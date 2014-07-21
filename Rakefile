@@ -11,15 +11,11 @@ PACKAGE_DIRNAME = '_package'
 BLANK_STRING_RE = Regexp.new('^\s*$')
 
 def source_dir
-  @source_dir ||= File.expand_path('..',Dir.pwd)
+  @source_dir ||= File.expand_path(Dir.pwd)
 end
 
-def builder_dir
-  @builder_dir = File.join(source_dir,BUILDER_DIRNAME)
-end
-
-def builder_template_dir
-  @builder_template_dir ||= File.join(builder_dir,'templates')
+def template_dir
+  @template_dir ||= File.join(source_dir,'_templates')
 end
 
 def preview_dir
@@ -115,7 +111,7 @@ end
 
 task :build do
   # Copy stylesheets into preview area
-  system("cp -r #{builder_dir}/stylesheets #{preview_dir}")
+  system("cp -r _stylesheets #{preview_dir}/stylesheets")
   # Build the topic files
   build_config.each do |topic_group|
     src_group_path = File.join(source_dir,topic_group['Dir'])
@@ -130,7 +126,7 @@ task :build do
       src_file_path = File.join(src_group_path,"#{topic['File']}.adoc")
       tgt_file_path = File.join(tgt_group_path,"#{topic['File']}.adoc")
       system('cp', src_file_path, tgt_file_path)
-      Asciidoctor.render_file tgt_file_path, :in_place => true, :safe => :unsafe, :template_dir => builder_template_dir, :attributes => ['source-highlighter=coderay','coderay-css=style',"stylesdir=#{preview_dir}/stylesheets","imagesdir=#{src_group_path}/images",'stylesheet=origin.css','linkcss!','icons=font','idprefix=','idseparator=-','sectanchors']
+      Asciidoctor.render_file tgt_file_path, :in_place => true, :safe => :unsafe, :template_dir => template_dir, :attributes => ['source-highlighter=coderay','coderay-css=style',"stylesdir=#{preview_dir}/stylesheets","imagesdir=#{src_group_path}/images",'stylesheet=origin.css','linkcss!','icons=font','idprefix=','idseparator=-','sectanchors']
       system('rm', tgt_file_path)
     end
   end
