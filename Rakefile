@@ -1,4 +1,6 @@
 require 'asciidoctor'
+require 'git'
+require 'logger'
 require 'pandoc-ruby'
 require 'pathname'
 require 'rake'
@@ -38,12 +40,90 @@ def package_dir
   end
 end
 
+def git
+  @git ||= Git.open(source_dir)
+end
+
+def git_checkout branch_name
+  target_branch = git.branches.local.select{ |b| b.name == branch_name }[0]
+  if not target_branch.current
+    target_branch.checkout
+  end
+end
+
+# Returns the local git branches; current branch is always first
+def local_branches
+  @local_branches ||= begin
+    branches = []
+    branches << git.branches.local.select{ |b| b.current }[0].name
+    branches << git.branches.local.select{ |b| not b.current }.map{ |b| b.name }
+    branches.flatten
+  end
+end
+
 def build_config_file
   @build_config_file ||= File.join(source_dir,BUILD_FILENAME)
 end
 
 def build_config
   @build_config ||= validate_config(YAML.load_stream(open(build_config_file)))
+end
+
+def distro_map
+  @distro_map ||= begin
+    { 'openshift-origin' => {
+        :name     => 'OpenShift Origin',
+        :branches => {
+          'master'   => {
+            :name => 'Nightly Build',
+            :dir  => 'latest',
+          },
+          'origin-4' => {
+            :name => 'Version 4',
+            :dir  => 'stable',
+          },
+        },
+      },
+      'openshift-online' => {
+        :name     => 'OpenShift Online',
+        :branches => {
+          'online' => { 
+            :name => 'Latest Release',
+            :dir  => 'online',
+          },
+        },
+      },
+      'openshift-enterprise' => {
+        :name     => 'OpenShift Enterprise',
+        :branches => {
+          'enterprise-2.2' => {
+            :name => 'Version 2.2',
+            :dir  => 'enterprise/v2.2',
+          },
+        },
+      }
+    }
+  end
+end
+
+def distro_branches
+  @distro_branches ||= distro_map.map{ |distro,dconfig| dconfig[:branches].keys }.flatten
+end
+
+def parse_distros distros_string, for_validation=false
+  values = distros_string.split(',').map{ |v| v.strip }
+  return values if for_validation
+  return distro_map.keys if values.include?('all')
+  return values.uniq
+end
+
+def validate_distros distros_string
+  return false if not distros_string.is_a?(String)
+  values = parse_distros(distros_string, true)
+  values.each do |v|
+    return false if not v == 'all' or not distro_map.keys.include?(v)
+  end
+  return true
 end
 
 def validate_config config_data
@@ -70,6 +150,16 @@ def validate_config config_data
     if not File.exists?(File.join(source_dir,topic_group['Dir']))
       raise "In #{build_config_file}, the directory #{topic_group['Dir']} for topic group #{topic_group['Name']} does not exist under #{source_dir}"
     end
+    # Validate the Distros setting
+    if topic_group.has_key?('Distros')
+      if not validate_distros(topic_group['Distros'])
+        key_list = distro_map.keys.map{ |k| "'#{k.to_s}'" }.sort.join(', ')
+        raise "In #{build_config_file}, the Distros value #{topic_group['Distros'].inspect} for topic group #{topic_group['Name']} is not valid. Legal values are 'all', #{key_list}, or a comma-separated list of legal values."
+      end
+      topic_group['Distros'] = parse_distros(topic_group['Distros'])
+    else
+      topic_group['Distros'] = parse_distros('all')
+    end
     if not topic_group['Topics'].is_a?(Array)
       raise "The #{topic_group['Name']} topic group in #{build_config_file} is malformed; the build system is expecting an array of 'Topic' definitions."
     end
@@ -90,17 +180,29 @@ def validate_config config_data
       if not File.exists?(File.join(source_dir,topic_group['Dir'],"#{topic['File']}.adoc"))
         raise "In #{build_config_file}, could not find file #{topic['File']} under directory #{topic_group['Dir']} for topic #{topic['Name']} in topic group #{topic_group['Name']}."
       end
+      if topic.has_key?('Distros')
+        if not validate_distros(topic['Distros'])
+          key_list = distro_map.keys.map{ |k| "'#{k.to_s}'" }.sort.join(', ')
+          raise "In #{build_config_file}, the Distros value #{topic_group['Distros'].inspect} for topic item #{topic['Name']} in topic group #{topic_group['Name']} is not valid. Legal values are 'all', #{key_list}, or a comma-separated list of legal values."
+        end
+        topic['Distros'] = parse_distros(topic['Distros'])
+      else
+        topic['Distros'] = parse_distros('all')
+      end
     end
   end
   config_data
 end
 
-def nav_tree
+def nav_tree distro
   @nav_tree ||= begin
     navigation = []
     build_config.each do |topic_group|
+      next if not topic_group['Distros'].include?(distro)
+      next if topic_group['Topics'].select{ |t| t['Distros'].include?(distro) }.length == 0
       topic_list = []
       topic_group['Topics'].each do |topic|
+        next if not topic['Distros'].include?(distro)
         topic_list << ["#{topic_group['Dir']}/#{topic['File']}.html",topic['Name']]
       end
       navigation << { :title => topic_group['Name'], :topics => topic_list }
@@ -110,25 +212,63 @@ def nav_tree
 end
 
 task :build do
-  # Copy stylesheets into preview area
-  system("cp -r _stylesheets #{preview_dir}/stylesheets")
-  # Build the topic files
-  build_config.each do |topic_group|
-    src_group_path = File.join(source_dir,topic_group['Dir'])
-    tgt_group_path = File.join(preview_dir,topic_group['Dir'])
-    if not File.exists?(tgt_group_path)
-      Dir.mkdir(tgt_group_path)
+  # First, notify the user of missing local branches
+  missing_branches = []
+  distro_branches.sort.each do |dbranch|
+    next if local_branches.include?(dbranch)
+    missing_branches << dbranch
+  end
+  if missing_branches.length > 0
+    puts "\nNOTE: The following branches do not exist in your local git repo:"
+    missing_branches.each do |mbranch|
+      puts "- #{mbranch}"
     end
-    #if File.exists?(File.join(src_group_path,'images'))
-    #  system("cp -r #{src_group_path}/images #{tgt_group_path}")
-    #end
-    topic_group['Topics'].each do |topic|
-      src_file_path = File.join(src_group_path,"#{topic['File']}.adoc")
-      tgt_file_path = File.join(tgt_group_path,"#{topic['File']}.adoc")
-      system('cp', src_file_path, tgt_file_path)
-      Asciidoctor.render_file tgt_file_path, :in_place => true, :safe => :unsafe, :template_dir => template_dir, :attributes => ['source-highlighter=coderay','coderay-css=style',"stylesdir=#{preview_dir}/stylesheets","imagesdir=#{src_group_path}/images",'stylesheet=origin.css','linkcss!','icons=font','idprefix=','idseparator=-','sectanchors']
-      system('rm', tgt_file_path)
+    puts "The build will proceed but these branches will not be generated."
+  end
+  distro_map.each do |distro,distro_config|
+    puts "\n\nBuilding #{distro_config[:name]}"
+    distro_config[:branches].each do |branch,branch_config|
+      if missing_branches.include?(branch)
+        puts "- skipping #{branch}"
+        next
+      end
+      puts "- building #{branch}"
+
+      # Put us on the correct branch
+      git_checkout(branch)
+
+      # Create the target dir
+      branch_path = "#{preview_dir}/#{branch_config[:dir]}"
+      system("mkdir -p #{branch_path}")
+
+      # Copy stylesheets into preview area
+      system("cp -r _stylesheets #{branch_path}/stylesheets")
+
+      # Build the nav tree
+      navigation = nav_tree(distro)
+
+      # Build the topic files
+      build_config.each do |topic_group|
+        next if not topic_group['Distros'].include?(distro)
+        next if topic_group['Topics'].select{ |t| t['Distros'].include?(distro) }.length == 0
+        src_group_path = File.join(source_dir,topic_group['Dir'])
+        tgt_group_path = File.join(branch_path,topic_group['Dir'])
+        if not File.exists?(tgt_group_path)
+          Dir.mkdir(tgt_group_path)
+        end
+        topic_group['Topics'].each do |topic|
+          next if not topic['Distros'].include?(distro)
+          src_file_path = File.join(src_group_path,"#{topic['File']}.adoc")
+          tgt_file_path = File.join(tgt_group_path,"#{topic['File']}.adoc")
+          system('cp', src_file_path, tgt_file_path)
+          Asciidoctor.render_file tgt_file_path, :in_place => true, :safe => :unsafe, :template_dir => template_dir, :attributes => ['source-highlighter=coderay','coderay-css=style',"stylesdir=#{branch_path}/stylesheets","imagesdir=#{src_group_path}/images",'stylesheet=origin.css','linkcss!','icons=font','idprefix=','idseparator=-','sectanchors', distro, "product-title=#{distro_config[:name]}", "product-version=#{branch_config[:name]}"]
+          system('rm', tgt_file_path)
+        end
+      end
     end
+
+    # Return to the original branch
+    git_checkout(local_branches[0])
   end
 end
 
