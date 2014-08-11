@@ -288,7 +288,7 @@ def nav_tree distro
       topic_group['Topics'].each do |topic|
         next if not topic['Distros'].include?(distro)
         topic_list << {
-          :path => "#{topic['File']}.html",
+          :path => "../#{topic_group['Dir']}/#{topic['File']}.html",
           :name => topic['Name'],
           :id   => topic['ID'],
         }
@@ -346,6 +346,7 @@ task :build do
         end
         topic_group['Topics'].each do |topic|
           next if not topic['Distros'].include?(distro)
+          puts "  - #{topic['ID']}"
           src_file_path = File.join(src_group_path,"#{topic['File']}.adoc")
           tgt_file_path = File.join(tgt_group_path,"#{topic['File']}.html")
           topic_adoc    = File.open(src_file_path,'r').read
