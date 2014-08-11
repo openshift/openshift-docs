@@ -110,6 +110,82 @@ def distro_branches
   @distro_branches ||= distro_map.map{ |distro,dconfig| dconfig[:branches].keys }.flatten
 end
 
+def page(args)
+  page_css = ''
+  args[:css].each do |sheet|
+    sheet_href = args[:css_path] + sheet
+    page_css << "<link href=\"#{sheet_href}\" rel=\"stylesheet\" />\n"
+  end
+  page_head = <<EOF
+<!DOCTYPE html>
+<html>
+<head>
+<title>#{args[:distro]} #{args[:version]} | #{args[:group_title]} | #{args[:topic_title]}</title>
+#{page_css}
+<script src="http://code.jquery.com/jquery-2.1.1.min.js"></script>
+<script src="http://maxcdn.bootstrapcdn.com/bootstrap/3.2.0/js/bootstrap.min.js"></script>
+</head>
+<body>
+<div class="container">
+  <h3>OpenShift Documentation <small>#{args[:distro]} #{args[:version]}</small></h3>
+  <div class="row">
+    <div class="col-md-3">
+      <form method="get" onsubmit="window.location.href='https://www.google.com/search?as_q=' + this.elements.docsSearch.value + '&as_sitesearch=openshift.github.io';">
+      <div class="input-group">
+        <!-- <span class="input-group-addon"><span class="glyphicon glyphicon-search"></span></span> //-->
+        <input id="docsSearch" name="docsSearch" type="text" class="form-control" />
+        <span class="input-group-btn">
+          <button class="btn btn-default" type="button" onclick="window.location.href='https://www.google.com/search?as_q=' + this.form.elements.docsSearch.value + '&as_sitesearch=openshift.github.io';">Search</button>
+        </span>
+      </div>
+      <p>&nbsp;</p>
+      </form>
+EOF
+
+  page_nav = ['      <div class="panel-group">']
+  groupidx = 0
+  args[:navigation].each do |topic_group|
+    current_group = topic_group[:id] == args[:group_id]
+    page_nav << '        <div class="panel panel-default">'
+    page_nav << '          <div class="panel-heading">'
+    page_nav << '            <h3 class="panel-title">'
+    page_nav << "              <a data-toggle=\"collapse\" data-parent=\"#accordion\" href=\"#topicGroup#{groupidx}\">#{topic_group[:name]}</a>"
+    page_nav << '            </h3>'
+    page_nav << '          </div>'
+    page_nav << "          <ul id=\"topicGroup#{groupidx}\" class=\"list-group panel-collapse collapse#{current_group ? ' in' : ''}\">"
+    topic_group[:topics].each do |topic|
+      current_topic = topic[:id] == args[:topic_id]
+      page_nav << "            <li class=\"list-group-item\"><a class=\"list-group-item#{current_topic ? ' active' : ''}\" href=\"#{topic[:path]}\">#{topic[:name]}</a></li>"
+    end
+    page_nav << '          </ul>'
+    page_nav << '        </div>'
+    groupidx = groupidx + 1
+  end
+  page_nav << '      </div>'
+
+  page_body = <<EOF
+    </div>
+    <div class="col-md-9">
+      <div class="page-header">
+        <h2>#{args[:group_title]}: #{args[:topic_title]}</h2>
+      </div>
+      #{args[:content]}
+    </div>
+  </div>
+</div>
+</body>
+</html>
+EOF
+
+  page_txt = ''
+  page_txt << page_head
+  page_txt << "\n"
+  page_txt << page_nav.join("\n")
+  page_txt << "\n"
+  page_txt << page_body
+  page_txt
+end
+
 def parse_distros distros_string, for_validation=false
   values = distros_string.split(',').map{ |v| v.strip }
   return values if for_validation
@@ -163,6 +239,8 @@ def validate_config config_data
     if not topic_group['Topics'].is_a?(Array)
       raise "The #{topic_group['Name']} topic group in #{build_config_file} is malformed; the build system is expecting an array of 'Topic' definitions."
     end
+    # Generate an ID for this topic group
+    topic_group['ID'] = camelize topic_group['Name']
     # Now buzz through the topics
     topic_group['Topics'].each do |topic|
       ['Name','File'].each do |topic_key|
@@ -189,9 +267,15 @@ def validate_config config_data
       else
         topic['Distros'] = parse_distros('all')
       end
+      # Generate an ID for this topic
+      topic['ID'] = "#{topic_group['ID']}::#{camelize(topic['Name'])}"
     end
   end
   config_data
+end
+
+def camelize text
+  text.split(' ').map{ |t| t.capitalize }.join
 end
 
 def nav_tree distro
@@ -203,9 +287,13 @@ def nav_tree distro
       topic_list = []
       topic_group['Topics'].each do |topic|
         next if not topic['Distros'].include?(distro)
-        topic_list << ["#{topic_group['Dir']}/#{topic['File']}.html",topic['Name']]
+        topic_list << {
+          :path => "#{topic['File']}.html",
+          :name => topic['Name'],
+          :id   => topic['ID'],
+        }
       end
-      navigation << { :title => topic_group['Name'], :topics => topic_list }
+      navigation << { :name => topic_group['Name'], :id => topic_group['ID'], :topics => topic_list }
     end
     navigation
   end
@@ -239,12 +327,12 @@ task :build do
 
       # Create the target dir
       branch_path = "#{preview_dir}/#{branch_config[:dir]}"
-      system("mkdir -p #{branch_path}")
+      system("mkdir -p #{branch_path}/stylesheets")
 
       # Copy stylesheets into preview area
-      system("cp -r _stylesheets #{branch_path}/stylesheets")
+      system("cp -r _stylesheets/*css #{branch_path}/stylesheets")
 
-      # Build the nav tree
+      # Build the landing page
       navigation = nav_tree(distro)
 
       # Build the topic files
@@ -259,10 +347,27 @@ task :build do
         topic_group['Topics'].each do |topic|
           next if not topic['Distros'].include?(distro)
           src_file_path = File.join(src_group_path,"#{topic['File']}.adoc")
-          tgt_file_path = File.join(tgt_group_path,"#{topic['File']}.adoc")
-          system('cp', src_file_path, tgt_file_path)
-          Asciidoctor.render_file tgt_file_path, :in_place => true, :safe => :unsafe, :template_dir => template_dir, :attributes => ['source-highlighter=coderay','coderay-css=style',"stylesdir=#{branch_path}/stylesheets","imagesdir=#{src_group_path}/images",'stylesheet=origin.css','linkcss!','icons=font','idprefix=','idseparator=-','sectanchors', distro, "product-title=#{distro_config[:name]}", "product-version=#{branch_config[:name]}"]
-          system('rm', tgt_file_path)
+          tgt_file_path = File.join(tgt_group_path,"#{topic['File']}.html")
+          topic_adoc    = File.open(src_file_path,'r').read
+          topic_html    = Asciidoctor.render topic_adoc, :header_footer => false, :safe => :unsafe, :attributes => ['source-highlighter=coderay','coderay-css=style',"imagesdir=#{src_group_path}/images",'linkcss!','icons=font','idprefix=','idseparator=-','sectanchors', distro, "product-title=#{distro_config[:name]}", "product-version=#{branch_config[:name]}"]
+          full_file_text = page({
+            :distro      => distro_config[:name],
+            :version     => branch_config[:name],
+            :group_title => topic_group['Name'],
+            :topic_title => topic['Name'],
+            :content     => topic_html,
+            :navigation  => navigation,
+            :group_id    => topic_group['ID'],
+            :topic_id    => topic['ID'],
+            :css_path    => "#{branch_path}/stylesheets/",
+            :css         => [
+              'bootstrap_default.min.css',
+              'font-awesome.min.css',
+              'foundation.css',
+              'origin.css',
+            ]
+          })
+          File.write(tgt_file_path,full_file_text)
         end
       end
     end
@@ -351,7 +456,7 @@ task :package do
 end
 
 task :clean do
-  sh "rm -rf ../_preview ../_package" do |ok,res|
+  sh "rm -rf _preview/* _package/*" do |ok,res|
     if ! ok
       puts "Nothing to clean."
     end
