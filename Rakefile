@@ -11,6 +11,7 @@ BUILDER_DIRNAME = '_build_system'
 PREVIEW_DIRNAME = '_preview'
 PACKAGE_DIRNAME = '_package'
 BLANK_STRING_RE = Regexp.new('^\s*$')
+PRODUCT_AUTHOR  = "OpenShift Documentation Project <dev@lists.openshift.redhat.com>"
 
 def source_dir
   @source_dir ||= File.expand_path(Dir.pwd)
@@ -350,7 +351,7 @@ task :build do
           src_file_path = File.join(src_group_path,"#{topic['File']}.adoc")
           tgt_file_path = File.join(tgt_group_path,"#{topic['File']}.html")
           topic_adoc    = File.open(src_file_path,'r').read
-          topic_html    = Asciidoctor.render topic_adoc, :header_footer => false, :safe => :unsafe, :attributes => ['source-highlighter=coderay','coderay-css=style',"imagesdir=#{src_group_path}/images",'linkcss!','icons=font','idprefix=','idseparator=-','sectanchors', distro, "product-title=#{distro_config[:name]}", "product-version=#{branch_config[:name]}"]
+          topic_html    = Asciidoctor.render topic_adoc, :header_footer => false, :safe => :unsafe, :attributes => ['source-highlighter=coderay','coderay-css=style',"imagesdir=#{src_group_path}/images",'linkcss!','icons=font','idprefix=','idseparator=-','sectanchors', distro, "product-title=#{distro_config[:name]}", "product-version=#{branch_config[:name]}", "product-author=#{PRODUCT_AUTHOR}"]
           full_file_text = page({
             :distro      => distro_config[:name],
             :version     => branch_config[:name],
