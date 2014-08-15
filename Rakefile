@@ -12,6 +12,7 @@ PREVIEW_DIRNAME = '_preview'
 PACKAGE_DIRNAME = '_package'
 BLANK_STRING_RE = Regexp.new('^\s*$')
 PRODUCT_AUTHOR  = "OpenShift Documentation Project <dev@lists.openshift.redhat.com>"
+ANALYTICS_SHIM  = '<script type="text/javascript" src="https://assets.openshift.net/app/assets/site/tracking.js"></script>'
 
 def source_dir
   @source_dir ||= File.expand_path(Dir.pwd)
@@ -39,6 +40,10 @@ def package_dir
     end
     package_dir
   end
+end
+
+def build_date
+  Time.now.utc
 end
 
 def git
@@ -107,8 +112,11 @@ def distro_map
   end
 end
 
-def distro_branches
-  @distro_branches ||= distro_map.map{ |distro,dconfig| dconfig[:branches].keys }.flatten
+def distro_branches(use_distro='')
+  @distro_branches ||= begin
+    use_distro_list = use_distro == '' ? distro_map.keys : [use_distro]
+    distro_map.select{ |dkey,dval| use_distro_list.include?(dkey) }.map{ |distro,dconfig| dconfig[:branches].keys }.flatten
+  end
 end
 
 def page(args)
@@ -174,6 +182,7 @@ EOF
     </div>
   </div>
 </div>
+#{ANALYTICS_SHIM}
 </body>
 </html>
 EOF
@@ -300,10 +309,37 @@ def nav_tree distro
   end
 end
 
-task :build do
+def asciidoctor_page_attrs(more_attrs=[])
+  [
+    'source-highlighter=coderay',
+    'coderay-css=style',
+    'linkcss!',
+    'icons=font',
+    'idprefix=',
+    'idseparator=-',
+    'sectanchors',
+  ].concat(more_attrs)
+end
+
+task :build, :build_distro do |task,args|
+  # Figure out which distros we are building.
+  # A blank value here == all distros
+  build_distro = args[:build_distro] || ''
+
+  if not build_distro == ''
+    if not distro_map.has_key?(build_distro)
+      puts "Unrecognized distro '#{build_distro}'; cancelling build."
+      exit
+    else
+      puts "Building the #{distro_map[build_distro][:name]} distribution(s)."
+    end
+  else
+    puts "Building all available distributions."
+  end
+
   # First, notify the user of missing local branches
   missing_branches = []
-  distro_branches.sort.each do |dbranch|
+  distro_branches(build_distro).sort.each do |dbranch|
     next if local_branches.include?(dbranch)
     missing_branches << dbranch
   end
@@ -315,7 +351,10 @@ task :build do
     puts "The build will proceed but these branches will not be generated."
   end
   distro_map.each do |distro,distro_config|
-    puts "\n\nBuilding #{distro_config[:name]}"
+    if not build_distro == '' and not build_distro == distro
+      next
+    end
+    puts "\nBuilding #{distro_config[:name]}"
     distro_config[:branches].each do |branch,branch_config|
       if missing_branches.include?(branch)
         puts "- skipping #{branch}"
@@ -327,7 +366,7 @@ task :build do
       git_checkout(branch)
 
       # Create the target dir
-      branch_path = "#{preview_dir}/#{branch_config[:dir]}"
+      branch_path = File.join(preview_dir,branch_config[:dir])
       system("mkdir -p #{branch_path}/stylesheets")
 
       # Copy stylesheets into preview area
@@ -347,11 +386,18 @@ task :build do
         end
         topic_group['Topics'].each do |topic|
           next if not topic['Distros'].include?(distro)
-          puts "  - #{topic['ID']}"
           src_file_path = File.join(src_group_path,"#{topic['File']}.adoc")
           tgt_file_path = File.join(tgt_group_path,"#{topic['File']}.html")
+          puts "  - #{File.join(topic_group['Dir'],topic['File'])}"
           topic_adoc    = File.open(src_file_path,'r').read
-          topic_html    = Asciidoctor.render topic_adoc, :header_footer => false, :safe => :unsafe, :attributes => ['source-highlighter=coderay','coderay-css=style',"imagesdir=#{src_group_path}/images",'linkcss!','icons=font','idprefix=','idseparator=-','sectanchors', distro, "product-title=#{distro_config[:name]}", "product-version=#{branch_config[:name]}", "product-author=#{PRODUCT_AUTHOR}"]
+          page_attrs    = asciidoctor_page_attrs([
+            "imagesdir=#{src_group_path}/images",
+            distro,
+            "product-title=#{distro_config[:name]}",
+            "product-version=#{branch_config[:name]}",
+            "product-author=#{PRODUCT_AUTHOR}"
+          ])
+          topic_html     = Asciidoctor.render topic_adoc, :header_footer => false, :safe => :unsafe, :attributes => page_attrs
           full_file_text = page({
             :distro      => distro_config[:name],
             :version     => branch_config[:name],
@@ -374,87 +420,25 @@ task :build do
       end
     end
 
+    # Create a distro landing page
+    # WARNING: if building mutiple distros, this file will be overwritten by each distro
+    src_file_path = File.join(source_dir,'index.adoc')
+    topic_adoc    = File.open(src_file_path,'r').read
+    page_attrs    = asciidoctor_page_attrs([
+      "imagesdir=#{File.join(source_dir,'_site_images')}",
+      distro,
+      "product-title=#{distro_config[:name]}",
+      "product-version=Updated #{build_date}",
+      "product-author=#{PRODUCT_AUTHOR}"
+    ])
+    topic_html = Asciidoctor.render topic_adoc, :header_footer => true, :safe => :unsafe, :attributes => page_attrs
+    File.write(File.join(preview_dir,'index.html'),topic_html)
+
     # Return to the original branch
     git_checkout(local_branches[0])
   end
-end
 
-task :package do
-  builds = [
-    { :branch => 'master',
-      :branch_dir  => ['/','openshift_origin/nightly'],
-      :doc_version => 'OpenShift Origin Latest'
-    },
-  ]
-
-  branches = `git branch`.split(/\n/).map{ |branch| branch.strip }
-
-  # Remeber the working branch so that we can return here later.
-  working_branch = 'master'
-  branches.each do |branch|
-    next if not branch.start_with?('*')
-    working_branch = branch.sub!(/^\* /,'')
-  end
-
-  # Make sure the working branch doesn't have any uncommitted changes
-  changed_files = `git status --porcelain`
-  if not changed_files.empty?
-    puts "Warning: Your current branch has uncommitted changes. Hit <CTRL+C> if you want to exit."
-    print "Starting packager in "
-    [3,2,1].each do |i|
-      print "#{i}..."
-      sleep 1
-    end
-    print "\n"
-  end
-
-  # Now make sure the build branches are available.
-  missing_branches = false
-  builds.each do |build|
-    if not branches.include?(build[:branch])
-      if not missing_branches
-        puts "ERROR: One or more branches for packaging are not available in this local repo:"
-        missing_branches = true
-      end
-      puts "- #{build[:branch]}"
-    end
-  end
-  if missing_branches
-    puts "Add these branches and rerun the packaging command."
-    exit 1
-  end
-
-  # Start packaging. Clear out the old package dir before making the new package
-  if Dir.entries('..').include?('_package')
-    system 'rm', '-rf', '../_package'
-  end
-  Dir.mkdir('../_package')
-
-  # Now make each package.
-  builds.each do |build|
-    # Check out this build branch
-    system("git checkout #{build[:branch]}")
-
-    if not $?.exitstatus == 0
-      puts "ERROR: Could not check out branch #{build[:branch]}, please investigate."
-      exit 1
-    end
-
-    # Make the build dir
-    build_dir = "../_package/#{build[:site_dir]}"
-    Dir.mkdir(build_dir)
-
-    # Build the docs
-    Rake::Task['build'].execute
-
-    # Clean everything up
-    Rake::Task['clean'].execute
-  end
-
-  # Return to the original branch
-  system("git checkout #{working_branch}")
-
-  puts "Packaging completed."
+  puts "\nAll builds completed."
 end
 
 task :clean do
