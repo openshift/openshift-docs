@@ -161,7 +161,7 @@ EOF
     page_nav << "              <a data-toggle=\"collapse\" data-parent=\"#accordion\" href=\"#topicGroup#{groupidx}\">#{topic_group[:name]}</a>"
     page_nav << '            </h3>'
     page_nav << '          </div>'
-    page_nav << "          <ul id=\"topicGroup#{groupidx}\" class=\"list-group panel-collapse collapse#{current_group ? ' in' : ''}\">"
+    page_nav << "          <ul id=\"topicGroup#{groupidx}\" class=\"list-group panel-collapse collapse#{args[:nav_expanded] or current_group ? ' in' : ''}\">"
     topic_group[:topics].each do |topic|
       current_topic = topic[:id] == args[:topic_id]
       page_nav << "            <li class=\"list-group-item\"><a class=\"list-group-item#{current_topic ? ' active' : ''}\" href=\"#{topic[:path]}\">#{topic[:name]}</a></li>"
@@ -413,7 +413,8 @@ task :build, :build_distro do |task,args|
               'font-awesome.min.css',
               'foundation.css',
               'origin.css',
-            ]
+            ],
+            :nav_expanded => (topic_group['Dir'] == 'welcome' and topic['File'].start_with?('index')),
           })
           File.write(tgt_file_path,full_file_text)
         end
