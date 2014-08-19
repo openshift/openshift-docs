@@ -407,7 +407,7 @@ task :build, :build_distro do |task,args|
             :navigation  => navigation,
             :group_id    => topic_group['ID'],
             :topic_id    => topic['ID'],
-            :css_path    => "#{branch_path}/stylesheets/",
+            :css_path    => "../../#{branch_config[:dir]}/stylesheets/",
             :css         => [
               'bootstrap_default.min.css',
               'font-awesome.min.css',
