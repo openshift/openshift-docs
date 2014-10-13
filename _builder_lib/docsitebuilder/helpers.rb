@@ -137,51 +137,130 @@ module DocSiteBuilder
 <html>
 <head>
 <title>#{args[:distro]} #{args[:version]} | #{args[:group_title]} | #{args[:topic_title]}</title>
+<link href="https://assets.openshift.net/content/subdomain.css" rel="stylesheet" type="text/css">
 #{page_css}
 <script src="http://code.jquery.com/jquery-2.1.1.min.js"></script>
 <script src="http://maxcdn.bootstrapcdn.com/bootstrap/3.2.0/js/bootstrap.min.js"></script>
+<script src="https://assets.openshift.net/content/modernizr.js" type="text/javascript"></script>
+<script src="#{args[:javascripts_path]}bootstrap-offcanvas.js" type="text/javascript"></script>
+<link href="https://assets.openshift.net/content/subdomain/touch-icon-precomposed.png" rel="apple-touch-icon-precomposed" type="image/png">
+<link href="https://assets.openshift.net/content/subdomain/favicon32x32.png" rel="shortcut icon" type="text/css">
+<!--[if IE]><link rel="shortcut icon" href="https://assets.openshift.net/content/subdomain/favicon.ico"><![endif]-->
+<!-- or, set /favicon.ico for IE10 win -->
+<meta content="OpenShift" name="application-name">
+<meta content="#000000" name="msapplication-TileColor">
+<meta content="https://assets.openshift.net/content/subdomain/touch-icon-precomposed.png" name="msapplication-TileImage">
+<!-- HTML5 shim and Respond.js IE8 support of HTML5 elements and media queries -->
+<!--[if lt IE 9]>
+  <script src="https://assets.openshift.net/content/html5shiv.js" type="text/javascript"></script>
+  <script src="https://assets.openshift.net/content/respond.js" type="text/javascript"></script>
+  <link href="https://assets.openshift.net/content/vendor/respond-js/respond-proxy.html" id="respond-proxy" rel="respond-proxy">
+  <link href="#{args[:images_path]}respond.proxy.gif" id="respond-redirect" rel="respond-redirect">
+  <script src="#{args[:javascripts_path]}respond.proxy.js" type="text/javascript"></script>
+<![endif]-->
 </head>
 <body>
-<div class="container">
-  <h3>OpenShift Documentation <small>#{args[:distro]} #{args[:version]}</small></h3>
-  <div class="row">
-    <div class="col-md-3">
-      <form method="get" onsubmit="window.location.href='https://www.google.com/search?as_q=' + this.elements.docsSearch.value + '&as_sitesearch=openshift.github.io';">
-      <div class="input-group">
-        <!-- <span class="input-group-addon"><span class="glyphicon glyphicon-search"></span></span> //-->
-        <input id="docsSearch" name="docsSearch" type="text" class="form-control" />
-        <span class="input-group-btn">
-          <button class="btn btn-default" type="button" onclick="window.location.href='https://www.google.com/search?as_q=' + this.form.elements.docsSearch.value + '&as_sitesearch=openshift.github.io';">Search</button>
+<div class="navbar navbar-default navbar-openshift" role="navigation">
+  <div class="navbar-header">
+    <div class="dropdown">
+      <a class="dropdown-toggle navbar-menu" href="#" data-toggle="dropdown">
+        <span class="navbar-menu-title">
+          MENU
         </span>
-      </div>
-      <p>&nbsp;</p>
-      </form>
+        <span class="icon-bar"></span>
+        <span class="icon-bar"></span>
+        <span class="icon-bar"></span></a>
+      <ul class="dropdown-menu">
+        <li>
+          <a href="https://www.openshift.com/products">Products</a>
+        </li>
+        <li>
+          <a href="https://www.openshift.com/products/pricing">Pricing</a>
+        </li>
+        <li class="active">
+          <a href="https://developers.openshift.com">Developer Portal</a>
+        </li>
+        <li>
+          <a href="https://help.openshift.com">Help Center</a>
+        </li>
+        <li>
+          <a href="https://openshift.uservoice.com">Vote on Features</a>
+        </li>
+        <li>
+          <a href="https://marketplace.openshift.com/">Add-ons</a>
+        </li>
+        <li>
+          <a href="https://blog.openshift.com/">Blog</a>
+        </li>
+        <li class="divider hidden-md hidden-lg"></li>
+        <li class="hidden-md hidden-lg">
+          <a class="nav-log-in" href="https://openshift.redhat.com/app/console">Log in</a>
+        </li>
+        <li class="hidden-md hidden-lg">
+          <a class="nav-sign-up" href="https://www.openshift.com/app/account/new">Sign up free</a>
+        </li>
+      </ul>
+    </div>
+    <a class="navbar-brand" href="/"></a>
+    <button class="navbar-toggle collapsed" type="button" data-toggle="collapse" data-target=".navbar-collapse" />
+      <span class="sr-only">
+        Toggle search
+      </span></button>
+  </div>
+  <div class="navbar-collapse collapse">
+    <ul class="nav navbar-nav navbar-right">
+      <li>
+        <a class="nav-search" href="#" data-toggle="collapse" data-target="#navbar-search-field"><i class="fa fa-search"></i></a>
+        <div id="navbar-search-field" class="collapse width col-md-4">
+          <form id="cse-search-form" action="https://help.openshift.com/hc/en-us/search" method="get">
+            <input id="cse-search-input" class="navbar-search-query form-control" name="query" type="text" placeholder=" Search" tabindex="1" autocomplete="off" autofocus="autofocus" />
+            <button class="btn btn-default fa fa-search" type="submit" value="Search"></button>
+        </form>
+        </div>
+      </li>
+      <li class="hidden-xs hidden-sm">
+        <a class="nav-log-in" href="https://openshift.redhat.com/app/console">Log in</a>
+      </li>
+      <li class="hidden-xs hidden-sm">
+        <a class="nav-sign-up" href="https://www.openshift.com/app/account/new">Sign up free</a>
+      </li>
+    </ul>
+  </div></div>
+<div class="container">
+  <p class="toggle-nav visible-xs pull-left">
+    <button class="btn btn-default btn-sm" type="button" data-toggle="offcanvas">Toggle nav</button>
+  </p>
+  <ol class="breadcrumb">
+        <li class="sitename">
+          <a href="/">OpenShift Documentation</a>
+        </li>
+        <li class="hidden-xs active">
+          #{args[:distro]} #{args[:version]}
+        </li>
+      </ol>
+  <div class="row row-offcanvas row-offcanvas-left">
+    <div class="col-xs-8 col-sm-3 col-md-3 sidebar sidebar-offcanvas">
 EOF
 
-      page_nav = ['      <div class="panel-group">']
+      page_nav = ['      <ul class="nav nav-sidebar">']
       groupidx = 0
       args[:navigation].each do |topic_group|
         current_group = topic_group[:id] == args[:group_id]
-        page_nav << '        <div class="panel panel-default">'
-        page_nav << '          <div class="panel-heading">'
-        page_nav << '            <h3 class="panel-title">'
-        page_nav << "              <a data-toggle=\"collapse\" data-parent=\"#accordion\" href=\"#topicGroup#{groupidx}\">#{topic_group[:name]}</a>"
-        page_nav << '            </h3>'
-        page_nav << '          </div>'
-        page_nav << "          <ul id=\"topicGroup#{groupidx}\" class=\"list-group panel-collapse collapse#{args[:nav_expanded] or current_group ? ' in' : ''}\">"
+        page_nav << "        <li class=\"nav-header\">"
+        page_nav << "          <a class=\"\" href=\"#\" data-toggle=\"collapse\" data-target=\"#topicGroup#{groupidx}\"><span class=\"fa #{current_group ? 'fa-angle-down' : 'fa-angle-right'}\"></span>#{topic_group[:name]}</a>"
+        page_nav << "          <ul id=\"topicGroup#{groupidx}\" class=\"collapse #{current_group ? 'in' : ''} list-unstyled\">"
         topic_group[:topics].each do |topic|
           current_topic = topic[:id] == args[:topic_id]
-          page_nav << "            <li class=\"list-group-item\"><a class=\"list-group-item#{current_topic ? ' active' : ''}\" href=\"#{topic[:path]}\">#{topic[:name]}</a></li>"
+          page_nav << "           <li><a class=\"#{current_topic ? ' active' : ''}\" href=\"#{topic[:path]}\">#{topic[:name]}</a></li>"
         end
         page_nav << '          </ul>'
-        page_nav << '        </div>'
+        page_nav << '         </li>'
         groupidx = groupidx + 1
       end
-      page_nav << '      </div>'
-
-      page_body = <<EOF
+        page_nav << '       </ul>'
+        page_body = <<EOF
     </div>
-    <div class="col-md-9">
+    <div class="col-xs-12 col-sm-9 col-md-9 main">
       <div class="page-header">
         <h2>#{args[:group_title]}: #{args[:topic_title]}</h2>
       </div>
@@ -190,6 +269,24 @@ EOF
   </div>
 </div>
 #{ANALYTICS_SHIM}
+<script type="text/javascript">
+/*<![CDATA[*/
+$(document).ready(function() {
+  $('.nav-sidebar [data-toggle=collapse]').click(function(e){
+    e.preventDefault();
+    // toggle icon
+    $(this).find("span").toggleClass("fa-angle-right fa-angle-down");
+  });
+  $('.collapse').on('show', function (e) {
+    // hide open menus
+    $('.collapse').each(function(){
+      if ($(this).hasClass('in')) {
+          $(this).collapse('toggle');
+      }
+    });
+  });
+/*]]>*/
+</script>
 </body>
 </html>
 EOF
@@ -384,9 +481,17 @@ EOF
           # Create the target dir
           branch_path = File.join(preview_dir,branch_config[:dir])
           system("mkdir -p #{branch_path}/stylesheets")
+          system("mkdir -p #{branch_path}/javascripts")
+          system("mkdir -p #{branch_path}/images")
 
           # Copy stylesheets into preview area
           system("cp -r _stylesheets/*css #{branch_path}/stylesheets")
+
+          # Copy javascripts into preview area
+          system("cp -r _javascripts/*js #{branch_path}/javascripts")
+
+          # Copy images into preview area
+          system("cp -r _images/* #{branch_path}/images")
 
           # Read the _build_config.yml for this distro
           distro_build_config = build_config
@@ -431,11 +536,11 @@ EOF
                 :group_id    => topic_group['ID'],
                 :topic_id    => topic['ID'],
                 :css_path    => "../../#{branch_config[:dir]}/stylesheets/",
+                :javascripts_path    => "../../#{branch_config[:dir]}/javascripts/",
+                :images_path    => "../../#{branch_config[:dir]}/images/",
                 :css         => [
-                  'bootstrap_default.min.css',
                   'font-awesome.min.css',
-                  'foundation.css',
-                  'origin.css',
+                  'docs.css'
                 ],
               })
               File.write(tgt_file_path,full_file_text)
