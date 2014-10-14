@@ -539,8 +539,7 @@ EOF
                 :javascripts_path    => "../../#{branch_config[:dir]}/javascripts/",
                 :images_path    => "../../#{branch_config[:dir]}/images/",
                 :css         => [
-                  'font-awesome.min.css',
-                  'docs.css'
+                  'docs.css',
                 ],
               })
               File.write(tgt_file_path,full_file_text)
