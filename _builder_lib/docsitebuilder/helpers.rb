@@ -82,6 +82,11 @@ module DocSiteBuilder
       validate_config(YAML.load_stream(open(build_config_file)))
     end
 
+    # Protip: Do cache this! It contains the dev branch config
+    def dev_build_config
+      @dev_build_config ||= validate_config(YAML.load_stream(open(build_config_file)))
+    end
+
     def distro_map
       @distro_map ||= begin
         { 'openshift-origin' => {
@@ -432,15 +437,25 @@ EOF
         single_page_file = single_page.split(':')[1]
         puts "Rebuilding '#{single_page}' on branch '#{working_branch}'."
       end
+
       if not build_distro == ''
         if not distro_map.has_key?(build_distro)
-          puts "Unrecognized distro '#{build_distro}'; cancelling build."
           exit
         else
           puts "Building the #{distro_map[build_distro][:name]} distribution(s)."
         end
       elsif single_page.nil?
         puts "Building all available distributions."
+      end
+
+      development_branch = nil
+      if not distro_branches.include?(working_branch)
+        development_branch = working_branch
+        if not build_distro == ''
+          puts "The working branch '#{working_branch}' will be rendered as #{build_distro} documentation."
+        else
+          puts "The working branch '#{working_branch}' will be rendered for each build distribution."
+        end
       end
 
       # First, notify the user of missing local branches
@@ -458,12 +473,12 @@ EOF
       end
 
       distro_map.each do |distro,distro_config|
-        if not build_distro == '' and not build_distro == distro
+        if single_page.nil? and not build_distro == '' and not build_distro == distro
           next
         end
         first_branch = single_page.nil?
         distro_config[:branches].each do |branch,branch_config|
-          if not single_page.nil? and not working_branch == branch
+          if not single_page.nil? and not working_branch == branch and development_branch.nil?
             next
           end
           if first_branch
@@ -474,9 +489,12 @@ EOF
             puts "- skipping #{branch}"
             next
           end
-          if single_page.nil?
+          if single_page.nil? and development_branch.nil?
             puts "- building #{branch}"
             git_checkout(branch)
+          end
+          if not development_branch.nil?
+            branch_config[:dir] = "#{development_branch}_#{distro}"
           end
 
           # Create the target dir
@@ -495,7 +513,7 @@ EOF
           system("cp -r _images/* #{branch_path}/images")
 
           # Read the _build_config.yml for this distro
-          distro_build_config = build_config
+          distro_build_config = development_branch.nil? ? build_config : dev_build_config
 
           # Build the landing page
           navigation = nav_tree(distro,distro_build_config)
@@ -548,6 +566,10 @@ EOF
                 return
               end
             end
+          end
+
+          if not development_branch.nil?
+            break
           end
         end
 
