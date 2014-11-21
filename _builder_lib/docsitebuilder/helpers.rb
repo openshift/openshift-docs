@@ -8,13 +8,14 @@ require 'yaml'
 module DocSiteBuilder
   module Helpers
 
-    BUILD_FILENAME  = '_build_cfg.yml'
-    BUILDER_DIRNAME = '_build_system'
-    PREVIEW_DIRNAME = '_preview'
-    PACKAGE_DIRNAME = '_package'
-    BLANK_STRING_RE = Regexp.new('^\s*$')
-    PRODUCT_AUTHOR  = "OpenShift Documentation Project <dev@lists.openshift.redhat.com>"
-    ANALYTICS_SHIM  = '<script type="text/javascript" src="https://assets.openshift.net/app/assets/site/tracking.js"></script>'
+    BUILD_FILENAME      = '_build_cfg.yml'
+    DISTRO_MAP_FILENAME = '_distro_map.yml'
+    BUILDER_DIRNAME     = '_build_system'
+    PREVIEW_DIRNAME     = '_preview'
+    PACKAGE_DIRNAME     = '_package'
+    BLANK_STRING_RE     = Regexp.new('^\s*$')
+    PRODUCT_AUTHOR      = "OpenShift Documentation Project <dev@lists.openshift.redhat.com>"
+    ANALYTICS_SHIM      = '<script type="text/javascript" src="https://assets.openshift.net/app/assets/site/tracking.js"></script>'
 
     def source_dir
       @source_dir ||= File.expand_path '../../../', __FILE__
@@ -77,6 +78,10 @@ module DocSiteBuilder
       @build_config_file ||= File.join(source_dir,BUILD_FILENAME)
     end
 
+    def distro_map_file
+      @distro_map_file ||= File.join(source_dir, DISTRO_MAP_FILENAME)
+    end
+
     # Protip: Don't cache this! It needs to be reread every time we change branches.
     def build_config
       validate_config(YAML.load_stream(open(build_config_file)))
@@ -87,47 +92,15 @@ module DocSiteBuilder
       @dev_build_config ||= validate_config(YAML.load_stream(open(build_config_file)))
     end
 
+    # Protip: Don't cache this! It needs to be reread every time we change branches.
     def distro_map
-      @distro_map ||= begin
-        { 'openshift-origin' => {
-            :name     => 'OpenShift Origin',
-            :branches => {
-              'master'   => {
-                :name => 'Nightly Build',
-                :dir  => 'latest',
-              },
-              'origin-4' => {
-                :name => 'Version 4',
-                :dir  => 'stable',
-              },
-            },
-          },
-          'openshift-online' => {
-            :name     => 'OpenShift Online',
-            :branches => {
-              'online' => {
-                :name => 'Latest Release',
-                :dir  => 'online',
-              },
-            },
-          },
-          'openshift-enterprise' => {
-            :name     => 'OpenShift Enterprise',
-            :branches => {
-              'enterprise-2.2' => {
-                :name => 'Version 2.2',
-                :dir  => 'enterprise/v2.2',
-              },
-        },
-          }
-        }
-      end
+      YAML.load_file(distro_map_file)
     end
 
     def distro_branches(use_distro='')
       @distro_branches ||= begin
         use_distro_list = use_distro == '' ? distro_map.keys : [use_distro]
-        distro_map.select{ |dkey,dval| use_distro_list.include?(dkey) }.map{ |distro,dconfig| dconfig[:branches].keys }.flatten
+        distro_map.select{ |dkey,dval| use_distro_list.include?(dkey) }.map{ |distro,dconfig| dconfig["branches"].keys }.flatten
       end
     end
 
@@ -349,7 +322,7 @@ EOF
         # Validate the Distros setting
         if topic_group.has_key?('Distros')
           if not validate_distros(topic_group['Distros'])
-            key_list = distro_map.keys.map{ |k| "'#{k.to_s}'" }.sort.join(', ')
+            key_list = distro_map.keys.map{ |k| "'#{k}'" }.sort.join(', ')
             raise "In #{build_config_file}, the Distros value #{topic_group['Distros'].inspect} for topic group #{topic_group['Name']} is not valid. Legal values are 'all', #{key_list}, or a comma-separated list of legal values."
           end
           topic_group['Distros'] = parse_distros(topic_group['Distros'])
@@ -380,7 +353,7 @@ EOF
           end
           if topic.has_key?('Distros')
             if not validate_distros(topic['Distros'])
-              key_list = distro_map.keys.map{ |k| "'#{k.to_s}'" }.sort.join(', ')
+              key_list = distro_map.keys.map{ |k| "'#{k}'" }.sort.join(', ')
               raise "In #{build_config_file}, the Distros value #{topic_group['Distros'].inspect} for topic item #{topic['Name']} in topic group #{topic_group['Name']} is not valid. Legal values are 'all', #{key_list}, or a comma-separated list of legal values."
             end
             topic['Distros'] = parse_distros(topic['Distros'])
@@ -442,7 +415,7 @@ EOF
         if not distro_map.has_key?(build_distro)
           exit
         else
-          puts "Building the #{distro_map[build_distro][:name]} distribution(s)."
+          puts "Building the #{distro_map[build_distro]["name"]} distribution(s)."
         end
       elsif single_page.nil?
         puts "Building all available distributions."
@@ -477,12 +450,12 @@ EOF
           next
         end
         first_branch = single_page.nil?
-        distro_config[:branches].each do |branch,branch_config|
+        distro_config["branches"].each do |branch,branch_config|
           if not single_page.nil? and not working_branch == branch and development_branch.nil?
             next
           end
           if first_branch
-            puts "\nBuilding #{distro_config[:name]}"
+            puts "\nBuilding #{distro_config["name"]}"
             first_branch = false
           end
           if missing_branches.include?(branch)
@@ -494,11 +467,11 @@ EOF
             git_checkout(branch)
           end
           if not development_branch.nil?
-            branch_config[:dir] = "#{development_branch}_#{distro}"
+            branch_config["dir"] = "#{development_branch}_#{distro}"
           end
 
           # Create the target dir
-          branch_path = File.join(preview_dir,branch_config[:dir])
+          branch_path = File.join(preview_dir,branch_config["dir"])
           system("mkdir -p #{branch_path}/stylesheets")
           system("mkdir -p #{branch_path}/javascripts")
           system("mkdir -p #{branch_path}/images")
@@ -540,23 +513,23 @@ EOF
               page_attrs    = asciidoctor_page_attrs([
                 "imagesdir=#{src_group_path}/images",
                 distro,
-                "product-title=#{distro_config[:name]}",
-                "product-version=#{branch_config[:name]}",
+                "product-title=#{distro_config["name"]}",
+                "product-version=#{branch_config["name"]}",
                 "product-author=#{PRODUCT_AUTHOR}"
               ])
               topic_html     = Asciidoctor.render topic_adoc, :header_footer => false, :safe => :unsafe, :attributes => page_attrs
               full_file_text = page({
-                :distro      => distro_config[:name],
-                :version     => branch_config[:name],
+                :distro      => distro_config["name"],
+                :version     => branch_config["name"],
                 :group_title => topic_group['Name'],
                 :topic_title => topic['Name'],
                 :content     => topic_html,
                 :navigation  => navigation,
                 :group_id    => topic_group['ID'],
                 :topic_id    => topic['ID'],
-                :css_path    => "../../#{branch_config[:dir]}/stylesheets/",
-                :javascripts_path    => "../../#{branch_config[:dir]}/javascripts/",
-                :images_path    => "../../#{branch_config[:dir]}/images/",
+                :css_path    => "../../#{branch_config["dir"]}/stylesheets/",
+                :javascripts_path    => "../../#{branch_config["dir"]}/javascripts/",
+                :images_path    => "../../#{branch_config["dir"]}/images/",
                 :css         => [
                   'docs.css',
                 ],
@@ -580,7 +553,7 @@ EOF
         page_attrs    = asciidoctor_page_attrs([
           "imagesdir=#{File.join(source_dir,'_site_images')}",
           distro,
-          "product-title=#{distro_config[:name]}",
+          "product-title=#{distro_config["name"]}",
           "product-version=Updated #{build_date}",
           "product-author=#{PRODUCT_AUTHOR}"
         ])
