@@ -240,7 +240,7 @@ EOF
     </div>
     <div class="col-xs-12 col-sm-9 col-md-9 main">
       <div class="page-header">
-        <h2>#{args[:group_title]}: #{args[:topic_title]}</h2>
+        <h2>#{args[:topic_title]}</h2>
       </div>
       #{args[:content]}
     </div>
