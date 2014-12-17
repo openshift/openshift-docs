@@ -298,7 +298,7 @@ EOF
     def validate_config config_data
       # Validate/normalize the config file straight away
       if not config_data.is_a?(Array)
-        raise "The configutaration in #{build_config_file} is malformed; the build system is expecting an array of topic groups."
+        raise "The configuration in #{build_config_file} is malformed; the build system is expecting an array of topic groups."
       end
       config_data.each do |topic_group|
         # Check for presence of topic group keys
@@ -465,6 +465,9 @@ EOF
           if single_page.nil? and development_branch.nil?
             puts "- building #{branch}"
             git_checkout(branch)
+          end
+          if development_branch == '(detached from FETCH_HEAD)'
+            development_branch = 'detached_from_fetch_head'
           end
           if not development_branch.nil?
             branch_config["dir"] = "#{development_branch}_#{distro}"
