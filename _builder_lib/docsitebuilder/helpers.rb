@@ -117,8 +117,8 @@ module DocSiteBuilder
 <title>#{args[:distro]} #{args[:version]} | #{args[:group_title]} | #{args[:topic_title]}</title>
 <link href="https://assets.openshift.net/content/subdomain.css" rel="stylesheet" type="text/css">
 #{page_css}
-<script src="http://code.jquery.com/jquery-2.1.1.min.js"></script>
-<script src="http://maxcdn.bootstrapcdn.com/bootstrap/3.2.0/js/bootstrap.min.js"></script>
+<script src="https://code.jquery.com/jquery-2.1.1.min.js"></script>
+<script src="https://maxcdn.bootstrapcdn.com/bootstrap/3.2.0/js/bootstrap.min.js"></script>
 <script src="#{args[:javascripts_path]}bootstrap-offcanvas.js" type="text/javascript"></script>
 <script src="https://assets.openshift.net/content/modernizr.js" type="text/javascript"></script>
 <link href="https://assets.openshift.net/content/subdomain/touch-icon-precomposed.png" rel="apple-touch-icon-precomposed" type="image/png">
