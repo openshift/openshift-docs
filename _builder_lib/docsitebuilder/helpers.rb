@@ -112,8 +112,15 @@ module DocSiteBuilder
       end
       page_head = <<EOF
 <!DOCTYPE html>
+<!--[if IE 8]> <html class="ie8"> <![endif]-->
+<!--[if IE 9]> <html class="ie9"> <![endif]-->
+<!--[if gt IE 9]><!-->
 <html>
+<!--<![endif]-->
 <head>
+<meta charset="utf-8">
+<meta content="IE=edge" http-equiv="X-UA-Compatible">
+<meta content="width=device-width, initial-scale=1.0" name="viewport">
 <title>#{args[:distro]} #{args[:version]} | #{args[:group_title]} | #{args[:topic_title]}</title>
 <link href="https://assets.openshift.net/content/subdomain.css" rel="stylesheet" type="text/css">
 #{page_css}
