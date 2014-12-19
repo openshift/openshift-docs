@@ -466,8 +466,8 @@ EOF
             puts "- building #{branch}"
             git_checkout(branch)
           end
-          if development_branch == '(detached from FETCH_HEAD)'
-            development_branch = 'detached_from_fetch_head'
+          if development_branch =~ /^\(detached from .*\)/
+            development_branch = 'detached'
           end
           if not development_branch.nil?
             branch_config["dir"] = "#{development_branch}_#{distro}"
