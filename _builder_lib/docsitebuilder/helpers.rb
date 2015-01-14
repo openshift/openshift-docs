@@ -257,18 +257,11 @@ EOF
 <script type="text/javascript">
 /*<![CDATA[*/
 $(document).ready(function() {
-  $('.nav-sidebar [data-toggle=collapse]').click(function(e){
-    e.preventDefault();
-    // toggle icon
-    $(this).find("span").toggleClass("fa-angle-right fa-angle-down");
+  $("[id^='topicGroup']").on('show.bs.collapse', function () {
+    $(this).parent().find("span").toggleClass("fa-angle-right fa-angle-down");
   });
-  $('.collapse').on('show', function (e) {
-    // hide open menus
-    $('.collapse').each(function(){
-      if ($(this).hasClass('in')) {
-          $(this).collapse('toggle');
-      }
-    });
+  $("[id^='topicGroup']").on('hide.bs.collapse', function () {
+    $(this).parent().find("span").toggleClass("fa-angle-right fa-angle-down");
   });
 });
 /*]]>*/
