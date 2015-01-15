@@ -110,6 +110,42 @@ module DocSiteBuilder
         sheet_href = args[:css_path] + sheet
         page_css << "<link href=\"#{sheet_href}\" rel=\"stylesheet\" />\n"
       end
+
+      # TODO: This process of rebuilding the entire nav for every page will not scale well.
+      #       As the doc set increases, we will need to think about refactoring this.
+      page_nav = ['      <ul class="nav nav-sidebar">']
+      groupidx = 0
+      breadcrumb_root  = ''
+      breadcrumb_group = ''
+      breadcrumb_topic = ''
+      first_group = true
+      args[:navigation].each do |topic_group|
+        current_group = topic_group[:id] == args[:group_id]
+        page_nav << "        <li class=\"nav-header\">"
+        page_nav << "          <a class=\"\" href=\"#\" data-toggle=\"collapse\" data-target=\"#topicGroup#{groupidx}\"><span class=\"fa #{current_group ? 'fa-angle-down' : 'fa-angle-right'}\"></span>#{topic_group[:name]}</a>"
+        page_nav << "          <ul id=\"topicGroup#{groupidx}\" class=\"collapse #{current_group ? 'in' : ''} list-unstyled\">"
+        first_topic = true
+        topic_group[:topics].each do |topic|
+          current_topic = topic[:id] == args[:topic_id]
+          page_nav << "           <li><a class=\"#{current_topic ? ' active' : ''}\" href=\"#{topic[:path]}\">#{topic[:name]}</a></li>"
+          if first_group and first_topic
+            breadcrumb_root = "<a href=\"#{topic[:path]}\">#{args[:distro]} #{args[:version]}</a>"
+            first_group = false
+          end
+          if current_group and first_topic
+            breadcrumb_group = "<a href=\"#{topic[:path]}\">#{topic_group[:name]}</a>"
+            first_topic = false
+          end
+          if current_topic
+            breadcrumb_topic = topic[:name]
+          end
+        end
+        page_nav << '          </ul>'
+        page_nav << '         </li>'
+        groupidx = groupidx + 1
+      end
+      page_nav << '       </ul>'
+
       page_head = <<EOF
 <!DOCTYPE html>
 <!--[if IE 8]> <html class="ie8"> <![endif]-->
@@ -220,30 +256,20 @@ module DocSiteBuilder
           <a href="/">OpenShift Documentation</a>
         </li>
         <li class="hidden-xs active">
-          #{args[:distro]} #{args[:version]}
+          #{breadcrumb_root}
+        </li>
+        <li class="hidden-xs active">
+          #{breadcrumb_group}
+        </li>
+        <li class="hidden-xs active">
+          #{breadcrumb_topic}
         </li>
       </ol>
   <div class="row row-offcanvas row-offcanvas-left">
     <div class="col-xs-8 col-sm-3 col-md-3 sidebar sidebar-offcanvas">
 EOF
 
-      page_nav = ['      <ul class="nav nav-sidebar">']
-      groupidx = 0
-      args[:navigation].each do |topic_group|
-        current_group = topic_group[:id] == args[:group_id]
-        page_nav << "        <li class=\"nav-header\">"
-        page_nav << "          <a class=\"\" href=\"#\" data-toggle=\"collapse\" data-target=\"#topicGroup#{groupidx}\"><span class=\"fa #{current_group ? 'fa-angle-down' : 'fa-angle-right'}\"></span>#{topic_group[:name]}</a>"
-        page_nav << "          <ul id=\"topicGroup#{groupidx}\" class=\"collapse #{current_group ? 'in' : ''} list-unstyled\">"
-        topic_group[:topics].each do |topic|
-          current_topic = topic[:id] == args[:topic_id]
-          page_nav << "           <li><a class=\"#{current_topic ? ' active' : ''}\" href=\"#{topic[:path]}\">#{topic[:name]}</a></li>"
-        end
-        page_nav << '          </ul>'
-        page_nav << '         </li>'
-        groupidx = groupidx + 1
-      end
-        page_nav << '       </ul>'
-        page_body = <<EOF
+      page_body = <<EOF
     </div>
     <div class="col-xs-12 col-sm-9 col-md-9 main">
       <div class="page-header">
