@@ -10,6 +10,13 @@ task :build, :build_distro do |task,args|
   generate_docs(build_distro)
 end
 
+task :package, :package_site do |task,args|
+  package_site = args[:package_site] || ''
+  Rake::Task["clean"].invoke
+  Rake::Task["build"].invoke
+  package_docs(package_site)
+end
+
 task :refresh_page, :single_page do |task,args|
   generate_docs('',args[:single_page])
 end

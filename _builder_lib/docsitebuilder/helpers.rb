@@ -27,21 +27,21 @@ module DocSiteBuilder
 
     def preview_dir
       @preview_dir ||= begin
-        preview_dir = File.join(source_dir,PREVIEW_DIRNAME)
-        if not File.exists?(preview_dir)
-          Dir.mkdir(preview_dir)
+        lpreview_dir = File.join(source_dir,PREVIEW_DIRNAME)
+        if not File.exists?(lpreview_dir)
+          Dir.mkdir(lpreview_dir)
         end
-        preview_dir
+        lpreview_dir
       end
     end
 
     def package_dir
       @package_dir ||= begin
-        package_dir = File.join(source_dir,PACKAGE_DIRNAME)
-        if not File.exists?(package_dir)
-          Dir.mkdir(package_dir)
+        lpackage_dir = File.join(source_dir,PACKAGE_DIRNAME)
+        if not File.exists?(lpackage_dir)
+          Dir.mkdir(lpackage_dir)
         end
-        package_dir
+        lpackage_dir
       end
     end
 
@@ -95,6 +95,17 @@ module DocSiteBuilder
     # Protip: Don't cache this! It needs to be reread every time we change branches.
     def distro_map
       YAML.load_file(distro_map_file)
+    end
+
+    def site_map
+      site_map = {}
+      distro_map.each do |distro,distro_config|
+        if not site_map.has_key?(distro_config["site"])
+          site_map[distro_config["site"]] = {}
+        end
+        site_map[distro_config["site"]][distro] = distro_config["branches"]
+      end
+      site_map
     end
 
     def distro_branches(use_distro='')
@@ -253,7 +264,7 @@ module DocSiteBuilder
   </p>
   <ol class="breadcrumb">
         <li class="sitename">
-          <a href="/">OpenShift Documentation</a>
+          <a href="../../index.html">#{args[:sitename]}</a>
         </li>
         <li class="hidden-xs active">
           #{breadcrumb_root}
@@ -441,20 +452,10 @@ EOF
         if not distro_map.has_key?(build_distro)
           exit
         else
-          puts "Building the #{distro_map[build_distro]["name"]} distribution(s)."
+          puts "Building only the #{distro_map[build_distro]["name"]} distribution."
         end
       elsif single_page.nil?
-        puts "Building all available distributions."
-      end
-
-      development_branch = nil
-      if not distro_branches.include?(working_branch)
-        development_branch = working_branch
-        if not build_distro == ''
-          puts "The working branch '#{working_branch}' will be rendered as #{build_distro} documentation."
-        else
-          puts "The working branch '#{working_branch}' will be rendered for each build distribution."
-        end
+        puts "Building all distributions."
       end
 
       # First, notify the user of missing local branches
@@ -471,36 +472,43 @@ EOF
         puts "The build will proceed but these branches will not be generated."
       end
 
-      distro_map.each do |distro,distro_config|
-        if single_page.nil? and not build_distro == '' and not build_distro == distro
-          next
+      # Generate all distros for every local branch
+      local_branches.each do |local_branch|
+        # Single-page regen only occurs for the working branch
+        if not local_branch == working_branch
+          if single_page.nil?
+            # Checkout the branch
+            git_checkout(local_branch)
+          else
+            next
+          end
         end
-        first_branch = single_page.nil?
-        distro_config["branches"].each do |branch,branch_config|
-          if not single_page.nil? and not working_branch == branch and development_branch.nil?
+
+        # Run all distros.
+        distro_map.each do |distro,distro_config|
+          # Only building a single distro; skip the others.
+          if not build_distro == '' and not build_distro == distro
             next
           end
+
+          sitename = distro_config["site"] == 'community' ? "OpenShift Community Documentation" : "OpenShift Product Documentation"
+
+          first_branch = single_page.nil?
+
+          branch_config = { "name" => "Branch Build", "dir" => local_branch }
+          dev_branch    = true
+          if distro_config["branches"].has_key?(local_branch)
+            branch_config = distro_config["branches"][local_branch]
+            dev_branch    = false
+          end
+
           if first_branch
-            puts "\nBuilding #{distro_config["name"]}"
+            puts "\nBuilding #{distro_config["name"]} for branch '#{local_branch}'"
             first_branch = false
-          end
-          if missing_branches.include?(branch)
-            puts "- skipping #{branch}"
-            next
-          end
-          if single_page.nil? and development_branch.nil?
-            puts "- building #{branch}"
-            git_checkout(branch)
-          end
-          if development_branch =~ /^\(detached from .*\)/
-            development_branch = 'detached'
-          end
-          if not development_branch.nil?
-            branch_config["dir"] = "#{development_branch}_#{distro}"
           end
 
           # Create the target dir
-          branch_path = File.join(preview_dir,branch_config["dir"])
+          branch_path = File.join(preview_dir,distro,branch_config["dir"])
           system("mkdir -p #{branch_path}/stylesheets")
           system("mkdir -p #{branch_path}/javascripts")
           system("mkdir -p #{branch_path}/images")
@@ -515,7 +523,7 @@ EOF
           system("cp -r _images/* #{branch_path}/images")
 
           # Read the _build_config.yml for this distro
-          distro_build_config = development_branch.nil? ? build_config : dev_build_config
+          distro_build_config = dev_branch ? dev_build_config : build_config
 
           # Build the landing page
           navigation = nav_tree(distro,distro_build_config)
@@ -549,6 +557,7 @@ EOF
               topic_html     = Asciidoctor.render topic_adoc, :header_footer => false, :safe => :unsafe, :attributes => page_attrs
               full_file_text = page({
                 :distro      => distro_config["name"],
+                :sitename    => sitename,
                 :version     => branch_config["name"],
                 :group_title => topic_group['Name'],
                 :topic_title => topic['Name'],
@@ -570,30 +579,48 @@ EOF
             end
           end
 
-          if not development_branch.nil?
-            break
-          end
+          # Create a distro landing page
+          # WARNING: if building mutiple distros, this file will be overwritten by each distro
+          src_file_path = File.join(source_dir,'index.adoc')
+          topic_adoc    = File.open(src_file_path,'r').read
+          page_attrs    = asciidoctor_page_attrs([
+            "imagesdir=#{File.join(source_dir,'_site_images')}",
+            distro,
+            "product-title=#{distro_config["name"]}",
+            "product-version=Updated #{build_date}",
+            "product-author=#{PRODUCT_AUTHOR}"
+          ])
+          topic_html = Asciidoctor.render topic_adoc, :header_footer => true, :safe => :unsafe, :attributes => page_attrs
+          File.write(File.join(preview_dir,distro,'index.html'),topic_html)
         end
 
-        # Create a distro landing page
-        # WARNING: if building mutiple distros, this file will be overwritten by each distro
-        src_file_path = File.join(source_dir,'index.adoc')
-        topic_adoc    = File.open(src_file_path,'r').read
-        page_attrs    = asciidoctor_page_attrs([
-          "imagesdir=#{File.join(source_dir,'_site_images')}",
-          distro,
-          "product-title=#{distro_config["name"]}",
-          "product-version=Updated #{build_date}",
-          "product-author=#{PRODUCT_AUTHOR}"
-        ])
-        topic_html = Asciidoctor.render topic_adoc, :header_footer => true, :safe => :unsafe, :attributes => page_attrs
-        File.write(File.join(preview_dir,'index.html'),topic_html)
-
         # Return to the original branch
-        git_checkout(local_branches[0])
+        git_checkout(working_branch)
       end
 
       puts "\nAll builds completed."
+    end
+
+    # package_docs
+    # This method generates the docs and then organizes them the way they will be arranged
+    # for the production websites.
+    def package_docs(package_site)
+      site_map.each do |site,site_config|
+        next if not package_site == '' and not package_site == site
+        puts "\nBuilding #{site} site."
+        site_config.each do |distro,branches|
+          branches.each do |branch,branch_config|
+            src_dir = File.join(preview_dir,distro,branch_config["dir"])
+            tgt_dir = File.join(package_dir,site)
+            next if not File.directory?(src_dir)
+            FileUtils.mkdir_p(tgt_dir)
+            FileUtils.cp_r(src_dir,tgt_dir)
+          end
+          if File.directory?(File.join(package_dir,site))
+            FileUtils.cp(File.join(preview_dir,distro,'index.html'),File.join(package_dir,site,'index.html'))
+          end
+        end
+      end
     end
   end
 end
