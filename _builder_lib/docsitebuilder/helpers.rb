@@ -55,7 +55,7 @@ module DocSiteBuilder
 
     def git_checkout branch_name
       target_branch = git.branches.local.select{ |b| b.name == branch_name }[0]
-      if not target_branch.current
+      if not target_branch.nil? and not target_branch.current
         target_branch.checkout
       end
     end
@@ -482,6 +482,10 @@ EOF
           else
             next
           end
+        end
+
+        if local_branch =~ /^\(detached from .*\)/
+          local_branch = 'detached'
         end
 
         # Run all distros.
