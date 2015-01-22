@@ -87,11 +87,6 @@ module DocSiteBuilder
       validate_config(YAML.load_stream(open(build_config_file)))
     end
 
-    # Protip: Do cache this! It contains the dev branch config
-    def dev_build_config
-      @dev_build_config ||= validate_config(YAML.load_stream(open(build_config_file)))
-    end
-
     # Protip: Don't cache this! It needs to be reread every time we change branches.
     def distro_map
       YAML.load_file(distro_map_file)
@@ -408,9 +403,9 @@ EOF
       text.split(' ').map{ |t| t.capitalize }.join
     end
 
-    def nav_tree distro, distro_build_config
+    def nav_tree distro, branch_build_config
       navigation = []
-      distro_build_config.each do |topic_group|
+      branch_build_config.each do |topic_group|
         next if not topic_group['Distros'].include?(distro)
         next if topic_group['Topics'].select{ |t| t['Distros'].include?(distro) }.length == 0
         topic_list = []
@@ -489,6 +484,7 @@ EOF
         end
 
         # Run all distros.
+        puts "DMAP\n#{distro_map.inspect}"
         distro_map.each do |distro,distro_config|
           # Only building a single distro; skip the others.
           if not build_distro == '' and not build_distro == distro
@@ -526,14 +522,11 @@ EOF
           # Copy images into preview area
           system("cp -r _images/* #{branch_path}/images")
 
-          # Read the _build_config.yml for this distro
-          distro_build_config = dev_branch ? dev_build_config : build_config
-
           # Build the landing page
-          navigation = nav_tree(distro,distro_build_config)
+          navigation = nav_tree(distro,build_config)
 
-          # Build the topic files
-          distro_build_config.each do |topic_group|
+          # Build the topic files for this branch & distro
+          build_config.each do |topic_group|
             next if not topic_group['Distros'].include?(distro)
             next if topic_group['Topics'].select{ |t| t['Distros'].include?(distro) }.length == 0
             next if not single_page.nil? and not single_page_dir == topic_group['Dir']
