@@ -484,7 +484,6 @@ EOF
         end
 
         # Run all distros.
-        puts "DMAP\n#{distro_map.inspect}"
         distro_map.each do |distro,distro_config|
           # Only building a single distro; skip the others.
           if not build_distro == '' and not build_distro == distro
