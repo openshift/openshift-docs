@@ -15,7 +15,19 @@ module DocSiteBuilder
     PACKAGE_DIRNAME     = '_package'
     BLANK_STRING_RE     = Regexp.new('^\s*$')
     PRODUCT_AUTHOR      = "OpenShift Documentation Project <dev@lists.openshift.redhat.com>"
-    ANALYTICS_SHIM      = '<script type="text/javascript" src="https://assets.openshift.net/app/assets/site/tracking.js"></script>'
+    ANALYTICS_SHIM      = {
+      'openshift-origin' => "<script async src=\"//www.google-analytics.com/analytics.js\" type=\"text/javascript\"></script>
+<script>
+ window.ga=window.ga||function(){(ga.q=ga.q||[]).push(arguments)};ga.l=+new Date;
+ ga('create', 'UA-40375612-1', 'openshift.org');
+ ga('set', 'forceSSL', true);
+ ga('send', 'pageview');
+</script>",
+      'openshift-online' => "<script type=\"text/javascript\" src=\"https://assets.openshift.net/app/assets/site/tracking.js\"></script>",
+      'openshift-enterprise' => "<script type=\"text/javascript\" src=\"https://assets.openshift.net/app/assets/site/tracking.js\"></script>",
+    }
+    
+    
 
     def source_dir
       @source_dir ||= File.expand_path '../../../', __FILE__
@@ -185,6 +197,7 @@ module DocSiteBuilder
   <link href="#{args[:images_path]}respond.proxy.gif" id="respond-redirect" rel="respond-redirect">
   <script src="#{args[:javascripts_path]}respond.proxy.js" type="text/javascript"></script>
 <![endif]-->
+#{args[:analytics_shim]}
 </head>
 <body>
 <div class="navbar navbar-default navbar-openshift" role="navigation">
@@ -285,7 +298,6 @@ EOF
     </div>
   </div>
 </div>
-#{ANALYTICS_SHIM}
 <script type="text/javascript">
 /*<![CDATA[*/
 $(document).ready(function() {
@@ -567,6 +579,7 @@ EOF
                 :css         => [
                   'docs.css',
                 ],
+                :analytics_shim => ANALYTICS_SHIM[distro]
               })
               File.write(tgt_file_path,full_file_text)
               if not single_page.nil?
