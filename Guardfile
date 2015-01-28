@@ -1,8 +1,9 @@
 guard 'shell' do
   watch(/^.*\.adoc$/) { |m|
-    if not m[0].start_with?('_preview')
-      src_group_path = m[0].split('/')[0]
-      filename       = m[0].split('/')[-1][0..-6]
+    if not m[0].start_with?('_preview') and not m[0].start_with?('_package')
+      full_path      = m[0].split('/')
+      src_group_path = full_path.length == 1 ? '' : full_path[0]
+      filename       = full_path[-1][0..-6]
       system("bundle exec rake refresh_page['#{src_group_path}:#{filename}']")
     end
   }

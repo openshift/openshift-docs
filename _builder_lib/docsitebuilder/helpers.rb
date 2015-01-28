@@ -26,8 +26,8 @@ module DocSiteBuilder
       'openshift-online' => "<script type=\"text/javascript\" src=\"https://assets.openshift.net/app/assets/site/tracking.js\"></script>",
       'openshift-enterprise' => "<script type=\"text/javascript\" src=\"https://assets.openshift.net/app/assets/site/tracking.js\"></script>",
     }
-    
-    
+
+
 
     def source_dir
       @source_dir ||= File.expand_path '../../../', __FILE__
@@ -452,7 +452,7 @@ EOF
       if not single_page.nil?
         single_page_dir = single_page.split(':')[0]
         single_page_file = single_page.split(':')[1]
-        puts "Rebuilding '#{single_page}' on branch '#{working_branch}'."
+        puts "Rebuilding '#{single_page_dir}/#{single_page_file}' on branch '#{working_branch}'."
       end
 
       if not build_distro == ''
