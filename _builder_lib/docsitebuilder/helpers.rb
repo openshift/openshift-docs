@@ -83,7 +83,7 @@ module DocSiteBuilder
     end
 
     def working_branch
-      local_branches[0]
+      @working_branch ||= local_branches[0]
     end
 
     def build_config_file
@@ -589,18 +589,22 @@ EOF
           end
 
           # Create a distro landing page
-          # WARNING: if building mutiple distros, this file will be overwritten by each distro
+          # This is backwards compatible code. We can remove it when no
+          # official repo uses index.adoc. We are moving to flat HTML
+          # files for index.html
           src_file_path = File.join(source_dir,'index.adoc')
-          topic_adoc    = File.open(src_file_path,'r').read
-          page_attrs    = asciidoctor_page_attrs([
-            "imagesdir=#{File.join(source_dir,'_site_images')}",
-            distro,
-            "product-title=#{distro_config["name"]}",
-            "product-version=Updated #{build_date}",
-            "product-author=#{PRODUCT_AUTHOR}"
-          ])
-          topic_html = Asciidoctor.render topic_adoc, :header_footer => true, :safe => :unsafe, :attributes => page_attrs
-          File.write(File.join(preview_dir,distro,'index.html'),topic_html)
+          if File.exists?(src_file_path)
+            topic_adoc    = File.open(src_file_path,'r').read
+            page_attrs    = asciidoctor_page_attrs([
+              "imagesdir=#{File.join(source_dir,'_site_images')}",
+              distro,
+              "product-title=#{distro_config["name"]}",
+              "product-version=Updated #{build_date}",
+              "product-author=#{PRODUCT_AUTHOR}"
+            ])
+            topic_html = Asciidoctor.render topic_adoc, :header_footer => true, :safe => :unsafe, :attributes => page_attrs
+            File.write(File.join(preview_dir,distro,'index.html'),topic_html)
+          end
         end
 
         # Return to the original branch
@@ -626,7 +630,13 @@ EOF
             FileUtils.cp_r(src_dir,tgt_dir)
           end
           if File.directory?(File.join(package_dir,site))
-            FileUtils.cp(File.join(preview_dir,distro,'index.html'),File.join(package_dir,site,'index.html'))
+            # With this update, site index files will always come from the master branch
+            working_branch_site_index = File.join(source_dir,'index-' + site + '.html')
+            if File.exists?(working_branch_site_index)
+              FileUtils.cp(working_branch_site_index,File.join(package_dir,site,'index.html'))
+            else
+              FileUtils.cp(File.join(preview_dir,distro,'index.html'),File.join(package_dir,site,'index.html'))
+            end
           end
         end
       end
