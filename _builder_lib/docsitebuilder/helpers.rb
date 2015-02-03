@@ -214,20 +214,14 @@ module DocSiteBuilder
         <li>
           <a href="https://www.openshift.com/products">Products</a>
         </li>
-        <li>
-          <a href="https://www.openshift.com/products/pricing">Pricing</a>
-        </li>
         <li class="active">
+          <a href="http://docs.openshift.org/latest/welcome/index.html">Documentation</a>
+        </li>
+        <li>
           <a href="https://developers.openshift.com">Developer Portal</a>
         </li>
         <li>
-          <a href="https://help.openshift.com">Help Center</a>
-        </li>
-        <li>
           <a href="https://openshift.uservoice.com">Vote on Features</a>
-        </li>
-        <li>
-          <a href="https://marketplace.openshift.com/">Add-ons</a>
         </li>
         <li>
           <a href="https://blog.openshift.com/">Blog</a>
