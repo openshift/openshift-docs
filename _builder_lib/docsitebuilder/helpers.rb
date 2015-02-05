@@ -1,4 +1,5 @@
 require 'asciidoctor'
+require 'find'
 require 'git'
 require 'logger'
 require 'pandoc-ruby'
@@ -97,6 +98,31 @@ module DocSiteBuilder
     # Protip: Don't cache this! It needs to be reread every time we change branches.
     def build_config
       validate_config(YAML.load_stream(open(build_config_file)))
+    end
+
+    def find_topic_files
+      file_list = Find.find('.').select{ |path| not path.nil? and path =~ /.*\.adoc$/ and not path =~ /README/ and not path =~ /\/old\// and not path.split('/').length < 3 }
+      file_list.map{ |path|
+        parts = path.split('/');
+        parts[1] + '/' + parts[2].split('.')[0]
+      }
+    end
+
+    def remove_found_config_files(branch,branch_build_config,branch_topic_files)
+      nonexistent_topics = []
+      branch_build_config.each do |topic_group|
+        tg_dir = topic_group['Dir']
+        topic_group['Topics'].each do |topic|
+          topic_path = tg_dir + '/' + topic['File']
+          result     = branch_topic_files.delete(topic_path)
+          if result.nil?
+            nonexistent_topics << topic_path
+          end
+        end
+      end
+      if nonexistent_topics.length > 0
+        puts "\nWARNING: The _build_cfg.yml file on branch '#{branch}' references nonexitanst topics:\n" + nonexistent_topics.map{ |topic| "- #{topic}" }.join("\n")
+      end
     end
 
     # Protip: Don't cache this! It needs to be reread every time we change branches.
@@ -479,6 +505,7 @@ EOF
         if not local_branch == working_branch
           if single_page.nil?
             # Checkout the branch
+            puts "\nCHANGING TO BRANCH '#{local_branch}'"
             git_checkout(local_branch)
           else
             next
@@ -488,6 +515,21 @@ EOF
         if local_branch =~ /^\(detached from .*\)/
           local_branch = 'detached'
         end
+
+        # The branch_orphan_files list starts with the set of all
+        # .adoc files found in the repo, and will be whittled
+        # down from there.
+        branch_orphan_files = find_topic_files
+        branch_build_config = build_config
+        remove_found_config_files(local_branch,branch_build_config,branch_orphan_files)
+
+        if branch_orphan_files.length > 0
+          puts "\nWARNING: Branch '#{local_branch}' includes the following .adoc files that are not referenced in the _build_cfg.yml file:\n" + branch_orphan_files.map{ |file| "- #{file}" }.join("\n")
+        end
+
+        # Every file included in the build_config can be eliminated
+        # from the orphan list.
+        # branch_orphan_files =
 
         # Run all distros.
         distro_map.each do |distro,distro_config|
@@ -528,10 +570,10 @@ EOF
           system("cp -r _images/* #{branch_path}/images")
 
           # Build the landing page
-          navigation = nav_tree(distro,build_config)
+          navigation = nav_tree(distro,branch_build_config)
 
           # Build the topic files for this branch & distro
-          build_config.each do |topic_group|
+          branch_build_config.each do |topic_group|
             next if not topic_group['Distros'].include?(distro)
             next if topic_group['Topics'].select{ |t| t['Distros'].include?(distro) }.length == 0
             next if not single_page.nil? and not single_page_dir == topic_group['Dir']
