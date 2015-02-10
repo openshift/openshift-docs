@@ -1,0 +1,298 @@
+= Authentication
+{product-author}
+{product-version}
+:data-uri:
+:icons:
+:experimental:
+:toc: macro
+:toc-title: 
+
+toc::[]
+
+== Overview
+
+The authentication layer is responsible for identifying the user associated with requests to the OpenShift API. Information about the requesting user is then used by the authorization layer to determine whether the request should be allowed.
+
+== API Authentication
+
+Requests to the OpenShift API are authenticated using the following methods:
+
+* OAuth Access Token
+** Obtained from the OpenShift OAuth server using the `<master>/oauth/authorize` and `<master>/oauth/token` endpoints
+** Sent as an "Authorization: Bearer &hellip;" header or an "access_token=&hellip;" query parameter
+* X.509 Certificate
+** Requires a https connection to the API server
+** Verified by the API server against a trusted certificate authority bundle
+** The API server creates and distributes certificates to controllers to authenticate themselves
+
+Any request with an invalid access token or an invalid certificate is rejected by the authentication layer.
+
+If no access token or certificate is presented, the authentication layer assigns the `system:anonymous` user and the `system:unauthenticated` group to the request. This allows the authorization layer to determine which requests (if any) an anonymous user is allowed to make.
+
+== OAuth
+
+=== Overview
+
+The OpenShift master includes a built-in OAuth server. Users obtain OAuth access tokens to authenticate themselves to the API.
+
+==== OAuth clients
+
+Every request for an OAuth token must specify the OAuth client which will receive and use the token. The following OAuth clients are automatically created when starting the OpenShift API:
+
+ * `openshift-web-console`: used to request tokens for the web console
+ * `openshift-browser-client`: used to request tokens at `<master>/oauth/token/request` with a user-agent that can handle interactive logins
+ * `openshift-challenging-client`: used to request tokens with a user-agent that can handle `WWW-Authenticate` challenges
+
+To register additional clients:
+
+----
+osc create -f <(echo '
+{
+    "kind": "OAuthClient",
+    "version": "v1beta1",
+    "metadata": {
+        "name":"demo" <1>
+    },
+    "secret": "...", <2>
+    "redirectURIs": [
+        "http://www.example.com/" <3>
+    ]
+}')
+----
+<1> The `name` of the OAuth client is used as the `client_id` parameter when making requests to `<master>/oauth/authorize` and `<master>/oauth/token`.
+<2> The `secret` is used as the `client_secret` parameter when making requests to `<master>/oauth/token`.
+<3> The `redirect_uri` parameter specified in requests to `<master>/oauth/authorize` and `<master>/oauth/token` must be equal to (or prefixed by) one of the URIs in `redirectURIs`.
+
+==== Authentication integrations
+
+All requests for OAuth tokens involve a request to `<master>/oauth/authorize`. Most authentication integrations will place an authenticating proxy in front of this endpoint, or configure OpenShift to validate credentials against a backing identity provider.
+
+Because requests to `<master>/oauth/authorize` can come from user-agents that cannot display interactive login pages (like `osc`), authenticating using a `WWW-Authenticate` challenge is supported in addition to interactive login flows.
+
+If an authenticating proxy is placed in front of the `<master>/oauth/authorize` endpoint, it should send unauthenticated non-browser user-agents `WWW-Authenticate` challenges, rather than displaying an interactive login page or redirecting to an interactive login flow.
+
+If the authenticating proxy cannot support `WWW-Authenticate` challenges (or if OpenShift is configured to use a backing identity provider and cannot send WWW-Authenticate challenges), users can visit `<master>/oauth/token/request` using a browser to obtain an access token manually.
+
+=== Configuration
+
+*Authentication is still in development, so the configuration is subject to change.*
+
+Configuration of the OAuth server is currently specified in environment variables when running the `openshift start` command.
+
+All of the following configuration applies *only* to the `<master>/oauth/authorize` endpoint, for purposes of obtaining an OAuth token. It does not affect authentication of API requests.
+
+==== Access token flow
+
+The OAuth server follows these steps for all access token requests:
+
+1. link:#config-request-handlers[Identify the user] making the request to `<master>/oauth/authorize`
+   a. If the request is unauthenticated, stop and link:#config-auth-handler[require authentication]
+   b. If the request is authenticated, continue
+2. Check if the user has granted permission for the requesting client to be given an access token
+   a. If the user has not granted permission, stop and link:#config-grant-handler[handle a grant request]
+   b. If the user has granted permission, continue
+3. link:#config-token[Generate an access token] (or an authorization code the client can exchange for an access token)
+4. Redirect the user to the URL requested by the client, with the token (or code) as a parameter
+
+==== Identify users [[config-request-handlers]]
+
+To configure how the OAuth server recognizes users from incoming requests to `<master>/oauth/authorize`, set the `OPENSHIFT_OAUTH_REQUEST_HANDLERS` environment variable. Valid values are:
+
+* `requestheader`
+** Identify the user from a configurable request header (e.g. `X-Remote-User`)
+** Typically used with an authenticating proxy which sets the request header
+** Uses the specified link:#config-requestheader[request header configuration]
+* `bearer`
+** Identify the user from an "Authorization: Bearer" header, if present
+** Uses the configured link:#config-bearer[bearer token validation]
+* `basicauth`
+** Identify the user from an "Authorization: Basic" header, if present
+** Uses the configured link:#config-password[username and password validation]
+* `session`
+** Identify the user from a cookie-based session
+** Uses the specified link:#config-session[session configuration]
+
+Multiple handlers can be specified using a comma-separated list. Each handler is given a chance to identify the user from the request. The first handler to identify the user wins.
+
+`OPENSHIFT_OAUTH_REQUEST_HANDLERS` defaults to `session,basicauth`
+
+==== Handle unauthenticated requests [[config-auth-handler]]
+
+To configure how the OAuth server responds to unauthenticated requests to `<master>/oauth/authorize`, set the `OPENSHIFT_OAUTH_HANDLER` environment variable. Valid values are:
+
+* `login`
+** Redirect to an OpenShift-provided login page, and validate the login using the configured link:#config-password[username and password validation]
+** For OAuth clients that request it, issue a `WWW-Authenticate: Basic` challenge rather than redirecting
+** Requires `session` and `basicauth` to be in the `OPENSHIFT_OAUTH_REQUEST_HANDLERS` list
+* `github`
+** Allows logging in using GitHub credentials
+** Uses the specified link:#config-github[Github OAuth client configuration]
+** Requires `session` to be in the `OPENSHIFT_OAUTH_REQUEST_HANDLERS` list
+** Using an external identity provider via OAuth prevents non-browser clients from obtaining API tokens directly
+* `google`
+** Allows logging in using Google credentials
+** Uses the specified link:#config-google[Google OAuth client configuration]
+** Requires `session` to be in the `OPENSHIFT_OAUTH_REQUEST_HANDLERS` list
+** Using an external identity provider via OAuth prevents non-browser clients from obtaining API tokens directly
+* `deny`
+** Reject unauthenticated requests
+
+`OPENSHIFT_OAUTH_HANDLER` defaults to `login`
+
+==== Bearer token validation [[config-bearer]]
+
+This configuration is used by the link:#config-request-handlers[`bearer`] request handler.
+
+To configure how the OAuth server validates bearer tokens, set the `OPENSHIFT_OAUTH_TOKEN_STORE` environment variable. Valid values are:
+
+* `oauth`
+** Bearer tokens must be valid OAuth access tokens
+** This allows a user with an OAuth access token to generate another OAuth access token
+* `file`
+** Bearer tokens are validated against a CSV file containing token, user name, and user uid columns (user uid may be blank). A sample row might look like this: `token123,bob,uid-bob`
+** Requires the `OPENSHIFT_OAUTH_TOKEN_FILE_PATH` environment variable be set to the path of the CSV file
+** The token file is read once at server start, not per request
+
+`OPENSHIFT_OAUTH_TOKEN_STORE` defaults to `oauth`
+
+==== Username and password validation [[config-password]]
+
+This configuration is used by the link:#config-request-handlers[`basicauth`] request handler and the link:#config-auth-handler[`login`] auth handler.
+
+To configure how usernames and passwords are validated, set the `OPENSHIFT_OAUTH_PASSWORD_AUTH` environment variable. Valid values are:
+
+* `anypassword`
+** Any non-empty username and password combination is accepted
+* `basicauthurl`
+** The username and password are validated against a protected JSON-returning remote URL, using basic auth:
+*** A 401 response indicates failed auth.
+*** A non-200 status or the presence of an "error" key with a non-empty value indicates an error: `{"error":"Error message"}`
+*** A 200 status with an "id" key indicates success: `{"id":"userid"}`
+*** A successful response may also include name and/or email: `{"id":"userid", "name": "User Name", "email":"user@example.com"}`
+** Requires the environment variable `OPENSHIFT_OAUTH_BASIC_AUTH_URL` to be set to the remote URL
+
+`OPENSHIFT_OAUTH_PASSWORD_AUTH` defaults to `anypassword`
+
+==== Request header configuration [[config-requestheader]]
+
+This configuration is used by the link:#config-request-handlers[`requestheader`] request handler.
+
+To configure the request headers to use to identify users, set the `OPENSHIFT_OAUTH_REQUEST_HEADERS` environment variable.
+
+Multiple headers can be specified using a comma-separated list. Each header is checked in order, and the first one with a value is treated as the username of the requesting user. If none of the specified headers have values, the request is considered unauthenticated.
+
+`OPENSHIFT_OAUTH_REQUEST_HEADERS` defaults to `X-Remote-User`
+
+TODO: Add options to verify the request (e.g. client certificate checking, IP range restriction, etc) to ensure it is coming from a trusted source before using the username in the request header.
+
+==== Session configuration [[config-session]]
+
+This configuration is used by the link:#config-request-handlers[`session`] request handler. 
+
+The following environment variables control the cookie-based session:
+
+* `OPENSHIFT_OAUTH_SESSION_SECRET`
+** Secret used to encrypt cookie sessions
+** Defaults to a random uuid on each server start
+* `OPENSHIFT_OAUTH_SESSION_NAME`
+** Name of the cookie used to store the session
+** Defaults to `ssn`
+* `OPENSHIFT_OAUTH_SESSION_MAX_AGE_SECONDS`
+** Controls the maximum age of a session (sessions auto-expire once a token request is complete)
+** If auto-grant is not enabled, sessions must last as long as the user is expected to take to approve or reject a client authorization request
+** Defaults to 5 minutes
+
+==== Google external identity provider [[config-google]]
+
+This configuration is used by the link:#config-auth-handler[`google`] auth handler.
+
+* `OPENSHIFT_OAUTH_GOOGLE_CLIENT_ID`
+** The client_id of a client registered with the https://developers.google.com/accounts/docs/OAuth2[Google OAuth provider]
+** It must be authorized to redirect to `<master-public-addr>/oauth2callback/google`
+* `OPENSHIFT_OAUTH_GOOGLE_CLIENT_SECRET`
+** The client_secret of a client registered with the Google OAuth provider
+
+==== Github external identity provider [[config-github]]
+
+This configuration is used by the link:#config-auth-handler[`github`] auth handler.
+
+* `OPENSHIFT_OAUTH_GITHUB_CLIENT_ID`
+** The client_id of a client registered with the https://developer.github.com/v3/oauth/[GitHub OAuth provider]
+** It must be authorized to redirect to `<master-public-addr>/oauth2callback/github`
+* `OPENSHIFT_OAUTH_GITHUB_CLIENT_SECRET`
+** The client_secret of a client registered with the GitHub OAuth provider
+
+==== Handle token grant requests [[config-grant-handler]]
+
+To configure how the OAuth server responds to token requests for a client the user has not previously granted permission, set the `OPENSHIFT_OAUTH_GRANT_HANDLER` environment variable. Valid values are:
+
+* `auto`
+** Auto-approve the grant and retry the request
+* `prompt`
+** Prompt the user to approve or deny the grant
+* `deny`
+** Auto-deny the grant and return a failure error to the client
+
+`OPENSHIFT_OAUTH_GRANT_HANDLER` defaults to `auto`
+
+==== Token generation [[config-token]]
+
+The OAuth server can generate two kinds of tokens. 
+
+Authorize codes are short-lived tokens whose only use is to be exchanged for an access token. Set the `OPENSHIFT_OAUTH_AUTHORIZE_TOKEN_MAX_AGE_SECONDS` environment variable to control the lifetime of authorize codes. The default lifetime is 5 minutes.
+
+Access tokens are longer-lived tokens that grant access to the API. Set the `OPENSHIFT_OAUTH_ACCESS_TOKEN_MAX_AGE_SECONDS` environment variable to control the lifetime of access tokens. The default lifetime is 1 hour.
+
+=== Examples
+
+==== Default
+When running `openshift start` with no OAuth environment variables set, these are the default settings:
+```
+OPENSHIFT_OAUTH_REQUEST_HANDLERS=session,basicauth <1>
+OPENSHIFT_OAUTH_HANDLER=login <2>
+OPENSHIFT_OAUTH_PASSWORD_AUTH=anypassword <3>
+OPENSHIFT_OAUTH_SESSION_SECRET=... <4>
+OPENSHIFT_OAUTH_SESSION_NAME=ssn <5>
+OPENSHIFT_OAUTH_SESSION_MAX_AGE_SECONDS=300 <6>
+```
+<1> Check requests to `<master>/oauth/authorize` for a cookie-session containing user info, or a "Authorization: Basic" header containing a valid username/password
+<2> If the request to `<master>/oauth/authorize` is not authenticated, redirect to a login page (validating the username/password using the `OPENSHIFT_OAUTH_PASSWORD_AUTH` identity provider) or send a `WWW-Authenticate` challenge header
+<3> Validate username/passwords using the `anypassword` identity provider, which accepts any non-empty username/password. Used by the `basicauth` request handler and the `login` auth handler.
+<4> Secret used to encrypt the cookie session
+<5> Name of the cookie to save the session in
+<6> Let sessions last up to 5 minutes
+
+==== External basic auth
+To validate usernames/passwords against an external URL using basic auth:
+```
+OPENSHIFT_OAUTH_REQUEST_HANDLERS=session,basicauth
+OPENSHIFT_OAUTH_HANDLER=login
+OPENSHIFT_OAUTH_PASSWORD_AUTH=basicauthurl
+OPENSHIFT_OAUTH_BASIC_AUTH_URL=https://www.example.com/validate
+```
+
+The https://www.example.com/validate URL should respond to invalid usernames/passwords with a 401 error, and valid usernames/passwords with a JSON-response containing (at minimum) the user id:
+```
+{"id":"userid", "name": "User Name", "email":"user@example.com"}
+```
+
+==== Authenticating proxy
+
+To get user information from a `Remote-User` or `SSO-User` header set by an authenticating proxy:
+```
+OPENSHIFT_OAUTH_REQUEST_HANDLERS=requestheader
+OPENSHIFT_OAUTH_REQUEST_HEADERS=Remote-User,SSO-User
+OPENSHIFT_OAUTH_HANDLER=deny
+```
+The authenticating proxy can use whatever authentication method it likes, but keep in mind that both browser and non-browser clients will need to authenticate against it.
+
+==== Google OAuth provider
+
+To use Google as an identity provider:
+```
+OPENSHIFT_OAUTH_REQUEST_HANDLERS=session
+OPENSHIFT_OAUTH_HANDLER=google
+OPENSHIFT_OAUTH_GITHUB_CLIENT_ID=...
+OPENSHIFT_OAUTH_GITHUB_CLIENT_SECRET=...
+```
+Note that using an external OAuth provider like Github or Google requires users to get a token using `<master>/oauth/token/request` to use with command-line tools.
