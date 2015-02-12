@@ -125,9 +125,8 @@ module DocSiteBuilder
       end
     end
 
-    # Protip: Don't cache this! It needs to be reread every time we change branches.
     def distro_map
-      YAML.load_file(distro_map_file)
+      @distro_map ||= YAML.load_file(distro_map_file)
     end
 
     def site_map
@@ -660,7 +659,7 @@ EOF
         site_config.each do |distro,branches|
           branches.each do |branch,branch_config|
             src_dir = File.join(preview_dir,distro,branch_config["dir"])
-            tgt_dir = File.join(package_dir,site)
+            tgt_dir = File.join(package_dir,site,branch_config["dir"])
             next if not File.directory?(src_dir)
             FileUtils.mkdir_p(tgt_dir)
             FileUtils.cp_r(src_dir,tgt_dir)
