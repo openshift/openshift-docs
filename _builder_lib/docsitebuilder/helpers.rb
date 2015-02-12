@@ -670,6 +670,9 @@ EOF
             working_branch_site_index = File.join(source_dir,'index-' + site + '.html')
             if File.exists?(working_branch_site_index)
               FileUtils.cp(working_branch_site_index,File.join(package_dir,site,'index.html'))
+              ['_images','_stylesheets'].each do |support_dir|
+                FileUtils.cp_r(File.join(source_dir,support_dir),File.join(package_dir,site,support_dir))
+              end
             else
               FileUtils.cp(File.join(preview_dir,distro,'index.html'),File.join(package_dir,site,'index.html'))
             end
