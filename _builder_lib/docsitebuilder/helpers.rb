@@ -291,7 +291,7 @@ module DocSiteBuilder
   </p>
   <ol class="breadcrumb">
         <li class="sitename">
-          <a href="../../index.html">#{args[:sitename]}</a>
+          <a href="#{args[:site_home_path]}">#{args[:sitename]}</a>
         </li>
         <li class="hidden-xs active">
           #{breadcrumb_root}
@@ -598,6 +598,10 @@ EOF
                 "product-author=#{PRODUCT_AUTHOR}"
               ])
               topic_html     = Asciidoctor.render topic_adoc, :header_footer => false, :safe => :unsafe, :attributes => page_attrs
+              dir_depth = ''
+              if branch_config['dir'].split('/').length > 1
+                dir_depth = '../' * (branch_config['dir'].split('/').length - 1)
+              end
               full_file_text = page({
                 :distro      => distro_config["name"],
                 :sitename    => sitename,
@@ -608,9 +612,10 @@ EOF
                 :navigation  => navigation,
                 :group_id    => topic_group['ID'],
                 :topic_id    => topic['ID'],
-                :css_path    => "../../#{branch_config["dir"]}/stylesheets/",
-                :javascripts_path    => "../../#{branch_config["dir"]}/javascripts/",
-                :images_path    => "../../#{branch_config["dir"]}/images/",
+                :css_path    => "../../#{dir_depth}#{branch_config["dir"]}/stylesheets/",
+                :javascripts_path => "../../#{dir_depth}#{branch_config["dir"]}/javascripts/",
+                :images_path      => "../../#{dir_depth}#{branch_config["dir"]}/images/",
+                :site_home_path   => "../../#{dir_depth}index.html",
                 :css         => [
                   'docs.css',
                 ],
@@ -658,8 +663,15 @@ EOF
         puts "\nBuilding #{site} site."
         site_config.each do |distro,branches|
           branches.each do |branch,branch_config|
-            src_dir = File.join(preview_dir,distro,branch_config["dir"])
-            tgt_dir = File.join(package_dir,site,branch_config["dir"])
+            src_dir  = File.join(preview_dir,distro,branch_config["dir"])
+            tgt_tdir = branch_config["dir"].split('/')
+            tgt_tdir.pop
+            tgt_dir  = ''
+            if tgt_tdir.length > 0
+              tgt_dir = File.join(package_dir,site,tgt_tdir.join('/'))
+            else
+              tgt_dir = File.join(package_dir,site)
+            end
             next if not File.directory?(src_dir)
             FileUtils.mkdir_p(tgt_dir)
             FileUtils.cp_r(src_dir,tgt_dir)
