@@ -27,7 +27,82 @@ module DocSiteBuilder
       'openshift-online' => "<script type=\"text/javascript\" src=\"https://assets.openshift.net/app/assets/site/tracking.js\"></script>",
       'openshift-enterprise' => "<script type=\"text/javascript\" src=\"https://assets.openshift.net/app/assets/site/tracking.js\"></script>",
     }
+    TOPNAV_DEFAULT      = <<EOF
+    <div class="navbar navbar-default navbar-openshift" role="navigation">
+      <div class="navbar-header">
+        <div class="dropdown">
+          <a class="dropdown-toggle navbar-menu" href="#" data-toggle="dropdown">
+            <span class="navbar-menu-title">
+              MENU
+            </span>
+            <span class="icon-bar"></span>
+            <span class="icon-bar"></span>
+            <span class="icon-bar"></span></a>
+          <ul class="dropdown-menu">
+            <li>
+              <a href="https://www.openshift.com/products">Products</a>
+            </li>
+            <li class="active">
+              <a href="http://docs.openshift.org/latest/welcome/index.html">Documentation</a>
+            </li>
+            <li>
+              <a href="https://developers.openshift.com">Developer Portal</a>
+            </li>
+            <li>
+              <a href="https://openshift.uservoice.com">Vote on Features</a>
+            </li>
+            <li>
+              <a href="https://blog.openshift.com/">Blog</a>
+            </li>
+            <li class="divider hidden-md hidden-lg"></li>
+            <li class="hidden-md hidden-lg">
+              <a class="nav-log-in" href="https://openshift.redhat.com/app/console">Log in</a>
+            </li>
+            <li class="hidden-md hidden-lg">
+              <a class="nav-sign-up" href="https://www.openshift.com/app/account/new">Sign up free</a>
+            </li>
+          </ul>
+        </div>
+        <a class="navbar-brand" href="/"></a>
+        <button class="navbar-toggle collapsed" type="button" data-toggle="collapse" data-target=".navbar-collapse" />
+          <span class="sr-only">
+            Toggle search
+          </span></button>
+      </div>
+      <div class="navbar-collapse collapse">
+        <ul class="nav navbar-nav navbar-right">
+          <li>
+            <a class="nav-search" href="#" data-toggle="collapse" data-target="#navbar-search-field"><i class="fa fa-search"></i></a>
+            <div id="navbar-search-field" class="collapse width col-md-4">
+              <form id="cse-search-form" action="https://help.openshift.com/hc/en-us/search" method="get">
+                <input id="cse-search-input" class="navbar-search-query form-control" name="query" type="text" placeholder=" Search" tabindex="1" autocomplete="off" autofocus="autofocus" />
+                <button class="btn btn-default fa fa-search" type="submit" value="Search"></button>
+            </form>
+            </div>
+          </li>
+          <li class="hidden-xs hidden-sm">
+            <a class="nav-log-in" href="https://openshift.redhat.com/app/console">Log in</a>
+          </li>
+          <li class="hidden-xs hidden-sm">
+            <a class="nav-sign-up" href="https://www.openshift.com/app/account/new">Sign up free</a>
+          </li>
+        </ul>
+      </div></div>
+EOF
 
+    TOPNAV_ORIGIN = <<EOF
+    <div class="navbar navbar-default navbar-openshift navbar-origin" role="navigation">
+      <div class="navbar-header">
+        <a class="navbar-brand origin" href="/"></a>
+      </div>
+    </div>
+EOF
+
+    TOPNAV              = {
+      'openshift-origin' => TOPNAV_ORIGIN,
+      'openshift-online' => TOPNAV_DEFAULT,
+      'openshift-enterprise' => TOPNAV_DEFAULT,
+    }
 
 
     def source_dir
@@ -225,66 +300,7 @@ module DocSiteBuilder
 #{args[:analytics_shim]}
 </head>
 <body>
-<div class="navbar navbar-default navbar-openshift" role="navigation">
-  <div class="navbar-header">
-    <div class="dropdown">
-      <a class="dropdown-toggle navbar-menu" href="#" data-toggle="dropdown">
-        <span class="navbar-menu-title">
-          MENU
-        </span>
-        <span class="icon-bar"></span>
-        <span class="icon-bar"></span>
-        <span class="icon-bar"></span></a>
-      <ul class="dropdown-menu">
-        <li>
-          <a href="https://www.openshift.com/products">Products</a>
-        </li>
-        <li class="active">
-          <a href="http://docs.openshift.org/latest/welcome/index.html">Documentation</a>
-        </li>
-        <li>
-          <a href="https://developers.openshift.com">Developer Portal</a>
-        </li>
-        <li>
-          <a href="https://openshift.uservoice.com">Vote on Features</a>
-        </li>
-        <li>
-          <a href="https://blog.openshift.com/">Blog</a>
-        </li>
-        <li class="divider hidden-md hidden-lg"></li>
-        <li class="hidden-md hidden-lg">
-          <a class="nav-log-in" href="https://openshift.redhat.com/app/console">Log in</a>
-        </li>
-        <li class="hidden-md hidden-lg">
-          <a class="nav-sign-up" href="https://www.openshift.com/app/account/new">Sign up free</a>
-        </li>
-      </ul>
-    </div>
-    <a class="navbar-brand" href="/"></a>
-    <button class="navbar-toggle collapsed" type="button" data-toggle="collapse" data-target=".navbar-collapse" />
-      <span class="sr-only">
-        Toggle search
-      </span></button>
-  </div>
-  <div class="navbar-collapse collapse">
-    <ul class="nav navbar-nav navbar-right">
-      <li>
-        <a class="nav-search" href="#" data-toggle="collapse" data-target="#navbar-search-field"><i class="fa fa-search"></i></a>
-        <div id="navbar-search-field" class="collapse width col-md-4">
-          <form id="cse-search-form" action="https://help.openshift.com/hc/en-us/search" method="get">
-            <input id="cse-search-input" class="navbar-search-query form-control" name="query" type="text" placeholder=" Search" tabindex="1" autocomplete="off" autofocus="autofocus" />
-            <button class="btn btn-default fa fa-search" type="submit" value="Search"></button>
-        </form>
-        </div>
-      </li>
-      <li class="hidden-xs hidden-sm">
-        <a class="nav-log-in" href="https://openshift.redhat.com/app/console">Log in</a>
-      </li>
-      <li class="hidden-xs hidden-sm">
-        <a class="nav-sign-up" href="https://www.openshift.com/app/account/new">Sign up free</a>
-      </li>
-    </ul>
-  </div></div>
+#{args[:topnav]}
 <div class="container">
   <p class="toggle-nav visible-xs pull-left">
     <button class="btn btn-default btn-sm" type="button" data-toggle="offcanvas">Toggle nav</button>
@@ -619,7 +635,8 @@ EOF
                 :css         => [
                   'docs.css',
                 ],
-                :analytics_shim => ANALYTICS_SHIM[distro]
+                :analytics_shim => ANALYTICS_SHIM[distro],
+                :topnav => TOPNAV[distro],
               })
               File.write(tgt_file_path,full_file_text)
               if not single_page.nil?
