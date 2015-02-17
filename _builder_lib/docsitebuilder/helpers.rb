@@ -125,7 +125,7 @@ EOF
 EOF
 
     FOOTER_ORIGIN = <<EOF
-    <footer class="footer-openshift footer-origin" style="background-color: #1b2a38; border: none;">
+    <footer class="footer-openshift footer-origin">
       <div class="container">
         <div class="row">
           <div class="col-xs-3 col-md-3 origin-logo">
