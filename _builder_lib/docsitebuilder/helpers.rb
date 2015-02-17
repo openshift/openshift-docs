@@ -104,7 +104,7 @@ EOF
       'openshift-enterprise' => TOPNAV_DEFAULT,
     }
 
-    FOOTER_DEFAULT      = <<EOF
+    FOOTER_DEFAULT = <<EOF
     <footer class="footer-openshift">
       <div class="container">
         <div class="row">
