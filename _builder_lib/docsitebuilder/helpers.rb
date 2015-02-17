@@ -104,6 +104,67 @@ EOF
       'openshift-enterprise' => TOPNAV_DEFAULT,
     }
 
+    FOOTER_DEFAULT      = <<EOF
+    <footer class="footer-openshift">
+      <div class="container">
+        <div class="row">
+          <div class="col-xs-3 col-md-3 logo">
+            <a href="https://www.redhat.com/"></a>
+          </div>
+          <div class="col-xs-9 col-md-9 text-right">
+            <a href="https://www.openshift.com/legal/openshift_privacy">
+              Privacy Policy
+            </a>
+            <a href="https://www.openshift.com/legal/services_agreement">
+              Terms and Conditions
+            </a>
+          </div>
+        </div>
+      </div>
+    </footer>
+EOF
+
+    FOOTER_ORIGIN = <<EOF
+    <footer class="footer-openshift footer-origin" style="background-color: #1b2a38; border: none;">
+      <div class="container">
+        <div class="row">
+          <div class="col-xs-3 col-md-3 origin-logo">
+            <span>Sponsored by:</span><br>
+            <a href="https://www.redhat.com/"></a>
+          </div>
+          <div class="col-xs-9 col-md-9 text-right">
+                <a href="https://twitter.com/openshift">
+                  <span>
+                    <i class="fa fa-twitter-square fa-2x fa-inverse"></i>
+                  </span>
+                </a>
+                <a href="https://github.com/openshift/origin-server">
+                  <span>
+                    <i class="fa fa-github fa-2x fa-inverse"></i>
+                  </span>
+                </a>
+                <a href="https://plus.google.com/communities/114361859072744017486">
+                  <span>
+                    <i class="fa fa-google-plus-square fa-2x fa-inverse"></i>
+                  </span>
+                </a>
+                <a href="https://www.facebook.com/openshift">
+                  <span>
+                    <i class="fa fa-facebook-square fa-2x fa-inverse"></i>
+                  </span>
+                </a>
+          </div>
+        </div>
+      </div>
+    </footer>
+EOF
+
+    FOOTER              = {
+      'openshift-origin' => FOOTER_ORIGIN,
+      'openshift-online' => FOOTER_DEFAULT,
+      'openshift-enterprise' => FOOTER_DEFAULT,
+    }
+
 
     def source_dir
       @source_dir ||= File.expand_path '../../../', __FILE__
@@ -345,6 +406,7 @@ $(document).ready(function() {
 });
 /*]]>*/
 </script>
+#{args[:footer]}
 </body>
 </html>
 EOF
@@ -637,6 +699,7 @@ EOF
                 ],
                 :analytics_shim => ANALYTICS_SHIM[distro],
                 :topnav => TOPNAV[distro],
+                :footer => FOOTER[distro],
               })
               File.write(tgt_file_path,full_file_text)
               if not single_page.nil?
