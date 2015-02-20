@@ -209,6 +209,23 @@ EOF
       end
     end
 
+    def git_stash_all
+      # See if there are any changes in need of stashing
+      @stash_needed = `git status --porcelain` !~ /^\s*$/
+      if @stash_needed
+        puts "\nNOTICE: Stashing uncommited changes and files in working branch."
+        `git stash -a`
+      end
+    end
+
+    def git_apply_and_drop
+      return unless @stash_needed
+      puts "\nNOTICE: Re-applying uncommitted changes and files to working branch."
+      `git stash apply`
+      `git stash drop`
+      @stash_needed = false
+    end
+
     # Returns the local git branches; current branch is always first
     def local_branches
       @local_branches ||= begin
@@ -727,9 +744,17 @@ EOF
           end
         end
 
-        # Return to the original branch
-        git_checkout(working_branch)
+        if local_branch == working_branch
+          # We're moving away from the working branch, so save off changed files
+          git_stash_all
+        end
       end
+
+      # Return to the original branch
+      git_checkout(working_branch)
+
+      # If necessary, restore temporarily stashed files
+      git_apply_and_drop
 
       puts "\nAll builds completed."
     end
