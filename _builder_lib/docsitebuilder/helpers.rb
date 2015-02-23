@@ -155,6 +155,16 @@ EOF
                 </a>
           </div>
         </div>
+        <div class="row">
+          <div class="col-lg-12">
+            <div class="attribution">
+              <button type="button" class="btn btn-link" data-container="body" data-toggle="popover" data-placement="top" data-content="
+                '<a target='_blank' href='https://www.flickr.com/photos/eflon/3655695161/'>Spin</a>' by <a target='_blank' href='https://www.flickr.com/photos/eflon/'>eflon</a>,</br> used under <a target='_blank' href='https://creativecommons.org/licenses/by/2.0/'>CC BY 2.0</a> </br>Color tint added to original">
+                Image attribution
+              </button>
+            </div>
+          </div>
+        </div>
       </div>
     </footer>
 EOF
