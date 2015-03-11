@@ -415,7 +415,7 @@ EOF
     </div>
     <div class="col-xs-12 col-sm-9 col-md-9 main">
       <div class="page-header">
-        <h2>#{args[:topic_title]}</h2>
+        <h2>#{args[:article_title]}</h2>
       </div>
       #{args[:content]}
     </div>
@@ -702,22 +702,29 @@ EOF
                 "product-version=#{branch_config["name"]}",
                 "product-author=#{PRODUCT_AUTHOR}"
               ])
+
+              # Because we render only the body of the article with AsciiDoctor, the full article title
+              # would be lost in conversion. So, read it out of the raw asciidoc and pass it in to our
+              # page renderer
+              article_title  = topic_adoc.split("\n")[0].gsub(/^\=\s+/, '').gsub(/\s+$/, '')
+
               topic_html     = Asciidoctor.render topic_adoc, :header_footer => false, :safe => :unsafe, :attributes => page_attrs
               dir_depth = ''
               if branch_config['dir'].split('/').length > 1
                 dir_depth = '../' * (branch_config['dir'].split('/').length - 1)
               end
               full_file_text = page({
-                :distro      => distro_config["name"],
-                :sitename    => sitename,
-                :version     => branch_config["name"],
-                :group_title => topic_group['Name'],
-                :topic_title => topic['Name'],
-                :content     => topic_html,
-                :navigation  => navigation,
-                :group_id    => topic_group['ID'],
-                :topic_id    => topic['ID'],
-                :css_path    => "../../#{dir_depth}#{branch_config["dir"]}/stylesheets/",
+                :distro        => distro_config["name"],
+                :sitename      => sitename,
+                :version       => branch_config["name"],
+                :group_title   => topic_group['Name'],
+                :topic_title   => topic['Name'],
+                :article_title => article_title,
+                :content       => topic_html,
+                :navigation    => navigation,
+                :group_id      => topic_group['ID'],
+                :topic_id      => topic['ID'],
+                :css_path      => "../../#{dir_depth}#{branch_config["dir"]}/stylesheets/",
                 :javascripts_path => "../../#{dir_depth}#{branch_config["dir"]}/javascripts/",
                 :images_path      => "../../#{dir_depth}#{branch_config["dir"]}/images/",
                 :site_home_path   => "../../#{dir_depth}index.html",
