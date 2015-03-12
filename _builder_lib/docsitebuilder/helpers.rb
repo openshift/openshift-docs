@@ -706,7 +706,7 @@ EOF
               # Because we render only the body of the article with AsciiDoctor, the full article title
               # would be lost in conversion. So, read it out of the raw asciidoc and pass it in to our
               # page renderer
-              article_title  = topic_adoc.split("\n")[0].gsub(/^\=\s+/, '').gsub(/\s+$/, '')
+              article_title  = topic_adoc.split("\n")[0].gsub(/^\=\s+/, '').gsub(/\s+$/, '').gsub(/\{product-title\}/, distro_config["name"]).gsub(/\{product-version\}/, branch_config["name"])
 
               topic_html     = Asciidoctor.render topic_adoc, :header_footer => false, :safe => :unsafe, :attributes => page_attrs
               dir_depth = ''
