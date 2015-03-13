@@ -128,31 +128,39 @@ EOF
     <footer class="footer-openshift footer-origin">
       <div class="container">
         <div class="row">
-          <div class="col-xs-3 col-md-3 origin-logo">
-            <span>Sponsored by:</span><br>
-            <a href="https://www.redhat.com/"></a>
+          <div class="col-sm-12 col-md-4">
+            <a id="footer_logo" href="https://www.redhat.com/">
+              <img alt="Red Hat" src="https://assets.openshift.net/app/assets/redhat.svg">
+            </a>
           </div>
-          <div class="col-xs-9 col-md-9 text-right">
-                <a href="https://twitter.com/openshift">
-                  <span>
-                    <i class="fa fa-twitter-square fa-2x fa-inverse"></i>
-                  </span>
-                </a>
-                <a href="https://github.com/openshift/origin-server">
-                  <span>
-                    <i class="fa fa-github fa-2x fa-inverse"></i>
-                  </span>
-                </a>
-                <a href="https://plus.google.com/communities/114361859072744017486">
-                  <span>
-                    <i class="fa fa-google-plus-square fa-2x fa-inverse"></i>
-                  </span>
-                </a>
-                <a href="https://www.facebook.com/openshift">
-                  <span>
-                    <i class="fa fa-facebook-square fa-2x fa-inverse"></i>
-                  </span>
-                </a>
+          <div class="col-sm-12 col-md-4 text-center">
+            <a id="powered_by_openshift" title="Powered by OpenShift Online with the DIY Cartridge" href="https://hub.openshift.com/quickstarts/92-do-it-yourself-0-1">
+              <img src="https://www.openshift.com/sites/default/files/images/powered-transparent-white.png" alt="Powered by OpenShift Online">
+            </a>
+          </div>
+          <div class="col-sm-12 col-md-4 text-right">
+            <div id="footer_social">
+              <a href="https://twitter.com/openshift" class="first">
+                <span>
+                  <i class="fa fa-twitter-square fa-2x fa-inverse"></i>
+                </span>
+              </a>
+              <a href="https://github.com/openshift/origin-server">
+                <span>
+                  <i class="fa fa-github fa-2x fa-inverse"></i>
+                </span>
+              </a>
+              <a href="https://plus.google.com/communities/114361859072744017486">
+                <span>
+                  <i class="fa fa-google-plus-square fa-2x fa-inverse"></i>
+                </span>
+              </a>
+              <a href="https://www.facebook.com/openshift">
+                <span>
+                  <i class="fa fa-facebook-square fa-2x fa-inverse"></i>
+                </span>
+              </a>
+            </div>
           </div>
         </div>
         <div class="row">
