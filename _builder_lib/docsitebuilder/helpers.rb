@@ -5,9 +5,41 @@ require 'logger'
 require 'pandoc-ruby'
 require 'pathname'
 require 'yaml'
+require 'forwardable'
 
 module DocSiteBuilder
   module Helpers
+    extend Forwardable
+
+    def self.source_dir
+      @source_dir ||= File.expand_path '../../../', __FILE__
+    end
+
+    def self.template_dir
+      @template_dir ||= File.join(source_dir,'_templates')
+    end
+
+    def self.preview_dir
+      @preview_dir ||= begin
+        lpreview_dir = File.join(source_dir,PREVIEW_DIRNAME)
+        if not File.exists?(lpreview_dir)
+          Dir.mkdir(lpreview_dir)
+        end
+        lpreview_dir
+      end
+    end
+
+    def self.package_dir
+      @package_dir ||= begin
+        lpackage_dir = File.join(source_dir,PACKAGE_DIRNAME)
+        if not File.exists?(lpackage_dir)
+          Dir.mkdir(lpackage_dir)
+        end
+        lpackage_dir
+      end
+    end
+
+    def_delegators self, :source_dir, :template_dir, :preview_dir, :package_dir
 
     BUILD_FILENAME      = '_build_cfg.yml'
     DISTRO_MAP_FILENAME = '_distro_map.yml'
@@ -182,35 +214,6 @@ EOF
       'openshift-online' => FOOTER_DEFAULT,
       'openshift-enterprise' => FOOTER_DEFAULT,
     }
-
-
-    def source_dir
-      @source_dir ||= File.expand_path '../../../', __FILE__
-    end
-
-    def template_dir
-      @template_dir ||= File.join(source_dir,'_templates')
-    end
-
-    def preview_dir
-      @preview_dir ||= begin
-        lpreview_dir = File.join(source_dir,PREVIEW_DIRNAME)
-        if not File.exists?(lpreview_dir)
-          Dir.mkdir(lpreview_dir)
-        end
-        lpreview_dir
-      end
-    end
-
-    def package_dir
-      @package_dir ||= begin
-        lpackage_dir = File.join(source_dir,PACKAGE_DIRNAME)
-        if not File.exists?(lpackage_dir)
-          Dir.mkdir(lpackage_dir)
-        end
-        lpackage_dir
-      end
-    end
 
     def build_date
       Time.now.utc
