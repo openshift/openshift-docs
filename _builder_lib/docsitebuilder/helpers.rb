@@ -7,6 +7,8 @@ require 'pathname'
 require 'yaml'
 require 'forwardable'
 
+require_relative "./template_renderer"
+
 module DocSiteBuilder
   module Helpers
     extend Forwardable
@@ -41,6 +43,8 @@ module DocSiteBuilder
 
     def_delegators self, :source_dir, :template_dir, :preview_dir, :package_dir
 
+    TemplateRenderer.initialize_cache(template_dir)
+
     BUILD_FILENAME      = '_build_cfg.yml'
     DISTRO_MAP_FILENAME = '_distro_map.yml'
     BUILDER_DIRNAME     = '_build_system'
@@ -48,172 +52,6 @@ module DocSiteBuilder
     PACKAGE_DIRNAME     = '_package'
     BLANK_STRING_RE     = Regexp.new('^\s*$')
     PRODUCT_AUTHOR      = "OpenShift Documentation Project <dev@lists.openshift.redhat.com>"
-    ANALYTICS_SHIM      = {
-      'openshift-origin' => "<script async src=\"//www.google-analytics.com/analytics.js\" type=\"text/javascript\"></script>
-<script>
- window.ga=window.ga||function(){(ga.q=ga.q||[]).push(arguments)};ga.l=+new Date;
- ga('create', 'UA-40375612-1', 'openshift.org');
- ga('set', 'forceSSL', true);
- ga('send', 'pageview');
-</script>",
-      'openshift-online' => "<script type=\"text/javascript\" src=\"https://assets.openshift.net/app/assets/site/tracking.js\"></script>",
-      'openshift-enterprise' => "<script type=\"text/javascript\" src=\"https://assets.openshift.net/app/assets/site/tracking.js\"></script>",
-    }
-    TOPNAV_DEFAULT      = <<EOF
-    <div class="navbar navbar-default navbar-openshift" role="navigation">
-      <div class="navbar-header">
-        <div class="dropdown">
-          <a class="dropdown-toggle navbar-menu" href="#" data-toggle="dropdown">
-            <span class="navbar-menu-title">
-              MENU
-            </span>
-            <span class="icon-bar"></span>
-            <span class="icon-bar"></span>
-            <span class="icon-bar"></span></a>
-          <ul class="dropdown-menu">
-            <li>
-              <a href="https://www.openshift.com/products">Products</a>
-            </li>
-            <li class="active">
-              <a href="http://docs.openshift.org/latest/welcome/index.html">Documentation</a>
-            </li>
-            <li>
-              <a href="https://developers.openshift.com">Developer Portal</a>
-            </li>
-            <li>
-              <a href="https://openshift.uservoice.com">Vote on Features</a>
-            </li>
-            <li>
-              <a href="https://blog.openshift.com/">Blog</a>
-            </li>
-            <li class="divider hidden-md hidden-lg"></li>
-            <li class="hidden-md hidden-lg">
-              <a class="nav-log-in" href="https://openshift.redhat.com/app/console">Log in</a>
-            </li>
-            <li class="hidden-md hidden-lg">
-              <a class="nav-sign-up" href="https://www.openshift.com/app/account/new">Sign up free</a>
-            </li>
-          </ul>
-        </div>
-        <a class="navbar-brand" href="/"></a>
-        <button class="navbar-toggle collapsed" type="button" data-toggle="collapse" data-target=".navbar-collapse" />
-          <span class="sr-only">
-            Toggle search
-          </span></button>
-      </div>
-      <div class="navbar-collapse collapse">
-        <ul class="nav navbar-nav navbar-right">
-          <li>
-            <a class="nav-search" href="#" data-toggle="collapse" data-target="#navbar-search-field"><i class="fa fa-search"></i></a>
-            <div id="navbar-search-field" class="collapse width col-md-4">
-              <form id="cse-search-form" action="https://help.openshift.com/hc/en-us/search" method="get">
-                <input id="cse-search-input" class="navbar-search-query form-control" name="query" type="text" placeholder=" Search" tabindex="1" autocomplete="off" autofocus="autofocus" />
-                <button class="btn btn-default fa fa-search" type="submit" value="Search"></button>
-            </form>
-            </div>
-          </li>
-          <li class="hidden-xs hidden-sm">
-            <a class="nav-log-in" href="https://openshift.redhat.com/app/console">Log in</a>
-          </li>
-          <li class="hidden-xs hidden-sm">
-            <a class="nav-sign-up" href="https://www.openshift.com/app/account/new">Sign up free</a>
-          </li>
-        </ul>
-      </div></div>
-EOF
-
-    TOPNAV_ORIGIN = <<EOF
-    <div class="navbar navbar-default navbar-openshift navbar-origin" role="navigation">
-      <div class="navbar-header">
-        <a class="navbar-brand origin" href="/"></a>
-      </div>
-    </div>
-EOF
-
-    TOPNAV              = {
-      'openshift-origin' => TOPNAV_ORIGIN,
-      'openshift-online' => TOPNAV_DEFAULT,
-      'openshift-enterprise' => TOPNAV_DEFAULT,
-    }
-
-    FOOTER_DEFAULT = <<EOF
-    <footer class="footer-openshift">
-      <div class="container">
-        <div class="row">
-          <div class="col-xs-3 col-md-3 logo">
-            <a href="https://www.redhat.com/"></a>
-          </div>
-          <div class="col-xs-9 col-md-9 text-right">
-            <a href="https://www.openshift.com/legal/openshift_privacy">
-              Privacy Policy
-            </a>
-            <a href="https://www.openshift.com/legal/services_agreement">
-              Terms and Conditions
-            </a>
-          </div>
-        </div>
-      </div>
-    </footer>
-EOF
-
-    FOOTER_ORIGIN = <<EOF
-    <footer class="footer-openshift footer-origin">
-      <div class="container">
-        <div class="row">
-          <div class="col-sm-12 col-md-4">
-            <a id="footer_logo" href="https://www.redhat.com/">
-              <img alt="Red Hat" src="https://assets.openshift.net/app/assets/redhat.svg">
-            </a>
-          </div>
-          <div class="col-sm-12 col-md-4 text-center">
-            <a id="powered_by_openshift" title="Powered by OpenShift Online with the DIY Cartridge" href="https://hub.openshift.com/quickstarts/92-do-it-yourself-0-1">
-              <img src="https://www.openshift.com/sites/default/files/images/powered-transparent-white.png" alt="Powered by OpenShift Online">
-            </a>
-          </div>
-          <div class="col-sm-12 col-md-4 text-right">
-            <div id="footer_social">
-              <a href="https://twitter.com/openshift" class="first">
-                <span>
-                  <i class="fa fa-twitter-square fa-2x fa-inverse"></i>
-                </span>
-              </a>
-              <a href="https://github.com/openshift/origin-server">
-                <span>
-                  <i class="fa fa-github fa-2x fa-inverse"></i>
-                </span>
-              </a>
-              <a href="https://plus.google.com/communities/114361859072744017486">
-                <span>
-                  <i class="fa fa-google-plus-square fa-2x fa-inverse"></i>
-                </span>
-              </a>
-              <a href="https://www.facebook.com/openshift">
-                <span>
-                  <i class="fa fa-facebook-square fa-2x fa-inverse"></i>
-                </span>
-              </a>
-            </div>
-          </div>
-        </div>
-        <div class="row">
-          <div class="col-lg-12">
-            <div class="attribution">
-              <button type="button" class="btn btn-link" data-container="body" data-toggle="popover" data-placement="top" data-content="
-                '<a target='_blank' href='https://www.flickr.com/photos/eflon/3655695161/'>Spin</a>' by <a target='_blank' href='https://www.flickr.com/photos/eflon/'>eflon</a>,</br> used under <a target='_blank' href='https://creativecommons.org/licenses/by/2.0/'>CC BY 2.0</a> </br>Color tint added to original">
-                Image attribution
-              </button>
-            </div>
-          </div>
-        </div>
-      </div>
-    </footer>
-EOF
-
-    FOOTER              = {
-      'openshift-origin' => FOOTER_ORIGIN,
-      'openshift-online' => FOOTER_DEFAULT,
-      'openshift-enterprise' => FOOTER_DEFAULT,
-    }
 
     def build_date
       Time.now.utc
@@ -332,161 +170,24 @@ EOF
     end
 
     def page(args)
-      page_css = ''
-      args[:css].each do |sheet|
-        sheet_href = args[:css_path] + sheet
-        page_css << "<link href=\"#{sheet_href}\" rel=\"stylesheet\" />\n"
-      end
-
-      page_titles = [args[:group_title]]
+      args[:page_titles] = [args[:group_title]]
       if args[:subgroup_title]
-        page_titles << args[:subgroup_title]
+        args[:page_titles] << args[:subgroup_title]
       end
-      page_titles << args[:topic_title]
+      args[:page_titles] << args[:topic_title]
 
       # TODO: This process of rebuilding the entire nav for every page will not scale well.
       #       As the doc set increases, we will need to think about refactoring this.
-      breadcrumb_root, breadcrumb_group, breadcrumb_subgroup, breadcrumb_topic = extract_breadcrumbs(args)
+      args[:breadcrumb_root], args[:breadcrumb_group], args[:breadcrumb_subgroup], args[:breadcrumb_topic] = extract_breadcrumbs(args)
 
-      breadcrumb_subgroup_block = ''
-      subtopic_shim             = ''
-      if breadcrumb_subgroup
-        breadcrumb_subgroup_block = "<li class=\"hidden-xs active\">#{breadcrumb_subgroup}</li>"
-        subtopic_shim             = '../'
+      args[:breadcrumb_subgroup_block] = ''
+      args[:subtopic_shim]             = ''
+      if args[:breadcrumb_subgroup]
+        args[:breadcrumb_subgroup_block] = "<li class=\"hidden-xs active\">#{breadcrumb_subgroup}</li>"
+        args[:subtopic_shim]             = '../'
       end
 
-      page_nav = ['      <ul class="nav nav-sidebar">']
-      args[:navigation].each.with_index do |topic_group, groupidx|
-        current_group = topic_group[:id] == args[:group_id]
-        page_nav << "        <li class=\"nav-header\">"
-        page_nav << "          <a class=\"\" href=\"#\" data-toggle=\"collapse\" data-target=\"#topicGroup#{groupidx}\"><span id=\"tgSpan#{groupidx}\" class=\"fa #{current_group ? 'fa-angle-down' : 'fa-angle-right'}\"></span>#{topic_group[:name]}</a>"
-        page_nav << "          <ul id=\"topicGroup#{groupidx}\" class=\"collapse #{current_group ? 'in' : ''} list-unstyled\">"
-        topic_group[:topics].each.with_index do |topic, topicidx|
-          if not topic.has_key?(:topics)
-            current_topic = current_group && (topic[:id] == args[:topic_id])
-            page_nav << "           <li><a class=\"#{current_topic ? ' active' : ''}\" href=\"#{subtopic_shim}#{topic[:path]}\">#{topic[:name]}</a></li>"
-          else
-            current_subgroup = topic[:id] == args[:subgroup_id]
-            page_nav << "           <li class=\"nav-header\">"
-            page_nav << "             <a class=\"\" href=\"#\" data-toggle=\"collapse\" data-target=\"#topicSubGroup-#{groupidx}-#{topicidx}\"><span id=\"sgSpan-#{groupidx}-#{topicidx}\" class=\"fa #{current_subgroup ? 'fa-caret-down' : 'fa-caret-right'}\"></span>&nbsp;#{topic[:name]}</a>"
-            page_nav << "             <ul id=\"topicSubGroup-#{groupidx}-#{topicidx}\" class=\"nav-tertiary list-unstyled collapse#{current_subgroup ? ' in' : ''}\">"
-            topic[:topics].each do |subtopic|
-              current_subtopic = current_group && current_subgroup && (subtopic[:id] == args[:topic_id])
-              page_nav << "               <li><a class=\"#{current_subtopic ? ' active' : ''}\" href=\"#{subtopic_shim}#{subtopic[:path]}\">#{subtopic[:name]}</a></li>"
-            end
-            page_nav << '             </ul>'
-            page_nav << '           </li>'
-          end
-        end
-        page_nav << '          </ul>'
-        page_nav << '        </li>'
-      end
-      page_nav << '      </ul>'
-
-      page_head = <<EOF
-<!DOCTYPE html>
-<!--[if IE 8]> <html class="ie8"> <![endif]-->
-<!--[if IE 9]> <html class="ie9"> <![endif]-->
-<!--[if gt IE 9]><!-->
-<html>
-<!--<![endif]-->
-<head>
-<meta charset="utf-8">
-<meta content="IE=edge" http-equiv="X-UA-Compatible">
-<meta content="width=device-width, initial-scale=1.0" name="viewport">
-<title>#{args[:distro]} #{args[:version]} | #{page_titles.join(' | ')}</title>
-<link href="https://assets.openshift.net/content/subdomain.css" rel="stylesheet" type="text/css">
-#{page_css}
-<script src="https://code.jquery.com/jquery-2.1.1.min.js"></script>
-<script src="https://maxcdn.bootstrapcdn.com/bootstrap/3.2.0/js/bootstrap.min.js"></script>
-<script src="#{args[:javascripts_path]}bootstrap-offcanvas.js" type="text/javascript"></script>
-<script src="https://assets.openshift.net/content/modernizr.js" type="text/javascript"></script>
-<link href="https://assets.openshift.net/content/subdomain/touch-icon-precomposed.png" rel="apple-touch-icon-precomposed" type="image/png">
-<link href="https://assets.openshift.net/content/subdomain/favicon32x32.png" rel="shortcut icon" type="text/css">
-<!--[if IE]><link rel="shortcut icon" href="https://assets.openshift.net/content/subdomain/favicon.ico"><![endif]-->
-<!-- or, set /favicon.ico for IE10 win -->
-<meta content="OpenShift" name="application-name">
-<meta content="#000000" name="msapplication-TileColor">
-<meta content="https://assets.openshift.net/content/subdomain/touch-icon-precomposed.png" name="msapplication-TileImage">
-<!-- HTML5 shim and Respond.js IE8 support of HTML5 elements and media queries -->
-<!--[if lt IE 9]>
-  <script src="https://assets.openshift.net/content/html5shiv.js" type="text/javascript"></script>
-  <script src="https://assets.openshift.net/content/respond.js" type="text/javascript"></script>
-  <link href="https://assets.openshift.net/content/vendor/respond-js/respond-proxy.html" id="respond-proxy" rel="respond-proxy">
-  <link href="#{args[:images_path]}respond.proxy.gif" id="respond-redirect" rel="respond-redirect">
-  <script src="#{args[:javascripts_path]}respond.proxy.js" type="text/javascript"></script>
-<![endif]-->
-#{args[:analytics_shim]}
-</head>
-<body>
-#{args[:topnav]}
-<div class="container">
-  <p class="toggle-nav visible-xs pull-left">
-    <button class="btn btn-default btn-sm" type="button" data-toggle="offcanvas">Toggle nav</button>
-  </p>
-  <ol class="breadcrumb">
-        <li class="sitename">
-          <a href="#{args[:site_home_path]}">#{args[:sitename]}</a>
-        </li>
-        <li class="hidden-xs active">
-          #{breadcrumb_root}
-        </li>
-        <li class="hidden-xs active">
-          #{breadcrumb_group}
-        </li>
-        #{breadcrumb_subgroup_block}
-        <li class="hidden-xs active">
-          #{breadcrumb_topic}
-        </li>
-      </ol>
-  <div class="row row-offcanvas row-offcanvas-left">
-    <div class="col-xs-8 col-sm-3 col-md-3 sidebar sidebar-offcanvas">
-EOF
-
-      page_body = <<EOF
-    </div>
-    <div class="col-xs-12 col-sm-9 col-md-9 main">
-      <div class="page-header">
-        <h2>#{args[:article_title]}</h2>
-      </div>
-      #{args[:content]}
-    </div>
-  </div>
-</div>
-<script type="text/javascript">
-/*<![CDATA[*/
-$(document).ready(function() {
-  $("[id^='topicGroup']").on('show.bs.collapse', function (event) {
-    if (!($(event.target).attr('id').match(/^topicSubGroup/))) {
-      $(this).parent().find("[id^='tgSpan']").toggleClass("fa-angle-right fa-angle-down");
-    }
-  });
-  $("[id^='topicGroup']").on('hide.bs.collapse', function (event) {
-    if (!($(event.target).attr('id').match(/^topicSubGroup/))) {
-      $(this).parent().find("[id^='tgSpan']").toggleClass("fa-angle-right fa-angle-down");
-    }
-  });
-  $("[id^='topicSubGroup']").on('show.bs.collapse', function () {
-    $(this).parent().find("[id^='sgSpan']").toggleClass("fa-caret-right fa-caret-down");
-  });
-  $("[id^='topicSubGroup']").on('hide.bs.collapse', function () {
-    $(this).parent().find("[id^='sgSpan']").toggleClass("fa-caret-right fa-caret-down");
-  });
-});
-/*]]>*/
-</script>
-#{args[:footer]}
-</body>
-</html>
-EOF
-
-      page_txt = ''
-      page_txt << page_head
-      page_txt << "\n"
-      page_txt << page_nav.join("\n")
-      page_txt << "\n"
-      page_txt << page_body
-      page_txt
+      TemplateRenderer.new.render("_templates/page.html.erb", args)
     end
 
     def extract_breadcrumbs(args)
@@ -938,29 +639,25 @@ EOF
       dir_depth = '../' + dir_depth
     end
     page_args = {
+      :distro_key       => distro,
       :distro           => distro_config["name"],
       :sitename         => sitename,
       :version          => branch_config["name"],
       :group_title      => topic_group['Name'],
+      :subgroup_title   => topic_subgroup && topic_subgroup['Name'],
       :topic_title      => topic['Name'],
       :article_title    => article_title,
       :content          => topic_html,
       :navigation       => navigation,
       :group_id         => topic_group['ID'],
+      :subgroup_id      => topic_subgroup && topic_subgroup['ID'],
       :topic_id         => topic['ID'],
       :css_path         => "../../#{dir_depth}#{branch_config["dir"]}/stylesheets/",
       :javascripts_path => "../../#{dir_depth}#{branch_config["dir"]}/javascripts/",
       :images_path      => "../../#{dir_depth}#{branch_config["dir"]}/images/",
       :site_home_path   => "../../#{dir_depth}index.html",
       :css              => ['docs.css'],
-      :analytics_shim   => ANALYTICS_SHIM[distro],
-      :topnav           => TOPNAV[distro],
-      :footer           => FOOTER[distro],
     }
-    if not topic_subgroup.nil?
-      page_args[:subgroup_title] = topic_subgroup['Name']
-      page_args[:subgroup_id]    = topic_subgroup['ID']
-    end
     full_file_text = page(page_args)
     File.write(tgt_file_path,full_file_text)
     end
