@@ -327,36 +327,20 @@ EOF
 
       # TODO: This process of rebuilding the entire nav for every page will not scale well.
       #       As the doc set increases, we will need to think about refactoring this.
+      breadcrumb_root, breadcrumb_group, breadcrumb_topic = extract_breadcrumbs(args)
+
       page_nav = ['      <ul class="nav nav-sidebar">']
-      groupidx = 0
-      breadcrumb_root  = ''
-      breadcrumb_group = ''
-      breadcrumb_topic = ''
-      first_group = true
-      args[:navigation].each do |topic_group|
+      args[:navigation].each.with_index do |topic_group, groupidx|
         current_group = topic_group[:id] == args[:group_id]
         page_nav << "        <li class=\"nav-header\">"
         page_nav << "          <a class=\"\" href=\"#\" data-toggle=\"collapse\" data-target=\"#topicGroup#{groupidx}\"><span class=\"fa #{current_group ? 'fa-angle-down' : 'fa-angle-right'}\"></span>#{topic_group[:name]}</a>"
         page_nav << "          <ul id=\"topicGroup#{groupidx}\" class=\"collapse #{current_group ? 'in' : ''} list-unstyled\">"
-        first_topic = true
         topic_group[:topics].each do |topic|
-          current_topic = topic[:id] == args[:topic_id]
+          current_topic = current_group && (topic[:id] == args[:topic_id])
           page_nav << "           <li><a class=\"#{current_topic ? ' active' : ''}\" href=\"#{topic[:path]}\">#{topic[:name]}</a></li>"
-          if first_group and first_topic
-            breadcrumb_root = "<a href=\"#{topic[:path]}\">#{args[:distro]} #{args[:version]}</a>"
-            first_group = false
-          end
-          if current_group and first_topic
-            breadcrumb_group = "<a href=\"#{topic[:path]}\">#{topic_group[:name]}</a>"
-            first_topic = false
-          end
-          if current_topic
-            breadcrumb_topic = topic[:name]
-          end
         end
         page_nav << '          </ul>'
         page_nav << '         </li>'
-        groupidx = groupidx + 1
       end
       page_nav << '       </ul>'
 
@@ -453,6 +437,31 @@ EOF
       page_txt << "\n"
       page_txt << page_body
       page_txt
+    end
+
+    def extract_breadcrumbs(args)
+      breadcrumb_root = breadcrumb_group = breadcrumb_topic = nil
+
+      root_group = args[:navigation].first
+      if root_group
+        root_topic = root_group[:topics].first
+        breadcrumb_root = linkify_breadcrumb(root_topic[:path], "#{args[:distro]} #{args[:version]}") if root_topic
+      end
+
+      selected_group = args[:navigation].detect { |group| group[:id] == args[:group_id] }
+      if selected_group
+        group_topic = selected_group[:topics].first
+        breadcrumb_group = linkify_breadcrumb(group_topic[:path], selected_group[:name]) if group_topic
+
+        selected_topic = selected_group[:topics].detect { |topic| topic[:id] == args[:topic_id] }
+        breadcrumb_topic = linkify_breadcrumb(nil, selected_topic[:name]) if selected_topic
+      end
+
+      return breadcrumb_root, breadcrumb_group, breadcrumb_topic
+    end
+
+    def linkify_breadcrumb(href, text)
+      href ? "<a href=\"#{href}\">#{text}</a>" : text
     end
 
     def parse_distros distros_string, for_validation=false
