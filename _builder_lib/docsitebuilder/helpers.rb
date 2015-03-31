@@ -365,10 +365,10 @@ EOF
           else
             current_subgroup = topic[:id] == args[:subgroup_id]
             page_nav << "           <li class=\"nav-header\">"
-            page_nav << "             <a class=\"\" href=\"#\" data-toggle=\"collapse\" data-target=\"#topicSubGroup-#{groupidx}-#{topicidx}\"><span id=\"sgSpan-#{groupidx}-#{topicidx}\" class=\"fa #{current_subgroup ? 'fa-angle-down' : 'fa-angle-right'}\"></span>#{topic[:name]}</a>"
+            page_nav << "             <a class=\"\" href=\"#\" data-toggle=\"collapse\" data-target=\"#topicSubGroup-#{groupidx}-#{topicidx}\"><span id=\"sgSpan-#{groupidx}-#{topicidx}\" class=\"fa #{current_subgroup ? 'fa-caret-down' : 'fa-caret-right'}\"></span>&nbsp;#{topic[:name]}</a>"
             page_nav << "             <ul id=\"topicSubGroup-#{groupidx}-#{topicidx}\" class=\"nav-tertiary list-unstyled collapse#{current_subgroup ? ' in' : ''}\">"
             topic[:topics].each do |subtopic|
-              current_subtopic = current_group && current_subtopic && (subtopic[:id] == args[:topic_id])
+              current_subtopic = current_group && current_subgroup && (subtopic[:id] == args[:topic_id])
               page_nav << "               <li><a class=\"#{current_subtopic ? ' active' : ''}\" href=\"#{subtopic_shim}#{subtopic[:path]}\">#{subtopic[:name]}</a></li>"
             end
             page_nav << '             </ul>'
@@ -464,10 +464,10 @@ $(document).ready(function() {
     }
   });
   $("[id^='topicSubGroup']").on('show.bs.collapse', function () {
-    $(this).parent().find("[id^='sgSpan']").toggleClass("fa-angle-right fa-angle-down");
+    $(this).parent().find("[id^='sgSpan']").toggleClass("fa-caret-right fa-caret-down");
   });
   $("[id^='topicSubGroup']").on('hide.bs.collapse', function () {
-    $(this).parent().find("[id^='sgSpan']").toggleClass("fa-angle-right fa-angle-down");
+    $(this).parent().find("[id^='sgSpan']").toggleClass("fa-caret-right fa-caret-down");
   });
 });
 /*]]>*/
