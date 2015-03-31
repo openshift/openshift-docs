@@ -274,8 +274,8 @@ EOF
     def find_topic_files
       file_list = Find.find('.').select{ |path| not path.nil? and path =~ /.*\.adoc$/ and not path =~ /README/ and not path =~ /\/old\// and not path.split('/').length < 3 }
       file_list.map{ |path|
-        parts = path.split('/');
-        parts[1] + '/' + parts[2].split('.')[0]
+        parts = path.split('/').slice(1..-1);
+        parts.slice(0..-2).join('/') + '/' + parts[-1].split('.')[0]
       }
     end
 
@@ -284,15 +284,25 @@ EOF
       branch_build_config.each do |topic_group|
         tg_dir = topic_group['Dir']
         topic_group['Topics'].each do |topic|
-          topic_path = tg_dir + '/' + topic['File']
-          result     = branch_topic_files.delete(topic_path)
-          if result.nil?
-            nonexistent_topics << topic_path
+          if topic.has_key?('File')
+            topic_path = tg_dir + '/' + topic['File']
+            result     = branch_topic_files.delete(topic_path)
+            if result.nil?
+              nonexistent_topics << topic_path
+            end
+          elsif topic.has_key?('Dir')
+            topic_path = tg_dir + '/' + topic['Dir'] + '/'
+            topic['Topics'].each do |subtopic|
+              result = branch_topic_files.delete(topic_path + subtopic['File'])
+              if result.nil?
+                nonexistent_topics << topic_path + subtopic['File']
+              end
+            end
           end
         end
       end
       if nonexistent_topics.length > 0
-        puts "\nWARNING: The _build_cfg.yml file on branch '#{branch}' references nonexitanst topics:\n" + nonexistent_topics.map{ |topic| "- #{topic}" }.join("\n")
+        puts "\nWARNING: The _build_cfg.yml file on branch '#{branch}' references nonexistant topics:\n" + nonexistent_topics.map{ |topic| "- #{topic}" }.join("\n")
       end
     end
 
@@ -325,24 +335,50 @@ EOF
         page_css << "<link href=\"#{sheet_href}\" rel=\"stylesheet\" />\n"
       end
 
+      page_titles = [args[:group_title]]
+      if args[:subgroup_title]
+        page_titles << args[:subgroup_title]
+      end
+      page_titles << args[:topic_title]
+
       # TODO: This process of rebuilding the entire nav for every page will not scale well.
       #       As the doc set increases, we will need to think about refactoring this.
-      breadcrumb_root, breadcrumb_group, breadcrumb_topic = extract_breadcrumbs(args)
+      breadcrumb_root, breadcrumb_group, breadcrumb_subgroup, breadcrumb_topic = extract_breadcrumbs(args)
+
+      breadcrumb_subgroup_block = ''
+      subtopic_shim             = ''
+      if breadcrumb_subgroup
+        breadcrumb_subgroup_block = "<li class=\"hidden-xs active\">#{breadcrumb_subgroup}</li>"
+        subtopic_shim             = '../'
+      end
 
       page_nav = ['      <ul class="nav nav-sidebar">']
       args[:navigation].each.with_index do |topic_group, groupidx|
         current_group = topic_group[:id] == args[:group_id]
         page_nav << "        <li class=\"nav-header\">"
-        page_nav << "          <a class=\"\" href=\"#\" data-toggle=\"collapse\" data-target=\"#topicGroup#{groupidx}\"><span class=\"fa #{current_group ? 'fa-angle-down' : 'fa-angle-right'}\"></span>#{topic_group[:name]}</a>"
+        page_nav << "          <a class=\"\" href=\"#\" data-toggle=\"collapse\" data-target=\"#topicGroup#{groupidx}\"><span id=\"tgSpan#{groupidx}\" class=\"fa #{current_group ? 'fa-angle-down' : 'fa-angle-right'}\"></span>#{topic_group[:name]}</a>"
         page_nav << "          <ul id=\"topicGroup#{groupidx}\" class=\"collapse #{current_group ? 'in' : ''} list-unstyled\">"
-        topic_group[:topics].each do |topic|
-          current_topic = current_group && (topic[:id] == args[:topic_id])
-          page_nav << "           <li><a class=\"#{current_topic ? ' active' : ''}\" href=\"#{topic[:path]}\">#{topic[:name]}</a></li>"
+        topic_group[:topics].each.with_index do |topic, topicidx|
+          if not topic.has_key?(:topics)
+            current_topic = current_group && (topic[:id] == args[:topic_id])
+            page_nav << "           <li><a class=\"#{current_topic ? ' active' : ''}\" href=\"#{subtopic_shim}#{topic[:path]}\">#{topic[:name]}</a></li>"
+          else
+            current_subgroup = topic[:id] == args[:subgroup_id]
+            page_nav << "           <li class=\"nav-header\">"
+            page_nav << "             <a class=\"\" href=\"#\" data-toggle=\"collapse\" data-target=\"#topicSubGroup-#{groupidx}-#{topicidx}\"><span id=\"sgSpan-#{groupidx}-#{topicidx}\" class=\"fa #{current_subgroup ? 'fa-angle-down' : 'fa-angle-right'}\"></span>#{topic[:name]}</a>"
+            page_nav << "             <ul id=\"topicSubGroup-#{groupidx}-#{topicidx}\" class=\"nav-tertiary list-unstyled collapse#{current_subgroup ? ' in' : ''}\">"
+            topic[:topics].each do |subtopic|
+              current_subtopic = current_group && current_subtopic && (subtopic[:id] == args[:topic_id])
+              page_nav << "               <li><a class=\"#{current_subtopic ? ' active' : ''}\" href=\"#{subtopic_shim}#{subtopic[:path]}\">#{subtopic[:name]}</a></li>"
+            end
+            page_nav << '             </ul>'
+            page_nav << '           </li>'
+          end
         end
         page_nav << '          </ul>'
-        page_nav << '         </li>'
+        page_nav << '        </li>'
       end
-      page_nav << '       </ul>'
+      page_nav << '      </ul>'
 
       page_head = <<EOF
 <!DOCTYPE html>
@@ -355,7 +391,7 @@ EOF
 <meta charset="utf-8">
 <meta content="IE=edge" http-equiv="X-UA-Compatible">
 <meta content="width=device-width, initial-scale=1.0" name="viewport">
-<title>#{args[:distro]} #{args[:version]} | #{args[:group_title]} | #{args[:topic_title]}</title>
+<title>#{args[:distro]} #{args[:version]} | #{page_titles.join(' | ')}</title>
 <link href="https://assets.openshift.net/content/subdomain.css" rel="stylesheet" type="text/css">
 #{page_css}
 <script src="https://code.jquery.com/jquery-2.1.1.min.js"></script>
@@ -395,6 +431,7 @@ EOF
         <li class="hidden-xs active">
           #{breadcrumb_group}
         </li>
+        #{breadcrumb_subgroup_block}
         <li class="hidden-xs active">
           #{breadcrumb_topic}
         </li>
@@ -416,11 +453,21 @@ EOF
 <script type="text/javascript">
 /*<![CDATA[*/
 $(document).ready(function() {
-  $("[id^='topicGroup']").on('show.bs.collapse', function () {
-    $(this).parent().find("span").toggleClass("fa-angle-right fa-angle-down");
+  $("[id^='topicGroup']").on('show.bs.collapse', function (event) {
+    if (!($(event.target).attr('id').match(/^topicSubGroup/))) {
+      $(this).parent().find("[id^='tgSpan']").toggleClass("fa-angle-right fa-angle-down");
+    }
   });
-  $("[id^='topicGroup']").on('hide.bs.collapse', function () {
-    $(this).parent().find("span").toggleClass("fa-angle-right fa-angle-down");
+  $("[id^='topicGroup']").on('hide.bs.collapse', function (event) {
+    if (!($(event.target).attr('id').match(/^topicSubGroup/))) {
+      $(this).parent().find("[id^='tgSpan']").toggleClass("fa-angle-right fa-angle-down");
+    }
+  });
+  $("[id^='topicSubGroup']").on('show.bs.collapse', function () {
+    $(this).parent().find("[id^='sgSpan']").toggleClass("fa-angle-right fa-angle-down");
+  });
+  $("[id^='topicSubGroup']").on('hide.bs.collapse', function () {
+    $(this).parent().find("[id^='sgSpan']").toggleClass("fa-angle-right fa-angle-down");
   });
 });
 /*]]>*/
@@ -440,28 +487,40 @@ EOF
     end
 
     def extract_breadcrumbs(args)
-      breadcrumb_root = breadcrumb_group = breadcrumb_topic = nil
+      breadcrumb_root = breadcrumb_group = breadcrumb_subgroup = breadcrumb_topic = nil
 
-      root_group = args[:navigation].first
+      root_group          = args[:navigation].first
+      selected_group      = args[:navigation].detect { |group| group[:id] == args[:group_id] }
+      selected_subgroup   = selected_group[:topics].detect { |subgroup| subgroup[:id] == args[:subgroup_id] }
+      current_is_subtopic = selected_subgroup ? true : false
+
       if root_group
         root_topic = root_group[:topics].first
-        breadcrumb_root = linkify_breadcrumb(root_topic[:path], "#{args[:distro]} #{args[:version]}") if root_topic
+        breadcrumb_root = linkify_breadcrumb(root_topic[:path], "#{args[:distro]} #{args[:version]}", current_is_subtopic) if root_topic
       end
 
-      selected_group = args[:navigation].detect { |group| group[:id] == args[:group_id] }
       if selected_group
         group_topic = selected_group[:topics].first
-        breadcrumb_group = linkify_breadcrumb(group_topic[:path], selected_group[:name]) if group_topic
+        breadcrumb_group = linkify_breadcrumb(group_topic[:path], selected_group[:name], current_is_subtopic) if group_topic
 
-        selected_topic = selected_group[:topics].detect { |topic| topic[:id] == args[:topic_id] }
-        breadcrumb_topic = linkify_breadcrumb(nil, selected_topic[:name]) if selected_topic
+        if selected_subgroup
+          subgroup_topic = selected_subgroup[:topics].first
+          breadcrumb_subgroup = linkify_breadcrumb(subgroup_topic[:path], selected_subgroup[:name], current_is_subtopic) if subgroup_topic
+
+          selected_topic = selected_subgroup[:topics].detect { |topic| topic[:id] == args[:topic_id] }
+          breadcrumb_topic = linkify_breadcrumb(nil, selected_topic[:name], current_is_subtopic) if selected_topic
+        else
+          selected_topic = selected_group[:topics].detect { |topic| topic[:id] == args[:topic_id] }
+          breadcrumb_topic = linkify_breadcrumb(nil, selected_topic[:name], current_is_subtopic) if selected_topic
+        end
       end
 
-      return breadcrumb_root, breadcrumb_group, breadcrumb_topic
+      return breadcrumb_root, breadcrumb_group, breadcrumb_subgroup, breadcrumb_topic
     end
 
-    def linkify_breadcrumb(href, text)
-      href ? "<a href=\"#{href}\">#{text}</a>" : text
+    def linkify_breadcrumb(href, text, extra_level)
+      addl_level = extra_level ? '../' : ''
+      href ? "<a href=\"#{addl_level}#{href}\">#{text}</a>" : text
     end
 
     def parse_distros distros_string, for_validation=false
@@ -480,80 +539,105 @@ EOF
       return true
     end
 
+    def validate_topic_group group, info
+      # Check for presence of topic group keys
+      ['Name','Dir','Topics'].each do |group_key|
+        if not group.has_key?(group_key)
+          raise "One of the topic groups in #{build_config_file} is missing the '#{group_key}' key."
+        end
+      end
+      # Check for right format of topic group values
+      ['Name','Dir'].each do |group_key|
+        if not group[group_key].is_a?(String)
+          raise "One of the topic groups in #{build_config_file} is not using a string for the #{group_key} setting; current value is #{group[group_key].inspect}"
+        end
+        if group[group_key].empty? or group[group_key].match BLANK_STRING_RE
+          raise "One of the topic groups in #{build_config_file} is using a blank value for the #{group_key} setting."
+        end
+      end
+      if not File.exists?(File.join(source_dir,info[:path]))
+        raise "In #{build_config_file}, the directory path '#{info[:path]}' for topic group #{group['Name']} does not exist under #{source_dir}"
+      end
+      # Validate the Distros setting
+      if group.has_key?('Distros')
+        if not validate_distros(group['Distros'])
+          key_list = distro_map.keys.map{ |k| "'#{k}'" }.sort.join(', ')
+          raise "In #{build_config_file}, the Distros value #{group['Distros'].inspect} for topic group #{group['Name']} is not valid. Legal values are 'all', #{key_list}, or a comma-separated list of legal values."
+        end
+        group['Distros'] = parse_distros(group['Distros'])
+      else
+        group['Distros'] = parse_distros('all')
+      end
+      if not group['Topics'].is_a?(Array)
+        raise "The #{group['Name']} topic group in #{build_config_file} is malformed; the build system is expecting an array of 'Topic' definitions."
+      end
+      # Generate an ID for this topic group
+      group['ID'] = camelize group['Name']
+      if info.has_key?(:parent_id)
+        group['ID'] = "#{info[:parent_id]}::#{group['ID']}"
+      end
+    end
+
+    def validate_topic_item item, info
+      ['Name','File'].each do |topic_key|
+        if not item[topic_key].is_a?(String)
+          raise "In #{build_config_file}, topic group #{info[:group]}, one of the topics is not using a string for the '#{topic_key}' setting; current value is #{item[topic_key].inspect}"
+        end
+        if item[topic_key].empty? or item[topic_key].match BLANK_STRING_RE
+          raise "In #{build_config_file}, topic group #{topic_group['Name']}, one of the topics is using a blank value for the '#{topic_key}' setting"
+        end
+      end
+      # Normalize the filenames
+      if item['File'].end_with?('.adoc')
+        item['File'] = item['File'][0..-6]
+      end
+      if not File.exists?(File.join(source_dir,info[:path],"#{item['File']}.adoc"))
+        raise "In #{build_config_file}, could not find file #{item['File']} under directory #{info[:path]} for topic #{item['Name']} in topic group #{info[:group]}."
+      end
+      if item.has_key?('Distros')
+        if not validate_distros(item['Distros'])
+          key_list = distro_map.keys.map{ |k| "'#{k}'" }.sort.join(', ')
+          raise "In #{build_config_file}, the Distros value #{item['Distros'].inspect} for topic item #{item['Name']} in topic group #{info[:group]} is not valid. Legal values are 'all', #{key_list}, or a comma-separated list of legal values."
+        end
+        item['Distros'] = parse_distros(item['Distros'])
+      else
+        item['Distros'] = parse_distros('all')
+      end
+      # Generate an ID for this topic
+      item['ID'] = "#{info[:group_id]}::#{camelize(item['Name'])}"
+    end
+
     def validate_config config_data
       # Validate/normalize the config file straight away
       if not config_data.is_a?(Array)
         raise "The configuration in #{build_config_file} is malformed; the build system is expecting an array of topic groups."
       end
       config_data.each do |topic_group|
-        # Check for presence of topic group keys
-        ['Name','Dir','Topics'].each do |group_key|
-          if not topic_group.has_key?(group_key)
-            raise "One of the topic groups in #{build_config_file} is missing the '#{group_key}' key."
-          end
-        end
-        # Check for right format of topic group values
-        ['Name','Dir'].each do |group_key|
-          if not topic_group[group_key].is_a?(String)
-            raise "One of the topic groups in #{build_config_file} is not using a string for the #{group_key} setting; current value is #{topic_group[group_key].inspect}"
-          end
-          if topic_group[group_key].empty? or topic_group[group_key].match BLANK_STRING_RE
-            raise "One of the topic groups in #{build_config_file} is using a blank value for the #{group_key} setting."
-          end
-        end
-        if not File.exists?(File.join(source_dir,topic_group['Dir']))
-          raise "In #{build_config_file}, the directory #{topic_group['Dir']} for topic group #{topic_group['Name']} does not exist under #{source_dir}"
-        end
-        # Validate the Distros setting
-        if topic_group.has_key?('Distros')
-          if not validate_distros(topic_group['Distros'])
-            key_list = distro_map.keys.map{ |k| "'#{k}'" }.sort.join(', ')
-            raise "In #{build_config_file}, the Distros value #{topic_group['Distros'].inspect} for topic group #{topic_group['Name']} is not valid. Legal values are 'all', #{key_list}, or a comma-separated list of legal values."
-          end
-          topic_group['Distros'] = parse_distros(topic_group['Distros'])
-        else
-          topic_group['Distros'] = parse_distros('all')
-        end
-        if not topic_group['Topics'].is_a?(Array)
-          raise "The #{topic_group['Name']} topic group in #{build_config_file} is malformed; the build system is expecting an array of 'Topic' definitions."
-        end
-        # Generate an ID for this topic group
-        topic_group['ID'] = camelize topic_group['Name']
+        validate_topic_group(topic_group, { :path => topic_group['Dir'] })
         # Now buzz through the topics
         topic_group['Topics'].each do |topic|
-          ['Name','File'].each do |topic_key|
-            if not topic[topic_key].is_a?(String)
-              raise "In #{build_config_file}, topic group #{topic_group['Name']}, one of the topics is not using a string for the '#{topic_key}' setting; current value is #{topic[topic_key].inspect}"
+          # Is this an actual topic or a subtopic group?
+          is_subtopic_group = topic.has_key?('Dir') and topic.has_key?('Topics') and not topic.has_key?('File')
+          is_topic_item = topic.has_key?('File') and not topic.has_key?('Dir') and not topic.has_key?('Topics')
+          if not is_subtopic_group and not is_topic_item
+            raise "This topic could not definitively be determined to be a topic item or a subtopic group:\n#{topic.inspect}"
+          end
+          if is_topic_item
+            validate_topic_item(topic, { :group => topic_group['Name'], :group_id => topic_group['ID'], :path => topic_group['Dir'] })
+          elsif is_subtopic_group
+            topic_path = "#{topic_group['Dir']}/#{topic['Dir']}"
+            validate_topic_group(topic, { :path => topic_path, :parent_id => topic_group['ID'] })
+            topic['Topics'].each do |subtopic|
+              validate_topic_item(subtopic, { :group => "#{topic_group['Name']}/#{topic['Name']}", :group_id => topic['ID'], :path => topic_path })
             end
-            if topic[topic_key].empty? or topic[topic_key].match BLANK_STRING_RE
-              raise "In #{build_config_file}, topic group #{topic_group['Name']}, one of the topics is using a blank value for the '#{topic_key}' setting"
-            end
           end
-          # Normalize the filenames
-          if topic['File'].end_with?('.adoc')
-            topic['File'] = topic['File'][0..-6]
-          end
-          if not File.exists?(File.join(source_dir,topic_group['Dir'],"#{topic['File']}.adoc"))
-            raise "In #{build_config_file}, could not find file #{topic['File']} under directory #{topic_group['Dir']} for topic #{topic['Name']} in topic group #{topic_group['Name']}."
-          end
-          if topic.has_key?('Distros')
-            if not validate_distros(topic['Distros'])
-              key_list = distro_map.keys.map{ |k| "'#{k}'" }.sort.join(', ')
-              raise "In #{build_config_file}, the Distros value #{topic_group['Distros'].inspect} for topic item #{topic['Name']} in topic group #{topic_group['Name']} is not valid. Legal values are 'all', #{key_list}, or a comma-separated list of legal values."
-            end
-            topic['Distros'] = parse_distros(topic['Distros'])
-          else
-            topic['Distros'] = parse_distros('all')
-          end
-          # Generate an ID for this topic
-          topic['ID'] = "#{topic_group['ID']}::#{camelize(topic['Name'])}"
         end
       end
       config_data
     end
 
     def camelize text
-      text.split(' ').map{ |t| t.capitalize }.join
+      text.gsub(/[^0-9a-zA-Z ]/i, '').split(' ').map{ |t| t.capitalize }.join
     end
 
     def nav_tree distro, branch_build_config
@@ -564,11 +648,25 @@ EOF
         topic_list = []
         topic_group['Topics'].each do |topic|
           next if not topic['Distros'].include?(distro)
-          topic_list << {
-            :path => "../#{topic_group['Dir']}/#{topic['File']}.html",
-            :name => topic['Name'],
-            :id   => topic['ID'],
-          }
+          if topic.has_key?('File')
+            topic_list << {
+              :path => "../#{topic_group['Dir']}/#{topic['File']}.html",
+              :name => topic['Name'],
+              :id   => topic['ID'],
+            }
+          elsif topic.has_key?('Dir')
+            next if topic['Topics'].select{ |t| t['Distros'].include?(distro) }.length == 0
+            subtopic_list = []
+            topic['Topics'].each do |subtopic|
+              next if not subtopic['Distros'].include?(distro)
+              subtopic_list << {
+                :path => "../#{topic_group['Dir']}/#{topic['Dir']}/#{subtopic['File']}.html",
+                :name => subtopic['Name'],
+                :id   => subtopic['ID'],
+              }
+            end
+            topic_list << { :name => topic['Name'], :id => topic['ID'], :topics => subtopic_list }
+          end
         end
         navigation << { :name => topic_group['Name'], :id => topic_group['ID'], :topics => topic_list }
       end
@@ -698,63 +796,61 @@ EOF
             next if not topic_group['Distros'].include?(distro)
             next if topic_group['Topics'].select{ |t| t['Distros'].include?(distro) }.length == 0
             next if not single_page.nil? and not single_page_dir == topic_group['Dir']
-            src_group_path = File.join(source_dir,topic_group['Dir'])
-            tgt_group_path = File.join(branch_path,topic_group['Dir'])
-            if not File.exists?(tgt_group_path)
-              Dir.mkdir(tgt_group_path)
-            end
             topic_group['Topics'].each do |topic|
+              src_group_path = File.join(source_dir,topic_group['Dir'])
+              tgt_group_path = File.join(branch_path,topic_group['Dir'])
+              if not File.exists?(tgt_group_path)
+                Dir.mkdir(tgt_group_path)
+              end
               next if not topic['Distros'].include?(distro)
-              next if not single_page.nil? and not topic['File'] == single_page_file
-              src_file_path = File.join(src_group_path,"#{topic['File']}.adoc")
-              tgt_file_path = File.join(tgt_group_path,"#{topic['File']}.html")
-              if single_page.nil?
-                puts "  - #{File.join(topic_group['Dir'],topic['File'])}"
-              end
-              topic_adoc    = File.open(src_file_path,'r').read
-              page_attrs    = asciidoctor_page_attrs([
-                "imagesdir=#{src_group_path}/images",
-                distro,
-                "product-title=#{distro_config["name"]}",
-                "product-version=#{branch_config["name"]}",
-                "product-author=#{PRODUCT_AUTHOR}"
-              ])
-
-              # Because we render only the body of the article with AsciiDoctor, the full article title
-              # would be lost in conversion. So, read it out of the raw asciidoc and pass it in to our
-              # page renderer
-              article_title  = topic_adoc.split("\n")[0].gsub(/^\=\s+/, '').gsub(/\s+$/, '').gsub(/\{product-title\}/, distro_config["name"]).gsub(/\{product-version\}/, branch_config["name"])
-
-              topic_html     = Asciidoctor.render topic_adoc, :header_footer => false, :safe => :unsafe, :attributes => page_attrs
-              dir_depth = ''
-              if branch_config['dir'].split('/').length > 1
-                dir_depth = '../' * (branch_config['dir'].split('/').length - 1)
-              end
-              full_file_text = page({
-                :distro        => distro_config["name"],
-                :sitename      => sitename,
-                :version       => branch_config["name"],
-                :group_title   => topic_group['Name'],
-                :topic_title   => topic['Name'],
-                :article_title => article_title,
-                :content       => topic_html,
-                :navigation    => navigation,
-                :group_id      => topic_group['ID'],
-                :topic_id      => topic['ID'],
-                :css_path      => "../../#{dir_depth}#{branch_config["dir"]}/stylesheets/",
-                :javascripts_path => "../../#{dir_depth}#{branch_config["dir"]}/javascripts/",
-                :images_path      => "../../#{dir_depth}#{branch_config["dir"]}/images/",
-                :site_home_path   => "../../#{dir_depth}index.html",
-                :css         => [
-                  'docs.css',
-                ],
-                :analytics_shim => ANALYTICS_SHIM[distro],
-                :topnav => TOPNAV[distro],
-                :footer => FOOTER[distro],
-              })
-              File.write(tgt_file_path,full_file_text)
-              if not single_page.nil?
-                return
+              if topic.has_key?('File')
+                next if not single_page.nil? and not topic['File'] == single_page_file
+                topic_path = File.join(topic_group['Dir'],topic['File'])
+                configure_and_generate_page({
+                  :distro         => distro,
+                  :distro_config  => distro_config,
+                  :branch_config  => branch_config,
+                  :navigation     => navigation,
+                  :topic          => topic,
+                  :topic_group    => topic_group,
+                  :topic_path     => topic_path,
+                  :src_group_path => src_group_path,
+                  :tgt_group_path => tgt_group_path,
+                  :single_page    => single_page,
+                  :sitename       => sitename,
+                })
+                if not single_page.nil?
+                  return
+                end
+              elsif topic.has_key?('Dir')
+                next if not single_page.nil? and not single_page_dir == topic_group['Dir'] + '/' + topic['Dir']
+                topic['Topics'].each do |subtopic|
+                  next if not subtopic['Distros'].include?(distro)
+                  next if not single_page.nil? and not subtopic['File'] == single_page_file
+                  src_group_path = File.join(source_dir,topic_group['Dir'],topic['Dir'])
+                  tgt_group_path = File.join(branch_path,topic_group['Dir'],topic['Dir'])
+                  if not File.exists?(tgt_group_path)
+                    Dir.mkdir(tgt_group_path)
+                  end
+                  topic_path = File.join(topic_group['Dir'],topic['Dir'],subtopic['File'])
+                  configure_and_generate_page({
+                    :distro         => distro,
+                    :distro_config  => distro_config,
+                    :branch_config  => branch_config,
+                    :navigation     => navigation,
+                    :topic          => subtopic,
+                    :topic_group    => topic_group,
+                    :topic_subgroup => topic,
+                    :topic_path     => topic_path,
+                    :src_group_path => src_group_path,
+                    :tgt_group_path => tgt_group_path,
+                    :single_page    => single_page,
+                    :sitename       => sitename,
+                  })
+                  if not single_page.nil?
+                    return
+                  end
+                end
               end
             end
           end
@@ -791,6 +887,75 @@ EOF
       git_apply_and_drop
 
       puts "\nAll builds completed."
+    end
+
+    def configure_and_generate_page options
+      distro         = options[:distro]
+      distro_config  = options[:distro_config]
+      branch_config  = options[:branch_config]
+      navigation     = options[:navigation]
+      topic          = options[:topic]
+      topic_group    = options[:topic_group]
+      topic_subgroup = options[:topic_subgroup]
+      topic_path     = options[:topic_path]
+      src_group_path = options[:src_group_path]
+      tgt_group_path = options[:tgt_group_path]
+      single_page    = options[:single_page]
+      sitename       = options[:sitename]
+
+      src_file_path = File.join(src_group_path,"#{topic['File']}.adoc")
+      tgt_file_path = File.join(tgt_group_path,"#{topic['File']}.html")
+      if single_page.nil?
+        puts "  - #{topic_path}"
+      end
+      topic_adoc = File.open(src_file_path,'r').read
+      page_attrs = asciidoctor_page_attrs([
+        "imagesdir=#{src_group_path}/images",
+        distro,
+        "product-title=#{distro_config["name"]}",
+        "product-version=#{branch_config["name"]}",
+        "product-author=#{PRODUCT_AUTHOR}"
+      ])
+
+    # Because we render only the body of the article with AsciiDoctor, the full article title
+    # would be lost in conversion. So, read it out of the raw asciidoc and pass it in to our
+    # page renderer
+    article_title  = topic_adoc.split("\n")[0].gsub(/^\=\s+/, '').gsub(/\s+$/, '').gsub(/\{product-title\}/, distro_config["name"]).gsub(/\{product-version\}/, branch_config["name"])
+
+    topic_html     = Asciidoctor.render topic_adoc, :header_footer => false, :safe => :unsafe, :attributes => page_attrs
+    dir_depth = ''
+    if branch_config['dir'].split('/').length > 1
+      dir_depth = '../' * (branch_config['dir'].split('/').length - 1)
+    end
+    if not topic_subgroup.nil?
+      dir_depth = '../' + dir_depth
+    end
+    page_args = {
+      :distro           => distro_config["name"],
+      :sitename         => sitename,
+      :version          => branch_config["name"],
+      :group_title      => topic_group['Name'],
+      :topic_title      => topic['Name'],
+      :article_title    => article_title,
+      :content          => topic_html,
+      :navigation       => navigation,
+      :group_id         => topic_group['ID'],
+      :topic_id         => topic['ID'],
+      :css_path         => "../../#{dir_depth}#{branch_config["dir"]}/stylesheets/",
+      :javascripts_path => "../../#{dir_depth}#{branch_config["dir"]}/javascripts/",
+      :images_path      => "../../#{dir_depth}#{branch_config["dir"]}/images/",
+      :site_home_path   => "../../#{dir_depth}index.html",
+      :css              => ['docs.css'],
+      :analytics_shim   => ANALYTICS_SHIM[distro],
+      :topnav           => TOPNAV[distro],
+      :footer           => FOOTER[distro],
+    }
+    if not topic_subgroup.nil?
+      page_args[:subgroup_title] = topic_subgroup['Name']
+      page_args[:subgroup_id]    = topic_subgroup['ID']
+    end
+    full_file_text = page(page_args)
+    File.write(tgt_file_path,full_file_text)
     end
 
     # package_docs
