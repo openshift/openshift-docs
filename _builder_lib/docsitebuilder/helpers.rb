@@ -51,7 +51,6 @@ module DocSiteBuilder
     PREVIEW_DIRNAME     = '_preview'
     PACKAGE_DIRNAME     = '_package'
     BLANK_STRING_RE     = Regexp.new('^\s*$')
-    PRODUCT_AUTHOR      = "OpenShift Documentation Project <dev@lists.openshift.redhat.com>"
 
     def build_date
       Time.now.utc
@@ -571,7 +570,7 @@ module DocSiteBuilder
               distro,
               "product-title=#{distro_config["name"]}",
               "product-version=Updated #{build_date}",
-              "product-author=#{PRODUCT_AUTHOR}"
+              "product-author=#{distro_config["author"]}"
             ])
             topic_html = Asciidoctor.render topic_adoc, :header_footer => true, :safe => :unsafe, :attributes => page_attrs
             File.write(File.join(preview_dir,distro,'index.html'),topic_html)
@@ -618,7 +617,7 @@ module DocSiteBuilder
         distro,
         "product-title=#{distro_config["name"]}",
         "product-version=#{branch_config["name"]}",
-        "product-author=#{PRODUCT_AUTHOR}"
+        "product-author=#{distro_config["author"]}"
       ])
 
     # Because we render only the body of the article with AsciiDoctor, the full article title
