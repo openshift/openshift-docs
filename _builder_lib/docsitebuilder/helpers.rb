@@ -169,12 +169,6 @@ module DocSiteBuilder
     end
 
     def page(args)
-      args[:page_titles] = [args[:group_title]]
-      if args[:subgroup_title]
-        args[:page_titles] << args[:subgroup_title]
-      end
-      args[:page_titles] << args[:topic_title]
-
       # TODO: This process of rebuilding the entire nav for every page will not scale well.
       #       As the doc set increases, we will need to think about refactoring this.
       args[:breadcrumb_root], args[:breadcrumb_group], args[:breadcrumb_subgroup], args[:breadcrumb_topic] = extract_breadcrumbs(args)
