@@ -460,7 +460,7 @@ module DocSiteBuilder
             next
           end
 
-          sitename = distro_config["site"] == 'community' ? "OpenShift Community Documentation" : "OpenShift Product Documentation"
+          site_name = distro_config["site_name"]
 
           first_branch = single_page.nil?
 
@@ -520,7 +520,7 @@ module DocSiteBuilder
                   :src_group_path => src_group_path,
                   :tgt_group_path => tgt_group_path,
                   :single_page    => single_page,
-                  :sitename       => sitename,
+                  :site_name      => site_name,
                 })
                 if not single_page.nil?
                   return
@@ -548,7 +548,7 @@ module DocSiteBuilder
                     :src_group_path => src_group_path,
                     :tgt_group_path => tgt_group_path,
                     :single_page    => single_page,
-                    :sitename       => sitename,
+                    :site_name      => site_name,
                   })
                   if not single_page.nil?
                     return
@@ -604,7 +604,7 @@ module DocSiteBuilder
       src_group_path = options[:src_group_path]
       tgt_group_path = options[:tgt_group_path]
       single_page    = options[:single_page]
-      sitename       = options[:sitename]
+      site_name      = options[:site_name]
 
       src_file_path = File.join(src_group_path,"#{topic['File']}.adoc")
       tgt_file_path = File.join(tgt_group_path,"#{topic['File']}.html")
@@ -640,7 +640,7 @@ module DocSiteBuilder
     page_args = {
       :distro_key       => distro,
       :distro           => distro_config["name"],
-      :sitename         => sitename,
+      :site_name        => site_name,
       :version          => branch_config["name"],
       :group_title      => topic_group['Name'],
       :subgroup_title   => topic_subgroup && topic_subgroup['Name'],
