@@ -176,7 +176,7 @@ module DocSiteBuilder
       args[:breadcrumb_subgroup_block] = ''
       args[:subtopic_shim]             = ''
       if args[:breadcrumb_subgroup]
-        args[:breadcrumb_subgroup_block] = "<li class=\"hidden-xs active\">#{breadcrumb_subgroup}</li>"
+        args[:breadcrumb_subgroup_block] = "<li class=\"hidden-xs active\">#{args[:breadcrumb_subgroup]}</li>"
         args[:subtopic_shim]             = '../'
       end
 
