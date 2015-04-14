@@ -1,4 +1,6 @@
 require 'asciidoctor'
+require 'asciidoctor/cli'
+require 'asciidoctor-diagram'
 require 'find'
 require 'git'
 require 'logger'

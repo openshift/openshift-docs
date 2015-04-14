@@ -1,6 +1,7 @@
 source "https://rubygems.org"
 
 gem 'asciidoctor'
+gem 'asciidoctor-diagram'
 gem 'git'
 gem 'guard'
 gem 'guard-shell'
