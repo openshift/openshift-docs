@@ -29,6 +29,7 @@ Each time a new deployment is created, the `latestVersion` field of `deploymentC
 
 A `deploymentConfig` in OpenShift is a REST object which can be POSTed to the API server to create a new instance. Consider a simple configuration which should result in a new `deployment` every time a Docker image tag changes.
 
+[source,json]
 ----
 {
   "kind": "DeploymentConfig",
@@ -94,23 +95,38 @@ A `deploymentConfig` has a `strategy` which is responsible for making new deploy
 
 ===== Recreate strategy
 
-The Recreate `strategy` has very basic behavior.
+The Recreate `strategy` has basic rollout behavior, and supports link:#lifecycle-hooks[lifecycle hooks] for injecting code into the deployment process.
 
+[source,json]
 ----
 {
-  "type": "Recreate"
+  "type": "Recreate",
+  "recreateParams": { <1>
+    "pre": {}, <2>
+    "post": {}
+  }
 }
 ----
 
-The algorithm for this `strategy` is simply:
+<1> `recreateParams` are *optional*.
+<2> `pre` and `post` are both link:#lifecycle-hooks[lifecycle hooks].
 
-1.  Increase the replica count of the new `deployment` to the replica count defined on the deployment configuration
-2.  Find and disable previous `deployments` (by reducing their replica count to 0)
+The algorithm for this `strategy` is:
+
+1.  Execute any `pre` lifecycle hook
+2.  Increase the replica count of the new `deployment` to the replica count defined on the deployment configuration
+3.  Find and disable previous `deployments` (by reducing their replica count to 0)
+4.  Execute any `post` lifecycle hook
+
+link:#lifecycle-hooks[Lifecycle hooks] are specified in the `recreateParams` for the strategy. 
+
+IMPORTANT: The `Abort` lifecycle hook failure policy is *not* supported for the `post` hook in this strategy; any `post` hook failure will be ignored.
 
 ===== Custom strategy
 
 The Custom `strategy` allows users of OpenShift to provide their own deployment behavior. 
 
+[source,json]
 ----
 {
   "type": "Custom",
@@ -144,6 +160,84 @@ Additionally, the following environment variables are provided by OpenShift to t
 
 The replica count of the new `deployment` will be 0 initially. The responsibility of the `strategy` is to make the new `deployment` live using whatever logic best serves the needs of the user.
 
+== Lifecycle Hooks
+
+Deployment strategies may support lifecycle hooks, which allow the user to inject behavior into the deployment process at predefined points within the strategy. Consider this partially defined hook.
+
+[source,json]
+----
+{
+  "failurePolicy": "Abort",
+  "execNewPod": {} <1>
+}
+----
+<2> `execNewPod` is the type of this lifecycle hook, and is link:#pod-based-lifecycle-hook[documented separately].
+
+Every hook has a `failurePolicy` which defines the action the strategy should take when a hook failure is encountered. Possible values are:
+
+* `Abort` - the deployment should be considered a failure if the hook fails.
+* `Retry` - the hook execution should be retried until it succeeds.
+* `Ignore` - any hook failure should be ignored and deployment should proceeed.
+
+WARNING: Some hook points for a strategy might support only a subset of `failurePolicy` values. For example, the `Recreate` strategy does not currently support the `Abort` policy for its "post" deployment lifecycle hook point. Check the documentation for a given strategy to learn more about its support for lifecycle hooks.
+
+Hooks have a type specific field which describes how to execute the hook. Currently `execNewPod` is the only supported type.
+
+===== Pod-based lifecycle hook
+
+The `execNewPod` hook type executes lifecycle hook code in a new pod derived from the pod template in a `deploymentConfig`. Consider this simplified example `deploymentConfig` which uses the link:#recreate-strategy[Recreate strategy].
+
+[source,json]
+----
+{
+  "kind": "DeploymentConfig",
+  "template": {
+    "strategy": {
+      "type": "Recreate",
+      "recreateParams": {
+        "pre": {
+          "failurePolicy": "Abort",
+          "execNewPod": {
+            "containerName": "helloworld", <1>
+            "command": [ <2>
+              "/usr/bin/command", "arg1", "arg2"
+            ],
+            "env": [ <3>
+              {
+                "name": "CUSTOM_VAR1",
+                "value": "custom_value1"
+              }
+            ]
+          }
+        }
+      }
+    },
+    "controllerTemplate": {
+      "replicas": 1,
+      "podTemplate": {
+        "desiredState": {
+          "manifest": {
+            "version": "v1beta1",
+            "containers": [
+              {
+                "name": "helloworld",
+                "image": "openshift/origin-ruby-sample"
+              }
+            ]
+          }
+        }
+      }
+    }
+  }
+}
+----
+<1> `containerName` corresponds to `podTemplate.containers[0].name`.
+<2> `command` overrides any `ENTRYPOINT` defined in the image used by `containerName`.
+<3> `env` is an *optional* set of environment variables for the hook container.
+
+
+In this example, the `pre` hook will be executed in a new pod using the `openshift/origin-ruby-sample` image from the `helloworld` container. The hook command will be `/usr/bin/command arg1 arg2`, and the hook pod will have `CUSTOM_VAR1=custom_value1` in its environment. Because the `failurePolicy` is `Abort`, if the hook fails, the deployment will fail (as supported by the Recreate strategy).
+
 == Triggers
 
 A `deploymentConfig` contains `triggers` which drive the creation of new deployments in response to events (both inside and outside OpenShift). The following trigger types are supported:
@@ -152,6 +246,7 @@ A `deploymentConfig` contains `triggers` which drive the creation of new deploym
 
 The ImageChange `trigger` will result in a new deployment whenever the value of a Docker `imageRepository` tag value changes. Consider an example trigger.
 
+[source,json]
 ----
 {
   "type": "ImageChange",
@@ -173,6 +268,7 @@ In this example, when the `latest` tag value for the `imageRepository` named `op
 
 The ConfigChange `trigger` will result in a new deployment whenever changes are detected to the `template` of the `deploymentConfig`. Suppose the REST API is used to modify an environment variable in a container within the `template`.
 
+[source,json]
 ----
 {
   "type": "ConfigChange"
