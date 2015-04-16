@@ -621,7 +621,7 @@ module DocSiteBuilder
     # to read the full article title out of the file itself.
     file_lines    = topic_adoc.split("\n")
     article_title = topic['Name']
-    if file_lines.length < 0
+    if file_lines.length > 0
       article_title  = file_lines[0].gsub(/^\=\s+/, '').gsub(/\s+$/, '').gsub(/\{product-title\}/, distro_config["name"]).gsub(/\{product-version\}/, branch_config["name"])
     end
 
