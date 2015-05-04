@@ -233,7 +233,7 @@ module DocSiteBuilder
       return false if not distros_string.is_a?(String)
       values = parse_distros(distros_string, true)
       values.each do |v|
-        return false if not v == 'all' or not distro_map.keys.include?(v)
+        return false if not v == 'all' and not distro_map.keys.include?(v)
       end
       return true
     end
