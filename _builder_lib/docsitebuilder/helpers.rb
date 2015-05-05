@@ -74,15 +74,18 @@ module DocSiteBuilder
       @stash_needed = `git status --porcelain` !~ /^\s*$/
       if @stash_needed
         puts "\nNOTICE: Stashing uncommited changes and files in working branch."
-        `git stash -a`
+        `git stash -u`
       end
     end
 
     def git_apply_and_drop
       return unless @stash_needed
-      puts "\nNOTICE: Re-applying uncommitted changes and files to working branch."
-      `git stash apply`
-      `git stash drop`
+      puts "\nNOTE: Re-applying uncommitted changes and files to working branch."
+      if system("git stash pop")
+        puts "NOTE: Stash application successful."
+      else
+        puts "ERROR: Could not apply stashed code. Run `git stash apply` manually."
+      end
       @stash_needed = false
     end
 
