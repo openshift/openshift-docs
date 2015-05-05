@@ -388,12 +388,12 @@ module DocSiteBuilder
     end
 
     def generate_docs(build_distro,single_page=nil)
-      single_page_dir = nil
+      single_page_dir  = []
       single_page_file = nil
       if not single_page.nil?
-        single_page_dir = single_page.split(':')[0]
+        single_page_dir  = single_page.split(':')[0].split('/')
         single_page_file = single_page.split(':')[1]
-        puts "Rebuilding '#{single_page_dir}/#{single_page_file}' on branch '#{working_branch}'."
+        puts "Rebuilding '#{single_page_dir.join('/')}/#{single_page_file}' on branch '#{working_branch}'."
       end
 
       if not build_distro == ''
@@ -433,6 +433,8 @@ module DocSiteBuilder
           end
         end
 
+        first_branch = single_page.nil?
+
         if local_branch =~ /^\(detached from .*\)/
           local_branch = 'detached'
         end
@@ -444,13 +446,9 @@ module DocSiteBuilder
         branch_build_config = build_config
         remove_found_config_files(local_branch,branch_build_config,branch_orphan_files)
 
-        if branch_orphan_files.length > 0
+        if branch_orphan_files.length > 0 and single_page.nil?
           puts "\nWARNING: Branch '#{local_branch}' includes the following .adoc files that are not referenced in the _build_cfg.yml file:\n" + branch_orphan_files.map{ |file| "- #{file}" }.join("\n")
         end
-
-        # Every file included in the build_config can be eliminated
-        # from the orphan list.
-        # branch_orphan_files =
 
         # Run all distros.
         distro_map.each do |distro,distro_config|
@@ -460,8 +458,6 @@ module DocSiteBuilder
           end
 
           site_name = distro_config["site_name"]
-
-          first_branch = single_page.nil?
 
           branch_config = { "name" => "Branch Build", "dir" => local_branch }
           dev_branch    = true
@@ -497,7 +493,7 @@ module DocSiteBuilder
           branch_build_config.each do |topic_group|
             next if not topic_group['Distros'].include?(distro)
             next if topic_group['Topics'].select{ |t| t['Distros'].include?(distro) }.length == 0
-            next if not single_page.nil? and not single_page_dir == topic_group['Dir']
+            next if not single_page.nil? and not single_page_dir[0] == topic_group['Dir']
             topic_group['Topics'].each do |topic|
               src_group_path = File.join(source_dir,topic_group['Dir'])
               tgt_group_path = File.join(branch_path,topic_group['Dir'])
@@ -521,11 +517,8 @@ module DocSiteBuilder
                   :single_page    => single_page,
                   :site_name      => site_name,
                 })
-                if not single_page.nil?
-                  return
-                end
               elsif topic.has_key?('Dir')
-                next if not single_page.nil? and not single_page_dir == topic_group['Dir'] + '/' + topic['Dir']
+                next if not single_page.nil? and not single_page_dir.join('/') == topic_group['Dir'] + '/' + topic['Dir']
                 topic['Topics'].each do |subtopic|
                   next if not subtopic['Distros'].include?(distro)
                   next if not single_page.nil? and not subtopic['File'] == single_page_file
@@ -549,12 +542,13 @@ module DocSiteBuilder
                     :single_page    => single_page,
                     :site_name      => site_name,
                   })
-                  if not single_page.nil?
-                    return
-                  end
                 end
               end
             end
+          end
+
+          if not single_page.nil?
+            next
           end
 
           # Create a distro landing page
@@ -574,6 +568,10 @@ module DocSiteBuilder
             topic_html = Asciidoctor.render topic_adoc, :header_footer => true, :safe => :unsafe, :attributes => page_attrs
             File.write(File.join(preview_dir,distro,'index.html'),topic_html)
           end
+        end
+
+        if not single_page.nil?
+          return
         end
 
         if local_branch == working_branch
