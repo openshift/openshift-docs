@@ -216,7 +216,11 @@ oauthConfig:
 Set `*RequestHeaderIdentityProvider*` in the `*identityProviders*` stanza to
 identify users from request header values, such as `X-Remote-User`. It is
 typically used in combination with an authenticating proxy, which sets the
-request header value.
+request header value.  This is similar to how
+link:https://access.redhat.com/documentation/en-US/OpenShift_Enterprise/2/html/Deployment_Guide/Configuring_OpenShift_Enterprise_Authentication.html[the
+remote user plugin] allowed admins to provider Kerberos, LDAP and many other
+forms of Enterprise authentication.
+
 
 .Master Configuration Using `*RequestHeaderIdentityProvider*`
 ====
@@ -241,6 +245,229 @@ oauthConfig:
 <3> `*RequestHeaderIdentityProvider*` cannot be used to back a login page.
 <4> Optional: PEM-encoded certificate bundle. If set, a valid client certificate must be presented and validated against the certificate authorities in the specified file before the request headers are checked for user names.
 <5> Header names to check, in order, for user names. The first header containing a value is used as the user name. Required, case-insensitive.
+====
+
+.Apache authentication Using `*RequestHeaderIdentityProvider*`
+====
+
+This example configures an authentication proxy on the same host as the Master.
+Apache is not strictly required and this can serve as a reference configuration
+for other proxies.  Having the proxy and Master on the same host is merely a
+convenience and may not be suitable for your environment.  For example, if you
+were already running the router on the Master then port 443 would not be
+available.
+
+----
+yum install -y httpd mod_ssl<1>
+
+osadm create-signer-cert --cert='/etc/openshift/master/proxyca.crt' \ <2>
+                         --key='/etc/openshift/master/proxyca.key' \
+                         --name='openshift-proxy-signer@1432232228' \
+                         --serial='/etc/openshift/master/proxyca.serial.txt'
+
+osadm create-api-client-config --certificate-authority='/etc/openshift/master/proxyca.crt' \
+                               --client-dir='/etc/openshift/master/proxy' \
+                               --signer-cert='/etc/openshift/master/proxyca.crt' \
+                               --signer-key='/etc/openshift/master/proxyca.key' \
+                               --signer-serial='/etc/openshift/master/proxyca.serial.txt' \
+                               --user='system:proxy'<4>
+
+pushd /etc/openshift/master
+  cp master.server.crt /etc/pki/tls/certs/localhost.crt<5>
+  cp master.server.key /etc/pki/tls/private/localhost.key
+  cp ca.crt /etc/pki/CA/certs/ca.crt
+  cat proxy/system\:proxy.crt \
+      proxy/system\:proxy.key > \
+      /etc/pki/tls/certs/proxy.pem
+popd
+----
+
+<1> Install the prerequisites.
+<2> Generate a CA for validating requests that submit the trusted header.  This
+CA should be used as the filename for `clientCA` in the <<requestheader-master-ca-config,Master's identity
+provider configuration>>.
+<3> Generate a client certificate for the proxy.  This can be done using any x509 certificate tooling.  For
+convenience the `osadm` tool can be used.
+<4> The user name can be anything however it's useful to give it a descriptive
+name since it will appear in logs.
+<5> When running the authentication proxy on a different hostname than
+the Master it is important to generate a certificate that matches the hostname
+instead of using the default Master certificate as shown above.  The value for
+`masterPublicURL` in `/etc/openshift/master/master-config.yaml` must be
+included in the `X509v3 Subject Alternative Name` in the certificate that that
+is specified for `SSLCertificateFile`.  If a new certificate needs
+to be created `osadm create-server-cert` can be used.
+
+*Apache Configuration*
+
+Unlike OpenShift Enterprise version 2 this proxy does not need to reside on the
+same host as the Master.  It uses a client certificate to connect to the Master
+which is configured to trust the `X-Remote-User` header.
+
+----
+# Nothing needs to be served over HTTP.  This virtual host simply redirects to
+# HTTPS.
+<VirtualHost *:80>
+  DocumentRoot /var/www/html
+  RewriteEngine              On
+  RewriteRule     ^(.*)$     https://%{HTTP_HOST}$1 [R,L]
+</VirtualHost>
+
+<VirtualHost *:443>
+  ServerName ose3-master.example.com
+  DocumentRoot /var/www/html
+  SSLEngine on
+  SSLCertificateFile /etc/pki/tls/certs/localhost.crt
+  SSLCertificateKeyFile /etc/pki/tls/private/localhost.key
+  SSLCACertificateFile /etc/pki/CA/certs/ca.crt
+
+  SSLProxyEngine on
+  SSLProxyCACertificateFile /etc/pki/CA/certs/ca.crt
+  SSLProxyMachineCertificateFile /etc/pki/tls/certs/authproxy.pem
+
+  # Needed for efficient log watching
+  SetEnv proxy-sendchunked 1
+
+  # The value here will be important to tune for your performance needs.  At
+  # some point Apache has to clean up stale connections.  The proxy is unable
+  # to differenciate stale connections with say 'osc log -f' on a pod that
+  # simply isn't outputing anything.  There are likely many other ProxyPass
+  # settings that will need to be adjusted for Production workloads.
+  ProxyTimeout 60
+
+  # Insert your backend server name/ip here.
+  ProxyPass / https://ose3-master.example.com:8443/
+  ProxyPassReverse / https://ose3-master.example.com:8443/
+
+  # Requests should be able to access /oauth/token/request and
+  # /oauth/token/display without authentication.  In the case of
+  # /outh/token/display OpenShift will check one of the
+  # ORIGIN_AUTH_REQUEST_HANDLERS to see if the request is authenticated.
+  # Technically it would require authentication for /oauth/token/display simply
+  # by modifying these two ProxyMatch stanzas.
+  <ProxyMatch /oauth/token/.*>
+    Allow from all
+  </ProxyMatch>
+
+  # /oauth/authorize and /oauth/approve should be protected by Apache.
+  <ProxyMatch /oauth/a.*>
+    AuthUserFile /etc/openshift/htpasswd
+    AuthType basic
+
+    # For ldap:
+    # AuthBasicProvider ldap
+    # AuthLDAPURL "ldap://ldap.example.com:389/ou=People,dc=my-domain,dc=com?uid?sub?(objectClass=*)"
+
+    # For Kerberos remove "AuthType basic" and insert the following:
+    # AuthType Kerberos
+    # KrbMethodNegotiate on
+    # KrbMethodK5Passwd off
+    # KrbServiceName Any
+    # KrbAuthRealms EXAMPLE.COM
+    # Krb5Keytab /path/to/keytab
+    # KrbSaveCredentials off
+
+    AuthName openshift
+    Require valid-user
+    RequestHeader set X-Remote-User %{REMOTE_USER}s
+  </ProxyMatch>
+
+  # All other requests should use Bearer tokens.  These can only be verified by
+  # OpenShift so we need to let these requests pass through.
+  <Proxy *>
+    SetEnvIfNoCase Authorization Bearer passthrough
+    Allow from env=passthrough
+
+    Order Deny,Allow
+    Deny from all
+    Satisfy any
+  </Proxy>
+</VirtualHost>
+
+RequestHeader unset X-Remote-User
+----
+
+At this point you can create the users in the system Apache is using to store
+accounts information.  In this example file backed authentication is used:
+
+----
+yum -y install httpd-tools
+touch /etc/openshift/htpasswd
+htpasswd -c /etc/openshift/htpasswd <user name>
+----
+
+
+*Master Configuration*
+
+In `/etc/openshift/master/master-config.yaml` all instances of
+`masterPublicURL` and `assetPublicURL` need to match the hostname and port for
+the Apache VirtualHost.
+
+----
+    masterPublicURL: https://ose3-master.example.com:443
+    assetPublicURL: https://ose3-master.example.com:443/console/
+    publicURL: https://ose3-master.example.com:443/console/
+----
+
+[[requestheader-master-ca-config]]The identityProvider in `/etc/openshift/master/master-config.yaml` section
+needs to be updated as well.
+
+----
+  identityProviders:
+  - name: requestheader
+    challenge: false
+    login: false
+    provider:
+      apiVersion: v1
+      kind: RequestHeaderIdentityProvider
+      clientCA: /etc/openshift/master/ca.crt
+      headers:
+      - X-Remote-User
+----
+
+Now restart everything:
+
+----
+systemctl restart httpd
+systemctl restart openshift-master
+----
+
+*Verification*
+
+Test by bypassing the proxy.  You should be able to request a token if you supply the correct client certificate and header.
+----
+curl -L -k -H "X-Remote-User: joe" --cert /etc/pki/tls/certs/authproxy.pem https://ose3-master.example.com:8443/oauth/token/request
+----
+
+If you don't supply the client certificate the request should be denied.
+----
+curl -L -k -H "X-Remote-User: joe" https://ose3-master.example.com:8443/oauth/token/request
+----
+
+*Handling Logouts from the Console*
+
+The Console manages it's own sessions.  When a user authenticates to Apache in
+this case there is another session at play.  By default if the user clicks the
+logout link from the Console the console it will only clear out the session
+cookie and delete the token.  However, Apache will still think the user is
+logged in and will immediately trigger another log in.
+
+To handle this case the Console's Asset Server has a setting that will allow
+admins to specify a logout URL.
+
+----
+assetConfig:
+  logoutURL: "https://ose3-master.example.com/logout"
+----
+
+This page could be another `<Location>` in Apache that loads a static page for
+clearing the form of authentication that is in use.  This is especially useful
+when using `mod_auth_form` in Apache 2.4.  Basic Authentication logouts can be
+challenging to support across all browsers so it may simply be useful to
+redirect to a page instructing the user to clear their authentication cache or
+perhaps run `kdestroy` in the case of Kerberos.
+
+
 ====
 
 === GitHub [[GitHub]]
