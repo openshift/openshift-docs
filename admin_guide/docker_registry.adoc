@@ -9,6 +9,7 @@
 
 toc::[]
 
+[[deploy-registry]]
 == Deploying the Registry
 
 To deploy the integrated OpenShift
@@ -17,7 +18,7 @@ Registry], run the `osadm registry` command as a user with cluster
 administrator privileges:
 
 ----
-osadm registry --config=admin.kubeconfig --credentials=openshift-registry.kubeconfig
+$ osadm registry --config=admin.kubeconfig --credentials=openshift-registry.kubeconfig
 ----
 
 where the value passed to `--config` is the path to the kubeconfig file for the
@@ -95,6 +96,109 @@ $ osc exec -p docker-registry-1-da73t find /registry
 <7> This directory contains any layers that are currently being uploaded and staged for the given repository
 <8> This directory contains links to all the layers this repository references
 <9> This file contains a reference to a specific layer that has been linked into this repository via an image
+
+== Securing the Registry
+
+=== Overview
+
+You can optionally secure the registry to serve traffic via TLS.
+
+=== Procedure
+
+. Deploy the registry. See <<deploy-registry>> for more information.
++
+. Fetch service IP and port of the registry.
++
+[options="nowrap"]
+----
+$ osc get se docker-registry
+NAME              LABELS                                    SELECTOR                  IP(S)            PORT(S)
+docker-registry   docker-registry=default                   docker-registry=default   172.30.124.220   5000/TCP
+----
++
+. Create server certificates for the registry service IP and docker-registry.default.svc.cluster.local
++
+[options="nowrap"]
+----
+$ osadm create-server-cert --signer-cert=ca.crt --signer-key=ca.key --signer-serial=ca.serial.txt --hostnames='docker-registry.default.svc.cluster.local,172.30.124.220' --cert=registry.crt --key=registry.key
+----
++
+. Bundle and create secret for registry certificates
++
+[options="nowrap"]
+----
+$ openshift ex bundle-secret registry-secret registry.crt registry.key > secret.json
+$ osc create -f secret.json
+----
++
+. Add secret volume to the registry deployment configuration.
++
+[options="nowrap"]
+----
+$ osc edit dc docker-registry
+...
+volumes:
+  ...
+  - name: secret-volume
+    secret:
+      secretName: registry-secret
+...
+volumeMounts:
+  ...
+  - name: secret-volume
+    mountPath: /etc/secrets/
+    readOnly: true
+----
++
+. Enable TLS by adding these environment variables to the registry deployment configuration:
+  More details: https://github.com/docker/distribution/blob/master/docs/configuration.md#override-configuration-options[Overriding registry options]
++
+[options="nowrap"]
+----
+$ osc env dc/docker-registry REGISTRY_HTTP_TLS_CERTIFICATE=/etc/secrets/registry.crt REGISTRY_HTTP_TLS_KEY=/etc/secrets/registry.key
+----
++
+. Validate registry is running in TLS mode.
+  Wait until docker-registry pod status changes to `Running` and verify the docker logs for the registry container. You should find this entry `listening on :5000, tls`.
++
+[options="nowrap"]
+----
+$ osc get pods
+POD                       IP           CONTAINER(S)   IMAGE(S)                                  HOST                           LABELS                                                                                  STATUS    CREATED    MESSAGE
+docker-registry-1-da73t   172.17.0.1                                                            openshiftdev.local/127.0.0.1   deployment=docker-registry-4,deploymentconfig=docker-registry,docker-registry=default   Running   38 hours
+
+$ osc log docker-registry-1-da73t | grep tls
+time="2015-05-27T05:05:53Z" level=info msg="listening on :5000, tls" instance.id=deeba528-c478-41f5-b751-dc48e4935fc2
+----
++
+. Copy CA certificate to the docker certs dir. This must be done on all nodes in the cluster.
++
+----
+$ sudo mkdir -p /etc/docker/certs.d/172.30.124.220:5000
+$ sudo cp ca.crt /etc/docker/certs.d/172.30.124.220:5000
+
+$ sudo mkdir -p /etc/docker/certs.d/docker-registry.default.svc.cluster.local:5000
+$ sudo cp ca.crt /etc/docker/certs.d/docker-registry.default.svc.cluster.local:5000
+----
++
+. Remove `--insecure-registry` option from docker unit file (*/etc/sysconfig/docker*). Only for this particular registry.
+  Reload daemon and restart docker service to reflect this config change.
++
+----
+$ sudo systemctl daemon-reload
+$ sudo systemctl restart docker
+----
++
+. Validate docker client connection. docker push to registry or docker pull from registry should succeed.
++
+----
+$ docker pull busybox
+$ docker tag docker.io/busybox 172.30.124.220:5000/openshift/busybox
+$ docker push 172.30.124.220:5000/openshift/busybox
+...
+cf2616975b4a: Image successfully pushed
+Digest: sha256:3662dd821983bc4326bee12caec61367e7fb6f6a3ee547cbaff98f77403cab55
+----
 
 == Pruning
 
