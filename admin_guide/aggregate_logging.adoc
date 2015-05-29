@@ -1,0 +1,169 @@
+= Aggregate Container Logging
+{product-author}
+{product-version}
+:data-uri:
+:icons:
+:experimental:
+:toc: macro
+:toc-title:
+
+toc::[]
+
+== Overview
+As an OpenShift administrator, you may wish to view the logs from all containers in one user interface.
+The provided solution uses fluentd to forward the container logs to a centralized location.
+Automation can be found at https://github.com/openshift/openshift-ansible
+
+IMPORTANT: This solution is a work in progress.  As packaging improvements are made these instructions will be simplified.
+
+== Installing fluentd (td-agent) on the _nodes_
+
+[shell,sh]
+****
+  # export RPM=td-agent-2.2.0-0.x86_64.rpm
+  # curl http://packages.treasuredata.com/2/redhat/7/x86_64/$RPM -o /tmp/$RPM
+  # yum localinstall $RPM
+  # /opt/td-agent/embedded/bin/gem install fluent-plugin-kubernetes
+  # mkdir -p /etc/td-agent/config.d
+  # chown td-agent:td-agent /etc/td-agent/config.d
+****
+
+=== Configuring fluentd to read container logs
+
+Create the file `/etc/sysconfig/td-agent` with the following contents:
+
+[source,sh]
+****
+  DAEMON_ARGS=
+  TD_AGENT_ARGS="/usr/sbin/td-agent --log /var/log/td-agent/td-agent.log --use-v1-config"
+****
+
+This is required to allow `td-agent` access to the containers logs.
+
+Add the following line to the `/etc/td-agent/td-agent.conf` file:
+
+[source]
+****
+  @include config.d/*.conf
+****
+
+Create the file `/etc/td-agent/config.d/kubernetes.conf` with the following contents:
+
+[source,xml]
+****
+    <source>
+      type tail
+      path /var/lib/docker/containers/*/*-json.log
+      pos_file /var/log/td-agent/tmp/fluentd-docker.pos
+      time_format %Y-%m-%dT%H:%M:%S
+      tag docker.*
+      format json
+      read_from_head true
+    </source>
+
+    <match docker.var.lib.docker.containers.*.*.log>
+      type kubernetes
+      container_id ${tag_parts[5]}
+      tag docker.${name}
+    </match>
+
+    <match kubernetes>
+      type copy
+      <store>
+        type forward
+        send_timeout 60s
+        recover_wait 10s
+        heartbeat_interval 1s
+        phi_threshold 16
+        hard_timeout 60s
+        log_level trace
+        require_ack_response true
+        heartbeat_type tcp
+        <server>
+          name logging_name       <!--1-->
+          host host_name          <!--2-->
+          port 24224
+          weight 60
+        </server>
+
+        <secondary>
+          type file
+          path /var/log/td-agent/forward-failed
+        </secondary>
+      </store>
+
+      <store>
+        type file
+        path /var/log/td-agent/containers.log
+        time_slice_format %Y%m%d
+        time_slice_wait 10m
+        time_format %Y%m%dT%H%M%S%z
+        compress gzip
+        utc
+      </store>
+    </match>
+****
+
+<1> The name for the master that will be used during logging
+<2> The IP or a DNS resolvable name used to access the master
+
+=== Enable fluentd
+
+[shell,sh]
+****
+    # systemctl enable td-agent
+    # systemctl start td-agent
+****
+
+TIP: Any errors will be logged in `/var/log/td-agent/td-agent.log.
+
+=== Optional Method to verify working _nodes_
+
+====  Installing fluentd (td-agent) on the _master_
+
+[shell,sh]
+****
+    # export RPM=td-agent-2.2.0-0.x86_64.rpm
+    # curl http://packages.treasuredata.com/2/redhat/7/x86_64/$RPM -o /tmp/$RPM
+    # yum localinstall $RPM
+    # mkdir -p /etc/td-agent/config.d
+    # chown td-agent:td-agent /etc/td-agent/config.d
+****
+
+You will need to ensure port 24224 is open on the master's firewall to allow the nodes access.
+
+====  Configuring fluentd to aggregate container logs
+
+Add the following line to the `/etc/td-agent/td-agent.conf` file:
+
+[source]
+****
+  @include config.d/*.conf
+****
+
+Create the file `/etc/td-agent/config.d/kubernetes.conf` with the following contents:
+
+[source,html]
+****
+    <match kubernetes.**>
+        type file
+        path /var/log/td-agent/containers.log
+        time_slice_format %Y%m%d
+        time_slice_wait 10m
+        time_format %Y%m%dT%H%M%S%z
+        compress gzip
+        utc
+    </match>
+****
+
+==== Enable fluentd
+
+[shell,sh]
+****
+    # systemctl enable td-agent
+    # systemctl start td-agent
+****
+
+TIP: Any errors will be logged in `/var/log/td-agent/td-agent.log.
+
+You should now find all the containers' logs available on the master in `/var/log/td-agent/containers.log*`
