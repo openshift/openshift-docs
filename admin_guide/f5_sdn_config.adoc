@@ -1,0 +1,84 @@
+=== Routing from edge load-balancer to the pods within OpenShift SDN
+
+An edge load-balancer accepts traffic from outside network and proxies them to pods inside the cluster. The trouble with pods inside an OpenShift cluster is that they assume all pods are reachable via their published IP addresses. In case the load balancer is *not* part of the cluster network, the routing becomes a hurdle as the internal network is not accessible to the edge load balancer.
+
+To solve this issue where the OpenShift cluster is using openshift-sdn as the cluster networking solution, there are two ways to achieve network access to the pods.
+
+===== Include the Load Balancer as part of the SDN
+When possible run an instance of openshift-node that uses openshift-sdn as the networking plugin on the load balancer machine. This way the edge machine gets its own OpenVSwitch bridge that learns about the pods and nodes that reside in the cluster. The 'routing table' is automatically configured by openshift-sdn and thus, the routing software is able to reach the pods.
+
+Remember to disable the load-balancer machine as one of the schedulable nodes so that no pods end up on the load balancer machine.
+If the load balancer comes packaged as a docker container, even better as one can run it as a pod with host port exposed. The pre-packaged haproxy router in OpenShift runs in precisely this fashion.
+
+===== Establish an encapsulation tunnel between the LB and a ramp-node
+Take the case of F5 running on a public cloud. The instance cannot be included as part of OpenShift SDN because it runs a custom/incompatible kernel. In this case we can choose an existing node within the cluster as our ramp-node and establish a tunnel between the LB instance and the chosen ramp-node.
+
+The ramp-node, thus assumes the role of gateway to the SDN. Here is an example where we establish an ipip tunnel between a chosen ramp-node and the F5 load balancer.
+
+On the F5 instance:
+----
+export RAMP_IP=10.3.89.89     # IP of the ramp-node
+export TUNNEL_IP1=10.3.91.216 # a random non-conflicting virtual IP for one end of the tunnel
+export CLUSTER_NETWORK=10.1.0.0/16  # the overlay network CIDR that all pods belong to
+
+ip tunnel del tun1 || true  # delete if it already exists for re-entrancy
+ip tunnel add tun1 mode ipip remote $RAMP_IP dev eth0  # use eth0 as the outgoing interface
+ip addr add $TUNNEL_IP1 dev tun1
+ip link set tun1 up
+ip route add $CLUSTER_NETWORK dev tun1  # route for containers
+----
+
+On the ramp node:
+----
+export LB_IP=10.3.88.216      # reachable IP of the load balancer
+export TUNNEL_IP1=10.3.91.216 # the IP of the other end of the tunnel (chosen on the other LB side)
+export TUNNEL_IP2=10.3.91.217 # a second random IP for the other end of the tunnel
+
+# Create the ipip tunnel on the Ramp Node
+ip tunnel del tun1 || true
+ip tunnel add tun1 mode ipip remote $LB_IP dev eth0 # create the tunnel and use a suitable L2 connected interface (eth0)
+ip addr add $TUNNEL_IP2 dev tun1
+ip link set tun1 up
+ip route add $TUNNEL_IP1 dev tun1
+
+# SNAT the tunnel ip with an un-used ip of the local sdn subnet
+source /etc/openshift-sdn/config.env
+subaddr=$(echo $OPENSHIFT_SDN_TAP1_ADDR | cut -d "." -f 1,2,3)
+export RAMP_SDN_IP=${subaddr}.254
+
+# Assign this RAMP_SDN_IP as an additional address to tun0 (the local sdn's gateway)
+ip addr add ${RAMP_SDN_IP} dev tun0
+
+# Modify the OVS rules for SNAT
+ovs-ofctl -O OpenFlow13 add-flow br0 "cookie=0x999,ip,nw_src=${TUNNEL_IP1},actions=mod_nw_src:${RAMP_SDN_IP},resubmit(,0)"
+ovs-ofctl -O OpenFlow13 add-flow br0 "cookie=0x999,ip,nw_dst=${RAMP_SDN_IP},actions=mod_nw_dst:${TUNNEL_IP1},resubmit(,0)"
+----
+
+The openshift-master should, ideally, not schedule anything on the ramp-node. Do this by marking the ramp-node non-schedulable.
+----
+openshift admin manage-node <ramp-node-hostname> --schedulable=false
+----
+
+====== Highly available ramp-node
+Use openshift's ipfailover feature to make the ramp-node highly available from the load-balancer's point of view (uses keepalived internally). Bring up two nodes on the same L2 subnet and choose one RAMP_IP from within the subnet (e.g. ramp-node-1 IP: 10.20.30.2/24, ramp-node-2 IP: 10.20.30.3/24, then choose a virtual IP within 10.20.30.0/24 that is not taken by any other node).
+
+Mark both nodes with a specific label,
+----
+openshift kube label node ramp-node-1 f5rampnode=true
+openshift kube label node ramp-node-2 f5rampnode=true
+----
+
+Use the label and launch the ipfailover on both nodes:
+----
+RAMP_IP=10.20.30.4
+IFNAME=eth0 # interface where RAMP_IP should be configured
+
+openshift admin ipfailover <name-tag> \
+    --virtual-ips=$RAMP_IP \
+    --interface=$IFNAME \
+    --watch-port=0 \
+    --replicas=2 \
+    --selector='f5rampnode=true'
+----
+
+With the above setup, RAMP_IP will get dynamically re-assigned to one of the ramp-nodes when the primary one fails.
