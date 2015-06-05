@@ -7,16 +7,24 @@
 :toc: macro
 :toc-title:
 
-toc::[]
-
-== Overview
 As an OpenShift administrator, you may wish to view the logs from all containers
-in one user interface. The provided solution uses fluentd to forward the
-container logs to a centralized location. Automation can be found at
-https://github.com/openshift/openshift-ansible.
+in one user interface. There are two options for aggregating logs, depending on
+user requirements:
 
-IMPORTANT: This solution is a work in progress. As packaging improvements are
+. <<Using a Centralized Filesystem>>
+. <<Using Elasticsearch>>
+
+IMPORTANT: These solutions are a work in progress. As packaging improvements are
 made these instructions will be simplified.
+
+---
+
+= Using a Centralized Filesystem
+
+This option will read all container logs & forward them to a central server
+for storage on the filesystem. This solution requires less resources &
+require less management than the <<Using Elasticsearch,Elasticsearch>> option, but
+the logs will not be indexed & searchable.
 
 == Installing fluentd (td-agent) on Nodes
 
@@ -172,3 +180,261 @@ TIP: Any errors will be logged in the *_/var/log/td-agent/td-agent.log_* file.
 
 You should now find all the containers' logs available on the master in the
 *_/var/log/td-agent/containers.log_* file.
+
+---
+
+= Using Elasticsearch
+
+https://www.elastic.co/products/elasticsearch[Elasticsearch] is an open source
+distributed document database that indexes documents & provides full-text
+search capabilities. By storing container logs in Elasticsearch, users will be
+able to search all content & filter appropriately. This documentation shows how
+to run https://www.elastic.co/products/kibana[Kibana].
+
+This option requires more configuration & more resources than the
+<<Using a Centralized Filesystem,centralised filesystem>> option, but makes logs more useful
+for troubleshooting & fault finding.
+
+Enabling aggregated logging to Elasticsearch involves:
+
+. <<Creating an Elasticsearch cluster>>
+. <<Creating logging pods>>
+. <<Creating Kibana service>>
+
+== Creating an Elasticsearch cluster
+
+Logs are stored in an Elasticsearch cluster running on OpenShift. This cluster
+is scalable via a replication controller so you can scale the Elasticsearch
+cluster up & down as required.
+
+The following is the manifest for the Elasticsearch cluster:
+
+[source,yaml]
+----
+apiVersion: "v1"
+kind: "List"
+items:
+-
+  apiVersion: "v1"
+  kind: "Service"
+  metadata:
+    labels:
+      provider: "fabric8"
+      component: "elasticsearch"
+    name: "es-logging"
+  spec:
+    ports:
+    -
+      port: 9200
+      targetPort: 9200
+    selector:
+      provider: "fabric8"
+      component: "elasticsearch"
+-
+  apiVersion: "v1"
+  kind: "Service"
+  metadata:
+    labels:
+      provider: "fabric8"
+      component: "elasticsearch"
+    name: "es-logging-cluster"
+  spec:
+    portalIP: "None"
+    ports:
+    -
+      port: 9300
+      targetPort: 9300
+    selector:
+      provider: "fabric8"
+      component: "elasticsearch"
+-
+  apiVersion: "v1"
+  kind: "ReplicationController"
+  metadata:
+    labels:
+      provider: "fabric8"
+      component: "elasticsearch"
+    name: "elasticsearch"
+  spec:
+    replicas: 1
+    selector:
+      provider: "fabric8"
+      component: "elasticsearch"
+    template:
+      metadata:
+        labels:
+          provider: "fabric8"
+          component: "elasticsearch"
+      spec:
+        containers:
+          -
+            env:
+            -
+              name: "KUBERNETES_TRUST_CERT"
+              value: "true"
+            -
+              name: "SERVICE_DNS"
+              value: "es-logging-cluster"
+            image: "fabric8/elasticsearch-k8s:1.5.2"
+            name: "elasticsearch"
+            ports:
+            -
+              containerPort: 9200
+              name: "http"
+            -
+              containerPort: 9300
+              name: "transport"
+----
+
+Save this to a file & create with:
+
+```
+oc create -f path/to/elasticsearch.yaml
+```
+
+This will start a single Elasticsearch instance. If you need to create a larger
+cluster you can resize the Elasticsearch replication controller via:
+
+```
+oc resize --replicas=3 rc elasticsearch
+```
+
+## Creating logging pods
+
+In order to read the container logs, a static pod is deployed on each node.
+To do this you must first ensure that the node is configured to read local pod
+manifest config files. This is enabled by configuring the `podManifestConfig`
+in the `node-config.yaml` file, changing the config path & check interval
+appropriately:
+
+[source,yaml]
+----
+podManifestConfig:
+  path: openshift.local.manifests
+  fileCheckIntervalSeconds: 10
+----
+
+To create the logging pod, create a file with the following contents in the
+`podManifestConfig.path` directory:
+
+[source,yaml]
+----
+apiVersion: v1
+kind: Pod
+metadata:
+  name: fluentd-elasticsearch
+spec:
+  containers:
+  - name: fluentd-elasticsearch
+    image: fabric8/fluentd-kubernetes:1.0
+    privileged: true
+    resources:
+      limits:
+        cpu: 100m
+    volumeMounts:
+    - name: varlog
+      mountPath: /var/log
+    - name: varlibdockercontainers
+      mountPath: /var/lib/docker/containers
+      readOnly: true
+  volumes:
+  - name: varlog
+    hostPath:
+      path: /var/log
+  - name: varlibdockercontainers
+    hostPath:
+      path: /var/lib/docker/containers
+----
+
+This will start a pod on the node & post the container logs to Elasticsearch.
+
+## Validate
+
+To validate it is working, we will query Elasticsearch & check that the data is
+correctly being persisted. First, we need to identify one of the Elasticsearch
+pods:
+
+[source,bash]
+----
+oc get pods -l component=elasticsearch
+----
+
+And then we can query Elasticsearch, replacing the pod ID with one returned
+from the above call:
+
+[source,bash]
+----
+oc exec -p <podID> -c elasticsearch -- curl -s localhost:9200/_cat/indices?v
+----
+
+You should see output similar to the following:
+
+```
+health status index               pri rep docs.count docs.deleted store.size pri.store.size
+yellow open   logstash-2015.06.05   5   1        540            0      251kb          251kb
+```
+
+If the value for `docs.count` is more than 0, then log records are being sent
+to Elasticsearch & you're all set.
+
+== Creating Kibana service
+
+To create the Kibana service save the following spec to your filesystem:
+
+[souce,yaml]
+----
+apiVersion: "v1"
+kind: "List"
+items:
+-
+  apiVersion: "v1"
+  kind: "Service"
+  metadata:
+    name: "kibana"
+  spec:
+    ports:
+      -
+        port: 80
+        targetPort: "kibana-port"
+    selector:
+      provider: fabric8
+      component: "kibana"
+-
+  apiVersion: "v1"
+  kind: "ReplicationController"
+  metadata:
+    name: "kibana"
+    labels:
+      provider: fabric8
+      component: "kibana"
+  spec:
+    replicas: 1
+    selector:
+      component: "kibana"
+    template:
+      metadata:
+        name: "kibana"
+        labels:
+          provider: fabric8
+          component: "kibana"
+      spec:
+        containers:
+          -
+            name: "kibana"
+            image: "fabric8/kibana4:4.0.2"
+            ports:
+              -
+                name: "kibana-port"
+                containerPort: 5601
+            env:
+              -
+                name: "ELASTICSEARCH_URL"
+                value: "http://es-logging:9200"
+----
+
+And create the Kibana replication controller & service via:
+
+[source,bash]
+----
+oc create -f path/to/kibana.yaml
+----
