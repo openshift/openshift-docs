@@ -1,74 +1,84 @@
-=== Routing from edge load-balancer to the pods within OpenShift SDN
+=== Routing from Edge Load-Balancer to Pods within OpenShift SDN
 
-An edge load-balancer accepts traffic from outside network and proxies them to pods inside the cluster. The trouble with pods inside an OpenShift cluster is that they assume all pods are reachable via their published IP addresses. In case the load balancer is *not* part of the cluster network, the routing becomes a hurdle as the internal network is not accessible to the edge load balancer.
+An edge load-balancer accepts traffic from outside network and proxies them to pods inside the cluster. The problem with pods inside an OpenShift cluster is that pods are only reachable via their IP addresses on the cluster network. In cases where the load balancer is not part of the cluster network, routing becomes a hurdle as the internal cluster network is not accessible to the edge load-balancer.
 
-To solve this issue where the OpenShift cluster is using openshift-sdn as the cluster networking solution, there are two ways to achieve network access to the pods.
+To solve this problem where the OpenShift cluster is using openshift-sdn as the cluster networking solution, there are two ways to achieve network access to the pods.
 
-===== Include the Load Balancer as part of the SDN
-When possible run an instance of openshift-node that uses openshift-sdn as the networking plugin on the load balancer machine. This way the edge machine gets its own OpenVSwitch bridge that learns about the pods and nodes that reside in the cluster. The 'routing table' is automatically configured by openshift-sdn and thus, the routing software is able to reach the pods.
+===== Include the Load Balancer as Part of the SDN
+If possible, run an instance of openshift-node that uses openshift-sdn as the networking plugin on the load-balancer itself. This way, the edge machine gets its own OpenVSwitch bridge that openshift-sdn will automatically configure to provide access to the pods and nodes that reside in the cluster. The 'routing table' is dynamically configured by openshift-sdn as pods are created and deleted, and thus the routing software is able to reach the pods.
 
-Remember to disable the load-balancer machine as one of the schedulable nodes so that no pods end up on the load balancer machine.
-If the load balancer comes packaged as a docker container, even better as one can run it as a pod with host port exposed. The pre-packaged haproxy router in OpenShift runs in precisely this fashion.
-
-===== Establish an encapsulation tunnel between the LB and a ramp-node
-Take the case of F5 running on a public cloud. The instance cannot be included as part of OpenShift SDN because it runs a custom/incompatible kernel. In this case we can choose an existing node within the cluster as our ramp-node and establish a tunnel between the LB instance and the chosen ramp-node.
-
-The ramp-node, thus assumes the role of gateway to the SDN. Here is an example where we establish an ipip tunnel between a chosen ramp-node and the F5 load balancer.
-
-On the F5 instance:
+Remember to disable the load-balancer machine as one of the schedulable nodes so that no pods end up on the load balancer.  The following command will accomplish this configuration:
 ----
-export RAMP_IP=10.3.89.89     # IP of the ramp-node
-export TUNNEL_IP1=10.3.91.216 # a random non-conflicting virtual IP for one end of the tunnel
-export CLUSTER_NETWORK=10.1.0.0/16  # the overlay network CIDR that all pods belong to
+openshift admin manage-node <load-balancer-hostname> --schedulable=false
+----
+If the load balancer comes packaged as a Docker container, then it will be even easier to integrate with OpenShift: Simply run the load-balancer as a pod with the host port exposed. The pre-packaged haproxy router in OpenShift runs in precisely this fashion.
 
-ip tunnel del tun1 || true  # delete if it already exists for re-entrancy
-ip tunnel add tun1 mode ipip remote $RAMP_IP dev eth0  # use eth0 as the outgoing interface
-ip addr add $TUNNEL_IP1 dev tun1
-ip link set tun1 up
-ip route add $CLUSTER_NETWORK dev tun1  # route for containers
+===== Establish a Tunnel between the LB and a Ramp-Node
+In some cases, the previous solution is not possible.  Take the example of F5 BIG-IP. An F5 BIG-IP host cannot run openshift-node or openshift-sdn because F5 uses a custom, incompatible Linux kernel and distribution. Instead, to enable F5 BIG-IP to reach pods, we can choose an existing node within the cluster network as a 'ramp-node' and establish a tunnel between the F5 BIG-IP host and the designated ramp-node.  The ramp-node thus assumes the role of a gateway of sorts to the cluster network.
+
+Following is an example of establishing an *ipip* tunnel between an F5 BIG-IP host and a designated ramp node.  In the following, the `F5_IP` and `RAMP_IP` variables refer to the F5 BIG-IP host's and the ramp node's addresses, respectively, on a shared, internal network; `TUNNEL_IP1` refers to an arbitrary, non-conflicting IP address for the F5 host's end of the ipip tunnel; `TUNNEL_IP2` refers a second, arbitrary IP address for the ramp node's end of the ipip tunnel; and `CLUSTER_NETWORK` refers to the overlay network CIDR that the OpenShift SDN uses to assign addresses to pods.
+
+On the F5 BIG-IP host, run the following commands:
+----
+F5_IP=10.3.89.66
+RAMP_IP=10.3.89.89
+TUNNEL_IP1=10.3.91.216
+CLUSTER_NETWORK=10.1.0.0/16
+
+# Clean up any old route, self, and tunnel.
+tmsh delete net route 10.1.0.0/16 || true
+tmsh delete net self SDN || true
+tmsh delete net tunnels tunnel SDN || true
+
+tmsh create net tunnels tunnel SDN \{ description "OpenShift SDN" local-address $F5_IP profile ipip remote-address $RAMP_IP \}
+tmsh create net self SDN \{ address ${TUNNEL_IP1}/24 allow-service all vlan SDN \}
+tmsh create net route $CLUSTER_NETWORK interface SDN
 ----
 
-On the ramp node:
+On the ramp node, run the following commands:
 ----
-export LB_IP=10.3.88.216      # reachable IP of the load balancer
-export TUNNEL_IP1=10.3.91.216 # the IP of the other end of the tunnel (chosen on the other LB side)
-export TUNNEL_IP2=10.3.91.217 # a second random IP for the other end of the tunnel
+F5_IP=10.3.89.66
+TUNNEL_IP1=10.3.91.216
+TUNNEL_IP2=10.3.91.217
 
-# Create the ipip tunnel on the Ramp Node
+# Clean up any old tunnel.
 ip tunnel del tun1 || true
-ip tunnel add tun1 mode ipip remote $LB_IP dev eth0 # create the tunnel and use a suitable L2 connected interface (eth0)
+
+# Create the ipip tunnel on the ramp node,
+# using a suitable L2 connected interface (eth0).
+ip tunnel add tun1 mode ipip remote $F5_IP dev eth0
 ip addr add $TUNNEL_IP2 dev tun1
 ip link set tun1 up
 ip route add $TUNNEL_IP1 dev tun1
 
-# SNAT the tunnel ip with an un-used ip of the local sdn subnet
+# SNAT the tunnel IP with an un-used IP from the SDN subnet.
 source /etc/openshift-sdn/config.env
 subaddr=$(echo $OPENSHIFT_SDN_TAP1_ADDR | cut -d "." -f 1,2,3)
 export RAMP_SDN_IP=${subaddr}.254
 
-# Assign this RAMP_SDN_IP as an additional address to tun0 (the local sdn's gateway)
+# Assign this RAMP_SDN_IP as an additional address to tun0 (the local SDN's gateway).
 ip addr add ${RAMP_SDN_IP} dev tun0
 
-# Modify the OVS rules for SNAT
+# Modify the OVS rules for SNAT.
 ovs-ofctl -O OpenFlow13 add-flow br0 "cookie=0x999,ip,nw_src=${TUNNEL_IP1},actions=mod_nw_src:${RAMP_SDN_IP},resubmit(,0)"
 ovs-ofctl -O OpenFlow13 add-flow br0 "cookie=0x999,ip,nw_dst=${RAMP_SDN_IP},actions=mod_nw_dst:${TUNNEL_IP1},resubmit(,0)"
 ----
 
-The openshift-master should, ideally, not schedule anything on the ramp-node. Do this by marking the ramp-node non-schedulable.
+The OpenShift master should, ideally, not schedule anything on the ramp-node. You can configure it not to by using the following command to mark the ramp-node non-schedulable:
 ----
 openshift admin manage-node <ramp-node-hostname> --schedulable=false
 ----
 
 ====== Highly available ramp-node
-Use openshift's ipfailover feature to make the ramp-node highly available from the load-balancer's point of view (uses keepalived internally). Bring up two nodes on the same L2 subnet and choose one RAMP_IP from within the subnet (e.g. ramp-node-1 IP: 10.20.30.2/24, ramp-node-2 IP: 10.20.30.3/24, then choose a virtual IP within 10.20.30.0/24 that is not taken by any other node).
+Use OpenShift's *ipfailover* feature to make the ramp-node highly available from F5 BIG-IP's point of view (this OpenShift feature uses keepalived internally). To do so, first bring up two nodes--call them ramp-node-1 and ramp-node-2--on the same L2 subnet.  Then choose some unassigned IP address from within the same subnet to use for your virtual IP, or *vip*--this is your `RAMP_IP` with which you will configure your tunnel on F5 BIG-IP.
 
-Mark both nodes with a specific label,
+For example, suppose you are using the 10.20.30.0/24 subnet for your ramp nodes, and you have assigned 10.20.30.2 to ramp-node-1 and 10.20.30.3 to ramp-node-2. For your vip, you would choose some unassigned address from the same 10.20.30.0/24 subnet--for example, 10.20.30.4.  Then to configure ipfailover, first you would mark both nodes with a label such as 'f5rampnode', using the following commands:
 ----
 openshift kube label node ramp-node-1 f5rampnode=true
 openshift kube label node ramp-node-2 f5rampnode=true
 ----
 
-Use the label and launch the ipfailover on both nodes:
+Then you would configure ipfailover using your chosen vip (`RAMP_IP`), assigning the vip to your two nodes using the 'f5rampnode' label:
 ----
 RAMP_IP=10.20.30.4
 IFNAME=eth0 # interface where RAMP_IP should be configured
@@ -81,4 +91,4 @@ openshift admin ipfailover <name-tag> \
     --selector='f5rampnode=true'
 ----
 
-With the above setup, RAMP_IP will get dynamically re-assigned to one of the ramp-nodes when the primary one fails.
+With the above setup, the vip (`RAMP_IP`) will get automatically re-assigned when the ramp-node host that currently has it assigned fails.
