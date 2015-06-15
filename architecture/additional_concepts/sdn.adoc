@@ -1,0 +1,102 @@
+= Networking
+{product-author}
+{product-version}
+:data-uri:
+:icons:
+:experimental:
+:toc: macro
+:toc-title:
+
+toc::[]
+
+OpenShift provides a unified cluster network for that enables communication
+between containers across the OpenShift cluster.  This cluster network is
+established and maintained by the "OpenShift SDN", which configures an overlay
+network using Open vSwitch (OVS).  Following is a detailed discussion of
+the design and operation of OpenShift SDN, which may be useful for
+troubleshooting.
+
+== Design
+
+OpenShift SDN is integrated with the master and node components.  On a master,
+OpenShift SDN maintains a registry of nodes, stored in etcd.  When the system
+administrator registers a node, OpenShift SDN will allocate an unused subnet
+from the cluster network and store this subnet in the registry.  When a node is
+deleted, OpenShift SDN will delete the subnet from the registry and consider the
+subnet available to be allocated again.
+
+In the default configuration, the cluster network is the 10.1.0.0/16 class
+B network, and nodes are allocated /24 subnets (i.e., 10.1.0.0/24, 10.1.1.0/24,
+10.1.2.0/24, and so on).  This means that the cluster network has 256 subnets
+available to assign to nodes, and a given node is allocated 256 addresses that
+it can assign to the containers running on it.  The size and address range of
+the cluster network are configurable, as is the host subnet size.
+
+On a node, OpenShift SDN will first register the local host in the
+aforementioned registry so that the master will allocate a subnet to the node.
+Next, OpenShift SDN will configure the local host with a VxLAN through which the
+containers on the local host can access the containers of all other participants
+on the cluster network.  Finally, OpenShift SDN will monitor the registry in
+order to add and remove OpenFlow rules to and from the local host's VxLAN
+configuration as the master adds and deletes subnets to and from its registry.
+
+Note that OpenShift SDN on a master does not configure the local (master)
+host to have access to the cluster network.  Consequently, a master host will
+not have access to containers via the cluster network, unless it is also running
+as a node.
+
+== Operation
+
+When OpenShift SDN is run on a node, it configures five network devices:
+
+. br0, an OVS bridge device;
+. lbr0, a Linux bridge device;
+. vlinuxbr and vovsbr, two Linux peer virtual Ethernet interfaces; and
+. vxlan0, the OVS VxLAN device that provides access to containers on remote nodes.
+
+On initialization, OpenShift SDN creates lbr0 and configures Docker to use lbr0
+as the bridge for containers; creates br0 in OVS; creates the vlinuxbr and
+vovsbr peer interfaces, which provide a point-to-point connection for the
+purpose of moving packets between the regular Linux networking stack and OVS;
+adds vlinuxbr to lbr0 and vovsbr to br0 (on port 9); adds vxlan0 to br0 (on port
+10); and configures the host's netfilter and routing tables accordingly.
+
+As OpenShift SDN sees subnets added to and deleted from the registry by the
+master, it adds and deletes OpenFlow rules on br0 to route packets
+appropriately: packets with a destination IP address on the local node
+subnet go to vovsbr (port 9 on br0) and thus to vlinuxbr, the local bridge, and
+ultimately the local container; whereas packets with a destination IP address
+on a remote node's subnet go to vxlan0 (port 10 on br0) and thus out onto the
+network.
+
+To illustrate, suppose we have two containers A and B where the peer virtual
+Ethernet device for container A's eth0 is named vethA and the peer for container
+B's eth0 is named vethB.  (If Docker's use of peer virtual Ethernet devices is
+not already familiar to you, review [Docker's advanced networking
+documentation](https://docs.docker.com/articles/networking/).)
+
+Now suppose first that container A is on the local host and container B is also
+on the local host.  Then the flow of packets from container A to container B is
+as follows:
+
+eth0 (in A's netns) -> vethA -> lbr0 -> vlinuxbr -> vovsbr -> br0 -> vovsbr -> vlinuxbr -> lbr0 -> vethB -> eth0 (in B's netns).
+
+Next suppose instead that container A is on the local host and container B is on
+a remote host on the cluster network.  Then the flow of packets from container
+A to container B is as follows:
+
+eth0 (in A's netns) -> vethA -> lbr0 -> vlinuxbr -> vovsbr -> br0 -> vxlan0 -> network footnote:[After this point, device names refer to devices on container B's host.] -> vxlan0 -> br0 -> vovsbr -> vlinuxbr -> lbr0 -> vethB -> eth0 (in B's netns).
+
+
+== External Access to the Cluster Network
+
+If a host that is external to OpenShift requires access to the cluster network,
+you have two options:
+
+. Configure the host as an OpenShift node but mark it unschedulable so that the
+master will not schedule containers on it.
+. Create a tunnel between your host and a host that is on the cluster network.
+
+Both options are presented as part of a practical use-case in the documentation
+for configuring link:../../admin_guide/f5_sdn_config.html[routing from an edge
+load-balancer to containers within OpenShift SDN].
