@@ -1,0 +1,191 @@
+= Deploying a Router
+{product-author}
+{product-version}
+:data-uri:
+:icons:
+:experimental:
+:toc: macro
+:toc-title:
+:prewrap!:
+
+toc::[]
+
+== Overview
+The OpenShift link:../../architecture/core_concepts/routes.html[router] is the
+ingress point for all traffic destined for
+link:../../architecture/core_concepts/pods_and_services.html#services[services]
+in your OpenShift installation. An
+link:../../architecture/core_concepts/routes.html#haproxy-template-router[HAProxy
+template router implementation] is provided as the default template router
+plug-in. It uses the
+ifdef::openshift-enterprise[]
+*openshift3/ose-haproxy-router*
+endif::[]
+ifdef::openshift-origin[]
+*openshift/origin-haproxy-router*
+endif::[]
+ repository to run an
+HAProxy instance alongside the template router plug-in. It currently supports
+only HTTP(S) traffic and TLS-enabled traffic via SNI. While it is called a
+"router", it is essentially a proxy.
+
+The default router's
+ifdef::openshift-enterprise[]
+*openshift3/ose-haproxy-router*
+endif::[]
+ifdef::openshift-origin[]
+*openshift/origin-haproxy-router*
+endif::[]
+ container listens on
+the host network interface, unlike most containers that listen only on private
+IPs. The router proxies external requests for route names to the IPs of actual
+pods identified by the service associated with the route.
+
+[[haproxy-router]]
+== Deploying the Default HAProxy Router
+The `oadm router` command is provided with the administrator CLI to simplify the
+tasks of setting up routers in a new installation. Just about every form of
+communication with OpenShift components is secured by SSL and uses various
+certificates and authentication methods. Use the `--credentials` option to
+specify what credentials the router should use to contact the master.
+
+To check if the default router, named *router*, already exists:
+
+----
+$ oadm router --dry-run
+----
+
+To see what the default router would look like if created:
+
+----
+$ oadm router -o yaml --credentials="$KUBECONFIG"
+----
+
+To create a router if it does not exist:
+
+----
+$ oadm router <router_name> --replicas=<number> --credentials="$KUBECONFIG"
+----
+
+For example:
+
+====
+----
+$ oadm router router-west --replicas=2 --credentials="$KUBECONFIG"
+----
+====
+
+To use a different router image and see the router configuration:
+
+----
+$ oadm router <router_name> -o <format> --images=<image> --credentials="$KUBECONFIG"
+----
+
+For example:
+
+====
+----
+$ oadm router region-west -o yaml --images=myrepo/somerouter:mytag --credentials="$KUBECONFIG"
+----
+====
+
+[NOTE]
+====
+You can link:../../admin_guide/high_availability.html[set up a highly-available
+router] on your OpenShift cluster using IP failover.
+====
+
+== Deploying a Customized HAProxy Router
+
+The HAProxy router is based on a *golang* template. This template generates the
+HAProxy configuration file. If you want to customize a router to meet your
+needs, you can change the template file, build a new docker image, and run a
+customized router.
+
+One common case for this might be implementing new features within the
+application back ends. For example, it might be desirable in a highly-available
+setup to use stick-tables that synchronizes between peers. The router plug-in
+provides all the facilities necessary to make this customization.
+
+.Using Stick Tables
+
+*Adding a Peer Section*
+
+In order to synchronize stick-tables amongst peers you must a define a peers
+section in your HAProxy configuration. This section determines how HAProxy
+will identify and connect to peers. The plug-in provides data to the template
+under the `*.PeerEndpoints*` variable to allow you to easily identify members
+of the router service. You may add a peer section to the *_haproxy-config.template_* by adding:
+
+----
+{{ if (len .PeerEndpoints) gt 0 }}
+peers openshift_peers
+  {{ range $endpointID, $endpoint := .PeerEndpoints }}
+    peer {{$endpoint.TargetName}} {{$endpoint.IP}}:1937
+  {{ end }}
+{{ end }}
+----
+
+*Changing the Reload Script*
+
+When using stick-tables, you have the option of telling HAProxy what it should
+consider the name of the local host in the peer section. When creating
+endpoints, the plug-in attempts to set the `*TargetName*` to the value of the
+endpoint's `*TargetRef.Name*`. If `*TargetRef*` is not set, it will set the
+`*TargetName*` to the IP address. The `*TargetRef.Name*` corresponds with the
+Kubernetes host name, therefore you can add the `-L` option to the
+`reload-haproxy` script to identify the local host in the peer section.
+
+----
+peer_name=$HOSTNAME <1>
+
+if [ -n "$old_pid" ]; then
+  /usr/sbin/haproxy -f $config_file -p $pid_file -L $peer_name -sf $old_pid
+else
+  /usr/sbin/haproxy -f $config_file -p $pid_file -L $peer_name
+fi
+----
+<1> Must match an endpoint target name that is used in the peer section.
+
+*Modifying Back Ends*
+
+Finally, to use the stick-tables within back ends, you can modify the HAProxy
+configuration to use the stick-tables and peer set. The following is an example
+of changing the existing back end for TCP connections to use stick-tables:
+
+----
+
+            {{ if eq $cfg.TLSTermination "passthrough" }}
+backend be_tcp_{{$cfgIdx}}
+  balance leastconn
+  timeout check 5000ms
+  stick-table type ip size 1m expire 5m{{ if (len $.PeerEndpoints) gt 0 }} peers openshift_peers {{ end }}
+  stick on src
+                {{ range $endpointID, $endpoint := $serviceUnit.EndpointTable }}
+  server {{$endpointID}} {{$endpoint.IP}}:{{$endpoint.Port}} check inter 5000ms
+                {{ end }}
+            {{ end }}
+----
+
+*Rebuilding Your Router*
+
+After you have made modifications to the router you must rebuild the docker
+image and push it to your repository. Then you can specify your new image when
+creating a router either in the pod's object definition directly or by using the
+`oadm router` command:
+
+====
+----
+$ oadm router --credentials="$KUBECONFIG" --images=myrepo/myimage:mytag
+----
+====
+
+== What's Next?
+
+After you have a router deployed, you can learn more about
+link:../router.html[monitoring the HAProxy router].
+
+If you have not yet done so, continue on to
+link:../docker_registry.html[deploying the integrated docker registry], and then
+on to the link:first_steps.html[First Steps] topic to complete the basic
+installation.
