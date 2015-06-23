@@ -1,0 +1,310 @@
+= Cluster Metrics
+{product-author}
+{product-version}
+:data-uri:
+:icons:
+:experimental:
+:toc: macro
+:toc-title:
+:prewrap!:
+
+toc::[]
+
+== Overview
+
+As an OpenShift administrator, you may want to view the metrics from all
+containers & components in one user interface. The kubelet exposes metrics that
+which can be collected & stored in various backends by
+link:https://github.com/GoogleCloudPlatform/heapster[Heapster]. This guide will
+use link:https://influxdb.com/[InfluxDB] for storage & link:http://grafana.org[Grafana]
+for visualisation.
+
+[IMPORTANT]
+====
+This solution is a work in progress. As packaging improvements are made these
+instructions will be simplified.
+====
+
+== Node configuration
+
+In order for *Heapster* to retrieve metrics from the nodes, a read-only port has
+to be opened on each node. This allows *Heapster* to retrieve metrics without
+authentication.
+
+[IMPORTANT]
+====
+Opening up the read-only port exposes information about the running pods such
+as namespace, pod name, labels, etc to unauthenticated clients. The requirement
+to open up this read-only port will be fixed in future versions.
+====
+
+To enable the read-only port you have to configure the
+`*read-only-port*` Kubelet argument in the *_node-config.yaml_* file on each
+node. Add the following to your *_node-config.yaml_*:
+
+====
+[source,yaml]
+----
+kubeletArguments:
+  "read-only-port":
+    - "10255"
+----
+====
+
+Restart your node to make this setting take effect.
+
+== Deploying InfluxDB
+
+Metrics are stores in *InfluxDB* for querying. This cluster is scalable using a
+link:../architecture/core_objects/kubernetes_model.html#replication-controller[replication
+controller], so you can link:../dev_guide/deployments.html#scaling[scale] the
+*InfluxDB* cluster up and down as required.
+
+The following is the manifest for the *InfluxDB* cluster:
+
+====
+
+[source,yaml]
+----
+apiVersion: "v1"
+kind: "List"
+items:
+  -
+    apiVersion: "v1"
+    kind: "Service"
+    metadata:
+      labels:
+        provider: "fabric8"
+        component: "influxdb-monitoring"
+      name: "influxdb-monitoring"
+    spec:
+      ports:
+        -
+          port: 8086
+          targetPort: "http"
+      selector:
+        provider: "fabric8"
+        component: "influxdb-monitoring"
+  -
+    apiVersion: "v1"
+    kind: "ReplicationController"
+    metadata:
+      labels:
+        provider: "fabric8"
+        component: "influxdb-monitoring"
+      name: "influxdb-monitoring"
+    spec:
+      replicas: 1
+      selector:
+        provider: "fabric8"
+        component: "influxdb-monitoring"
+      template:
+        metadata:
+          labels:
+            provider: "fabric8"
+            component: "influxdb-monitoring"
+        spec:
+          containers:
+            -
+              env:
+                -
+                  name: "PRE_CREATE_DB"
+                  value: "k8s;grafana"
+              image: "fabric8/influxdb:0.8.8"
+              name: "influxdb"
+              ports:
+                -
+                  containerPort: 8090
+                  name: "raft"
+                -
+                  containerPort: 8099
+                  name: "protobuf"
+                -
+                  containerPort: 8083
+                  name: "admin"
+                -
+                  containerPort: 8086
+                  name: "http"
+              volumeMounts:
+                -
+                  mountPath: "/data"
+                  name: "influxdb-data"
+          volumes:
+            -
+              emptyDir:
+              name: "influxdb-data"
+----
+====
+
+Save this to a file and create it:
+
+====
+----
+$ oc create -f path/to/influxdb.yaml
+----
+====
+
+This starts a single *InfluxDB* instance. If you need to create a larger
+cluster, you can scale the *InfluxDB* replication controller using:
+
+====
+----
+$ oc scale --replicas=3 rc influxdb-monitoring
+----
+====
+
+== Deploying Heapster
+
+*Heapster* reads all nodes & pods from the master & then connects to each kubelet
+to retrieve pod metrics. *Heapster* will run under a service account with the
+_cluster-reader_ cluster role to be able to retrieve these metrics.
+
+The following is the definition of a service account that *Heapster* will use:
+
+====
+[source,yaml]
+----
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: heapster
+----
+====
+
+Save it to a file & create it with:
+
+====
+----
+$ oc create -f path/to/heapster-serviceaccount.yaml
+----
+====
+
+Add the *Heapster* service account to the _cluster-reader_ role:
+
+====
+----
+$ oadm policy add-cluster-role-to-user cluster-reader system:serviceaccount:default:heapster
+----
+====
+
+The following is the definition of the *Heapster* service & replication controller:
+
+====
+[source,yaml]
+----
+apiVersion: "v1"
+kind: "List"
+items:
+  -
+    apiVersion: "v1"
+    kind: "ReplicationController"
+    metadata:
+      labels:
+        provider: "fabric8"
+        component: "heapster"
+      name: "heapster"
+    spec:
+      replicas: 1
+      selector:
+        provider: "fabric8"
+        component: "heapster"
+      template:
+        metadata:
+          labels:
+            provider: "fabric8"
+            component: "heapster"
+        spec:
+          containers:
+            -
+              args:
+                - "-source=kubernetes:https://kubernetes.default.svc.cluster.local?auth=&insecure=true&useServiceAccount=true"
+                - "-sink=influxdb:http://influxdb-monitoring.default.svc.cluster.local:8086"
+              image: "kubernetes/heapster:V0.14.2"
+              name: "heapster"
+          serviceAccount: "heapster"
+----
+====
+
+Save it to a file & create it with:
+
+====
+----
+$ oc create -f path/to/heapster.yaml
+----
+====
+
+== Deploying Grafana
+
+*Grafana* allows users to create dashboards of metrics from InfluxDB. The default
+install comes with a basic dashboard & users are encouraged to create their own.
+
+The following is the definition of the *Grafana* service & replication controller:
+
+====
+[source,yaml]
+----
+apiVersion: "v1"
+kind: "List"
+items:
+  -
+    apiVersion: "v1"
+    kind: "Service"
+    metadata:
+      labels:
+        provider: "fabric8"
+        component: "grafana"
+      name: "grafana"
+    spec:
+      ports:
+        -
+          port: 80
+          targetPort: "http"
+      selector:
+        provider: "fabric8"
+        component: "grafana"
+  -
+    apiVersion: "v1"
+    kind: "ReplicationController"
+    metadata:
+      labels:
+        provider: "fabric8"
+        component: "grafana"
+      name: "grafana"
+    spec:
+      replicas: 1
+      selector:
+        provider: "fabric8"
+        component: "grafana"
+      template:
+        metadata:
+          labels:
+            provider: "fabric8"
+            component: "grafana"
+        spec:
+          containers:
+            -
+              env:
+                -
+                  name: "INFLUXDB_SERVICE_NAME"
+                  value: "INFLUXDB_MONITORING"
+                -
+                  name: "GRAFANA_DEFAULT_DASHBOARD"
+                  value: "/dashboard/file/kubernetes.json"
+              image: "fabric8/grafana:1.9.1_2"
+              name: "grafana"
+              ports:
+                -
+                  containerPort: 3000
+                  name: "http"
+----
+====
+
+Save it to a file & create it with:
+
+====
+----
+$ oc create -f path/to/grafana.yaml
+----
+====
+
+
