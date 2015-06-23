@@ -163,3 +163,278 @@ The MongoDB templates should have been registered in the `openshift` project by 
 You can find instructions for instantiating templates by following these link:../../dev_guide/templates.html#creating-resources-from-a-template[instructions].
 
 Once you have instantiated the service, you can copy the username, password, and database name environment variables into a DeploymentConfig for another component that intends to access the database.  That component can then access the database via the Service that was defined.
+
+== Using MongoDB replication
+
+IMPORTANT: The replication support provided by the MongoDB image is experimental and
+should not be used in production.
+
+The full source of replication example is available here:
+https://github.com/openshift/mongodb/tree/master/2.4/examples/replica
+
+IMPORTANT: The template provided in the example above does not use persistent
+storage. When you lose all members of the replication set, your data will be
+lost.
+
+This section describes how to start a cluster of MongoDB servers that implements
+master-slave replication and automated failover. This is the recommended
+replication strategy for MongoDB.
+
+=== Creating the DeploymentConfig
+
+To start with MongoDB replication, you first have to define a DeploymentConfig
+that defines a replication controller which will manage the members of the
+MongoDB cluster. To tell a MongoDB server that the member will be part of the
+cluster, you have to provide additional environment variables for the container
+defined in the replication controller pod template:
+
+[cols="3a,6a,1a",options="header"]
+|===
+
+|Variable name |Description |Default
+
+|`*MONGODB_REPLICA_NAME*`
+|Specify the name of the replication set.
+|rs0
+
+|`*MONGODB_KEYFILE_VALUE*`
+|See: http://docs.mongodb.org/manual/tutorial/generate-key-file[Generate a Key File]
+|generated
+|===
+
+The DeploymentConfig defined in the example replication template looks like
+this:
+
+[source,json]
+----
+{
+      "kind": "DeploymentConfig",
+      "apiVersion": "v1",
+      "metadata": {
+        "name": "${MONGODB_SERVICE_NAME}",
+      },
+      "spec": {
+        "strategy": {
+          "type": "Recreate",
+          "resources": {}
+        },
+        "triggers": [
+          {
+            "type":"ConfigChange"
+          }
+        ],
+        "replicas": 3,
+        "selector": {
+          "name": "mongodb-replica"
+        },
+        "template": {
+          "metadata": {
+            "labels": {
+              "name": "mongodb-replica"
+            }
+          },
+          "spec": {
+            "containers": [
+              {
+                "name":  "member",
+                "image": "openshift/mongodb-24-centos7",
+                "env": [
+                  {
+                    "name": "MONGODB_USER",
+                    "value": "${MONGODB_USER}"
+                  },
+                  {
+                    "name": "MONGODB_PASSWORD",
+                    "value": "${MONGODB_PASSWORD}"
+                  },
+                  {
+                    "name": "MONGODB_DATABASE",
+                    "value": "${MONGODB_DATABASE}"
+                  },
+                  {
+                    "name": "MONGODB_ADMIN_PASSWORD",
+                    "value": "${MONGODB_ADMIN_PASSWORD}"
+                  },
+                  {
+                    "name": "MONGODB_REPLICA_NAME",
+                    "value": "${MONGODB_REPLICA_NAME}"
+                  },
+                  {
+                    "name": "MONGODB_SERVICE_NAME",
+                    "value": "${MONGODB_SERVICE_NAME}"
+                  },
+                  {
+                    "name": "MONGODB_KEYFILE_VALUE",
+                    "value": "${MONGODB_KEYFILE_VALUE}"
+                  }
+                ],
+                "ports":[
+                  {
+                    "containerPort": 27017,
+                    "protocol": "TCP"
+                  }
+                ]
+              }
+            ]
+          }
+        },
+        "restartPolicy": "Never",
+        "dnsPolicy": "ClusterFirst"
+      }
+    }
+----
+
+When the DeploymentConfig is created and the pods with MongoDB cluster members
+are started, they will not be initialized, but they will start as part of the
+`rs0` replication set, as the value of the `MONGODB_REPLICA_NAME` is set to
+`rs0` by default.
+
+=== Creating the service pod
+
+To initialize members created by the DeploymentConfig, a "service pod" has to be
+defined in the Template. This pod will start MongoDB with the `initiate` argument,
+which will make the container entrypoint behave slighly different than having a
+regular standalone MongoDB database.
+
+The service pod defined in the example replication template looks like this:
+
+[source,json]
+----
+{
+  "kind": "Pod",
+  "apiVersion": "v1",
+  "metadata": {
+    "name": "mongodb-service",
+    "creationTimestamp": null,
+    "labels": {
+      "name": "mongodb-service"
+    }
+  },
+  "spec": {
+    "restartPolicy": "Never",
+    "dnsPolicy": "ClusterFirst",
+    "containers": [
+      {
+        "name": "initiate",
+        "image": "openshift/mongodb-24-centos7",
+        "args": ["initiate"],
+        "env": [
+          {
+            "name": "MONGODB_USER",
+            "value": "${MONGODB_USER}"
+          },
+          {
+            "name": "MONGODB_PASSWORD",
+            "value": "${MONGODB_PASSWORD}"
+          },
+          {
+            "name": "MONGODB_DATABASE",
+            "value": "${MONGODB_DATABASE}"
+          },
+          {
+            "name": "MONGODB_ADMIN_PASSWORD",
+            "value": "${MONGODB_ADMIN_PASSWORD}"
+          },
+          {
+            "name": "MONGODB_REPLICA_NAME",
+            "value": "${MONGODB_REPLICA_NAME}"
+          },
+          {
+            "name": "MONGODB_SERVICE_NAME",
+            "value": "${MONGODB_SERVICE_NAME}"
+          },
+          {
+            "name": "MONGODB_KEYFILE_VALUE",
+            "value": "${MONGODB_KEYFILE_VALUE}"
+          }
+        ]
+      }
+    ]
+  }
+}
+----
+
+=== Creating headless service
+
+The `initiate` argument in the container specification above will make the container
+first discover all running member pods within the MongoDB cluster. To achieve
+that, we defined a 'headless' service named 'mongodb' in the example template.
+
+To have a 'headless' service, you have to set the `portalIP` field value in the
+service definition to `None`.  Then you can use a DNS query to get a list of the
+pod IP addresses that represents the current endpoints for this service.
+
+The example replication template defines the headless service as following:
+
+[source,json]
+----
+{
+  "kind": "Service",
+  "apiVersion": "v1",
+  "metadata": {
+    "name": "${MONGODB_SERVICE_NAME}",
+    "labels": {
+      "name": "${MONGODB_SERVICE_NAME}"
+    }
+  },
+  "spec": {
+    "ports": [
+      {
+        "protocol": "TCP",
+        "port": 27017,
+        "targetPort": 27017,
+        "nodePort": 0
+      }
+    ],
+    "selector": {
+      "name": "mongodb-replica"
+    },
+    "portalIP": "None",
+    "type": "ClusterIP",
+    "sessionAffinity": "None"
+  },
+  "status": {
+    "loadBalancer": {}
+  }
+}
+----
+
+=== Creating the final replication set
+
+When the script that runs as the container entrypoint has the IP addresses of
+all running MongoDB members, it creates a MongoDB replication set configuration
+where it will list all member IP addresses and then initiate the replication set
+by `rs.initiate(config)`.  Then the script waits until the MongoDB elect the
+PRIMARY member of the cluster.
+
+Once the PRIMARY member has been elected, the entrypoint script will start
+creating MongoDB users and databases. The 'service pod' is running MongoDB
+without the `--auth` argument, so it can bootstrap the PRIMARY member without
+providing any authentication.
+
+When the user accounts and databases are created and the data are replicated to
+other members, it is time for the 'service pod' to give up its PRIMARY role and
+shut down. It is important to set the `restartPolicy` field in the 'service
+pod' to `Never` to prevent the 'service pod' from restarting when the container
+exits.  Right after the 'service pod' goes down, other members will start a new
+election and the new PRIMARY member is being elected from the running members.
+
+The clients can then start using the MongoDB by sending the queries to the
+`mongodb` service. As this service is a 'headless' service, they don't have to
+provide the IP address. They can use `mongodb:27017` for the client connections.
+The service will then send the query to one of the members in the replication
+set.
+
+=== Scaling MongoDB replication set
+
+To increase the number of members in the cluster, use this command:
+
+```
+$ oc scale rc mongodb-1 --replicas=4
+```
+
+This will tell the replication controller to create a new MongoDB member pod.
+When a new member is created, the member entrypoint will first attempt do
+discover other running members in the cluster. Then it will choose one and add
+itself to the list of members. Once the replication configuration is updated, the
+other members will replicate the data to a new pod and start a new election.
