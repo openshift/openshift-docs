@@ -1,0 +1,399 @@
+= Upgrading OpenShift
+{product-author}
+{product-version}
+:data-uri:
+:icons:
+:experimental:
+:toc: macro
+:toc-title:
+:prewrap!:
+
+toc::[]
+
+== Overview
+When new versions of OpenShift are released, you can upgrade your cluster to
+apply the latest enhancements and bug fixes.
+ifdef::openshift-origin[]
+For OpenShift Origin, see the
+link:https://github.com/openshift/origin/releases[Releases page] on GitHub  to
+review the latest changes.
+endif::[]
+ifdef::openshift-enterprise[]
+See the link:../whats_new/ose_3_0_release_notes.html[OpenShift Enterprise 3.0
+Release Notes] to review the latest changes.
+endif::[]
+
+To upgrade your OpenShift cluster without disruption, it is important to upgrade
+components as documented in this topic. Before you begin your upgrade,
+familiarize yourself with the entire procedure.
+link:#additional-instructions-per-release[Specific releases] may require
+additional steps to be performed at key points during the standard upgrade
+process.
+
+Unless noted otherwise, node and masters within a major version are forward and
+backward compatible, so upgrading your cluster should go smoothly. However, you
+should not run mismatched versions longer than necessary to upgrade the entire
+cluster.
+
+[NOTE]
+====
+This topic pertains to RPM-based installations only
+ifdef::openshift-enterprise[]
+(i.e., the link:install/quick_install.html[quick] and link:install/advanced_install.html[advanced installation] methods)
+endif::[]
+ifdef::openshift-origin[]
+(i.e., the link:install/advanced_install.html[advanced installation] method)
+endif::[]
+ and does
+not currently cover container-based installations.
+====
+
+[[upgrading-masters]]
+
+== Upgrading Masters
+Upgrade your masters first. On each master host, upgrade the *openshift-master*
+package:
+
+----
+# yum upgrade openshift-master
+----
+
+Then, restart the *openshift-master* service and review its logs to ensure
+services have been restarted successfully:
+
+----
+# systemctl restart openshift-master
+# journalctl -r -u openshift-master
+----
+
+[[upgrading-policy-definitions]]
+
+== Updating Policy Definitions
+After a cluster upgrade, the recommended
+link:../architecture/additional_concepts/authorization.html#roles[default
+cluster roles] may have been updated. To check if an update is recommended for
+your environment, you can run:
+
+----
+# oadm policy reconcile-cluster-roles
+----
+
+This command outputs a list of roles that are out of date and their new proposed
+values. For example:
+
+====
+----
+# oadm policy reconcile-cluster-roles
+apiVersion: v1
+items:
+- apiVersion: v1
+  kind: ClusterRole
+  metadata:
+    creationTimestamp: null
+    name: admin
+  rules:
+  - attributeRestrictions: null
+    resources:
+    - builds/custom
+...
+----
+====
+
+[NOTE]
+====
+Your output will vary based on the OpenShift version and any local
+customizations you have made. Review the proposed policy carefully.
+====
+
+You can either modify this output to re-apply any local policy changes you have
+made, or you can automatically apply the new policy by running:
+
+----
+# oadm policy reconcile-cluster-roles --confirm
+----
+
+[[upgrading-nodes]]
+
+== Upgrading Nodes
+After upgrading your masters, you can upgrade your nodes. When restarting the
+*openshift-node* service, there will be a brief disruption of outbound network
+connectivity from running pods to services while the
+link:../architecture/infrastructure_components/kubernetes_infrastructure.html#service-proxy[service
+proxy] is restarted. The length of this disruption should be very short and
+scales based on the number of services in the entire cluster.
+
+On each node host, upgrade all *openshift* packages:
+
+----
+# yum upgrade openshift\*
+----
+
+Then, restart the *openshift-node* service:
+
+----
+# systemctl restart openshift-node
+----
+
+As a user with *cluster-admin* privileges, verify that all nodes are showing as
+*Ready*:
+
+====
+----
+# oc get nodes
+NAME                    LABELS                                        STATUS
+master.example.com      kubernetes.io/hostname=master.example.com     Ready,SchedulingDisabled
+node1.example.com       kubernetes.io/hostname=node1.example.com      Ready
+node2.example.com       kubernetes.io/hostname=node2.example.com      Ready
+----
+====
+
+[[upgrading-the-router]]
+
+== Upgrading the Router
+If you have previously link:install/deploy_router.html[deployed a router], the
+router deployment configuration must be upgraded to apply updates contained in
+the router image.
+
+[IMPORTANT]
+====
+To upgrade your router without disrupting services, you must have previously
+deployed a
+link:high_availability.html#configuring-a-highly-available-routing-service[highly-available
+routing service].
+====
+
+Edit your router's deployment configuration. For example, if it has the default
+*router* name:
+
+====
+----
+# oc edit dc/router
+----
+====
+
+Apply the following changes:
+
+====
+----
+..
+spec:
+ template:
+    spec:
+      containers:
+      - env:
+        ..
+        image: openshift3/ose-haproxy-router:v3.0.1.0 <1>
+        imagePullPolicy: IfNotPresent
+        ..
+----
+====
+<1> Adjust the image version to match the version you are upgrading to.
+
+You should see one router pod updated and then the next.
+
+[[upgrading-the-registry]]
+
+== Upgrading the Registry
+The registry must also be upgraded for changes to take effect in the registry
+image. If you have used a `*PersistentVolumeClaim*` or a host mount point, you
+may restart the registry without losing the contents of your registry. The
+link:install/docker_registry.html#storage-for-the-registry[registry
+installation] topic details how to configure persistent storage.
+
+Edit your registry's deployment configuration:
+
+----
+# oc edit dc/docker-registry
+----
+
+Apply the following changes:
+
+====
+----
+spec:
+ template:
+    spec:
+      containers:
+      - env:
+        ..
+        image: openshift3/ose-docker-registry:v3.0.1.0 <1>
+        imagePullPolicy: IfNotPresent
+        ..
+----
+====
+<1> Adjust the image version to match the version you are upgrading to.
+
+[IMPORTANT]
+====
+Images that are being pushed or pulled from the internal registry at the time of
+upgrade will fail and should be restarted automatically. This will not disrupt
+pods that are already running.
+====
+
+[[updating-the-default-image-streams]]
+
+== Updating the Default Image Streams
+You may also wish to ensure that your database and S2I ImageStreams are updated.
+For each image stream in the default *openshift* project, you can run:
+
+----
+# oc image-import -n openshift <imagestream>
+----
+
+[IMPORTANT]
+====
+This will trigger a rebuild of all images built from these image streams if
+their build configurations have the
+link:../dev_guide/builds.html#image-change-triggers[`*ImageChange*` trigger]
+configured to do so. Before running `oc image-import`, ensure that all pods that
+persist data have properly configured persistent volumes. Pods with replica
+count greater than one will be updated in a rolling manner.
+====
+
+For example, get the list of all image streams in the default *openshift*
+project:
+
+====
+----
+# oc get is -n openshift
+NAME     DOCKER REPO                                                      TAGS                   UPDATED
+mongodb  registry.access.redhat.com/openshift3/mongodb-24-rhel7           2.4,latest,v3.0.0.0    16 hours ago
+mysql    registry.access.redhat.com/openshift3/mysql-55-rhel7             5.5,latest,v3.0.0.0    16 hours ago
+nodejs   registry.access.redhat.com/openshift3/nodejs-010-rhel7           0.10,latest,v3.0.0.0   16 hours ago
+...
+----
+====
+
+Update each image stream one at a time:
+
+====
+----
+# oc import-image -n openshift nodejs
+Waiting for the import to complete, CTRL+C to stop waiting.
+The import completed successfully.
+
+Name:                   nodejs
+Created:                16 hours ago
+Labels:                 <none>
+Annotations:            openshift.io/image.dockerRepositoryCheck=2015-07-21T13:17:00Z
+Docker Pull Spec:       registry.access.redhat.com/openshift3/nodejs-010-rhel7
+
+Tag             Spec            Created         PullSpec                                                        Image
+0.10            latest          16 hours ago    registry.access.redhat.com/openshift3/nodejs-010-rhel7:latest   66d92cebc0e48e4e4be3a93d0f9bd54f21af7928ceaa384d20800f6e6fcf669f
+latest                          16 hours ago    registry.access.redhat.com/openshift3/nodejs-010-rhel7:latest   66d92cebc0e48e4e4be3a93d0f9bd54f21af7928ceaa384d20800f6e6fcf669f
+v3.0.0.0        <pushed>        16 hours ago    registry.access.redhat.com/openshift3/nodejs-010-rhel7:v3.0.0.0 66d92cebc0e48e4e4be3a93d0f9bd54f21af7928ceaa384d20800f6e6fcf669f
+----
+====
+
+[[additional-instructions-per-release]]
+
+== Additional Instructions per Release
+
+Some OpenShift releases may have additional instructions specific to that
+release that must be performed to fully apply the updates across the cluster.
+Read through the following sections carefully depending on your upgrade path, as
+you may be required to perform certain steps and key points during the standard
+upgrade process described earlier in this topic.
+
+ifdef::openshift-enterprise[]
+=== OpenShift Enterprise 3.0.1.0
+endif::[]
+ifdef::openshift-origin[]
+=== OpenShift Origin 1.0.4
+endif::[]
+
+*Creating a Service Account for the Router*
+
+The router was updated to utilize host ports and requires that a service
+account be created and made a member of the privileged
+link:manage_scc.html[security context constraint] (SCC). Additionally,
+'down-then-up' rolling upgrades have been added and is now the preferred
+strategy for upgrading routers.
+
+After upgrading your master and nodes but before updating to the newer router,
+you must create a service account for the router. As a cluster administrator,
+ensure you are operating on the *default* project:
+
+====
+----
+# oc project default
+====
+
+Delete any existing *router* service account and create a new one:
+
+====
+----
+# oc delete serviceaccount/router
+serviceaccounts/router
+
+# echo '{"kind":"ServiceAccount","apiVersion":"v1","metadata":{"name":"router"}}' | oc create -f -
+serviceaccounts/router
+----
+====
+
+Edit the *privileged* SCC:
+
+====
+----
+# oc edit scc privileged
+----
+====
+
+Apply the following changes:
+
+====
+----
+allowHostDirVolumePlugin: true
+allowHostNetwork: true <1>
+allowHostPorts: true <2>
+allowPrivilegedContainer: true
+...
+users:
+- system:serviceaccount:openshift-infra:build-controller
+- system:serviceaccount:default:router <3>
+----
+====
+<1> Add or update `allowHostNetwork: true`.
+<2> Add or update `allowHostPorts: true`.
+<3> Add the service account you created to the user list at the end of the file.
+
+Edit your router's deployment configuration:
+
+====
+----
+# oc edit dc/router
+----
+====
+
+Apply the following changes:
+
+====
+----
+spec:
+  replicas: 2
+  selector:
+    router: router
+  strategy:
+    resources: {}
+    rollingParams:
+      intervalSeconds: 1
+      timeoutSeconds: 120
+      updatePeriodSeconds: 1
+      updatePercent: -10 <1>
+    type: Rolling
+    ..
+    spec:
+      ..
+      dnsPolicy: ClusterFirst
+      restartPolicy: Always
+      serviceAccount: router <2>
+      serviceAccountName: router <3>
+...
+----
+====
+<1> Add `updatePercent: -10` to allow down-then-up rolling upgrades.
+<2> Add `serviceAccount: router` to the template `*spec*`.
+<3> Add `serviceAccountName: router` to the template `*spec*`.
+
+Now upgrade your router per the link:#upgrading-the-router[standard router
+upgrade steps].
