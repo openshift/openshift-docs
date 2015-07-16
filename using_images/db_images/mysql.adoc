@@ -172,3 +172,358 @@ The MySQL templates should have been registered in the `openshift` project by th
 You can find instructions for instantiating templates by following these link:../../dev_guide/templates.html#creating-resources-from-a-template[instructions].
 
 Once you have instantiated the service, you can copy the username, password, and database name environment variables into a DeploymentConfig for another component that intends to access the database.  That component can then access the database via the Service that was defined.
+
+[[using-mysql-replication]]
+== Using MySQL Master-Slave Replication
+
+ifdef::openshift-origin[]
+[IMPORTANT]
+====
+Replication support provided by the MySQL image is experimental and should not
+be used in production.
+====
+endif::[]
+
+ifdef::openshift-enterprise[]
+[NOTE]
+====
+Enabling clustering for database images is currently in
+link:../../whats_new/ose_3_0_release_notes.html#technology-preview[Technology
+Preview] and not intended for production use.
+====
+endif::[]
+
+Red Hat provides a proof-of-concept
+link:../../architecture/core_concepts/templates.html[template] for MySQL
+replication (clustering); you can obtain the
+https://github.com/openshift/mysql/tree/master/5.5/examples/replica[example
+template from GitHub].
+
+To upload the example template into the current project's template library:
+
+====
+----
+$ oc create -f \
+    https://raw.githubusercontent.com/openshift/mysql/master/5.5/examples/replica/mysql_replica.json
+----
+====
+
+[[creating-the-deployment-configuration-for-mysql-master]]
+=== Creating the Deployment Configuration for MySQL Master
+
+To set up MySQL replication, a
+link:../../architecture/core_concepts/deployments.html#deployments-and-deployment-configurations[deployment
+configuration] is defined in the example template that defines a
+link:../../architecture/core_concepts/deployments.html#replication-controllers[replication
+controller].
+For MySQL Master-Slave replication, two deployment configurations are needed.
+One deployment configuration defines the MySQL 'master' server and second the MySQL
+'slave' servers.
+
+To tell a MySQL server to act as the master, the `command` field in the
+container's definition in deployment configuration has to be set to
+`run-mysqld-master.sh`. This script acts as an alternative entrypoint for the
+MySQL image and configures MySQL server to run as the 'master' in replication.
+The MySQL replication requires a special user that will relay data between the
+master and slaves. For that we define following environment variables in the
+template:
+
+[cols="3a,6a,1a",options="header"]
+|===
+
+|Variable Name |Description |Default
+
+|`*MYSQL_MASTER_USER*`
+|The user name of the replication user
+|*master*
+
+|`*MYSQL_MASTER_PASSWORD*`
+|The password for the replication user
+|*generated*
+|===
+
+
+.MySQL Master Deployment Configuration Object Definition in the Example Template
+====
+
+[source,json]
+----
+{
+  "kind":"DeploymentConfig",
+  "apiVersion":"v1",
+  "metadata":{
+    "name":"mysql-master"
+  },
+  "spec":{
+    "strategy":{
+      "type":"Recreate"
+    },
+    "triggers":[
+      {
+        "type":"ConfigChange"
+      }
+    ],
+    "replicas":1,
+    "selector":{
+      "name":"mysql-master"
+    },
+    "template":{
+      "metadata":{
+        "labels":{
+          "name":"mysql-master"
+        }
+      },
+      "spec":{
+        "volumes":[
+          {
+            "name":"mysql-master-data",
+            "persistentVolumeClaim":{
+              "claimName":"mysql-master"
+            }
+          }
+        ],
+        "containers":[
+          {
+            "name":"server",
+            "image":"openshift/mysql-55-centos7",
+            "command":[
+              "run-mysqld-master.sh"
+            ],
+            "ports":[
+              {
+                "containerPort":3306,
+                "protocol":"TCP"
+              }
+            ],
+            "env":[
+              {
+                "name":"MYSQL_MASTER_USER",
+                "value":"${MYSQL_MASTER_USER}"
+              },
+              {
+                "name":"MYSQL_MASTER_PASSWORD",
+                "value":"${MYSQL_MASTER_PASSWORD}"
+              },
+              {
+                "name":"MYSQL_USER",
+                "value":"${MYSQL_USER}"
+              },
+              {
+                "name":"MYSQL_PASSWORD",
+                "value":"${MYSQL_PASSWORD}"
+              },
+              {
+                "name":"MYSQL_DATABASE",
+                "value":"${MYSQL_DATABASE}"
+              },
+              {
+                "name":"MYSQL_ROOT_PASSWORD",
+                "value":"${MYSQL_ROOT_PASSWORD}"
+              }
+            ],
+            "volumeMounts":[
+              {
+                "name":"mysql-master-data",
+                "mountPath":"/var/lib/mysql/data"
+              }
+            ],
+            "resources":{
+
+            },
+            "terminationMessagePath":"/dev/termination-log",
+            "imagePullPolicy":"IfNotPresent",
+            "securityContext":{
+              "capabilities":{
+
+              },
+              "privileged":false
+            }
+          }
+        ],
+        "restartPolicy":"Always",
+        "dnsPolicy":"ClusterFirst"
+      }
+    }
+  }
+}
+----
+====
+
+Since we claimed a persistent volume in this deployment configuration to have
+all data persisted for the MySQL master server, you have to ask administrator
+to create a link:../../admin_guide/persistent_storage_nfs.html#provisioning[persistent volume]
+that you can claim the storage from.
+
+After the deployment configuration is created and the pod with MySQL master server
+is started, it will create the database defined by `*MYSQL_DATABASE*` and configure
+the server to replicate this database to slaves.
+
+The example provided defines only one replica of the MySQL master server. This
+will make Kubernetes start only one instance of the server. Having multiple
+instances (multi-master) is not supported and thus you can not scale this
+replication controller.
+
+[[creating-the-mysql-slaves]]
+
+To replicate the database created by the link:#creating-the-deployment-configuration-for-mysql-master[MySQL master]
+a deployment configuration is defined in the template. This deployment configuration
+creates replication controller that will launch MySQL image with the `*command*` field
+set to `*run-mysqld-slave.sh*`. This alternative entrypoints will skip the initialization
+of database and configure the MySQL server to connect to the `mysql-master` service, which
+is also defined in example template.
+
+.MySQL Slave Deployment Configuration Object Definition in the Example Template
+====
+
+[source,json]
+----
+{
+  "kind":"DeploymentConfig",
+  "apiVersion":"v1",
+  "metadata":{
+    "name":"mysql-slave"
+  },
+  "spec":{
+    "strategy":{
+      "type":"Recreate"
+    },
+    "triggers":[
+      {
+        "type":"ConfigChange"
+      }
+    ],
+    "replicas":1,
+    "selector":{
+      "name":"mysql-slave"
+    },
+    "template":{
+      "metadata":{
+        "labels":{
+          "name":"mysql-slave"
+        }
+      },
+      "spec":{
+        "containers":[
+          {
+            "name":"server",
+            "image":"openshift/mysql-55-centos7",
+            "command":[
+              "run-mysqld-slave.sh"
+            ],
+            "ports":[
+              {
+                "containerPort":3306,
+                "protocol":"TCP"
+              }
+            ],
+            "env":[
+              {
+                "name":"MYSQL_MASTER_USER",
+                "value":"${MYSQL_MASTER_USER}"
+              },
+              {
+                "name":"MYSQL_MASTER_PASSWORD",
+                "value":"${MYSQL_MASTER_PASSWORD}"
+              },
+              {
+                "name":"MYSQL_DATABASE",
+                "value":"${MYSQL_DATABASE}"
+              }
+            ],
+            "resources":{
+
+            },
+            "terminationMessagePath":"/dev/termination-log",
+            "imagePullPolicy":"IfNotPresent",
+            "securityContext":{
+              "capabilities":{
+
+              },
+              "privileged":false
+            }
+          }
+        ],
+        "restartPolicy":"Always",
+        "dnsPolicy":"ClusterFirst"
+      }
+    }
+  }
+}
+----
+====
+
+This example deployment config will start the replication controller with the
+initial number of replicas set to 1. You can scale this replication controller
+in both directions, up to the resources capacity of your account.
+
+[[creating-headless-service]]
+=== Creating a Headless Service
+
+The pods created by the MySQL slave replication controller have to reach the MySQL
+master server in order to register for replication. For that, this template defines
+a headless service named `*mysql-master*`. This service is not used only for replication
+but the clients can also send the queries to `*mysql-master:3306*` as the MySQL host.
+
+To have a headless service, the `*portalIP*` parameter in the service definition
+is set to *None*. Then you can use a DNS query to get a list of the pod IP
+addresses that represents the current endpoints for this service.
+
+.Headless Service Object Definition in the Example Template
+====
+
+[source,json]
+----
+{
+  "kind":"Service",
+  "apiVersion":"v1",
+  "metadata":{
+    "name":"mysql-master",
+    "labels":{
+      "name":"mysql-master"
+    }
+  },
+  "spec":{
+    "ports":[
+      {
+        "protocol":"TCP",
+        "port":3306,
+        "targetPort":3306,
+        "nodePort":0
+      }
+    ],
+    "selector":{
+      "name":"mysql-master"
+    },
+    "portalIP":"None",
+    "type":"ClusterIP",
+    "sessionAffinity":"None"
+  },
+  "status":{
+    "loadBalancer":{
+
+    }
+  }
+}
+----
+====
+
+[[scaling-the-mysql-slaves]]
+=== Scaling the MySQL slaves
+
+To link:../../dev_guide/deployments.html#scaling[increase the number of members]
+in the cluster:
+
+----
+$ oc scale rc mysql-slave-1 --replicas=<number>
+----
+
+This tells link:#creating-the-deploymentconfig[the replication controller] to
+create a new MySQL slave pod. When a new slave is created, the slave
+entrypoint first attempts to contact the `*mysql-master*` service and register
+itself to the replication set. Once that is done, the MySQL master server will
+send the slave the replicated database.
+
+When scaling down, the MySQL slave will be shut down and since the slave does not
+have any persistent storage defined, all data on the slave will be lost.
+The MySQL master server will discover that the slave is not reachable anymore
+and it will automatically remove it from the replication.
