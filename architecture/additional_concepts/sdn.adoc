@@ -19,7 +19,13 @@ overlay network using Open vSwitch (OVS). Following is a detailed discussion of
 the design and operation of OpenShift SDN, which may be useful for
 troubleshooting.
 
-== Design
+OpenShift SDN provides two SDN plugins for configuring the network, *ovssubnet*
+and *multitenant*.  The *multitenant* plugin provides isolation between pods
+based on which OpenShift project the pod is assigned to.
+
+== Common Design
+
+This section applies to both the *ovssubnet* and *multitenant* plugins.
 
 OpenShift SDN is integrated with the master and node components. On a master,
 OpenShift SDN maintains a registry of nodes, stored in *etcd*. When the system
@@ -31,28 +37,24 @@ subnet available to be allocated again.
 In the default configuration, the cluster network is the *10.1.0.0/16* class B
 network, and nodes are allocated */24* subnets (i.e., *10.1.0.0/24*,
 *10.1.1.0/24*, *10.1.2.0/24*, and so on). This means that the cluster network
-has 256 subnets available to assign to nodes, and a given node is allocated 256
+has 256 subnets available to assign to nodes, and a given node is allocated 254
 addresses that it can assign to the containers running on it. The size and
 address range of the cluster network are configurable, as is the host subnet
 size.
 
-On a node, OpenShift SDN first registers the local host in the aforementioned
-registry so that the master allocates a subnet to the node. Next, OpenShift SDN
-configures the local host with a Virtual Extensible Local Area Network (VxLAN)
-through which the containers on the local host can access the containers of all
-other participants on the cluster network. Finally, OpenShift SDN monitors the
-registry in order to add and remove OpenFlow rules to and from the local host's
-VxLAN configuration as the master adds and deletes subnets to and from its
-registry.
-
 Note that OpenShift SDN on a master does not configure the local (master) host
-to have access to the cluster network. Consequently, a master host does not have
+to have access to any cluster network. Consequently, a master host does not have
 access to containers via the cluster network, unless it is also running as a
 node.
 
-== Operation
+On a node, OpenShift SDN first registers the local host in the aforementioned
+registry so that the master allocates a subnet to the node. Next, OpenShift SDN
+configures the local host's interfaces and OVS rules in a plugin-specific manner.
 
-When OpenShift SDN is run on a node, it configures five network devices:
+=== ovssubnet Plugin Operation
+
+When OpenShift SDN is run on a node with the ovssubnet plugin, it configures
+four network devices:
 
 . *br0*, an OVS bridge device;
 . *lbr0*, a Linux bridge device;
@@ -109,7 +111,7 @@ network footnote:[After this point, device names refer to devices on container
 B's host.] -> vxlan0 -> br0 -> vovsbr -> vlinuxbr -> lbr0 -> vethB -> eth0 (in
 B's netns)_
 
-== External Access to the Cluster Network
+==== External Access to the Cluster Network
 
 If a host that is external to OpenShift requires access to the cluster network,
 you have two options:
@@ -122,3 +124,97 @@ so that the master does not schedule containers on it.
 Both options are presented as part of a practical use-case in the documentation
 for configuring link:../../admin_guide/routing_from_edge_lb.html[routing from an
 edge load-balancer to containers within OpenShift SDN].
+
+=== multitenant Plugin Operation
+
+The multitenant plugin isolates pods based on OpenShift projects.  Each project
+receives a unique Virtual Network ID (VNID) that identifies traffic from pods
+assigned to the project.  Pods from different projects cannot send packets to
+or receive packets from pods of a different project.
+
+However, the "default" project (which receives VNID 0) is more privileged in
+that it is allowed to communicate with all other pods, and all other pods can
+communicate with the "default" project.  This facilitates certain services
+(like the load balancer) that are run in containers themselves and must talk
+to all other containers.
+
+When OpenShift SDN is run on a node with the multitenant plugin, it configures
+five network devices:
+
+. *br0*, an OVS bridge device;
+. *lbr0*, a Linux bridge device;
+. *tun0*, an OVS internal port for outside network communication;
+. *vlinuxbr* and *vovsbr*, two Linux peer virtual Ethernet interfaces; and
+. *vxlan0*, the OVS VxLAN device that provides access to containers on remote
+nodes within the same tenant network
+
+On initialization, OpenShift SDN:
+
+. creates *lbr0*, assigns the node's cluster subnet gateway address to it (eg,
+10.1.x.1/24) and configures Docker to use *lbr0* as the bridge for containers;
+. creates *br0* in OVS and configures 
+. creates the *vlinuxbr* and *vovsbr* peer interfaces, which provide
+connectivity for containers created outside OpenShift SDN with Docker alone;
+. adds *vlinuxbr* to *lbr0* and *vovsbr* to *br0* (on port 9) to ensure
+standalone Docker containers have network connectivity
+. adds *vxlan0* to br0 (on port 1); and
+. configures the host's *netfilter* and routing tables to provide external
+network access via the tun0 interface through NAT.
+. adds non-pod-specific OpenFlow rules to the OVS database to route traffic
+between the non-pod interfaces
+
+As OpenShift SDN sees subnets added to and deleted from the registry by the
+master, it adds and deletes OpenFlow rules on *br0* that direct packets destined
+for that new subnet to the IP address of the node assigned that subnet through
+the VXLAN tunnel.
+
+OpenShift SDN also watches the master for added and deleted projects and
+updates an internal mapping of project :: VNID to ensure that pods are assigned
+the correct VNID when they are started.
+
+Each time a pod is started on the host, OpenShift SDN:
+
+. moves the host side of the pod's veth interface pair from the *lbr0* bridge
+(where Docker placed it when starting the container) to the OVS bridge *br0*.
+
+. adds OpenFlow rules to the OVS database to tag traffic coming from the pod
+with the pod's VNID.
+
+. adds OpenFlow rules to allow other traffic to enter the pod if the traffic's
+VNID matches the pod's VNID (or is the privileged VNID 0)
+
+The pod is allocated an IP address in the cluster subnet by Docker itself
+because Docker is told to use the *lbr0* bridge, which OpenShift SDN has assigned
+the cluster gateway address of 10.1.x.1/24.  Note that the *tun0* is also
+assigned the IP address 10.1.x.1/24 because it is the default gateway for all
+traffic destined for external networks, but these two interfaces do not
+conflict because the *lbr0* interface is only used for IPAM and no OpenShift
+SDN pods are connected to it.
+
+==== multitenant Plugin Packet Flow
+
+Almost all packet delivery decisions are performed with OpenFlow rules in the
+OVS bridge *br0*.  This simplifies the network architecture of the multitenant
+plugin and provides flexible routing and enforceable network isolation.
+
+When a packet exits a pod assigned to a non-default project, the OVS bridge
+*br0* tags that packet with the project's assigned VNID.  If the packet is
+directed to another IP address in the node's cluster subnet, the OVS bridge only
+allows the packet to be delivered to the destination pod if the VNIDs match.
+
+If a packet is received from another node via the VXLAN tunnel, the Tunnel ID
+is used as the VNID, and the OVS bridge only allows the packet to be delivered
+to a local pod if the tunnel ID matches the destination pod's VNID.
+
+Packets destined for other cluster subnets are tagged with their VNID and
+delivered to the VXLAN tunnel with a tunnel destination address of the node
+owning the cluster subnet.
+
+Packets destined for external networks are delivered directly to the *tun0*
+interface which triggers the kernel's iptables NAT rules.
+
+As described before, VNID 0 is privileged in that all traffic destined for
+VNID 0 is allowed to enter any pod assigned VNID 0.  All traffic exiting
+pods assigned VNID 0 is delivered to the destination pod irrespective of the
+destination pod's VNID.  Only the "default" OpenShift project is assigned
+VNID 0; all other projects are assigned unique, isolation-enabled VNIDs.
