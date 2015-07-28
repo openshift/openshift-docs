@@ -680,7 +680,8 @@ module DocSiteBuilder
             FileUtils.mkdir_p(tgt_dir)
             FileUtils.cp_r(src_dir,tgt_dir)
           end
-          if File.directory?(File.join(package_dir,site))
+          site_dir = File.join(package_dir,site)
+          if File.directory?(site_dir)
             # With this update, site index files will always come from the master branch
             working_branch_site_index = File.join(source_dir,'index-' + site + '.html')
             if File.exists?(working_branch_site_index)
@@ -690,6 +691,15 @@ module DocSiteBuilder
               end
             else
               FileUtils.cp(File.join(preview_dir,distro,'index.html'),File.join(package_dir,site,'index.html'))
+            end
+          end
+          # Now build a sitemap
+          site_dir_path = Pathname.new(site_dir)
+          SitemapGenerator::Sitemap.default_host = site_map['site_url'] || 'https://docs.openshift.com/'
+          SitemapGenerator::Sitemap.create( :include_root => true, :include_index => true, :compress => false, :filename => File.join(site_dir,'sitemap') ) do
+            file_list = Find.find(site_dir).select{ |path| not path.nil? and path =~ /.*\.html$/ }.map{ |path| '/' + Pathname.new(path).relative_path_from(site_dir_path).to_s }
+            file_list.each do |file|
+              add(file, :changefreq => 'daily')
             end
           end
         end
