@@ -159,9 +159,9 @@ module DocSiteBuilder
       site_map = {}
       distro_map.each do |distro,distro_config|
         if not site_map.has_key?(distro_config["site"])
-          site_map[distro_config["site"]] = {}
+          site_map[distro_config["site"]] = { :distros => {}, :name => distro_config['site_name'], :url => distro_config['site_url'] }
         end
-        site_map[distro_config["site"]][distro] = distro_config["branches"]
+        site_map[distro_config["site"]][:distros][distro] = distro_config["branches"]
       end
       site_map
     end
@@ -665,7 +665,7 @@ module DocSiteBuilder
       site_map.each do |site,site_config|
         next if not package_site == '' and not package_site == site
         puts "\nBuilding #{site} site."
-        site_config.each do |distro,branches|
+        site_config[:distros].each do |distro,branches|
           branches.each do |branch,branch_config|
             src_dir  = File.join(preview_dir,distro,branch_config["dir"])
             tgt_tdir = branch_config["dir"].split('/')
@@ -695,7 +695,7 @@ module DocSiteBuilder
           end
           # Now build a sitemap
           site_dir_path = Pathname.new(site_dir)
-          SitemapGenerator::Sitemap.default_host = site_map['site_url'] || 'https://docs.openshift.com/'
+          SitemapGenerator::Sitemap.default_host = site_config[:url]
           SitemapGenerator::Sitemap.create( :include_root => true, :include_index => true, :compress => false, :filename => File.join(site_dir,'sitemap') ) do
             file_list = Find.find(site_dir).select{ |path| not path.nil? and path =~ /.*\.html$/ }.map{ |path| '/' + Pathname.new(path).relative_path_from(site_dir_path).to_s }
             file_list.each do |file|
