@@ -1,15 +1,3 @@
 source "https://rubygems.org"
 
-gem 'asciidoctor'
-gem 'asciidoctor-diagram'
-gem 'git'
-gem 'guard'
-gem 'guard-shell'
-gem 'guard-livereload'
-gem 'haml'
-gem 'json'
-gem 'pandoc-ruby'
-gem 'rake'
-gem 'sitemap_generator', '~> 5.1.0'
-gem 'yajl-ruby'
-gem 'tilt'
+gem 'doc_site_builder', '=0.0.2'
