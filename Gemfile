@@ -1,3 +1,3 @@
 source "https://rubygems.org"
 
-gem 'doc_site_builder', '=0.0.3'
+gem 'ascii_binder', '=0.0.5'

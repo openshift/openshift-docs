@@ -1,4 +1,4 @@
-require 'doc_site_builder/tasks/tasks'
+require 'ascii_binder/tasks/tasks'
 
 task :import_api do
   sh "pushd ../origin && hack/gen-swagger-docs.sh" do |ok,res|
