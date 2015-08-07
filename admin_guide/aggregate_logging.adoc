@@ -254,6 +254,13 @@ Enabling aggregated logging to *Elasticsearch* involves:
 . link:#creating-logging-pods[Creating logging pods]
 . link:#creating-the-kibana-service[Creating the *Kibana* service]
 
+
+[NOTE]
+====
+The following directions assume everything is being created in the `default` project,
+but should work for arbitrary projects with minor adjustments.
+====
+
 [[creating-an-elasticsearch-cluster]]
 
 === Creating an Elasticsearch cluster
@@ -264,7 +271,48 @@ link:../architecture/core_concepts/deployments.html#replication-controllers[repl
 controller], so you can link:../dev_guide/deployments.html#scaling[scale] the
 *Elasticsearch* cluster up and down as required.
 
-The following is the manifest for the *Elasticsearch* cluster:
+You'll need a privileged service account to launch the current ElasticSearch image,
+as it runs as root (which should be corrected in time). Create a file with these contents:
+
+
+====
+
+[source,yaml]
+----
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: es-deploy
+----
+
+====
+
+Save this to a file and create it:
+
+====
+----
+$ oc create -f path/to/serviceaccount.yaml
+----
+====
+
+You should then add this service account to the user list in the privileged
+SCC. Of course, this must be done using cluster-administrator credentials.
+
+====
+----
+$ oc edit scc/privileged
+----
+====
+
+Add this to the `users` hash at the end (`default` is the project name):
+
+----
+- system:serviceaccount:default:es-deploy
+----
+
+Then save and exit. This account now has access to deploy privileged pods.
+
+The following is the manifest for the *ElasticSearch* cluster:
 
 ====
 
@@ -325,8 +373,11 @@ items:
           provider: "fabric8"
           component: "elasticsearch"
       spec:
+        serviceAccount: es-deploy
         containers:
           -
+            securityContext:
+              runAsUser: 0
             env:
             -
               name: "KUBERNETES_TRUST_CERT"
@@ -383,11 +434,21 @@ podManifestConfig:
 ----
 ====
 
-To create the logging pod, create a file with the following contents in the
-directory specified by `*podManifestConfig.path*` above:
+[NOTE]
+====
+If you are running OpenShift as an all-in-one with `openshift start` (either directly or via a systemd unit), node configuration
+is overwritten at each restart. You will need to use `openshift start --write-config=<path-to-config-dir> <parameters>` in order
+to write the master and node configuration, then modify your server command line to look like:
 
+    openshift start --master-config=/<config-dir>/master/master-config.yaml \
+                    --node-config=/<config-dir>/<node-dir>/node-config.yaml
 ====
 
+To create the logging pod, create a file with the following contents in
+the directory specified by `*podManifestConfig.path*` above (if relative
+as defined above, then it is relative to the node config dir):
+
+====
 [source,yaml]
 ----
 apiVersion: v1
@@ -409,6 +470,11 @@ spec:
     - name: varlibdockercontainers
       mountPath: /var/lib/docker/containers
       readOnly: true
+    env:
+    - name: "ES_HOST"
+      value: "es-logging"
+    - name: "ES_PORT"
+      value: "9200"
   volumes:
   - name: varlog
     hostPath:
@@ -422,17 +488,17 @@ spec:
 This starts a pod on the node and posts the container logs to *Elasticsearch*.
 
 To validate it is working, you can query *Elasticsearch* and check that the data
-is correctly being persisted. First, identify one of the *Elasticsearch* pods:
+is correctly being persisted. First, identify the *Elasticsearch* service:
 
 ----
-$ oc get pods -l component=elasticsearch
+$ oc get service -l component=elasticsearch
 ----
 
 Then query *Elasticsearch*, replacing the pod ID with one returned from the
-above command:
+above command for `es-logging`:
 
 ----
-$ oc exec -p <pod_id> -c elasticsearch -- curl -s localhost:9200/_cat/indices?v
+$ curl -s <service_ip>:9200/_cat/indices?v
 ----
 
 You should see output similar to the following:
@@ -446,6 +512,18 @@ yellow open   logstash-2015.06.05   5   1        540            0      251kb    
 
 If the value for `docs.count` is more than 0, then log records are being
 correctly sent to *Elasticsearch*.
+
+If not, it is usually because the fluentd container can't reach the elasticsearch service.
+There may be a bug currently that causes name resolution to fail. Check `oc logs` for the
+fluentd pod. The log may report something like:
+
+    temporarily failed to flush the buffer.  [...]
+        error="Can not reach Elasticsearch cluster ({:host=>\"es-logging\", :port=>9200, :scheme=>\"http\"})!
+        getaddrinfo: Name does not resolve (SocketError)"
+
+To work around this, you can modify the fluentd static pod definition to point
+the ES_HOST variable at the IP for the es-logging service instead of its name.
+It should be redeployed within ten seconds.
 
 [[creating-the-kibana-service]]
 
@@ -496,7 +574,7 @@ items:
         containers:
           -
             name: "kibana"
-            image: "fabric8/kibana4:4.0.2"
+            image: "fabric8/kibana4:4.1.0"
             ports:
               -
                 name: "kibana-port"
@@ -515,5 +593,16 @@ Create the *Kibana* replication controller and service:
 $ oc create -f path/to/kibana.yaml
 ----
 ====
+
+You may wish to create a route to reach Kibana externally:
+
+====
+----
+$ oc expose service/kibana --hostname=fqdn.example.com
+----
+====
+
+When you first access Kibana, you will need to specify a default index; the suggested default should work.
+For more information on using Kibana, visit its link:https://www.elastic.co/guide/en/kibana/current/index.html[user guide].
 
 endif::[]
