@@ -472,18 +472,29 @@ a value is used as the user name. Required, case-insensitive.
 
 .Apache Authentication Using *RequestHeaderIdentityProvider*
 ====
+This example configures an authentication proxy on the same host as the Master.
+Having the proxy and Master on the same host is merely a convenience and may
+not be suitable for your environment. For example, if you were already running
+a link:../admin_guide/install/deploy_router.html[Router] on the Master port 443
+would not be available.
 
-This example configures an authentication proxy on the same host as the master.
-Apache is not strictly required and this can serve as a reference configuration
-for other proxies. Having the proxy and master on the same host is merely a
-convenience and may not be suitable for your environment. For example, if you
-were already running the router on the master, then port 443 would not be
-available.
+It’s also important to note that while this reference configuration uses
+Apache's mod_auth_form it is by no means required and other proxies can easily
+be used if the following requirements are met:
 
-Install the prerequisites:
+1. Block the X-Remote-User header from client requests to prevent spoofing.
+2. Enfore client certificate authentication in the
+RequestHeaderIdentityProvider configuration
+3. Require the X-Csrf-Token header be set for all authentication request using the challenge flow.
+4. Only the /oauth/authorize endpoint should be proxied and redirects should not be rewritten to allow the backend server to send the client to the correct location.
+
+*Install the prerequisites*
+
+`mod_auth_form` is shipped as part of the `mod_session` package that is found
+in the https://access.redhat.com/solutions/392003[Optional channel]:
 
 ----
-# yum install -y httpd mod_ssl
+# yum install -y httpd mod_ssl mod_session apr-util-openssl
 ----
 
 Generate a CA for validating requests that submit the trusted header. This CA
@@ -536,6 +547,10 @@ host as the master. It uses a client certificate to connect to the master, which
 is configured to trust the `X-Remote-User` header.
 
 ----
+LoadModule auth_form_module modules/mod_auth_form.so
+LoadModule session_module modules/mod_session.so
+LoadModule request_module modules/mod_request.so
+
 # Nothing needs to be served over HTTP.  This virtual host simply redirects to
 # HTTPS.
 <VirtualHost *:80>
@@ -545,7 +560,11 @@ is configured to trust the `X-Remote-User` header.
 </VirtualHost>
 
 <VirtualHost *:443>
-  ServerName ose3-master.example.com
+  # This needs to match the certificates you generated.  See the CN and X509v3
+  # Subject Alternative Name in the output of:
+  # openssl x509 -text -in /etc/pki/tls/certs/localhost.crt
+  ServerName www.example.com
+
   DocumentRoot /var/www/html
   SSLEngine on
   SSLCertificateFile /etc/pki/tls/certs/localhost.crt
@@ -554,69 +573,72 @@ is configured to trust the `X-Remote-User` header.
 
   SSLProxyEngine on
   SSLProxyCACertificateFile /etc/pki/CA/certs/ca.crt
+  # It's critical to enforce client certificates on the Master.  Otherwise
+  # requests could spoof the X-Remote-User header by accessing the Master's
+  # /oauth/authorize endpoint directly.
   SSLProxyMachineCertificateFile /etc/pki/tls/certs/authproxy.pem
 
-  # Needed for efficient log watching
-  SetEnv proxy-sendchunked 1
+  # Send all requests to the console
+  RewriteEngine              On
+  RewriteRule     ^/console(.*)$     https://%{HTTP_HOST}:8443/console$1 [R,L]
 
-  # The value here will be important to tune for your performance needs.  At
-  # some point Apache has to clean up stale connections.  The proxy is unable
-  # to differenciate stale connections with say 'oc log -f' on a pod that
-  # simply isn't outputing anything.  There are likely many other ProxyPass
-  # settings that will need to be adjusted for Production workloads.
-  ProxyTimeout 60
+  # In order to using the challenging-proxy an X-Csrf-Token must be present.
+  RewriteCond %{REQUEST_URI} ^/challenging-proxy
+  RewriteCond %{HTTP:X-Csrf-Token} ^$ [NC]
+  RewriteRule ^.* - [F,L]
 
-  # Insert your backend server name/ip here.
-  ProxyPass / https://ose3-master.example.com:8443/
-  ProxyPassReverse / https://ose3-master.example.com:8443/
-
-  # Requests should be able to access /oauth/token/request and
-  # /oauth/token/display without authentication.  In the case of
-  # /outh/token/display OpenShift will check one of the
-  # ORIGIN_AUTH_REQUEST_HANDLERS to see if the request is authenticated.
-  # Technically it would require authentication for /oauth/token/display simply
-  # by modifying these two ProxyMatch stanzas.
-  <ProxyMatch /oauth/token/.*>
-    Allow from all
-  </ProxyMatch>
-
-  # /oauth/authorize and /oauth/approve should be protected by Apache.
-  <ProxyMatch /oauth/a.*>
-    AuthUserFile /etc/openshift/htpasswd
+  <Location /challenging-proxy/oauth/authorize>
+    # Insert your backend server name/ip here.
+    ProxyPass https://[MASTER]:8443/oauth/authorize
     AuthType basic
+  </Location>
+
+  <Location /login-proxy/oauth/authorize>
+    # Insert your backend server name/ip here.
+    ProxyPass https://[MASTER]:8443/oauth/authorize
+
+    # mod_auth_form providers are implemented by mod_authn_dbm, mod_authn_file,
+    # mod_authn_dbd, mod_authnz_ldap and mod_authn_socache.
+    AuthFormProvider file
+    AuthType form
+    AuthName openshift
+    ErrorDocument 401 /login.html
+  </Location>
+
+  <ProxyMatch /oauth/authorize>
+    AuthUserFile /etc/openshift/htpasswd
+    AuthName openshift
+    Require valid-user
+    RequestHeader set X-Remote-User %{REMOTE_USER}s
 
     # For ldap:
     # AuthBasicProvider ldap
     # AuthLDAPURL "ldap://ldap.example.com:389/ou=People,dc=my-domain,dc=com?uid?sub?(objectClass=*)"
 
-    # For Kerberos remove "AuthType basic" and insert the following:
-    # AuthType Kerberos
-    # KrbMethodNegotiate on
-    # KrbMethodK5Passwd off
-    # KrbServiceName Any
-    # KrbAuthRealms EXAMPLE.COM
-    # Krb5Keytab /path/to/keytab
-    # KrbSaveCredentials off
+    # It's possible to remove the mod_auth_form usage and replace it with
+    # something like mod_auth_kerb, mod_auth_gsspai or even mod_auth_mellon.
+    # The former would be able to support both the login and challenge flows
+    # from the Master.  Mellon would likely only support the login flow.
 
-    AuthName openshift
-    Require valid-user
-    RequestHeader set X-Remote-User %{REMOTE_USER}s
+    # For Kerberos
+    # yum install mod_auth_gssapi
+    # AuthType GSSAPI
+    # GssapiCredStore keytab:/etc/httpd.keytab
   </ProxyMatch>
 
-  # All other requests should use Bearer tokens.  These can only be verified by
-  # OpenShift so we need to let these requests pass through.
-  <Proxy *>
-    SetEnvIfNoCase Authorization Bearer passthrough
-    Allow from env=passthrough
-
-    Order Deny,Allow
-    Deny from all
-    Satisfy any
-  </Proxy>
 </VirtualHost>
 
 RequestHeader unset X-Remote-User
 ----
+
+*Additional mod_auth_form requirements*
+
+A sample login page is available from the
+https://github.com/openshift/openshift-extras/tree/master/misc/form_auth[openshift_extras]
+repository.  This file should be placed in the DocumentRoot (`/var/www/html` by
+default).
+
+*Create users*
 
 At this point, you can create the users in the system Apache is using to store
 accounts information. In this example, file-backed authentication is used:
@@ -645,8 +667,10 @@ the Apache VirtualHost:
 ----
   identityProviders:
   - name: requestheader
-    challenge: false
-    login: false
+    challenge: true
+    challengeURL: "https://[MASTER]/challenging-proxy/oauth/authorize?${query}"
+    login: true
+    loginURL: "https://[MASTER]/login-proxy/oauth/authorize?${query}"
     provider:
       apiVersion: v1
       kind: RequestHeaderIdentityProvider
@@ -655,7 +679,7 @@ the Apache VirtualHost:
       - X-Remote-User
 ----
 
-Now restart everything:
+*Final steps*
 
 ----
 # systemctl restart httpd
@@ -670,39 +694,16 @@ the correct client certificate and header:
 ----
 # curl -L -k -H "X-Remote-User: joe" \
   --cert /etc/pki/tls/certs/authproxy.pem \
-  https://ose3-master.example.com:8443/oauth/token/request
+  https://[MASTER]:8443/oauth/token/request
 ----
 
 If you do not supply the client certificate, the request should be denied:
 
 ----
 # curl -L -k -H "X-Remote-User: joe" \
-  https://ose3-master.example.com:8443/oauth/token/request
+  https://[MASTER]:8443/oauth/token/request
 ----
 
-*Handling Logouts from the Web Console*
-
-The link:../architecture/infrastructure_components/web_console.html[web
-console] manages its own sessions. When a user authenticates to Apache, in this
-case there is another session at play. By default if the user clicks the logout
-link from the web console, it only clears out the session cookie and delete the
-token. However, Apache still thinks the user is logged in and immediately
-triggers another log in.
-
-To handle this case, the web console's Asset Server has a setting that allows
-admins to specify a logout URL:
-
-----
-assetConfig:
-  logoutURL: "https://ose3-master.example.com/logout"
-----
-
-This page could be another `<Location>` in Apache that loads a static page for
-clearing the form of authentication that is in use. This is especially useful
-when using `mod_auth_form` in Apache 2.4. Basic Authentication logouts can be
-challenging to support across all browsers, so it may simply be useful to
-redirect to a page instructing the user to clear their authentication cache or
-perhaps run `kdestroy` in the case of Kerberos.
 
 ====
 
