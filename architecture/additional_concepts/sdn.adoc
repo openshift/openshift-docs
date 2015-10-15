@@ -12,7 +12,7 @@ toc::[]
 == Overview
 
 OpenShift uses a software-defined networking (SDN) approach to provide a unified
-cluster network that enables communication between containers across the
+cluster network that enables communication between pods across the
 OpenShift cluster. This cluster network is established and maintained by the
 ifdef::openshift-origin[]
 https://github.com/openshift/openshift-sdn[OpenShift SDN],
@@ -27,17 +27,17 @@ OpenShift SDN provides two SDN plug-ins for configuring the network:
 
 * The *ovssubnet* plug-in is the original plug-in which provides a "flat" pod
 network where every pod can communicate with every other pod and service.
-* The *multitenant* plug-in provides isolation between pods based on which
-OpenShift project the pod is assigned to. Each project receives a unique
-Virtual Network ID (VNID) that identifies traffic from pods assigned to the
-project. Pods from different projects cannot send packets to or receive
-packets from pods and services of a different project.
+* The *multitenant* plug-in provides OpenShift project level isolation for
+pods and services. Each project receives a unique Virtual Network ID (VNID)
+that identifies traffic from pods assigned to the project. Pods from different
+projects cannot send packets to or receive packets from pods and services of
+a different project.
 +
-However, the *default* project (which receives VNID 0) is more privileged in
-that it is allowed to communicate with all other pods, and all other pods can
-communicate with the *default* project. This facilitates certain services (like
-the load balancer) that are run in containers themselves and must talk to all
-other containers.
+However, projects which receive VNID 0 are more privileged in
+that they are allowed to communicate with all other pods, and all other pods can
+communicate with them. In OpenShift clusters, the *default* project has
+VNID 0. This facilitates certain services like the load balancer, etc. to
+communicate with all other pods in the cluster and vice versa.
 endif::[]
 
 ifdef::openshift-enterprise[]
@@ -69,7 +69,7 @@ size.
 
 Note that OpenShift SDN on a master does not configure the local (master) host
 to have access to any cluster network. Consequently, a master host does not have
-access to containers via the cluster network, unless it is also running as a
+access to pods via the cluster network, unless it is also running as a
 node.
 
 ifdef::openshift-origin[]
@@ -77,6 +77,24 @@ When using the *multitenant* plug-in, the OpenShift SDN master also watches for
 the creation and deletion of projects, and assigns VXLAN VNIDs to them, which
 will be used later by the nodes to isolate traffic correctly.
 endif::[]
+
+=== Master Network Configuration
+
+Cluster admin will have the option to control these pod network settings on the master:
+
+[source,yaml]
+----
+...
+networkConfig:
+  clusterNetworkCIDR: 10.1.0.0/16    # Cluster network for node IP allocation 
+  hostSubnetLength: 8                # Number of bits for Pod IP allocation within a node
+  networkPluginName: ""              # redhat/openshift-ovs-subnet for flat SDN
+ifdef::openshift-origin[]
+	                             # redhat/openshift-ovs-multitenant for multitenant SDN			
+endif::[] 
+  serviceNetworkCIDR: 172.30.0.0/16  # Service IP allocation for the cluster
+...
+----
 
 [[sdn-design-on-nodes]]
 
@@ -87,7 +105,7 @@ the aforementioned registry so that the master allocates a subnet to the node.
 
 Next, OpenShift SDN creates and configures six network devices:
 
-* *br0*, the OVS bridge device that containers will be attached to. OpenShift
+* *br0*, the OVS bridge device that pod containers will be attached to. OpenShift
 SDN also configures a set of non-subnet-specific flow rules on this bridge.
 ifdef::openshift-origin[]
 The *multitenant* plug-in does this immediately.
@@ -101,9 +119,14 @@ cluster subnet gateway address, and is used for external network
 access. OpenShift SDN configures *netfilter* and routing rules to enable access
 from the cluster subnet to the external network via NAT.
 * *vlinuxbr* and *vovsbr*, two Linux peer virtual Ethernet interfaces.
-*vlinuxbr* is added to *lbr0* and *vovsbr* is added to *br0* (port 9), to
-provide connectivity for containers created directly with Docker outside of
-OpenShift.
+*vlinuxbr* is added to *lbr0* and *vovsbr* is added to *br0*
+ifdef::openshift-origin[]
+(port 9 in *ovssubnet* plug-in,  port 3 in *multitenant* plug-in)
+endif::[]
+ifndef::openshift-origin[]
+(port 9)
+endif::[]
+, to provide connectivity for containers created directly with Docker outside of OpenShift.
 * *vxlan0*, the OVS VXLAN device (port 1 on *br0*), which provides access to
 containers on remote nodes.
 
@@ -136,6 +159,22 @@ ifdef::openshift-origin[]
 The *ovssubnet* plug-in sends all packets across the VXLAN with VNID 0, but the
 *multitenant* plug-in uses the appropriate VNID for the source container.
 endif::[]
+
+=== Node Network Configuration
+
+Cluster admin will have the option to control these pod network settings on the node:
+
+[source,yaml]
+----
+...
+networkConfig:
+  mtu: 1450              # Maximum transmission unit for the pod overlay network
+  networkPluginName: ""  # redhat/openshift-ovs-subnet for flat SDN
+ifdef::openshift-origin[]
+	                 # redhat/openshift-ovs-multitenant for multitenant SDN			
+endif::[] 
+...
+----
 
 === Packet Flow
 
@@ -177,6 +216,8 @@ isolation.
 endif::[]
 
 ifdef::openshift-origin[]
+[[multitenant-plugin]]
+
 === Network Isolation With the multitenant Plug-in
 
 When using the *multitenant* plug-in, when a packet exits a pod assigned to a
@@ -196,7 +237,9 @@ owning the cluster subnet.
 As described before, VNID 0 is privileged in that traffic with any VNID is
 allowed to enter any pod assigned VNID 0, and traffic with VNID 0 is allowed to
 enter any pod. Only the *default* OpenShift project is assigned VNID 0; all
-other projects are assigned unique, isolation-enabled VNIDs.
+other projects are assigned unique, isolation-enabled VNIDs. Admin can optionally
+control the pod network for the project with
+link:../../admin_guide/pod_network.html[oadm pod-network] CLI command.
 endif::[]
 
 === External Access to the Cluster Network
@@ -212,3 +255,15 @@ so that the master does not schedule containers on it.
 Both options are presented as part of a practical use-case in the documentation
 for configuring link:../../admin_guide/routing_from_edge_lb.html[routing from an
 edge load-balancer to containers within OpenShift SDN].
+
+ifdef::openshift-origin[]
+=== Migration between ovssubnet and multitenant plug-ins
+To switch from one SDN plug-in to another, admin needs to:
+
+. Change the *networkPluginName* parameter in both master and node configuration files.
+. Restart openshift-master service on master and openshift-node service on all nodes.
+
+When switching from ovssubnet to multitenant plug-in, all the existing projects in the cluster
+will be fully isolated (assigned unique VNIDs). Admin can choose to join or unisolate project
+networks using link:../../admin_guide/pod_network.html[oadm pod-network] CLI command.
+endif::[]
