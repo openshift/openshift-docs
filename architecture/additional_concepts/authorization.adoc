@@ -238,6 +238,8 @@ containers].
 . The SELinux context of the container.
 . The user ID.
 . The use of host namespaces and networking.
+. Allocating an FSGroup that owns the pod's volumes
+. Configuring allowable supplemental groups
 
 Two SCCs are added to the cluster by default, _privileged_ and _restricted_,
 which are viewable by cluster administrators using the CLI:
@@ -258,7 +260,12 @@ CLI. For example, for the privileged SCC:
 ----
 # oc export scc/privileged
 allowHostDirVolumePlugin: true
+allowHostIPC: true
+allowHostNetwork: true
+allowHostPID: true
+allowHostPorts: true
 allowPrivilegedContainer: true
+allowedCapabilities: null
 apiVersion: v1
 groups: <1>
 - system:cluster-admins
@@ -267,10 +274,14 @@ kind: SecurityContextConstraints
 metadata:
   creationTimestamp: null
   name: privileged
-runAsUser:
-  type: RunAsAny <2>
-seLinuxContext:
-  type: RunAsAny <3>
+runAsUser: <2>
+  type: RunAsAny
+seLinuxContext: <3>
+  type: RunAsAny
+supplementalGroups: <5>
+  type: RunAsAny
+fsGroup: <6>
+  type: RunAsAny
 users: <4>
 - system:serviceaccount:openshift-infra:build-controller
 ----
@@ -279,6 +290,8 @@ users: <4>
 <2> The run as user strategy type which dictates the allowable values for the Security Context
 <3> The SELinux context strategy type which dictates the allowable values for the Security Context
 <4> The users who have access to this SCC
+<5> The supplemental groups strategy which dictates the allowable supplemental groups for the Security Context
+<6> The FSGroup strategy which dictates the allowable values for the Security Context
 ====
 
 The `*users*` and `*groups*` fields on the SCC control which SCCs can be used.
@@ -294,6 +307,8 @@ The privileged SCC:
 - allows a pod to run with any MCS label.
 - allows a pod to use the host's IPC namespace.
 - allows a pod to use the host's PID namespace.
+- allows a pod to use any FSGroup.
+- allows a pod to use any supplemental group.
 
 The restricted SCC:
 
@@ -301,6 +316,14 @@ The restricted SCC:
 - ensures pods cannot use host directory volumes.
 - requires that a pod run as a user in a pre-allocated range of UIDs.
 - requires that a pod run with a pre-allocated MCS label.
+- allows a pod to use any FSGroup.
+- allows a pod to use any supplemental group.
+
+[NOTE]
+====
+For more information about each SCC please refer to the `kubernetes.io/description`
+annotation available on the SCC.
+====
 
 SCCs are comprised of settings and strategies that control the security features
 a pod has access to. These settings fall into three categories:
@@ -351,3 +374,66 @@ on the request.
 
 If a matching set of constraints is found, then the pod is accepted. If the
 request cannot be matched to an SCC, the pod is rejected.
+
+==== SCC Prioritization
+
+SCCs have a priority field that affects the ordering when attempting to
+validate a request by the admission controller.  A higher priority
+SCC is moved to the front of the set when sorting.  When the complete set
+of available SCCs are determined they are ordered by:
+
+. Highest priority first, nil is considered a 0 priority
+. If priorities are equal, the SCCs will be sorted from most restrictive to least restrictive
+. If both priorities and restrictions are equal the SCCs will be sorted by name
+
+By default, the anyuid SCC granted to cluster administrators is given priority
+in their SCC set.  This allows cluster administrators to run pods as any
+user by without specifying a `RunAsUser` on the pod's `SecurityContext`.  The
+administrator may still specify a `RunAsUser` if they wish.
+
+==== Understanding pre-allocated values and Security Context Constraints
+
+The admission controller is aware of certain conditions in the security context constraints that trigger
+it to look up pre-allocated values from a namespace and populate the security context constraint
+before processing the pod.
+
+The following security context constraints prompt the admission controller to look for pre-allocated
+values:
+
+. A RunAsUser strategy of MustRunAsRange with no min/max set.  Admission will look for the `openshift.io/sa.scc.uid-range`
+annotation to populate range fields.
+. An SELinux strategy of MustRunAs with no level set.  Admission will look for the `openshift.io/sa.scc.mcs`
+annotation to populate the level.
+. A FSGroup strategy of MustRunAsRange with no ranges set.  Admission will look for the
+`openshift.io/sa.scc.supplemental-groups` annotation.
+. A SupplementalGroups strategy of MustRunAsRange with no ranges set.  Admission will look for
+the `openshift.io/sa.scc.supplemental-groups` annotation.
+During the generation phase, the security context provider will default any values that are not
+specifically set by the user.  Defaulting is based on the strategy being used:
+.. RunAsAny and MustRunAsNonRoot strategies do not provide default values
+.. MustRunAs (single value) strategies provide the value that must be used
+.. MustRunAsRange and MustRunAs (range based) strategies provide the min value of the range.
+If a range based strategy is configurable with multiple ranges it will provide the min value of
+the first configured range.
+
+[NOTE]
+====
+FSGroup and SupplementalGroup strategies will fall back to the `openshift.io/sa.scc.uid-range`
+annotation if the `openshift.io/sa.scc.supplemental-groups` annotation does not exist on the
+namespace.  If neither exist the SCC will fail to create.
+====
+
+[NOTE]
+====
+By default the annotation based FSGroup strategy will configure itself with a single range based
+on the min value for the annotation.  For example, if your annotation reads `1/3` the FSGroup
+strategy will configure itself with a min and max of 1.  If you would like to allow more groups
+to be accepted for the FSGroup field you may configure a custom SCC that does not use the annotation.
+====
+
+[NOTE]
+====
+The `openshift.io/sa.scc.supplemental-groups` accepts a comma delimited list of blocks in the
+format of `<start>/<length` or `<start>-<end>`.  The `openshift.io/sa.scc.uid-range` accepts only
+a single block.
+====
