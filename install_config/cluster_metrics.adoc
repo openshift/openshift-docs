@@ -12,307 +12,433 @@ toc::[]
 
 == Overview
 
-As an OpenShift administrator, you may want to view the metrics from all
+As an OpenShift administrator, you can view a cluster's metrics from all
 containers and components in one user interface. The
 link:../architecture/infrastructure_components/kubernetes_infrastructure.html#kubelet[kubelet]
-exposes metrics that can be collected and stored in various back ends by
-link:https://github.com/GoogleCloudPlatform/heapster[Heapster]. This guide uses
-link:https://influxdb.com/[InfluxDB] for storage and
-link:http://grafana.org[Grafana] for visualization.
+exposes metrics that can be collected and stored in back-ends by
+link:https://github.com/GoogleCloudPlatform/heapster[Heapster].
+This topic describes using
+link:https://github.com/hawkular/hawkular-metrics[Hawkular Metrics]
+as a metrics engine which stores the data persistently in a
+link:http://cassandra.apache.org/[Cassandra] database. When this is
+configured, CPU and memory-based metrics are viewable from the OpenShift
+web console.
 
-[IMPORTANT]
-====
-This solution is a work in progress. As packaging improvements are made, these
-instructions will be simplified.
-====
+Heapster retrieves a list of all nodes from the master server, then contacts
+each node individually through the `/stats` endpoint. From there, Heapster
+scrapes the metrics for CPU & memory usage and exports them into Hawkular
+Metrics.
 
-== Node Configuration
+Browsing individual pods in the web console displays separate sparkline charts
+for memory and CPU. The time range displayed is selectable, and these charts
+automatically update every 30 seconds. If there are multiple containers on the
+pod, then you can select a specific container to display its metrics.
 
-In order for *Heapster* to retrieve metrics from the nodes, a read-only port has
-to be opened on each node. This allows *Heapster* to retrieve metrics without
-authentication.
+If you have link:../dev_guide/limits.html[resource limits] defined for your
+project, then you can also see a donut chart for each pod. The donut chart
+displays usage against the resource limit. For example: `145 Available of 200
+MiB`, with the donut chart showing `55 MiB Used`.
 
-[IMPORTANT]
-====
-Opening up the read-only port exposes information about the running pods (such
-as namespace, pod name, labels, etc.) to unauthenticated clients. The
-requirement to open up this read-only port will be fixed in future versions.
-====
-
-To enable the read-only port, you must configure the `*read-only-port*` Kubelet
-argument in the *_node-config.yaml_* file on each node. Add the following to
-your *_node-config.yaml_*:
-
-====
-[source,yaml]
-----
-kubeletArguments:
-  "read-only-port":
-    - "10255"
-----
-====
-
-Restart your node to make this setting take effect:
-
-----
 ifdef::openshift-origin[]
-$ systemctl restart origin-node
+For more information about the metrics integration, please refer to the
+link:https://github.com/openshift/origin-metrics[Origin Metrics] GitHub project.
 endif::[]
-ifdef::openshift-enterprise[]
-$ systemctl restart atomic-openshift-node
-endif::[]
+
+== Before You Begin
+
+The components for cluster metrics must be deployed to the `openshift-infra`
+project. This allows the `horizontal pod autoscaler` to discover the heapster
+service and use it to retrieve metrics that can be used for autoscaling.
+////
+TODO: make a link to the HPA page once it exists.
+////
+
+All of the following commands in this topic must be executed under the
+`openshift-infra` project. To switch to the `openshift-infra` project:
+
+[options="nowrap"]
+----
+$ oc project openshift-infra
 ----
 
-Update firewall rules to allow remote access to the read-only port:
+Next: To enable cluster metrics, configure the:
 
+. link:../install_config/cluster_metrics.html#service-accounts[Service Accounts]
+. link:../install_config/cluster_metrics.html#metric-data-storage[Metric Data Storage]
+. link:../install_config/cluster_metrics.html#metrics-deployer[Metrics Deployer]
+
+== Service Accounts
+
+You must configure service accounts for:
+
+* link:../install_config/cluster_metrics.html#metrics-deployer-service[Metrics Deployer]
+* link:../install_config/cluster_metrics.html#heapster-service[Heapster]
+
+[[metrics-deployer-service]]
+
+=== Metrics Deployer Service Account
+
+Create a service account for the *metrics deployer*:
+
+[options="nowrap"]
 ----
-iptables -I OS_FIREWALL_ALLOW -p tcp -m state --state NEW -m tcp --dport 10255 -j ACCEPT
-----
-
-== Deploying InfluxDB
-
-Metrics are stored in *InfluxDB* for querying. This cluster is scalable using a
-link:../architecture/core_concepts/deployments.html#replication-controllers[replication
-controller], so you can link:../dev_guide/deployments.html#scaling[scale] the
-*InfluxDB* cluster up and down as required.
-
-The following is the manifest for the *InfluxDB* cluster:
-
-====
-
-[source,yaml]
-----
-apiVersion: "v1"
-kind: "List"
-items:
-  -
-    apiVersion: "v1"
-    kind: "Service"
-    metadata:
-      labels:
-        provider: "fabric8"
-        component: "influxdb-monitoring"
-      name: "influxdb-monitoring"
-    spec:
-      ports:
-        -
-          port: 8086
-          targetPort: "http"
-      selector:
-        provider: "fabric8"
-        component: "influxdb-monitoring"
-  -
-    apiVersion: "v1"
-    kind: "ReplicationController"
-    metadata:
-      labels:
-        provider: "fabric8"
-        component: "influxdb-monitoring"
-      name: "influxdb-monitoring"
-    spec:
-      replicas: 1
-      selector:
-        provider: "fabric8"
-        component: "influxdb-monitoring"
-      template:
-        metadata:
-          labels:
-            provider: "fabric8"
-            component: "influxdb-monitoring"
-        spec:
-          containers:
-            -
-              env:
-                -
-                  name: "PRE_CREATE_DB"
-                  value: "k8s;grafana"
-              image: "fabric8/influxdb:0.8.8"
-              name: "influxdb"
-              ports:
-                -
-                  containerPort: 8090
-                  name: "raft"
-                -
-                  containerPort: 8099
-                  name: "protobuf"
-                -
-                  containerPort: 8083
-                  name: "admin"
-                -
-                  containerPort: 8086
-                  name: "http"
-              volumeMounts:
-                -
-                  mountPath: "/data"
-                  name: "influxdb-data"
-          volumes:
-            -
-              emptyDir:
-              name: "influxdb-data"
-----
-====
-
-Save this to a file and create it:
-
-----
-$ oc create -f <path/to/influxdb.yaml>
-----
-
-This starts a single *InfluxDB* instance. If you need to create a larger
-cluster, you can scale the *InfluxDB* replication controller using:
-
-----
-$ oc scale rc influxdb-monitoring --replicas=<number>
-----
-
-== Deploying Heapster
-
-*Heapster* reads all nodes and pods from the master, then connects to each
-node's kubelet to retrieve pod metrics. *Heapster* will run under a
-link:service_accounts.html[service account] with the *cluster-reader*
-link:manage_authorization_policy.html#viewing-cluster-policy[cluster role] to
-be able to retrieve these metrics.
-
-The following is the definition of a service account for *Heapster* to use:
-
-====
-[source,yaml]
-----
+$ oc create -f - <<API
 apiVersion: v1
 kind: ServiceAccount
 metadata:
-  name: heapster
+  name: metrics-deployer
+secrets:
+- name: metrics-deployer
+API
 ----
+
+Before it can deploy components, the metrics-deployer service account must be granted the `edit` permission for the _openshift-infra_ project:
+
+[options="nowrap"]
+----
+$ oadm policy add-role-to-user edit system:serviceaccount:openshift-infra:metrics-deployer
+----
+
+[[heapster-service]]
+
+=== Heapster Service Account
+
+The Heapster component requires access to the master server to list all
+available nodes and access the `/stats` endpoint for each node. Before it can do
+this, the Heapster service account requires the `cluster-reader` permission:
+
+[options="nowrap"]
+----
+$ oadm policy add-cluster-role-to-user cluster-reader system:serviceaccount:openshift-infra:heapster
+----
+
+== Metric Data Storage
+
+You can store the metrics data to either
+link:../architecture/additional_concepts/storage.html[persistent storage]
+or to a temporary
+link:../dev_guide/volumes.html[pod volume].
+
+=== Persistent Storage
+
+Running OpenShift cluster metrics with persistent storage means that your
+metrics will be stored to a
+link:../architecture/additional_concepts/storage.html#persistent-volumes[persistent volume]
+and be able to survive a pod being restarted or recreated. This is ideal if you require your metric data to be guarded from data loss.
+
+To use persistent storage with the metric components, ensure that a
+link:../architecture/additional_concepts/storage.html#persistent-volumes[persistent volume]
+of sufficient size is available. The creation of
+link:../architecture/additional_concepts/storage.html#persistent-volume-claims[persistent volume claims]
+is handled by the
+link:../install_config/cluster_metrics.html#metrics-deployer[*metrics deployer*].
+
+=== Non-Persistent Storage
+
+Running OpenShift cluster metrics with non-persistent storage means that any
+stored metrics will be deleted when the pod is deleted. While it is much easier
+to run cluster metrics with non-persistent data, running with non-persistent
+data does come with the risk of permanent data loss. However, metrics can still
+survive a container being restarted.
+
+In order to use non-persistent storage, you will need to set the
+`*USE_PERSISTENT_STORAGE*`
+link:../install_config/cluster_metrics.html#creating-the-deployer-template[template option] to `false` for the *metrics deployer*.
+
+[[metrics-deployer]]
+
+== Metrics Deployer
+
+The *metrics deployer* deploys and configures all of the metrics
+components. You can configure it by passing in information from
+link:../dev_guide/secrets.html[secrets] and by passing parameters to the *metrics deployer*'s link:../dev_guide/templates.html[template].
+
+=== Metrics Deployer Secrets
+
+By default, the *metrics deployer* auto-generates self-signed certificates for
+use between components. To provide your own certificates, you can pass these
+values as link:../dev_guide/secrets.html[secrets] to the *metrics deployer*.
+
+[WARNING]
+====
+By default, the Hawkular Metrics service uses self signed certificates which can
+cause problems when the console accesses it in a web browser. Alternately, you
+can specify your own *_hawkular-metrics.pem_* secret to use a certificate which
+is trusted by the browser.
 ====
 
-Save it to a file and create it with:
+Optionally, provide your own certificate that is configured to be trusted by your browser by pointing your secret to the certificate's *_.pem_* and certificate authority certificate files:
 
+[options="nowrap"]
 ----
-$ oc create -f <path/to/heapster-serviceaccount.yaml>
-----
-
-Add the *cluster-reader* role to the *Heapster* service account:
-
-----
-$ oadm policy add-cluster-role-to-user \
-    cluster-reader \
-    system:serviceaccount:default:heapster
+$ oc secrets new metrics-deployer hawkular-metrics.pem=/home/openshift/metrics/hm.pem \
+hawkular-metrics-ca.cert=/home/openshift/metrics/hm-ca.cert
 ----
 
-The following is the definition of the *Heapster* replication controller:
+You can also use the default auto-generated certificates with the following
+command:
+
+[options="nowrap"]
+----
+$ oc secrets new metrics-deployer nothing=/dev/null
+----
+
+The following table contains more advanced configuration options, detailing all the secrets which can be used by the deployer:
+
+[cols="2,4",options="header"]
+|===
+
+|Secret Name |Description
+
+|*_hawkular-metrics.pem_*
+|The *_pem_* file to use for the Hawkular Metrics certificate. This is
+auto-generated if unspecified.
+
+|*_hawkular-metrics-ca.cert_*
+|The certificate for the CA used to sign the *_hawkular-metrics.pem_*. This
+option is ignored if the *_hawkular-metrics.pem_* option is not specified.
+
+|*_hawkular-cassandra.pem_*
+|The *_.pem_* file to use for the Cassandra certificate. This is auto-generated
+if unspecified.
+
+|*_hawkular-cassandra-ca.cert_*
+|The certificate for the CA used to sign the *_hawkular-cassandra.pem_*. This
+option is ignored if the *_hawkular-cassandra.pem_* option is not specified.
+
+|*_heapster.cert_*
+|The certificate for Heapster to use. This is auto-generated if unspecified.
+
+|*_heapster.key_*
+|The key to use with the Heapster certificate. This is ignored if
+*_heapster.cert_* is not specified
+
+|*_heapster_client_ca.cert_*
+|The certificate that generates *_heapster.cert_*. This is required if
+*_heapster.cert_* is specified, otherwise it is auto-generated.
+
+|*_heapster_allowed_users_*
+|A file containing a comma-separated list of CN to accept from certificates
+signed with the specified CA. By default, this is set to no allowed users.
+
+|===
+
+=== Creating the Deployer Template
+
+The following is the
+link:../architecture/core_concepts/templates.html[template]
+used to deploy the metrics components.
+
+By default, the OpenShift
+installer creates this template, and it can be found in the following directory:
+*_/usr/share/ansible/openshift-ansible/roles/openshift_examples/files/examples/infrastructure-templates/enterprise/metrics-deployer.yaml_*
+
+You will need to save your completed file with the file name *_metrics.yaml_*.
 
 ====
-[source,yaml]
+[source,yaml,options="nowrap"]
 ----
 apiVersion: "v1"
-kind: "List"
-items:
-  -
-    apiVersion: "v1"
-    kind: "ReplicationController"
-    metadata:
-      labels:
-        provider: "fabric8"
-        component: "heapster"
-      name: "heapster"
-    spec:
-      replicas: 1
-      selector:
-        provider: "fabric8"
-        component: "heapster"
-      template:
-        metadata:
-          labels:
-            provider: "fabric8"
-            component: "heapster"
-        spec:
-          containers:
-            -
-              args:
-                - "-source=kubernetes:https://kubernetes.default.svc?auth=&insecure=true&useServiceAccount=true"
-                - "-sink=influxdb:http://influxdb-monitoring:8086"
-              image: "kubernetes/heapster:v0.17.0"
-              name: "heapster"
-          serviceAccount: "heapster"
+kind: "Template"
+metadata:
+  name: metrics-deployer-template
+  annotations:
+    description: "Template for deploying the required Metrics integration. Requires cluster-admin 'metrics-deployer' service account and 'metrics-deployer' secret."
+    tags: "infrastructure"
+labels:
+  metrics-infra: deployer
+  provider: openshift
+  component: deployer
+objects:
+-
+  apiVersion: v1
+  kind: Pod
+  metadata:
+    generateName: metrics-deployer-
+  spec:
+    containers:
+    - image: ${IMAGE_PREFIX}metrics-deployer:${IMAGE_VERSION}
+      name: deployer
+      volumeMounts:
+      - name: secret
+        mountPath: /secret
+        readOnly: true
+      - name: empty
+        mountPath: /etc/deploy
+      env:
+        - name: PROJECT
+          valueFrom:
+            fieldRef:
+              fieldPath: metadata.namespace
+        - name: IMAGE_PREFIX
+          value: ${IMAGE_PREFIX}
+        - name: IMAGE_VERSION
+          value: ${IMAGE_VERSION}
+        - name: PUBLIC_MASTER_URL
+          value: ${PUBLIC_MASTER_URL}
+        - name: MASTER_URL
+          value: ${MASTER_URL}
+        - name: REDEPLOY
+          value: ${REDEPLOY}
+        - name: USE_PERSISTENT_STORAGE
+          value: ${USE_PERSISTENT_STORAGE}
+        - name: HAWKULAR_METRICS_HOSTNAME
+          value: ${HAWKULAR_METRICS_HOSTNAME}
+        - name: CASSANDRA_NODES
+          value: ${CASSANDRA_NODES}
+        - name: CASSANDRA_PV_SIZE
+          value: ${CASSANDRA_PV_SIZE}
+        - name: METRIC_DURATION
+          value: ${METRIC_DURATION}
+    dnsPolicy: ClusterFirst
+    restartPolicy: Never
+    serviceAccount: metrics-deployer
+    volumes:
+    - name: empty
+      emptyDir: {}
+    - name: secret
+      secret:
+        secretName: metrics-deployer
+parameters:
+-
+  description: 'Specify prefix for metrics components; e.g. for "openshift/origin-metrics-deployer:v3.1", set prefix "openshift/origin-"'
+  name: IMAGE_PREFIX
+  value: "openshift/origin-"
+-
+  description: 'Specify version for metrics components; e.g. for "openshift/origin-metrics-deployer:v3.1", set version "v1.1"'
+  name: IMAGE_VERSION
+  value: "latest"
+-
+  description: "Internal URL for the master, for authentication retrieval"
+  name: MASTER_URL
+  value: "https://kubernetes.default.svc:443"
+-
+  description: "External hostname where clients will reach Hawkular Metrics"
+  name: HAWKULAR_METRICS_HOSTNAME
+  required: true
+-
+  description: "If set to true the deployer will try and delete all the existing components before trying to redeploy."
+  name: REDEPLOY
+  value: "false"
+-
+  description: "Set to true for persistent storage, set to false to use non persistent storage"
+  name: USE_PERSISTENT_STORAGE
+  value: "true"
+-
+  description: "The number of Cassandra Nodes to deploy for the initial cluster"
+  name: CASSANDRA_NODES
+  value: "1"
+-
+  description: "The persistent volume size for each of the Cassandra nodes"
+  name: CASSANDRA_PV_SIZE
+  value: "10Gi"
+-
+  description: "How many days metrics should be stored for."
+  name: METRIC_DURATION
+  value: "7"
 ----
 ====
 
-Save it to a file and create it with:
+[[deployer-template-parameters]]
+==== Deployer Template Parameters
 
-----
-$ oc create -f <path/to/heapster.yaml>
-----
+The deployer template parameter options and their defaults are listed above in the *_metrics.yaml_* file. If required, you can override these values when creating the *metrics deployer*.
 
-== Deploying Grafana
+For example, access to the master server is configured by the `*MASTER_URL*`
+parameter. The default value is `https://kubernetes.default.svc:443`, however
+this likely needs to be overridden and configured for your environment. Failing
+to set this parameter properly may result in timeout errors in the deployer
+logs. You may also want to override the value for `*IMAGE_PREFIX*` to suit your
+deployment.
 
-*Grafana* allows users to create dashboards of metrics from *InfluxDB*. The
-default installation comes with a basic dashboard, and users are encouraged to
-create their own.
+However, the only required parameter is `*HAWKULAR_METRICS_HOSTNAME*`. This
+value is required when creating the deployer because it specifies the hostname
+for the Hawkular Metrics
+link:../architecture/core_concepts/routes.html[route]. You will need to know the
+value of `*HAWKULAR_METRICS_HOSTNAME*` when
+link:#accessing-metrics-in-the-console[configuring the console] for metrics
+access.
 
-The following is the definition of the *Grafana* service and replication
-controller:
+== Deploying the Metric Components
 
+Since deploying and configuring all the metric components is handled by the
+*metrics deployer*, you can simply deploy everything in one step.
+
+The following examples show you how to deploy metrics with and without
+persistent storage using the default template parameters. Optionally, you can
+specify any of the
+link:../install_config/cluster_metrics.html#deployer-template-parameters[template parameters]
+when calling these commands.
+
+.Deploying with Persistent Storage
 ====
-[source,yaml]
+The following command sets the Hawkular Metrics route to use
+`hawkular-metrics.example.com` and is deployed using persistent storage.
+
+You must have a persistent volume of sufficient size available.
+
+[options="nowrap"]
 ----
-apiVersion: "v1"
-kind: "List"
-items:
-  -
-    apiVersion: "v1"
-    kind: "Service"
-    metadata:
-      labels:
-        provider: "fabric8"
-        component: "grafana"
-      name: "grafana"
-    spec:
-      ports:
-        -
-          port: 80
-          targetPort: "http"
-      selector:
-        provider: "fabric8"
-        component: "grafana"
-  -
-    apiVersion: "v1"
-    kind: "ReplicationController"
-    metadata:
-      labels:
-        provider: "fabric8"
-        component: "grafana"
-      name: "grafana"
-    spec:
-      replicas: 1
-      selector:
-        provider: "fabric8"
-        component: "grafana"
-      template:
-        metadata:
-          labels:
-            provider: "fabric8"
-            component: "grafana"
-        spec:
-          containers:
-            -
-              env:
-                -
-                  name: "INFLUXDB_SERVICE_NAME"
-                  value: "INFLUXDB_MONITORING"
-                -
-                  name: "GRAFANA_DEFAULT_DASHBOARD"
-                  value: "/dashboard/file/kubernetes.json"
-              image: "fabric8/grafana:1.9.1_2"
-              name: "grafana"
-              ports:
-                -
-                  containerPort: 3000
-                  name: "http"
+$ oc process -f metrics.yaml -v \
+HAWKULAR_METRICS_HOSTNAME=hawkular-metrics.example.com,IMAGE_PREFIX=openshift/origin-,IMAGE_VERSION=devel \
+| oc create -f -
 ----
 ====
 
-Save it to a file and create it with:
+.Deploying without Persistent Storage
+====
+The following command sets the Hawkular Metrics route to use
+`hawkular-metrics.example.com` and is deployed without persistent storage.
+Remember, this is being deployed without persistent storage, so metric data loss
+can occur.
 
+[options="nowrap"]
 ----
-$ oc create -f <path/to/grafana.yaml>
+$ oc process -f metrics.yaml -v \
+HAWKULAR_METRICS_HOSTNAME=hawkular-metrics.example.com,IMAGE_PREFIX=openshift/origin-,IMAGE_VERSION=devel,USE_PERSISTENT_STORAGE=false \
+| oc create -f -
 ----
+====
+
+== Configuring OpenShift
+
+The OpenShift web console uses the data coming from the Hawkular Metrics service
+to display its graphs. The URL for accessing the Hawkular Metrics service
+must be configured via the `*metricsPublicURL*` option in the
+link:../install_config/master_node_configuration.html#master-configuration-files[master-config.yaml]
+file. This URL corresponds to the route created with the
+`*HAWKULAR_METRICS_HOSTNAME*` template parameter during the
+link:../install_config/cluster_metrics.html#deploying-the-metric-components[deployment]
+of the metrics components.
+
+[NOTE]
+====
+You must be able to resolve the `*HAWKULAR_METRICS_HOSTNAME*` from the browser
+accessing the console.
+====
+
+For example, if your `*HAWKULAR_METRICS_HOSTNAME*` corresponds to `hawkular-metrics.example.com`, then you must make the following change in the *_master-config.yaml_* file:
+
+====
+[source,yaml,]
+.master-config.yaml
+----
+  assetConfig:
+    ...
+    metricsPublicURL: "https://hawkular-metrics.example.com/hawkular/metrics"
+----
+====
+
+Once you have updated and saved the *_master-config.yaml_* file, you must
+restart your OpenShift instance.
+
+When your OpenShift server is back up and running, metrics will be displayed on
+the pod overview pages.
+
+[CAUTION]
+====
+If you are using self-signed certificates, remember that the Hawkular Metrics service is hosted under a different hostname and uses different certificates than the console. You may need to explicitly open a browser tab to the value
+specified in `*metricsPublicURL*` and accept that certificate.
+
+To avoid this issue, use certificates which are configured to be acceptable by your browser.
+====
