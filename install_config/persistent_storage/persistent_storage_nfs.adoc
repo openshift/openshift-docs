@@ -17,13 +17,13 @@ https://access.redhat.com/documentation/en-US/Red_Hat_Enterprise_Linux/7/html/St
 Some familiarity with Kubernetes and NFS is assumed.
 
 The Kubernetes
-link:../../architecture/additional_concepts/storage.html[persistent volume]
+link:../../architecture/additional_concepts/storage.html[persistent volume (PV)]
 framework allows administrators to provision a cluster with persistent storage
 and gives users a way to request those resources without having any knowledge of
 the underlying infrastructure. Persistent volumes are not bound to a single
 project or namespace; they can be shared across the OpenShift cluster.
 link:../../architecture/additional_concepts/storage.html#persistent-volume-claims[Persistent
-volume claims], however, are specific to a project or namespace and can be
+volume claims (PVC)], however, are specific to a project or namespace and can be
 requested by users.
 
 For a detailed example, see the guide for
@@ -100,7 +100,7 @@ pv0001                   <none>    5368709120   RWO           Available         
 ====
 
 Users can then link:../../dev_guide/persistent_volumes.html[request storage
-using persistent volume claims], which can now utilize your new persistent
+using persistent volume claims (PVC)], which can now utilize your new persistent
 volume.
 
 [[nfs-enforcing-disk-quotas]]
@@ -118,11 +118,275 @@ equal or greater capacity.
 [[nfs-volume-security]]
 
 === Volume Security
-Users request storage with a `*PersistentVolumeClaim*`. This claim only lives in
-the user's namespace and can only be referenced by a pod within that same
-namespace. Any attempt to access a persistent volume across a namespace causes
-the pod to fail.
+This section covers pieces of Security Context Constraints (SCC), which are descr
+ibed elsewhere, 
+see link:../../admin_guide/manage_scc.adoc[managing SCCs] and link:../../architec
+ture/additional_concepts/authorization.adoc#security-context-constraints[SCC conc
+epts].
+The reader is expected to understand the basics of POSIX permissions, process UID
+, and supplemental
+groups.
 
+Developers request NFS storage by referencing, in the `volumes:` section of their
+ pod spec,
+either a _PersistentVolumeClaim_ by name, or the NFS volume plugin directly. Alth
+ough a Persistent
+Volume resides in a global namespace, a persistent volume claim (PVC) lives in th
+e user's namespace
+(project), and the claim can only be referenced by a pod within that same namespa
+ce.
+
+The *_/etc/exports_* file, on the NFS server, contains the accessible NFS directo
+ries. The target
+NFS directory, which is referenced by the pod in either the `path:` section of th
+e PV spec or
+directly in the pod spec, has the familiar POSIX owner and group ids. The Openshift NFS plugin
+mounts the container's NFS directory with the same POSIX ownership and permissions found on the
+target NFS directory. However, the container is not run with its effective UID equal to the owner
+of the NFS mount, which is the desired behavior.
+
+As an example, if the target NFS directory appears as:
+```
+#on the nfs server:
+# ls -l /opt/nfs -d
+drwxrws---. 2 nobody 5555 4096 Feb  2 17:23 /opt/nfs
+
+# id nobody
+uid=99(nobody) gid=99(nobody) groups=99(nobody)
+```
+then the container will need to either run with a UID of 99 (_nobody_ owner), or with 5555
+in its supplemental groups, in order to access the directory.
+
+==== User IDs:
+User ids can be defined in the container image or in the pod spec. If a user id is supplied and
+the matching SCC's `runAsUser:` strategy is _MustRunAsRange_ then that id will be validated against
+the min and max user ids defined in that SCC. If min/max user ids are not defined in the SCC then
+the user id is validated against the namespace's `openshift.io/sa.scc.uid-range` value. On the
+other hand, if the user id is omitted then the default UID becomes the matching SCC's `runAsUser:`
+strategy's `uidRangeMin:` value. Or, if a min value is not specified in the SCC, then the first
+number in the namespace's `openshift.io/sa.scc.uid-range` becomes the default user id.
+
+As an example, using the _restricted_ SCC and the _default_ namespace, here are the user ID default
+and allowed values:
+```
+# oc get scc restricted 
+NAME         PRIV      CAPS      HOSTDIR   SELINUX     RUNASUSER        FSGROUP    SUPGROUP   PRIORITY
+restricted   false     []        false     MustRunAs   MustRunAsRange   RunAsAny   RunAsAny   <none>
+                                                        <1>
+```
+<1> _MustRunAsRange_ enforces UID checking. In comparison, a value of _RunAsAny_ would not trigger UID
+range checking and thus would accept any user id.
+
+So, the _restricted_ SCC requires user id checking, but supplies no user id range (the id min/max values,
+are not visible in `oc get scc` above, but are shown in `oc export scc restricted`). Therefore, the
+user id range must come from the _default_ namespace, seen below:
+```
+# oc export ns default
+...
+kind: Namespace
+metadata:
+  annotations:
+    ...
+    openshift.io/sa.scc.uid-range: 1000000000/10000 <1>
+...
+```
+<1> this range is interpreted as allowing user ids between 1000000000 through and including 1000009999.
+If no user id is specified then the default user id will be the min value of 1000000000.
+
+Getting back to the NFS example above: the container needs it's UID to be 99 (ignoring group ids for
+the moment), so the following fragement can be added to the pod spec:
+```
+spec:
+  containers: <1>
+  - name: ...
+    securityContext:
+      runAsUser: 99  #nobody
+```
+<1> *NOTE:* pods contain a `securtityContext:` specific to each container (shown above) and a global
+`securityContext:` which applies to all containers defined in the pod.
+
+Aassuming the _default_ project and the _restricted_ SCC above, the pod's requested user id of 99
+will, unfortunetely, *not* be allowed and therefore the pod will fail. The pod fails because:
+
+- it requests 99 as its user id,
+- all SCCs available to the pod are examined (roughly in priority order followed by most restrictive)
+to see which SCC will allow a user id of 99 (actually, all policies of the SCCs are checked but the 
+focus here is on user id),
+- since all available SCCs use _MustRunAsRange_ for their `runAsUser:` strategy, uid range checking is 
+required, 
+- 99 is not included in the SCC or namespace's user id range, so the pod fails.
+
+To fix this situation:
+
+- the _restricted_ SCC could be modified to include 99 within the min and max user ids
+(*not* recommended),
+- the _restricted_ SCC could be modified to use _RunAsAny_ for the `runAsUser:` value,
+thus eliminating id range checking (*not* recommended -- containers can run as root),
+- a new SCC could be created with the appropriate user id range (recommended),
+- a new SCC could be created with the `runAsUser:` strategy set to _RunAsAny_
+(*caution:* need to be mindful of containers being able to run as root),
+- the _default_ project's UID range could be changed to allow a user id of 99.
+(not generally advisable since only a single range of user ids can be specified),
+- a new project could be created with the appropriate user id range defined (not covered here).
+
+====== Custom SCC for UserID:
+It's generally considered a good practice to *not* modify the predefined SCCs. The preferred approach
+is to create a custom SCC that better fits an organization's security needs, or create a new project
+that supports the desired user ids. See
+link:../../dev_guide/projects.adoc#create-a-project[projects] on creating a new project.
+
+A custom SCC can be created such that a min and max user id is defined, UID range
+checking is still enforced, and the UID of 99 will be allowed. Here is an example:
+```
+# oc export scc nfs-scc 
+allowHostDirVolumePlugin: false  #the allow* bools are the same as for the restricted scc
+...
+kind: SecurityContextConstraints
+metadata:
+  ...
+  name: nfs-scc <1>
+priority: 9 <2>
+requiredDropCapabilities: null
+runAsUser:
+  type: MustRunAsRange <3>
+  uidRangeMax: 99 <4>
+  uidRangeMin: 99
+...
+```
+<1> the name of this new SCC is "nfs-scc"
+<2> numerically larger numbers have greater priority, nil or omitted is the lowest priority.
+Higher priority SCCs sort before lower pri SCCs and thus have a better chance of matching a new pod
+<3> `runAsUser:` is a strategy and it is set to _MustRunAsRange_, which means uid range checking is 
+enforced
+<4> the uid range is 99-99 (a range of one value).
+
+ow, using `runAsUser: 99`, shown in the pod fragment above, the pod to matches the new nfs-scc and is
+able to run with a UID of 99.
+
+===== Group IDs:
+Another way to handle NFS access (assuming it's not a choice to change permissions on the NFS mount)
+is to use supplemental groups. Supplemental groups in Openshift are used for shared storage, of which
+NFS is an exmaple. In contrast, block storage, such as Ceph RBD or iSCSI, use the `fsGroup:` SCC strategy
+and  the `fsGroup:` value in the pod's `securityContext:`. Since the group id on the target NFS directory,
+shown above, is 5555, the pod can define that group id using `suplementalGroups:` under pod's global
+`securityContext:` definition. For example:
+```
+spec:
+  containers:
+    - name: ...
+      #runAsUser: 99 from above has been commented out here
+  securityContext: <1>
+    supplementalGroups: [5555] #an array of GIDs defined globally for the pod
+```
+<1> securityContext here is defined globally to the pod, not under a specific container
+
+Since group id is the focus here, it's worth seeing the ranges defined for the _default_
+project:
+```
+# oc export ns default 
+...
+metadata:
+  annotations:
+    ...
+    openshift.io/sa.scc.supplemental-groups: 1000000000/10000 <1>
+    openshift.io/sa.scc.uid-range: 1000000000/10000
+...
+```
+<1> this is the preallocated range for the group ids. Additionally, the min value of the 
+range (1000000000) will be the GID default when a group id is not specified in the pod or image.
+The suggestion below does not modify the project's allowed group ids, but that could be an
+option for some project admins.
+
+Supplemental groups and ranges work a bit differently from a user id and its single range
+(assume the _default_ namespace and the "nfs-scc" SCC are still being used):
+
+- there can be more than one range of allowed group ids defined in the SCC and/or namespace.
+- the "nfs-sec" SCC (which has its `supplementalGroups:` strategy set as _MustRunAs_) will
+not satisfy the pod's requirements. This is due to the pod defining a group id but "nfs-sec"
+does not contain any group id ranges. Since "nfs-scc" is not the last SCC to be examined (its
+priority is 9 compared to nil for the other SCCs), the remaining SCCs are examined.
+- the _restricted_ SCC, which typically is the last SCC used to attempt to statisy a pod's 
+requirements, has its `supplementalGroups:` strategy set to _RunAsAny_, and therefore statisfies
+the pod, and, thus, the pod will start. Contrasted to user ids, the _restricted_ SCC's `runAsUser:`
+strategy is set to _MustRunAsRange_, which means that _restricted_ will not satisfy the pod's 
+requirements (and neither will the other predefined SCCs available to the pod) and, thus, the
+pod will fail to start. If the _restricted_ SCC were edited (not recommended) to change
+`supplementalGroups:` from _RunAsAny_ to _MustRunAs_, then the pod would not match the constraints
+of _restricted_ either and, thus, would fail. Ths scenario is analogous to the behavior seen
+when a user id of 99 was defined in the pod and the _restricted_ SCC was evaluated.
+
+====== Custom SCC for GroupID:
+If GID range checking is desired, and none of the predefined SCCs are to be edited, then the
+new "nfs-scc" can be modified to support this reqirement, as seen below:
+```
+#after oc edit scc nfs-scc
+...
+# oc export scc nfs-scc 
+...
+groups:
+- system:authenticated
+kind: SecurityContextConstraints
+metadata:
+...
+  name: nfs-scc
+priority: 9
+runAsUser:
+  type: MustRunAsRange <1>
+seLinuxContext:
+  type: MustRunAs
+supplementalGroups:
+  ranges: <3>
+  - max: 6000
+    min: 5000
+  type: MustRunAs <2>
+```
+<1> no change for user but the user id is no longer defined in the pod spec, so the default value is used
+<2> _MustRunAs_ triggers gid range checking
+<3> the min and max values are defined in the SCC, therefore the SCC statisfies the need for range checking
+and thus the namespace'a `openshift.io/sa.scc.supplemental-groups` range is not needed.
+
+Only the "nfs-scc" has been changed. The pod spec (fragment shown just above) does not need any changes, 
+and the _default_ namespace also remains the same (its original settings). After creating the pod:
+```
+# oc create -f nfs-pod.yaml
+...
+# oc get pod nfs-pod1 -0 yaml
+...
+metadata:
+  annotations:
+    openshift.io/scc: nfs-scc <1>
+  name: nfs-pod1
+  namespace: default <2>
+...
+spec:
+  containers:
+    ...
+    securityContext:
+      runAsUser: 1000000000 <3>
+ ...
+ securityContext:
+    seLinuxOptions:
+     level: s0:c1,c0
+    supplementalGroups:
+    - 5555 <3>
+...
+# oc rsh nfs-pod1 id
+uid=1000000000 gid=0(root) groups=5555 <3>
+
+```
+<1> the "nfs-scc" matched the pod, which was the goal
+<2> the namespace (project) is still _default_
+<3> verification that the running container has the default user id (1000000000)
+and supplemental groups of 5555
+
+
+*NOTE:*
+The `accessModes:` section of the PV and the PVC provide no access
+enforcement. They are used similarly to labels and match a PVC to a PV, nothing more. For example,
+the NFS PV's `accessModes:` can be set to _ReadOnlyMany_ yet the container, depending on its user
+and group ids could have write access to that PV.
+
+*NOTE:*
 Each NFS volume must be mountable by all nodes in the cluster.
 
 [[nfs-reclaiming-resources]]
