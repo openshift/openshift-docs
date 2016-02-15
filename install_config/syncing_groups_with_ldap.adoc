@@ -331,6 +331,8 @@ rfc2307:
         pageSize: 0
     userUIDAttribute: dn <6>
     userNameAttributes: [ mail ] <7>
+    tolerateMemberNotFoundErrors: false
+    tolerateMemberOutOfScopeErrors: false
 ----
 <1> The IP address and host of the LDAP server where this group's record is
 stored.
@@ -411,6 +413,8 @@ rfc2307:
         pageSize: 0
     userUIDAttribute: dn
     userNameAttributes: [ mail ]
+    tolerateMemberNotFoundErrors: false
+    tolerateMemberOutOfScopeErrors: false
 ----
 <1> The user-defined name mapping.
 <2> The unique identifier attribute that is used for the keys in the
@@ -446,6 +450,156 @@ users:
 - jim.adams@example.com
 ----
 <1> The name of the Group as specified by the user-defined name mapping.
+====
+
+[[rfc2307-with-error-tolerances]]
+=== RFC 2307 with User-Defined Error Tolerances
+
+By default, if groups being synced contain members whose entries are outside of the
+scope defined in the member query, the group sync fails with an error like:
+
+----
+Error determining LDAP group membership for "<group>": membership lookup for user "<user>" in group "<group>" failed because of "search for entry with dn="<user-dn>" would search outside of the base dn specified (dn="<base-dn>")".
+----
+
+This often indicates a mis-configured `baseDN` in the `usersQuery`. However,
+in cases where the `baseDN` intentionally does not contain some of the members
+of the group, setting `tolerateMemberOutOfScopeErrors: true` will allow the group
+sync to continue. Out of scope members will be ignored.
+
+Similarly, when the group sync process fails to locate a member for a group, it fails
+outright with errors like:
+
+----
+Error determining LDAP group membership for "<group>": membership lookup for user "<user>" in group "<group>" failed because of "search for entry with base dn="<user-dn>" refers to a non-existent entry".
+
+Error determining LDAP group membership for "<group>": membership lookup for user "<user>" in group "<group>" failed because of "search for entry with base dn="<user-dn>" and filter "<filter>" did not return any results".
+----
+
+This often indicates a mis-configured `usersQuery`. However, in cases where the
+group contains member entries that are known to be missing, setting 
+`tolerateMemberNotFoundErrors: true` will allow the group sync to continue. Problematic
+members will be ignored.
+
+[WARNING]
+====
+Enabling error tolerances for the LDAP group sync will cause the sync process to ignore
+problematic member entries. If the LDAP group sync is not configured correctly, this could
+result in synced OpenShift groups missing members.
+====
+
+.LDAP Entries Using RFC 2307 Schema With Problematic Group Membership: *_rfc2307_problematic_users.ldif_*
+====
+[source,ldif]
+----
+  dn: ou=users,dc=example,dc=com
+  objectClass: organizationalUnit
+  ou: users
+
+  dn: cn=Jane,ou=users,dc=example,dc=com
+  objectClass: person
+  objectClass: organizationalPerson
+  objectClass: inetOrgPerson
+  cn: Jane
+  sn: Smith
+  displayName: Jane Smith
+  mail: jane.smith@example.com
+
+  dn: cn=Jim,ou=users,dc=example,dc=com
+  objectClass: person
+  objectClass: organizationalPerson
+  objectClass: inetOrgPerson
+  cn: Jim
+  sn: Adams
+  displayName: Jim Adams
+  mail: jim.adams@example.com
+
+  dn: ou=groups,dc=example,dc=com
+  objectClass: organizationalUnit
+  ou: groups
+
+  dn: cn=admins,ou=groups,dc=example,dc=com
+  objectClass: groupOfNames
+  cn: admins
+  owner: cn=admin,dc=example,dc=com
+  description: System Administrators
+  member: cn=Jane,ou=users,dc=example,dc=com
+  member: cn=Jim,ou=users,dc=example,dc=com
+  member: cn=INVALID,ou=users,dc=example,dc=com <1>
+  member: cn=Jim,ou=OUTOFSCOPE,dc=example,dc=com <2>
+----
+<1> This member does not exist on the LDAP server.
+<2> This member may exist, but is not under the base DN in the
+user query for the sync job.
+====
+
+In order to tolerate the errors in the above example, the following additions to
+your sync configuration file must be made:
+
+.LDAP Sync Configuration Using RFC 2307 Schema Tolerating Errors: *_rfc2307_config_tolerating.yaml_*
+====
+[source,yaml]
+----
+kind: LDAPSyncConfig
+apiVersion: v1
+url: ldap://LDAP_SERVICE_IP:389
+insecure: true
+rfc2307:
+    groupsQuery:
+        baseDN: "ou=groups,dc=example,dc=com"
+        scope: sub
+        derefAliases: never
+        filter: (objectclass=groupOfNames)
+    groupUIDAttribute: dn
+    groupNameAttributes: [ cn ]
+    groupMembershipAttributes: [ member ]
+    usersQuery:
+        baseDN: "ou=users,dc=example,dc=com"
+        scope: sub
+        derefAliases: never
+        filter: (objectclass=inetOrgPerson)
+    userUIDAttribute: dn
+    userNameAttributes: [ mail ]
+    tolerateMemberNotFoundErrors: true <1>
+    tolerateMemberOutOfScopeErrors: true <2>
+----
+<1> When `true`, the sync job will tolerate groups for which some members were not found.
+If this is `true`, members whose LDAP entries are not found will be ignored. The default
+behavior for the sync job is to fail if a member of a group is not found.
+<2> When `true`, the sync job will tolerate groups for which some members are outside
+the user scope given in the `usersQuery` base DN. If this is `true`, members outside the
+member query scope will be ignored. The default behavior for the sync job is to fail if a
+member of a group is out of scope.
+====
+
+To run sync with the *_rfc2307_config_tolerating.yaml_* file:
+
+----
+$ oadm groups sync --sync-config=rfc2307_config_tolerating.yaml --confirm
+----
+
+OpenShift creates the following Group record as a result of the above sync
+operation:
+
+.OpenShift Group Created Using *_rfc2307_config.yaml_*
+====
+[source,yaml]
+----
+apiVersion: v1
+kind: Group
+metadata:
+  annotations:
+    openshift.io/ldap.sync-time: 2015-10-13T10:08:38-0400
+    openshift.io/ldap.uid: cn=admins,ou=groups,dc=example,dc=com
+    openshift.io/ldap.url: LDAP_SERVER_IP:389
+  creationTimestamp:
+  name: admins
+users: <1>
+- jane.smith@example.com
+- jim.adams@example.com
+----
+<1> The users that are members of the Group, named as specified by the sync file,
+absent any members for which lookup encountered errors that were tolerated.
 ====
 
 [[sync-ldap-active-directory]]
