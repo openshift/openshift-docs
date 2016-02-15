@@ -14,52 +14,204 @@ toc::[]
 
 This topic provides a general guide on pod security context as it relates to
 volume security. For information on pod security context in general, please see
-link:../../admin_guide/manage_scc.html[Managing Security Context Constraints].
+link:../../admin_guide/manage_scc.html[Managing Security Context Constraints (SCC)]
+and
+link:../../architecture/additional_concepts/authorization.html#security-context-constraints[SCC concepts].
 
-The pod security context (the `*SecurityContext*` stanza in a pod definition)
-provides three parameters which allow you to gain and control access to volumes:
-`*FSGroup*`,`*SupplementalGroups*`, and `*SELinuxOptions*`.
+As a quick background, the Openshift
+link:../../architecture/additional_concepts/storage.html[persistent volume]
+framework allows administrators to provision a cluster with persistent storage
+and gives users a way to request those resources without requiring knowledge of
+the underlying infrastructure. Persistent volumes (PV) are global resources and
+not tied to a specific project (namespace). 
+link:../../architecture/additional_concepts/storage.html#persistent-volume-claims[Persistent
+volume claims (PVC)] are local to the namespace (project), and multiple PVCs within
+the same project can bind to the same PV. However, once a PVC binds to a PV, that
+PV cannot be bound by a claim outside of the first claim's namespace. If the
+underlying storage needs to be accessed by multiple projects then each project needs
+its own PV, which can point to the same physical storage. In this sense, a bound PV
+is tied to a namespace. For a detailed PV and PVC example, see the guide for
+https://github.com/openshift/origin/tree/master/examples/wordpress[WordPress and
+MySQL using NFS].
 
-[IMPORTANT]
-====
-The `FSGroup` and `SELinuxOptions` parameters are generated for your pod if not
-specified. It is recommended that you rely on the automatically generated values
-and not specify your own unless you have a specific use case which requires
-otherwise.
-====
+Accessing persistent storage requires coordination between the cluster (and/or storage)
+administrator and the end-developer. The cluster admin creates persistent volumes (PV),
+which abstracts the underlying physical storage. The developer creates pods and,
+optionally, persistent volume claims (PVC), which bind to a PV based on matching
+criteria, such as capacity. Granting pods access to PVs involves knowing the group ids
+and/or user id assigned to the actual storage (and thus knowing the group and/or user id
+that need to be defined in the pod), any selinux considerations, and, finally, ensuring
+that these ids are allowed in the range of legal ids defined for the project (namespace)
+and/or in the SCC that matches the requirements of the pod.
 
-== SupplementalGroups
+Group ids, the user id, and selinux values are defined in the `*SecurityContext*` stanza
+in a pod definition. Group ids are global to the pod and apply to all containers defined
+in the pod. User ids can also be global, or specific to each container. Four stanzas
+control access to volumes:
+link:#fsgroup[`fsGroup`],
+link:#supplemental-groups[`supplementalGroups`],
+link:#run-as-user[`runAsUser`], and
+link:#selinux[`SELinuxOptions`].
 
-Supplemental groups are regular Linux groups. When a process runs in Linux, it
-has a UID and one or more GIDs. Usually this is just the UID and GIDs of the
-user who started the process, but in the case of containers you have the option
-of setting these attributes for the container's main process.
+==== Defaults and Allowed ID Ranges
+Default values are provided for `supplementalGroups`, `fsGroup`, `runAsUser`, and `SELinuxOptions`
+when not explicity defined in the pod spec (or in the image). Default values are looked for first in
+the pod's matching SCC, and, if not present there, then in the namespace. When an *id* default
+(preallocated value) is required, it is set to the minimum value in the first range of allowable
+values for that particular id.The _MustRunAs_ and _MustRunAsRange_ SCC strategies require defaults.
+A SCC strategy of _RunAsAny_ does not produce defaults. _RunAsAny_ sets the container's UID and GID
+to 0 (root), and does not set any `SELinuxOptions`. 
 
-The `*SupplementalGroups*` option of the pod `*SecurityContext*` stanza enables
-you to specify a list of groups which will be added to the main process of every
-container in the pod. This is useful because it enables you to give your pods
-group based access to volumes.
+Ids may be validated against ranges which are defined in the SCC and/or the project (namespace). 
+Like defaults, ranges of allowed ids are searched for first in the pod's SCC, and if not found there,
+then in the namespace. If the SCC id-related strategy is set to _MustRunAs_ or _MustRunAsRange_,
+then supplied ids, pertinent to that strategy, will be checked to be within the defined range(s).
+If the supplied ids are outside of the ranges then the pod will fail to start. On the other hand,
+an SCC id-related strategy of _RunAsAny_ bypasses id validation.
+
+```
+(THIS ARE NOTES FOR PAUL WEIL AND WILL BE DELETED SOON)
+
+NAME      PRIV      CAPS      HOSTDIR   SELINUX     RUNASUSER        FSGROUP     SUPGROUP    PRIORITY
+nfs-scc   false     []        false     MustRunAs   MustRunAsRange   MustRunAs   MustRunAs   9
+id: uid=99(nobody) gid=99(nogroup) groups=1000000000
+
+NAME      PRIV      CAPS      HOSTDIR   SELINUX     RUNASUSER        FSGROUP     SUPGROUP   PRIORITY
+nfs-scc   false     []        false     MustRunAs   MustRunAsRange   MustRunAs   RunAsAny   9
+id: uid=99(nobody) gid=99(nogroup) groups=1000000000  ##same as above
+
+NAME      PRIV      CAPS      HOSTDIR   SELINUX     RUNASUSER        FSGROUP    SUPGROUP    PRIORITY
+nfs-scc   false     []        false     MustRunAs   MustRunAsRange   RunAsAny   MustRunAs   9
+id: uid=99(nobody) gid=99(nogroup) groups=1000000000  ##same
+
+NAME      PRIV      CAPS      HOSTDIR   SELINUX     RUNASUSER        FSGROUP    SUPGROUP   PRIORITY
+nfs-scc   false     []        false     MustRunAs   MustRunAsRange   RunAsAny   RunAsAny   9
+id: uid=99(nobody) gid=99(nogroup)  !! both grps RunAsAny means no suppl-grps get defined.
+
+scc: no user min/max
+NAME      PRIV      CAPS      HOSTDIR   SELINUX     RUNASUSER        FSGROUP    SUPGROUP   PRIORITY
+nfs-scc   false     []        false     MustRunAs   MustRunAsRange   RunAsAny   RunAsAny   9
+id: uid=1000000000 gid=0(root)
+
+scc: no user min/max
+NAME      PRIV      CAPS      HOSTDIR   SELINUX     RUNASUSER        FSGROUP    SUPGROUP    PRIORITY
+nfs-scc   false     []        false     MustRunAs   MustRunAsRange   RunAsAny   MustRunAs   9
+id: uid=1000000000 gid=0(root) groups=1000000000
+
+99 defined in pod:
+uid=99(nobody) gid=99(nogroup) groups=1000000000
+
+what if min defined for fsgroup? suppl-groups? and for runasuser
+uid=99(nobody) gid=99(nogroup) groups=5000
+
+pod set user id = 100, same range in scc:
+NAME      PRIV      CAPS      HOSTDIR   SELINUX     RUNASUSER        FSGROUP    SUPGROUP    PRIORITY
+nfs-scc   false     []        false     MustRunAs   MustRunAsRange   RunAsAny   MustRunAs   9
+id: uid=100 gid=0(root) groups=5000
+so now GID is 0, not 99 and not 100....??
+```
+
+See the examples below:
+```
+oc export ns default <1>
+...
+metadata:
+  annotations: <2>
+    openshift.io/sa.scc.mcs: s0:c1,c0 <3>
+    openshift.io/sa.scc.supplemental-groups: 1000000000/10000 <4>
+    openshift.io/sa.scc.uid-range: 1000000000/10000 <5>
+...
+
+# oc export scc <scc-name>
+...
+fsGroup:
+  type: MustRunAs <6>
+  ranges:
+  - min: 5000
+    max: 6000
+runAsUser:
+  type: MustRunAsRange <7>
+  uidRangeMin: 99
+  uidRangeMax: 199
+seLinuxContext: <8>
+  type: MustRunAs 
+  SELinuxOptions: <9>
+    user: <selinux-user-name>
+    role: ...
+    type: ...
+    level: ...
+supplementalGroups:
+  type: MustRunAs <6>
+  ranges:
+  - min: 5000
+    max: 6000
+```
+<1> "default" is the name of the project (namespace).
+<2> recall that defaults are only used when the corresponding SCC stragtegy is *not* _RunAsAny_.
+<3> this is the selinux default if a value is not defined in the pod spec or in the SCC.
+<4> this is the range of allowable group ids in the container. There can be more than one range
+specified, separated by commas. Two range formats are supported: 1) M/N, where M is the starting
+id and N is the count, so the range becomes M through, and including, M+N-1. 2) M-N, M is again the
+starting id and N is the ending id. The default group id is the starting id in the first range, 1000000000.
+If the SCC does not define a minimum group id then the namespace's default id is applied.
+<5> same as (3) but for user ids. Also, only a single range of ids is supported.
+<6> _MustRunAs_ enforces group id range checking, and provides the container's groups default. Based on
+this scc definition, the default is 5000 (the min id value). If the range was omitted from this scc then
+the default would be 1000000000, from the namespace.
+The other supported type is _RunAsAny_, which does not perform range checking, thus allowing any
+group id, and causes no default id to be used.
+<7> _MustRunAsRange_ enforces user id range checking, and provides a UID default. Based on this scc
+the default UID is 99, the min value. If the min/max were omitted, the default user id would be
+1000000000, derived from the namespace. When a user id range is defined in the scc, and the `runAsUser`
+id in the pod spec equals the min range value, then the container's *GID* is set to the min UID.
+_MustRunAsNonRoot_ and _RunAsAny_ are the other supported types.
+<8> when set to _MustRunAs_, the container is created with the SCC's selinux options, or the
+MCS default defined in the namespace. A type of _RunAsAny_ indicates that selinux context
+is not required.
+<9> The selinux user name, role name, type, and labels can be defined here.
+
+[[supplemental-groups]]
+
+== Supplemental Groups
+
+Supplemental groups are regular Linux groups. When a process runs in Linux, it has a UID,
+a GID, and one or more supplemental groups. These attributes can be set for a container's
+main process. The `supplementalGroups` ids are typically used for controlling
+access to _shared_ storage, such as NFS and GlusterFS; whereas, 
+link:#fsgroup[fsGroup] is used for controlling access to _block_ storage, such
+as Ceph-RBD and iSCSI.
 
 For example, consider the following NFS export:
 
 ====
 ----
-showmount -e example.com
-Export list for example.com:
-/nfsexport (everyone)
+#on an openshift node:
+#(Note: showmount needs access to the ports used by rpcbind and rpc.mount on the nfs server)
+showmount -e <nfs-server-ip-or-hostname>
+Export list for f21-nfs.vm:
+/opt/nfs  *
 
-# ls -ld /nfsexport # on NFS server
-drwxrwx---. 2 root 1234 4096 Oct 30 15:27 /nfsexport
+#on the nfs server:
+# cat /etc/exports
+/opt/nfs *(rw,sync,no_root_squash)
+...
+
+# ls -lZ /opt/nfs -d
+drwxrws---. nobody 5555 unconfined_u:object_r:usr_t:s0   /opt/nfs
+
+# id nobody
+uid=99(nobody) gid=99(nobody) groups=99(nobody)
 ----
 ====
 
-The above export is only accessible by *root* and the group *1234*. So any pod
-which is not run as *root* and is not a member the group *1234* will not be able
-to access that export. It is often the case that the primary UID in the
-container cannot be controlled or predicted.
+The _/opt/nfs/_ export is accessible by UID *99* and the group *5555*. In general,
+containers should not run as root, so, in this NFS example, containers which are not run
+as UID *99* or are not members the group *5555* will not be able to access the NFS export.
 
-To solve this issue, you can add the group *1234* to `*SupplementalGroups*` as
-in the following example:
+Often, the SCC matching the pod does not allow an arbitrary user id to be specified, thus
+using groups is generally a more flexible way to grant storage access to a pod. For example,
+to grant NFS access to the export above, the group *5555* can be defined in the pod spec,
+as shown below (fragment):
 
 ====
 
@@ -67,88 +219,167 @@ in the following example:
 ----
 apiVersion: v1
 kind: Pod
-metadata:
-  name: nfs-web
+...
 spec:
   containers:
-    - name: web
-      image: nginx
-      ports:
-        - name: web
-          containerPort: 80
-      volumeMounts:
-          - name: nfs
-            mountPath: "/usr/share/nginx/html"
-  securityContext:
-    supplementalGroups: [1234]
+  - name: ...
+    volumeMounts: 
+    - name: nfs <1>
+      mountPath: /usr/share/... <2>
+  securityContext: <3>
+    supplementalGroups: [5555] <4>
   volumes:
-    - name: nfs
-      nfs:
-        server: example.com
-        path: "/nfsexport"
+  - name: nfs <1>
+    nfs:
+      server: <nfs-server-ip-or-host>
+      path: /opt/nfs <5>
 ----
 ====
+<1> name of the volume mount, must match the name in the `volumes` section.
+<2> nfs export path as seen in the container.
+<3> pod global security context: applies to all containers in pod. Note: each container can also define its
+`securityContext`; however, group ids are global to the pod, and cannot be defined for individual containers.
+<4> supplemental groups will contain 5555 which grants GID access to the export.
+<5> actual nfs export path on the nfs server.
 
-All containers in the above pod will be members of the group *1234* and will
-have access to the volume regardless of what user the container runs as. This is
-useful for volumes which do not allow you to change the export's ownership on
-the client, such as NFS and GlusterFS.
+All containers in the above pod, assuming the matching SCC or project allows the group *5555*, will be
+members of the group *5555*, and will have access to the volume, regardless of the container's user id.
 
-== FSGroup
+[[scc-supplemental-groups]]
 
-`*FSGroup*` stands for file system group. It is a supplemental group as defined
-above, but with some extra functionality. If `*FSGroup*` is specified, it will
-have the following effects on volumes which support ownership management:
+==== Supplemental Groups: SCC and Project
+All supplemental groups defined in the pod spec may be subject to validation against
+one of more ranges of group ids. These ranges can be defined in the Security Context
+Constraints (SCC) and/or in the project (which is the namespace) of the running pod.
 
-* The owning group of the volume will be set to the specified `*FSGroup*`.
-* Newly created files in the volume will also be owned by `*FSGroup*`.
-* Read and write permissions will be given to `*FSGroup*`.
-* The specified `*FSGroup*` will be added to the pod's list of supplemental
-groups.
+SCCs support two aspects related to supplemental groups:
 
-This gives your pod, and any other pods with the same `*FSGroup*`, access to the
-volume.
+* whether or not to allow, uncontested, the group ids defined in the pod (or in the image), and,
+* the range of allowed group ids (when id range checking is required).
+
+Projects (namespaces) support multiple ranges of group ids, used to validate the supplied
+`supplementalGroups` ids. Projects do not define policies, such as "MustRunAs".
+
+An SCC's `*supplementalGroups*` strategy expects a type of _MusRunAs_ or _RunAsAny_.
+_RunAsAny_ omits group id validation, and therefore any group id defined in the pod spec
+(or in the image) is allowed. On the other hand, _MustRunAs_ requires all supplied group ids
+to be validated against a range of group ids. This range can be defined in the SCC itself or
+in the namepsace (or in both, but the SCC has precedence over the namespace).
+
+There are currently six predefined SCCs, seen below:
+```
+# oc get scc
+NAME               PRIV      CAPS      HOSTDIR   SELINUX     RUNASUSER          FSGROUP    SUPGROUP    PRIORITY
+anyuid             false     []        false     MustRunAs   RunAsAny           RunAsAny   RunAsAny    10
+hostaccess         false     []        true      MustRunAs   MustRunAsRange     RunAsAny   RunAsAny    <none>
+hostmount-anyuid   false     []        true      MustRunAs   RunAsAny           RunAsAny   RunAsAny    <none>
+nonroot            false     []        false     MustRunAs   MustRunAsNonRoot   RunAsAny   RunAsAny    <none>
+privileged         true      []        true      RunAsAny    RunAsAny           RunAsAny   RunAsAny    <none>
+restricted         false     []        false     MustRunAs   MustRunAsRange     RunAsAny   RunAsAny    <none>
+```
+
+
+```
+# oc export scc <scc-name>  #can use *restricted* here, for example
+...
+kind: SecurityContextConstraints
+...
+supplementalGroups:
+  type: MustRunAs <1>
+  ranges: <2>
+  - max: 6000
+    min: 5000 <3>
+
+# oc export ns default <4>
+...
+metadata:
+  annotations:
+    ...
+    openshift.io/sa.scc.supplemental-groups: 1000000000/10000 <5>
+...
+```
+<1> _MustRunAs_ triggers gid range checking; whereas _RunAsAny_ does not require range checking.
+<2> the range of allowed group ids (when range checking is required) is 5000 through, and including, 5999.
+Since the min and max values are defined here (in the SCC), the namespace's
+`openshift.io/sa.scc.supplemental-groups` range (5) is not needed.
+<3> the min value will be used as the default supplemental group if groups are not defined in the pod
+(or in the image).
+<4> _default_ is the name of the project (namespace) associated with the pod.
+<5> this is the namespace's allowed range of group ids, defined here to be 1000000000 through, and
+including, 1000009999. Additionally, the min value of the range (1000000000) will be the default
+supplemental group id (if a min value is not defined in the matching SCC).
+
+[[fsgroup]]
+
+== FS Group
+
+`*fsGroup*` defines a pod's "file system group". As mentioned above, whereas
+link:#supplemental-groups[supplementalGroups] apply to shared storage, `fsGroup` is used for
+block storage. It is, in fact, a supplemental group but with some extra functionality. When
+`fsGroup` is specified, it has the following effects on volumes which support ownership
+management (i.e., block volumes):
+
+* the owning group of the volume is set to the specified `fsGroup`,
+* newly created files in the volume are owned by `fsGroup`,
+* read and write permissions are given to `fsGroup`,
+* the specified `fsGroup` is added to the pod's list of supplemental groups.
+
+This grants pods with the same `fsGroup` the same access to the volume.
 
 [IMPORTANT]
 ====
-Again, it is recommended to allow OpenShift to automatically allocate an
-`*FSGroup*` unless you have a specific use case which requires you to override
-it in the pod definition.
+Again, it is recommended to allow OpenShift to automatically allocate an `fsGroup`
+unless a specific use case requires pods to have a group id different from the default.
 ====
 
-`*FSGroup*` can be specified as follows:
+`fsGroup` is defined, as shown in the pod spec fragment below:
 
 ====
 [source,yaml]
 ----
-apiVersion: v1
 kind: Pod
-metadata:
-  name: ebs-web
+...
 spec:
   containers:
-    - name: web
-      image: nginx
-      ports:
-        - name: web
-          containerPort: 80
-      volumeMounts:
-          - name: ebs-volume
-            mountPath: "/usr/share/nginx/html"
-  securityContext:
-    fsGroup: 1234
-  volumes:
-    - name: ebs-volume
-      awsElasticBlockStore:
-      volumeID: <volume_id>
+  - name: ...
+  securityContext: <1>
+    fsGroup: 5555
+  ...
 ----
 ====
+<1> like with `supplementalGroups`, `fsGroup` must be defined globally to the pod, not per container.
 
-The above pod will attach the specified AWS EBS volume to the node, format it if
-needed, mount it, and connect it to the pod. It will then apply the `*FSGroup*`
-to it as detailed above.
+The pod resulting from the spec above will run containers with id *5555* in their list of supplemental
+groups, and thus have group-level access to the target volume.
 
-Currently the list of volumes which support ownership management includes:
+==== FS Group: SCC and Project
+Similar to link:#scc-supplemental-groups[supplementalGroups], an fs group id may be subject to
+validation against one of more ranges of group ids. 
+
+Below is a SCC fragement defining an `fsGroup` strategy of _MustRunAs_, and including a range
+of group ids to validate against:
+```
+# oc export scc <scc-name>  #can use *restricted* here, for example
+...
+kind: SecurityContextConstraints
+...
+fsGroup:
+  type: MustRunAs <1>
+  ranges: <2>
+  - max: 6000
+    min: 5000 <3>
+...
+```
+<1> _MustRunAs_ triggers gid range checking; whereas _RunAsAny_ does not require range checking.
+<2> the range of allowed group ids (when range checking is required) is 5000 through, and including, 5999.
+Since the min and max values are defined here (in the SCC), the namespace's
+`openshift.io/sa.scc.supplemental-groups` range is not needed.
+<3> the min value will be used as the default supplemental group if groups are not defined in the pod
+(or in the image).
+
+This is identicle to the spec for `supplementalGroups` other than the key name being `fsGroup`.
+
+Currently the list of volumes which support ownership (block) management include:
 
 * AWS Elastic Block Store
 * OpenStack Cinder
@@ -158,7 +389,9 @@ Currently the list of volumes which support ownership management includes:
 * Ceph RBD
 * gitRepo
 
-GlusterFS and NFS do not support ownership management.
+*NOTE:* GlusterFS and NFS support shared management.
+
+[[selinux]]
 
 == SELinuxOptions
 
@@ -231,6 +464,121 @@ Currently the list of volumes which support SELinux management includes:
 * gitRepo
 
 GlusterFS and NFS do not support SELinux management.
+
+[[run-as-user]]
+
+== User ID
+
+User ids can be defined in the container image or in the pod spec. In the pod spec, a single user
+id can be define global to all containers, or specific to each container (or both a global spec
+and container-specific UIDs for some of the containers). Similar to group ids, user ids may be
+validated according to policies set in the SCC and/or namespace.
+
+If a user id is supplied and the matching SCC's `*runAsUser*` strategy is _MustRunAsRange_ then
+that id will be validated against the min and max user ids defined in that SCC. If the min/max
+ids are not defined in the SCC then the user id is validated against the namespace's
+`openshift.io/sa.scc.uid-range` value. On the other hand, if the user id is omitted then the
+default UID becomes the matching SCC's `*runAsUser*` strategy's `uidRangeMin` value. Or, if a
+min value is not specified in the SCC, then the first number in the namespace's
+`openshift.io/sa.scc.uid-range` becomes the default user id.
+
+As an example, using the _restricted_ SCC and the _default_ namespace, here are the user ID default
+and allowed values:
+```
+# oc get scc restricted 
+NAME         PRIV      CAPS      HOSTDIR   SELINUX     RUNASUSER        FSGROUP    SUPGROUP   PRIORITY
+restricted   false     []        false     MustRunAs   MustRunAsRange   RunAsAny   RunAsAny   <none>
+                                                        <1>
+```
+<1> _MustRunAsRange_ enforces UID checking. In comparison, a value of _RunAsAny_ would not trigger UID
+range checking and thus would accept any user id.
+
+So, the _restricted_ SCC requires user id checking, but supplies no user id range (the min/max values
+are not visible in `oc get scc` above, but are shown in `oc export scc restricted`). Therefore, the
+user id allowable range comes from the _default_ namespace, seen below:
+```
+# oc export ns default
+...
+kind: Namespace
+metadata:
+  annotations:
+    ...
+    openshift.io/sa.scc.uid-range: 1000000000/10000 <1>
+...
+```
+<1> this range is interpreted as allowing user ids between 1000000000 through and including 1000009999.
+If no user id is specified then the default user id will be the min value of 1000000000.
+
+Getting back to the NFS example above: the container needs it's UID to be 99 (group ids are
+described link:#supplemental-groups[above]), so the following fragement can be added to
+the pod spec:
+```
+spec:
+  containers: <1>
+  - name: ...
+    securityContext:
+      runAsUser: 99  #nobody
+```
+<1> id 99 is container specific.
+
+Aassuming the _default_ project and the _restricted_ SCC, the pod's requested user id of 99
+will, unfortunetely, *not* be allowed and therefore the pod will fail. The pod fails because:
+
+- it requests 99 as its user id,
+- all SCCs available to the pod are examined (roughly in priority order followed by most restrictive)
+to see which SCC will allow a user id of 99 (actually, all policies of the SCCs are checked but the 
+focus here is on user id),
+- since all available SCCs use _MustRunAsRange_ for their `*runAsUser*` strategy, uid range checking
+is required, 
+- 99 is not included in the SCC or namespace's user id range, so the pod fails.
+
+To fix this situation:
+
+- the _restricted_ SCC could be modified to include 99 within the min and max user ids
+(*not* recommended),
+- the _restricted_ SCC could be modified to use _RunAsAny_ for the `*runAsUser*` value,
+thus eliminating id range checking (*not* recommended -- containers can run as root),
+- a new SCC could be created with the appropriate user id range (recommended),
+- a new SCC could be created with the `*runAsUser*` strategy set to _RunAsAny_
+(*caution:* need to be mindful of containers being able to run as root),
+- the _default_ project's UID range could be changed to allow a user id of 99.
+(not generally advisable since only a single range of user ids can be specified),
+- a new project could be created with the appropriate user id range defined (not covered here).
+
+===== Custom SCC for UserID:
+It's generally considered a good practice to *not* modify the predefined SCCs. The preferred approach
+is to create a custom SCC that better fits an organization's security needs, or create a new project
+that supports the desired user ids. See
+link:../../dev_guide/projects.html#create-a-project[projects] on creating a new project.
+
+A custom SCC can be created such that a min and max user id is defined, UID range
+checking is still enforced, and the UID of 99 will be allowed. Here is an example:
+```
+# oc export scc nfs-scc 
+allowHostDirVolumePlugin: false  #the allow* bools are the same as for the restricted scc
+...
+kind: SecurityContextConstraints
+metadata:
+  ...
+  name: nfs-scc <1>
+priority: 9 <2>
+requiredDropCapabilities: null
+runAsUser:
+  type: MustRunAsRange <3>
+  uidRangeMax: 99 <4>
+  uidRangeMin: 99
+...
+```
+<1> the name of this new SCC is "nfs-scc"
+<2> numerically larger numbers have greater priority, nil or omitted is the lowest priority.
+Higher priority SCCs sort before lower pri SCCs and thus have a better chance of matching a new pod
+<3> `*runAsUser*` is a strategy and it is set to _MustRunAsRange_, which means uid range checking is 
+enforced
+<4> the uid range is 99-99 (a range of one value).
+
+Now, using `runAsUser: 99`, shown in the pod fragment above, the pod to matches the new nfs-scc and is
+able to run with a UID of 99.
+
 
 == UID and GID Management with NFS and GlusterFS
 
