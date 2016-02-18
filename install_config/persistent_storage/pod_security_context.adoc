@@ -226,8 +226,8 @@ main process. The `supplementalGroups` ids are typically used for controlling ac
 _shared_ storage, such as NFS and GlusterFS; whereas, link:#fsgroup[fsGroup] is used for
 controlling access to _block_ storage, such as Ceph-RBD and iSCSI.
 
+[[nfs-export]]
 For example, consider the following NFS export:
-
 ====
 ----
 #on an openshift node:
@@ -339,18 +339,24 @@ custom SCC.
 
 == FS Group
 
-`*fsGroup*` defines a pod's "file system group". As mentioned above, whereas
-link:#supplemental-groups[supplementalGroups] apply to shared storage, `fsGroup` is used for
-block storage. It is, in fact, a supplemental group but with some extra functionality. When
-`fsGroup` is specified, it has the following effects on volumes which support ownership
-management (i.e., block volumes):
+`*fsGroup*` defines a pod's "file system group". As mentioned link:#supplemental-groups[above],
+`supplementalGroups` apply to shared storage; whereas, `fsGroup` is used for block storage.
+Block storage, such as Ceph-RBD,  iSCSI, and various cloud storage, is typically dedicated to
+a single pod which has specified the block storage volume, either directly or via a persistent
+volume claim (PVC). Block storage is "_taken over_" by a pod, meaning that user and group ids
+supplied in the pod spec (or image) are applied to the actual, physical block device. Typically,
+block storage is not shared. Sharing block storage requires all pods in the namespace to define
+the same group/user ids, so that when a pod "takes over" the block device, it is still accessible
+to the other pods. 
 
-* the owning group of the volume is set to the specified `fsGroup`,
+The `fsGroup` id is, in fact, a supplemental group set in the container, but brings some extra
+functionality:
+
+* the group of the volume is set to the specified `fsGroup`,
 * newly created files in the volume are owned by `fsGroup`,
 * read and write permissions are given to `fsGroup`,
-* the specified `fsGroup` is added to the pod's list of supplemental groups.
 
-This grants pods with the same `fsGroup` the same access to the volume.
+Using the link:#nfs-export[NFS export above], NOPE. Need CEPH ex
 
 [IMPORTANT]
 ====
@@ -421,17 +427,56 @@ Currently the list of volumes which support ownership (block) management include
 
 == SELinuxOptions
 
-The pod security context allows you to specify SELinux labels with which to run
-containers in your pod. Additionally, volumes which support SELinux management
+SELinux labels can be defined in the pod's `*securityContext*` stanza using `level`,
+shown in the pod spec fragment below:
+```
+...
+ securityContext: <1>
+    seLinuxOptions:
+      level: s0:c1,c0 <2>
+...
+```
+<1> `level` can be defined globally for the entire pod, or specifically to each container.
+<2> in addition to `level`, `user`, `role`, `type` can also be specified.
+
+Here are fragements from a SCC and from the _default_ project:
+```
+... #SCC
+seLinuxContext:
+  type: MustRunAs <1>
+...
+# oc export ns default 
+...
+metadata:
+  annotations:
+    openshift.io/sa.scc.mcs: s0:c1,c0 <2>
+...
+```
+<1> _MustRunAs_ should be used in the SCCs so that volume relabeling can be performed by the container.
+<2> if the label is not provided in the pod or in the SCC then the default comes from the namespace.
+
+All predefined SCCs, except for the _privileged_ SCC, set the `seLinuxContext:` to _MustRunAs_.
+This forces poda to use MCS labels, which can be defined in the pod spec, or provided as a default.
+
+...
+An SELinuxContext strategy of MustRunAs with no level set. Admission looks for the openshift.io/sa.scc.mcs annotation to populate the level.
+
+The SCC determines whether or not to require a selinux label and can provide a default label.
+If `*seLinuxContext*` in the SCC is set to _MustRunAs_, and the pod (or image) does not
+define a label then a default, either from the SCC itself or the namespace, is used. If
+`seLinuxContext`  is set to _RunAsAny_ then no default labels are provided, so the container
+determines the final label. In the case of docker, the container will use a unique MCS label,
+which will not likely match the label on existing storage mounts.
+
+Additionally, volumes which support SELinux management,
 will be relabeled so that they are accessible by the specified label and,
 depending on how exclusionary the label is, only that label.
 
-This means two things:
+This means two things for unprivileged containers:
 
-* If the container is unprivileged the volume will be given a `*type*` which is
-accessible by unprivileged containers. Usually *svirt_sandbox_file_t*.
-* If a `*level*` is specified, the volume will be labeled with the given MCS
-label.
+* the volume will be given a `*type*` which is accessible by unprivileged containers.
+Usually *svirt_sandbox_file_t*.
+* If a `*level*` is specified, the volume will be labeled with the given MCS label.
 
 [NOTE]
 ====
@@ -447,7 +492,7 @@ of the volume. So a pod with *s0:c1,c2* will be able to access volumes with
 Hard coding MCS labels into your pod definition makes it easy for others to
 determine what MCS label is needed to access the same volume as the defined pod.
 So it is especially important to rely on the MCS labels allocated by OpenShift
-and not use this option with care.
+and to use this feature with care.
 ====
 
 SELinux options are specified as follows:
