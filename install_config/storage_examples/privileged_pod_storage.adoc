@@ -1,0 +1,205 @@
+= Mounting Volumes on Privileged Pods
+{product-author}
+{product-version}
+:data-uri:
+:icons:
+:experimental:
+:toc: macro
+:toc-title:
+:prewrap:
+
+== Overview
+
+The following provides a method for mounting persistent volumes to pods attached
+to the *privileged SCC*.  For the purpose of this guide, GlusterFS will be the
+sample use-case though this method can be adapted to any
+link:../install_config/persistent_storage/index.html[supported storage plug-in].
+
+=== Prerequisites
+* A gluster volume exists and *glusterfs-fuse* is installed on all hosts
+* Definitions written for GlusterFS link:../persistent_storage/persistent_storage_glusterfs.html#creating-gluster-endpoints[endpoints and service],
+link:../persistent_storage/persistent_storage_glusterfs.html#gfs-creating-persistent-volume[persistent volume],
+link:../architecture/additional_concepts/storage.html#persistent-volume-claims[persistent volume claim], and a link:#create-priv-pod[privileged pod].
+** For this guide, these will be:
+*** `gluster-endpoints-service.yaml`
+*** `gluster-endpoints.yaml`
+*** `gluster-pvc.yaml`
+*** `gluster-pv.yaml`
+*** `gluster-nginx-pod.yaml`
+* A user with the
+link:../admin_guide/manage_authorization_policy.html#managing-role-bindings[*cluster-admin*] role binding.
+** For this guide, that user is called `admin`
+
+
+== Make the Volume Accessible
+
+
+[[create-priv-pv]]
+=== Create the Persistent Volume
+
+Creating the *PersistentVolume* will make the storage accessible to users,
+regardless of projects.
+
+.*As admin*
+[source]
+----
+$ oc create -f gluster-endpoints-service.yaml
+$ oc create -f gluster-endpoints.yaml
+$ oc create -f gluster-pv.yaml
+----
+
+Verify Success
+
+[source]
+----
+$ oc get pv
+NAME                     LABELS    CAPACITY   ACCESSMODES   STATUS      CLAIM     REASON    AGE
+gluster-default-volume   <none>    2Gi        RWX           Available                       2d
+----
+----
+$ oc get svc
+NAME              CLUSTER_IP      EXTERNAL_IP   PORT(S)   SELECTOR   AGE
+gluster-cluster   172.30.151.58   <none>        1/TCP     <none>     24s
+----
+----
+$ oc get ep
+NAME              ENDPOINTS                           AGE
+gluster-cluster   192.168.59.102:1,192.168.59.103:1   2m
+----
+
+[[create-regular-user]]
+== Create a Regular User
+
+A link:../../architecture/core_concepts/projects_and_users.html#users[*regular user*] must be added to the privileged SCC (or to a group given access
+  to the SCC) before they can run privileged pods.
+
+.*As admin*
+[source]
+----
+$ oadm policy add-scc-to-user privileged tom
+----
+
+Then login to the regular user.
+
+[source]
+----
+$ oc login -u tom -p tom
+----
+
+NOTE: Here, `tom` is an arbitrary username and password
+
+Next, create the project.
+
+[source]
+----
+$ oc new-project <project_name>
+----
+
+[[create-priv-pvc]]
+=== Create the Persistent Volume Claim
+
+.*As regular user*
+
+Create the *PersistentVolumeClaim* to access the volume.
+
+[source]
+----
+$ oc create -f gluster-pvc.yaml -n <project_name>
+----
+
+[[create-priv-pod]]
+=== Define the Pod
+
+First, define your pod to access the claim.
+
+.Pod Definition
+====
+
+[source,yaml]
+----
+apiVersion: v1
+id: gluster-nginx-pvc
+kind: Pod
+metadata:
+  name: gluster-nginx-priv
+spec:
+  containers:
+    - name: gluster-nginx-priv
+      image: fedora/nginx
+      volumeMounts:
+        - mountPath: /mnt/gluster <1>
+          name: gluster-volume-claim
+      securityContext:
+        privileged: true
+  volumes:
+    - name: gluster-volume-claim
+      persistentVolumeClaim:
+        claimName: gluster-claim <2>
+
+----
+<1> Volume mount within the pod
+<2> Must reflect the name of the *PersistentVolume*
+====
+
+=== Create the Pod
+
+On pod creation, the mount directory will be created and the volume attached
+to that mount point.
+
+.*As regular user*
+
+[source]
+----
+$ oc create -f gluster-nginx-pod.yaml
+----
+
+Check to make sure the pod created successfully.  It can take several minutes for the pod to create.
+
+[source]
+----
+$ oc get pods
+NAME                 READY     STATUS    RESTARTS   AGE
+gluster-nginx-pod   1/1       Running   0          36m
+----
+
+[[verify-priv-mount]]
+== Verify the setup
+
+=== Check the Pod SCC
+
+Export the configuration of the pod.
+
+[source]
+----
+$ oc export pod <pod_name>
+----
+
+Examine the output. Check that `openshift.io/scc` has the value `privileged`.
+
+.Export Snippet
+====
+[source,yaml]
+----
+metadata:
+  annotations:
+    openshift.io/scc: privileged
+----
+====
+
+=== Verify the Mount
+
+Shell into the pod and check that the volume is mounted.
+
+[source]
+----
+$ oc rsh <pod_name>
+[root@gluster-nginx-pvc /]# mount
+----
+
+Examine the output for the Gluster volume.
+
+.Volume Mount
+====
+----
+192.168.59.102:gv0 on /mnt/gluster type fuse.gluster (rw,relatime,user_id=0,group_id=0,default_permissions,allow_other,max_read=131072)
+----
