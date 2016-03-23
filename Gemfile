@@ -1,3 +1,3 @@
 source "https://rubygems.org"
 
-gem 'ascii_binder', '~>0.0.6'
+gem 'ascii_binder', '~>0.1.2'
