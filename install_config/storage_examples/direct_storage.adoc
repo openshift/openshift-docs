@@ -1,0 +1,483 @@
+= Direct access to storage using two methods
+{product-author}
+{product-version}
+:data-uri:
+:icons:
+:experimental:
+:toc: macro
+:toc-title:
+:prewrap!:
+
+toc::[]
+
+== Overview
+In OpenShift a Persistent Volume Claim (PVC) will bind to a Persistent Volume (PV) based on matching the
+spec labels of 'accessModes' and 'capacity' values. In some cases, a user may want to be specific about
+the storage they are acessing. This example will show how to a user can prebind a PV to a specifc claim 
+[METHOD 1] as well as go directly to the storage using the volume plugin [METHOD 2] inside the pod spec.
+
+In  this example we are using NFS, but the same method can be use for any of the storage plugins
+Please see the section on link:../persistent_storage/index.html[Persistent Storage Plugins] for the supports types.
+
+
+[NOTE]
+====
+All `oc ...` commands are executed on the OpenShift master node.
+====
+
+== [METHOD 1] Create the Persistent Volume using a predefined Persistent Volume Claim reference
+=== 1. Creating the persistent volume (PV) 
+The user may define the spec to include a claim name (ClaimRef) to restrict this PV to only
+bind to a particular persistent volume claim.
+
+.Persistent Volume Object Definition Using NFS
+====
+
+[source,yaml]
+----
+apiVersion: v1
+kind: PersistentVolume
+metadata:
+  name: nfs-pv-prebind <1>
+spec:
+  capacity:
+    storage: 1Gi <2>
+  accessModes:
+    - ReadWriteMany
+  persistentVolumeReclaimPolicy: Retain <3>
+  ClaimRef:
+    Namespace: default <4>
+    Name: nfs-claim-prebind <5>
+  nfs: <6>
+    path: /opt/nfs
+    server: nfs.f22
+    readOnly: false
+----
+<1> The name of the PV which is referenced in pod definitions or displayed in
+various `oc` volume commands.
+<2> The amount of storage allocated to this volume.
+<3> A volume reclaim policy of "retain" indicates to preserve the volume after the pods 
+<4> This is the namespace the claim will exist within 
+<5> This is the claim name that the PVC will need to match EXACTLY to in it's definition  
+<6> This indicates the volume plugin being used for the persistent volume definition
+====
+
+Save the PV definition to a file, for example *_nfs-pv.yaml_*,
+and create the persistent volume:
+
+====
+----
+# oc create -f nfs-pv.yaml 
+persistentvolume "nfs-pv-prebind" created
+----
+====
+
+Verify that the persistent volume was created:
+
+====
+----
+# oc get pv
+NAME                     LABELS    CAPACITY   ACCESSMODES   STATUS      CLAIM                         REASON    AGE
+nfs-pv-prebind           <none>    1Gi        RWX           Available                                           4s
+----
+====
+
+=== 2. Create the Persistent Volume Claim
+A persistent volume claim (PVC) specifies the desired access mode and storage capacity.
+Currently, based on only these two attributes, a PVC is bound to a single PV. Once a PV is
+bound to a PVC that PV is essentially tied to the PVC's project and cannot be bound to by
+another PVC. There is a one-to-one mapping of PVs and PVCs. However, multiple pods in the same
+project can use the same PVC. This is the use case we are highlighting in this example.
+
+.PVC Object Definition
+====
+[source,yaml]
+----
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: nfs-claim-prebind  <1>
+spec:
+  accessModes:
+  - ReadWriteMany      <2>
+  resources:
+     requests:
+       storage: 1Gi    <3>
+----
+<1> The claim name referenced by the PV spec definition ClaimRef Name.
+<2> As mentioned above for PVs, the `*accessModes*` do not enforce access right,
+but rather act as labels to match a PV to a PVC.
+<3> This claim will look for PVs offering *1Gi* or greater capacity.
+====
+
+Save the PVC definition to a file, for example *_nfs-pvc.yaml_*,
+and create the PVC:
+
+====
+----
+# oc create -f nfs-pvc.yaml 
+persistentvolumeclaim "nfs-claim-prebound" created
+
+#and verify the PVC was created and bound to the expected PV:
+# oc get pvc
+NAME                       LABELS    STATUS    VOLUME               CAPACITY   ACCESSMODES   AGE
+nfs-claim-prebound         <none>    Bound     nfs-pv-prebind       1Gi        RWX           24s
+                                    <1>
+----
+<1> the claim (nfs-claim-prebind) was bound to the "nfs-pv-prebind" PV.
+====
+
+=== 3. NFS Volume Access
+Access is necessary to a node in the NFS server. On this node examine
+the nfs-fuse mount:
+
+====
+----
+#on a nfs storage node:
+[root@nfs nfs]# ls -lZ /opt/nfs/
+total 8
+-rw-r--r--. 1 root 100003  system_u:object_r:usr_t:s0     10 Oct 12 23:27 test2b
+              <1>   
+                     <2>
+----
+<1> the owner has id 0.
+<2> the group has id 100003.
+====
+
+In order to access the NFS mount, the container must match the SELinux label, and
+either run with a UID of 0, or with 100003 in its supplemental groups range. It is recommended to gain
+access to the volume by matching the NFS mount's groups, which will be defined in the pod
+definition below.
+
+By default, SELinux does not allow writing from a pod to a remote NFS server. To enable
+writing to NFS volumes with SELinux enforcing on each node, run:
+
+----
+# setsebool -P virt_sandbox_use_nfs on
+----
+
+[NOTE]
+====
+The `virt_sandbox_use_nfs` boolean is defined by the *docker-selinux* package.
+If you get an error saying it is not defined, please ensure that this package is installed.
+====
+
+=== 4. Create the Pod
+A pod definition file or a template file can be used to define a pod. Below is a pod spec that
+creates a single container and mounts the nfs volume for read-write access:
+
+.Pod Object Definition
+====
+[source,yaml]
+----
+apiVersion: v1
+kind: Pod
+metadata:
+  name: nginx-nfs-pod <1>
+  labels:
+    name: nginx-nfs-pod
+spec:
+  containers:
+    - name: nginx-nfs-pod
+      image: fedora/nginx <2>
+      ports:
+        - name: web
+          containerPort: 80
+      volumeMounts:
+        - name: nfsvol <3>
+          mountPath: /usr/share/nginx/html <4>
+  securityContext:
+      supplementalGroups: [100003] <5>
+      privileged: false
+  volumes:
+    - name: nfsvol
+      persistentVolumeClaim:
+        claimName: nfs-claim-prebind
+----
+<1> The name of this pod as displayed by `oc get pod`.
+<2> The image run by this pod.
+<3> The name of the volume. This name must be the same in both the `containers` and `volumes` sections.
+<4> The mount path as seen in the container.
+<5> The group id to be assigned to the container.
+<6> The PVC that was created in the previous step.
+====
+
+Save the pod definition to a file, for example *_nfs.yaml_*,
+ and create the pod:
+
+====
+----
+# oc create -f nfs.yaml 
+pod "nginx-nfs-pod" created
+
+#verify pod was created
+# oc get pods
+NAME                READY     STATUS    RESTARTS   AGE
+nginx-nfs-pod       1/1       Running             0          4s
+----
+====
+
+More details are shown in the `oc describe pod` command:
+
+====
+----
+[root@ose70 nfs]# oc describe pod nginx-nfs-pod
+Name:				nginx-nfs-pod
+Namespace:			default <1>
+Image(s):			fedora/nginx
+Node:				ose70.rh7/192.168.234.148 <2>
+Start Time:			Mon, 21 Mar 2016 09:59:47 -0400
+Labels:				name=nginx-nfs-pod
+Status:				Running
+Reason:				
+Message:			
+IP:				10.1.0.4
+Replication Controllers:	<none>
+Containers:
+  nginx-nfs-pod:
+    Container ID:	docker://a3292104d6c28d9cf49f440b2967a0fc5583540fc3b062db598557b93893bc6f
+    Image:		fedora/nginx
+    Image ID:		docker://403d268c640894cbd76d84a1de3995d2549a93af51c8e16e89842e4c3ed6a00a
+    QoS Tier:
+      cpu:		BestEffort
+      memory:		BestEffort
+    State:		Running
+      Started:		Mon, 21 Mar 2016 09:59:49 -0400
+    Ready:		True
+    Restart Count:	0
+    Environment Variables:
+Conditions:
+  Type		Status
+  Ready 	True 
+Volumes:
+  nfsvol:
+    Type:	PersistentVolumeClaim (a reference to a PersistentVolumeClaim in the same namespace)
+    ClaimName:	nfs-claim-prebind <3>
+    ReadOnly:	false
+  default-token-a06zb:
+    Type:	Secret (a secret that should populate this volume)
+    SecretName:	default-token-a06zb
+Events: <4>
+  FirstSeen	LastSeen	Count	From			SubobjectPath				Reason		Message
+  ─────────	────────	─────	────			─────────────				──────		───────
+  4m		4m		1	{scheduler }							Scheduled	Successfully assigned nginx-nfs-pod to ose70.rh7
+  4m		4m		1	{kubelet ose70.rh7}	implicitly required container POD	Pulled		Container image "openshift3/ose-pod:v3.1.0.4" already present on machine
+  4m		4m		1	{kubelet ose70.rh7}	implicitly required container POD	Created		Created with docker id 866a37108041
+  4m		4m		1	{kubelet ose70.rh7}	implicitly required container POD	Started		Started with docker id 866a37108041
+  4m		4m		1	{kubelet ose70.rh7}	spec.containers{nginx-nfs-pod}		Pulled		Container image "fedora/nginx" already present on machine
+  4m		4m		1	{kubelet ose70.rh7}	spec.containers{nginx-nfs-pod}		Created		Created with docker id a3292104d6c2
+  4m		4m		1	{kubelet ose70.rh7}	spec.containers{nginx-nfs-pod}		Started		Started with docker id a3292104d6c2
+
+
+----
+<1> The project (namespace) name.
+<2> The IP address of the OpenShift node running the pod.
+<3> The PVC name used by the pod.
+<4> The list of events resulting in the pod being launched and the nfs volume being
+mounted. The container will not start correctly if the volume cannot mount.
+====
+
+There is more internal information, including the SCC used to authorize the pod, the pod's
+user and group ids, the selinux label, etc. shown in the
+`oc get pod <name> -o yaml` command:
+
+====
+----
+[root@ose70 nfs]# oc get pod nginx-nfs-pod -o yaml
+apiVersion: v1
+kind: Pod
+metadata:
+  annotations:
+    openshift.io/scc: restricted <1>
+  creationTimestamp: 2016-03-21T13:59:47Z
+  labels:
+    name: nginx-nfs-pod
+  name: nginx-nfs-pod
+  namespace: default <2>
+  resourceVersion: "2814411"
+  selfLink: /api/v1/namespaces/default/pods/nginx-nfs-pod
+  uid: 2c22d2ea-ef6d-11e5-adc7-000c2900f1e3
+spec:
+  containers:
+  - image: fedora/nginx
+    imagePullPolicy: IfNotPresent
+    name: nginx-nfs-pod
+    ports:
+    - containerPort: 80
+      name: web
+      protocol: TCP
+    resources: {}
+    securityContext:
+      privileged: false
+    terminationMessagePath: /dev/termination-log
+    volumeMounts:
+    - mountPath: /usr/share/nginx/html
+      name: nfsvol
+    - mountPath: /var/run/secrets/kubernetes.io/serviceaccount
+      name: default-token-a06zb
+      readOnly: true
+  dnsPolicy: ClusterFirst
+  host: ose70.rh7
+  imagePullSecrets:
+  - name: default-dockercfg-xvdew
+  nodeName: ose70.rh7
+  restartPolicy: Always
+  securityContext:
+    supplementalGroups:
+    - 100003i <3>
+  serviceAccount: default
+  serviceAccountName: default
+  terminationGracePeriodSeconds: 30
+  volumes:
+  - name: nfsvol
+    persistentVolumeClaim:
+      claimName: nfs-claim-prebind <4>
+  - name: default-token-a06zb
+    secret:
+      secretName: default-token-a06zb
+status:
+  conditions:
+  - lastProbeTime: null
+    lastTransitionTime: 2016-03-21T13:59:49Z
+    status: "True"
+    type: Ready
+  containerStatuses:
+  - containerID: docker://a3292104d6c28d9cf49f440b2967a0fc5583540fc3b062db598557b93893bc6f
+    image: fedora/nginx
+    imageID: docker://403d268c640894cbd76d84a1de3995d2549a93af51c8e16e89842e4c3ed6a00a
+    lastState: {}
+    name: nginx-nfs-pod
+    ready: true
+    restartCount: 0
+    state:
+      running:
+        startedAt: 2016-03-21T13:59:49Z
+  hostIP: 192.168.234.148
+  phase: Running
+  podIP: 10.1.0.4
+  startTime: 2016-03-21T13:59:47Z
+
+----
+<1> The SCC used by the pod.
+<2> The project (namespace) name.
+<3> The supplemental group ID for the pod (all containers).
+<4> The PVC name used by the pod.
+====
+
+== [METHOD 2] Go directly to the storage asset using the volume plug-in
+=== 1. Creating the pod definition
+Executing this method, the user may skip the creation of the Persistent Volume (PV) and
+Persistent Volume Claim (PVC) and access the storage via the path defined in the volumes
+section.
+
+
+.Pod Object Definition
+====
+[source,yaml]
+----
+apiVersion: v1
+kind: Pod
+metadata:
+  name: busybox-nfs-pod <1>
+  labels:
+    name: busybox-nfs-pod   
+spec:
+  containers:
+  - name: busybox-nfs-pod
+    image: busybox <2>       
+    command: ["sleep", "60000"]
+    volumeMounts:
+    - name: nfsvol-2 <3>
+      mountPath: /usr/share/busybox  <4>
+      readOnly: false
+  securityContext:
+    supplementalGroups: [100003] <5>       
+    privileged: false
+  volumes:
+  - name: nfsvol-2   
+    nfs:
+      path: /opt/nfs  <6>   
+      server: nfs.f22 <7>
+
+----
+<1> The name of this pod as displayed by `oc get pod`.
+<2> The image run by this pod.
+<3> The name of the volume. This name must be the same in both the `containers` and `volumes` sections.
+<4> The mount path as seen in the container.
+<5> The group id to be assigned to the container.
+<6> The path to the storage on the NFS server
+<7> The NFS server
+====
+
+Save the pod definition to a file, for example *_nfs-2.yaml_*,
+ and create the pod:
+
+====
+----
+# oc create -f nfs-2.yaml
+pod "busybox-nfs-pod" created
+
+#verify pod was created
+# oc get pods
+NAME                READY     STATUS    RESTARTS   AGE
+busybox-nfs-pod     1/1       Running   0          3s
+----
+====
+
+More details are shown in the `oc describe pod` command:
+
+====
+----
+[root@ose70 nfs]# oc describe pod busybox-nfs-pod
+Name:				busybox-nfs-pod
+Namespace:			default
+Image(s):			busybox
+Node:				ose70.rh7/192.168.234.148
+Start Time:			Mon, 21 Mar 2016 10:19:46 -0400
+Labels:				name=busybox-nfs-pod
+Status:				Running
+Reason:				
+Message:			
+IP:				10.1.0.5
+Replication Controllers:	<none>
+Containers:
+  busybox-nfs-pod:
+    Container ID:	docker://346d432e5a4824ebf5a47fceb4247e0568ecc64eadcc160e9bab481aecfb0594
+    Image:		busybox
+    Image ID:		docker://17583c7dd0dae6244203b8029733bdb7d17fccbb2b5d93e2b24cf48b8bfd06e2
+    QoS Tier:
+      cpu:		BestEffort
+      memory:		BestEffort
+    State:		Running
+      Started:		Mon, 21 Mar 2016 10:19:48 -0400
+    Ready:		True
+    Restart Count:	0
+    Environment Variables:
+Conditions:
+  Type		Status
+  Ready 	True 
+Volumes:
+  nfsvol:
+    Type:	NFS (an NFS mount that lasts the lifetime of a pod)
+    Server:	nfs.f22
+    Path:	/opt/nfs
+    ReadOnly:	false
+  default-token-32d2z:
+    Type:	Secret (a secret that should populate this volume)
+    SecretName:	default-token-32d2z
+Events:
+  FirstSeen	LastSeen	Count	From			SubobjectPath				Reason		Message
+  ─────────	────────	─────	────			─────────────				──────		───────
+  4m		4m		1	{scheduler }							Scheduled	Successfully assigned busybox-nfs-pod to ose70.rh7
+  4m		4m		1	{kubelet ose70.rh7}	implicitly required container POD	Pulled		Container image "openshift3/ose-pod:v3.1.0.4" already present on machine
+  4m		4m		1	{kubelet ose70.rh7}	implicitly required container POD	Created		Created with docker id 249b7d7519b1
+  4m		4m		1	{kubelet ose70.rh7}	implicitly required container POD	Started		Started with docker id 249b7d7519b1
+  4m		4m		1	{kubelet ose70.rh7}	spec.containers{busybox-nfs-pod}	Pulled		Container image "busybox" already present on machine
+  4m		4m		1	{kubelet ose70.rh7}	spec.containers{busybox-nfs-pod}	Created		Created with docker id 346d432e5a48
+  4m		4m		1	{kubelet ose70.rh7}	spec.containers{busybox-nfs-pod}	Started		Started with docker id 346d432e5a48
+----
+[NOTE] 
+====
+Instead of a Persistent Volume Claim being listed under the 'Volumes' section we have 'nfsvol' indicating we used the NFS plugin to access the storage asset.
+====
+
