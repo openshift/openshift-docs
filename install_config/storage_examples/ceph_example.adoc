@@ -1,0 +1,263 @@
+= Complete Example Using Ceph RBD
+{product-author}
+{product-version}
+:data-uri:
+:icons:
+:experimental:
+:toc: macro
+:toc-title:
+:prewrap!:
+
+toc::[]
+
+== Overview
+
+For an explanation of persistent volumes (PVs), persistent volume claims (PVCs), and
+using Ceph RBD as persistent storage, please see the section on
+link:../persistent_storage/persistent_storage_ceph_rbd.html[Persistent Storage Using Ceph Rados Block Device].
+Below, is an end-to-end example of using an existing ceph cluster as an OpenShift persistent store.
+It is assumed that a working ceph cluster has already been setup. If not please read more about 
+link:https://access.redhat.com/products/red-hat-ceph-storage[ceph here].
+
+[NOTE]
+====
+All `oc ...` commands are executed on the OpenShift master node.
+====
+
+== Installing the _ceph-common_ Package
+The _ceph-common_ library must be installed on *all schedulable* OpenShift nodes:
+
+[NOTE]
+====
+Often the OpenShift master node is not used to run pod workloads, and, thus, is not included as a schedulable node.
+====
+
+----
+# yum install -y ceph-common
+----
+
+== Creating the Ceph Secret
+
+The `ceph auth get-key` command is run on a ceph *MON* node to display the key value for the
+_client.admin_ user:
+
+.Ceph Secret Definition
+====
+[source,yaml]
+----
+apiVersion: v1
+kind: Secret
+metadata:
+  name: ceph-secret
+data:
+  key: QVFBOFF2SlZheUJQRVJBQWgvS2cwT1laQUhPQno3akZwekxxdGc9PQ== <1>
+
+----
+<1> this base64 key is generated on one of the ceph MON nodes using the following command:
+  `ceph auth get-key client.admin | base64`
+and then copying the output and pasting it as the secret key's value.
+====
+
+Save the secret definition to a file, for example *_ceph-secret.yaml_*,
+then create the secret:
+
+====
+----
+$ oc create -f ceph-secret.yaml
+secret "ceph-secret" created
+----
+====
+
+Verify that the secret was created:
+
+====
+----
+# oc get secret ceph-secret
+NAME          TYPE      DATA      AGE
+ceph-secret   Opaque    1         23d
+----
+====
+
+== Creating the Persistent Volume
+The persistent volume (PV) file is defined next before creating the PV object in
+OpenShift:
+
+.Persistent Volume Object Definition Using Ceph RBD
+====
+
+[source,yaml]
+----
+apiVersion: v1
+kind: PersistentVolume
+metadata: 
+  name: ceph-pv     <1>
+spec: 
+  capacity:
+    storage: 2Gi    <2>
+  accessModes:
+    - ReadWriteOnce <3>
+  rbd:              <4>
+    monitors:       <5>
+      - 192.168.122.133:6789
+    pool: rbd
+    image: ceph-image
+    user: admin
+    secretRef: 
+      name: ceph-secret <6>
+    fsType: ext4        <7>
+    readOnly: false
+  persistentVolumeReclaimPolicy: Recycle
+----
+<1> The name of the PV which is referenced in pod definitions or displayed in
+various `oc` volume commands.
+<2> The amount of storage allocated to this volume.
+<3> `accessModes` are used as labels to match a PV and a PVC. They currently
+do not define any form of access control. All block storage is defined to be
+single user (non-shared storage).
+<4> This defines the volume type being used, in this case the *rbd* plug-in.
+<5> This is an array of Ceph monitor ip addresses and ports.
+<6> This is the Ceph secret, define above, used to create a secure connection
+from OpenShift to the Ceph server.
+<7> This is the file system type mounted on the Ceph RBD block device.
+====
+
+Save the PV definition to a file, for example *_ceph-pv.yaml_*,
+and create the persistent volume:
+
+====
+----
+# oc create -f ceph-pv.yaml
+persistentvolume "ceph-pv" created
+----
+====
+
+Verify that the persistent volume was created:
+
+====
+----
+# oc get pv
+NAME                     LABELS    CAPACITY     ACCESSMODES   STATUS      CLAIM     REASON    AGE
+ceph-pv                  <none>    2147483648   RWO           Available                       2s
+----
+====
+
+== Creating the Persistent Volume Claim
+A persistent volume claim (PVC) specifies the desired access mode and storage capacity.
+Currently, based on only these two attributes, a PVC is bound to a single PV. Once a PV is
+bound to a PVC that PV is essentially tied to the PVC's project and cannot be bound to by
+another PVC. There is a one-to-one mapping of PVs and PVCs. However, multiple pods in the same
+project can use the same PVC.
+
+.PVC Object Definition
+====
+[source,yaml]
+----
+kind: PersistentVolumeClaim
+apiVersion: v1
+metadata:
+  name: ceph-claim
+spec:
+  accessModes:     <1>
+    - ReadWriteOnce
+  resources:
+    requests:
+      storage: 2Gi <2>
+
+----
+<1> As mentioned above for PVs, the `*accessModes*` do not enforce access right,
+but rather act as labels to match a PV to a PVC.
+<2> This claim will look for PVs offering *2Gi* or greater capacity.
+====
+
+Save the PVC definition to a file, for example *_ceph-claim.yaml_*,
+and create the PVC:
+
+====
+----
+# oc create -f ceph-claim.yaml
+persistentvolumeclaim "ceph-claim" created
+
+#and verify the PVC was created and bound to the expected PV:
+# oc get pvc
+NAME         LABELS    STATUS    VOLUME    CAPACITY   ACCESSMODES   AGE
+ceph-claim   <none>    Bound     ceph-pv   1Gi        RWX           21s
+                                 <1>
+----
+<1> the claim was bound to the "ceph-pv" PV.
+====
+
+== Creating the Pod
+A pod definition file or a template file can be used to define a pod. Below is a pod spec that
+creates a single container and mounts the Ceph RBD volume for read-write access:
+
+.Pod Object Definition
+====
+[source,yaml]
+----
+apiVersion: v1
+kind: Pod
+metadata:
+  name: ceph-pod1           <1>
+spec:
+  containers:
+  - name: ceph-busybox
+    image: busybox          <2>
+    command: ["sleep", "60000"]
+    volumeMounts:
+    - name: ceph-vol1       <3>
+      mountPath: /usr/share/busybox <4>
+      readOnly: false
+  volumes:
+  - name: ceph-vol1         <3>
+    persistentVolumeClaim: 
+      claimName: ceph-claim <5>
+----
+<1> The name of this pod as displayed by `oc get pod`.
+<2> The image run by this pod, In this case we're just telling busybox to sleep.
+<3> The name of the volume. This name must be the same in both the `containers` and `volumes` sections.
+
+<4> The mount path as seen in the container.
+<5> The PVC that is bound to the Ceph RBD cluster.
+====
+
+Save the pod definition to a file, for example *_ceph-pod1.yaml_*,
+and create the pod:
+
+====
+----
+# oc create -f ceph-pod1.yaml 
+pod "ceph-pod1" created
+
+#verify pod was created
+# oc get pod
+NAME        READY     STATUS    RESTARTS   AGE
+ceph-pod1   1/1       Running   0          2m
+                      <1>
+----
+<1> After a minute or so, the pod will be in the "Running" state.
+====
+
+== Defining Group and Owner IDs (optional)
+When using block storage, such as Ceph RBD, the physical block storage is _managed_ by the pod;
+meaning that the group id defined in the pod becomes the group id of *both* the Ceph RBD mount
+inside the container, and the group id of the actual storage itself. Thus, it is usually
+unnecessary to define a group id in the pod spec; however, if a group id is desired it can be
+defined using `*fsGroup*`, as shown in the following pod definition fragment:
+
+.Group ID Pod Definition
+====
+[source,yaml]
+----
+...
+spec:
+  containers:
+    - name:
+    ...
+  securityContext: <1>
+    fsGroup: 7777  <2>
+...
+----
+<1> `*securityContext*` must be defined at the pod level, not under a specific container.
+<2> all containers in the pod will have the same fsGroup id.
+====
+
