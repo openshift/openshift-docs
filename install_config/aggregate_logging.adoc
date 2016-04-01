@@ -19,68 +19,89 @@ https://www.elastic.co/videos/introduction-to-the-elk-stack[ELK stack]. The EFK
 stack can be useful for viewing logs aggregated from hosts and applications,
 whether coming from multiple containers or even deleted pods.
 
-Three components make up the EFK logging stack:
+These components make up the EFK logging stack:
 
 * https://www.elastic.co/products/elasticsearch[Elasticsearch]: An object store where all logs are stored.
 * http://www.fluentd.org/architecture[Fluentd]: Gathers logs from nodes and feeds them to Elasticsearch.
 * https://www.elastic.co/guide/en/kibana/current/introduction.html[Kibana]: A web UI for Elasticsearch.
+ifdef::openshift-origin[]
+* https://www.elastic.co/guide/en/elasticsearch/client/curator/current/about.html[Curator]: Removes old logs from Elasticsearch.
+endif::openshift-origin[]
 
 Once deployed in a cluster, the stack aggregates logs from all nodes and
 projects into Elasticsearch, and provides a Kibana UI to view any logs. Cluster
 administrators can view all logs, but application developers can only view logs
-for the project the have permission to view.
+for projects they have permission to view.
 
 [NOTE]
 ====
 link:../install_config/install/prerequisites.html#managing-docker-container-logs[Managing
 Docker Container Logs] discusses the use of `json-file` logging driver options
-to manage container logs when they become full.
+to manage container logs and prevent filling node disks.
 ====
 
 == Pre-deployment Configuration
 
-Deploying the EFK stack requires:
+The deployer for the EFK stack generates the objects necessary to
+implement aggregated logging, including secrets for secure communication
+within the cluster.
 
+Before running the deployer, the following are required:
+
+* A router deployment for serving cluster-defined routes
+* Sufficient volumes for Elasticsearch cluster storage (one per replica)
+* A project, typically reserved just for this deployment
 * A *logging-deployer* secret
 * A *logging-deployer* service account with access to the secret and creation privileges
-* Sufficient volumes for Elasticsearch cluster storage
-* A router deployment for serving cluster-defined routes
 
-The deployer generates the objects necessary for communication within the
-cluster, and defines secrets and templates to implement aggregated logging.
+Perform the following steps to prepare for deployment:
 
-. Create a new project. Once implemented in a single project, the EFK stack will
-collect logs for every project within your OpenShift cluster. The examples in
-this topic use `logging` as an example project:
+. Ensure that you have deployed a router for the cluster.
+. Ensure that you have the necessary storage for Elasticsearch.
+ifdef::openshift-enterprise[]
+. Ansible-based installs should create the *logging-deployer-template*
+template in the *openshift* project.
+Otherwise you can create it with the following command:
 +
 ====
 ----
-$ oadm new-project logging --node-selector label=value
+$ oc create -n openshift -f \
+    /usr/share/openshift/examples/infrastructure-templates/enterprise/logging-deployer.yaml
+----
+====
+endif::openshift-enterprise[]
+ifdef::openshift-origin[]
+. If your installation did not create templates in the *openshift* namespace, the
+*logging-deployer-template* and *logging-deployer-account-template* templates
+may not exist. In that case you can create them with the following command:
++
+====
+----
+$ oc create -n openshift -f \
+    https://raw.githubusercontent.com/openshift/origin-aggregated-logging/master/deployment/deployer.yaml
+----
+====
+endif::openshift-origin[]
+. Create a new project. Once implemented in a single project, the EFK stack will
+collect logs for every project within your OpenShift cluster. The examples in
+this topic use *logging* as an example project:
++
+====
+----
+$ oadm new-project logging --node-selector=""
+$ oc project logging
 ----
 ====
 +
 [NOTE]
 ====
-Using link:../admin_guide/managing_projects.html#using-node-selectors[node
-selectors] is optional. These can be used to restrict the placement of pods onto
-nodes in which the logging infrastructure deploys.
+Specifying a non-empty
+link:../admin_guide/managing_projects.html#using-node-selectors[node
+selector] on the project is not recommended, as this would restrict
+where Fluentd can be deployed. Instead, specify node selectors for the
+deployer to be applied on your other deployment configurations.
+====
 
-Restricting the project will also restrict where Fluentd can be deployed.
-It is instead recommended to specify node selectors on your Kibana and
-Elasticsearch Deployment Configs once created.
-
-See link:#logging-node-selector[Node Selector] for examples on how to do this.
-====
-+
-Ensure that you switch to your new project before moving on to the next step. In
-this example, the project name is called `logging`:
-+
-====
-----
-$ oc project logging
-----
-====
-+
 . Create a link:../dev_guide/secrets.html[secret] for the deployer. The secret
 can be configured specifically for your instance of the deployer.
 +
@@ -124,14 +145,15 @@ $ oc secrets new logging-deployer \
 ----
 +
 If a certificate file is not passed as a secret, the deployer will generate a
-self-signed certificate instead. However, a secret is still needed for
-certificates to be generated. In this case, you can create a "dummy" secret that
+self-signed certificate instead. However, a secret is still required for
+the deployer to run. In this case, you can create a "dummy" secret that
 does not specify a certificate value:
 +
 ----
-$ oc secrets new metrics-deployer nothing=/dev/null
+$ oc secrets new logging-deployer nothing=/dev/null
 ----
 
+ifdef::openshift-enterprise[]
 . Create the deployer link:../admin_guide/service_accounts.html[service
 account]:
 +
@@ -147,18 +169,44 @@ secrets:
 API
 ----
 ====
-+
-Then, enable the *logging-deployer* service account to edit the project
-contents. By default service accounts are not allowed to do this. The following
-example uses the `logging` project. Be sure to use the project created above in
-the following example:
+endif::openshift-enterprise[]
+ifdef::openshift-origin[]
+. Create the deployer link:../admin_guide/service_accounts.html[service
+account] and custom roles:
 +
 ====
 ----
-$ oc policy add-role-to-user edit \
-            system:serviceaccount:default:logging-deployer
+$ oc process logging-deployer-account-template -n openshift \
+     | oc create -f -
 ----
 ====
+endif::openshift-origin[]
++
+Then, enable the *logging-deployer* service account to create the objects
+needed for a logging deployment.
+ifdef::openshift-enterprise[]
++
+====
+----
+$ oc policy add-role-to-user edit --serviceaccount logging-deployer
+$ oc policy add-role-to-user daemonset-admin --serviceaccount logging-deployer
+$ oadm policy add-cluster-role-to-user oauth-editor \
+       system:serviceaccount:logging:logging-deployer
+----
+====
+endif::openshift-enterprise[]
+ifdef::openshift-origin[]
+Be sure to use the project created above in the last command:
++
+====
+----
+$ oc policy add-role-to-user edit --serviceaccount logging-deployer
+$ oc policy add-role-to-user daemonset-admin --serviceaccount logging-deployer
+$ oadm policy add-cluster-role-to-user oauth-editor \
+       system:serviceaccount:logging:logging-deployer
+----
+====
+endif::openshift-origin[]
 
 . Enable the Fluentd service account, which the deployer will create, that
 requires special privileges to operate Fluentd. Add the service account user to
@@ -185,21 +233,6 @@ $ oadm policy add-cluster-role-to-user cluster-reader \
 == Deploying the EFK Stack
 
 The EFK stack is deployed link:../dev_guide/templates.html[using a template].
-Ansible-based installs should create the *_logging-deployer-template_* template in the *_openshift_* project.
-ifdef::openshift-enterprise[]
-Otherwise, the template can be created with the following command:
-
-----
-$ oc create -n openshift -f /usr/share/openshift/examples/infrastructure-templates/enterprise/logging-deployer.yaml
-----
-endif::openshift-enterprise[]
-ifdef::openshift-origin[]
-Otherwise, the template can be created with the following command:
-
-----
-$ oc create -n openshift -f https://github.com/openshift/openshift-ansible/blob/master/roles/openshift_examples/files/examples/infrastructure-templates/origin/logging-deployer.yaml
-----
-endif::openshift-origin[]
 
 . Run the deployer, specifying at least the parameters in the following example (more are described in the table below):
 +
@@ -221,18 +254,63 @@ The available parameters are:
 |Variable Name
 |Description
 
-|`*KIBANA_HOSTNAME*`
-|(Required with the `oc process` command) The external host name for web clients
-to reach Kibana.
-
 |`*PUBLIC_MASTER_URL*`
 |(Required with the `oc process` command) The external URL for the master. For
 OAuth use.
 
-|`*ES_CLUSTER_SIZE*`
-|(Required with the `oc process` command) The amount of instances of
+|`*ENABLE_OPS_CLUSTER*`
+|If set to `*true*`, configures a second Elasticsearch cluster and Kibana for
+operations logs. Fluentd splits
+logs between the main cluster and a cluster reserved for operations
+logs (which consists of *_/var/log/messages_* on nodes and the logs from the
+projects *default*, *openshift*, and *openshift-infra*).
+This means a second Elasticsearch and Kibana are deployed. The deployments
+are distinguishable by the *-ops* included in their names and have parallel
+deployment options listed below.
+
+|`*KIBANA_HOSTNAME*`, `*KIBANA_OPS_HOSTNAME*`
+|(Required with the `oc process` command) The external host name for web clients
+to reach Kibana.
+
+|`*ES_CLUSTER_SIZE*`, `*ES_OPS_CLUSTER_SIZE*`
+|(Required with the `oc process` command) The number of instances of
 Elasticsearch to deploy. Redundancy requires at least three, and more can be
 used for scaling.
+
+|`*ES_INSTANCE_RAM*`, `*ES_OPS_INSTANCE_RAM*`
+|Amount of RAM to reserve per Elasticsearch instance. The default is 8GB, and it
+must be at least 512MB.
+
+|`*ES_NODE_QUORUM*`, `*ES_OPS_NODE_QUORUM*`
+|The quorum required to elect a new master. Should be more than half the intended cluster size.
+
+|`*ES_RECOVER_AFTER_NODES*`, `*ES_OPS_RECOVER_AFTER_NODES*`
+|When restarting the cluster, require this many nodes to be present before starting recovery.
+Defaults to one less than the cluster size to allow for one missing node.
+
+|`*ES_RECOVER_EXPECTED_NODES*`, `*ES_OPS_RECOVER_EXPECTED_NODES*`
+|When restarting the cluster, wait for this number of nodes to be present before starting recovery.
+By default, the same as the cluster size.
+
+|`*ES_RECOVER_AFTER_TIME*`, `*ES_OPS_RECOVER_AFTER_TIME*`
+|When restarting the cluster, this is a timeout for waiting for the expected number of nodes to be present.
+Defaults to "5m".
+
+ifdef::openshift-origin[]
+|`*ES_NODESELECTOR*`, `*ES_OPS_NODESELECTOR*`
+| A node selector that specifies which nodes are eligible targets
+for deploying Elasticsearch instances. This can be used to place
+these instances on nodes reserved and/or optimized for running them.
+For example, the selector could be `*node-type=infrastructure*`. At least
+one active node must have this label before Elasticsearch will deploy.
+
+|`*KIBANA_NODESELECTOR*`, `*KIBANA_OPS_NODESELECTOR*`, `*CURATOR_NODESELECTOR*`
+| A node selector that specifies which nodes are eligible targets
+for deploying Kibana or Curator instances.
+
+|`*FLUENTD_NODESELECTOR*`
+| A node selector that specifies which nodes are eligible targets
+for deploying Fluentd instances. Defaults to "logging-infra-fluentd=true".
 
 |`*IMAGE_PREFIX*`
 |The prefix for logging component images. For example, setting the prefix to
@@ -241,26 +319,17 @@ used for scaling.
 |`*IMAGE_VERSION*`
 |The version for logging component images. For example, setting the version to
 *v1.1* creates *openshift/origin-logging-deployer:v1.1*.
+endif::openshift-origin[]
+ifdef::openshift-enterprise[]
+|`*IMAGE_PREFIX*`
+|The prefix for logging component images. For example, setting the prefix to
+*registry.access.redhat.com/openshift3/ose-* creates *registry.access.redhat.com/openshift3/ose-logging-deployer:latest*.
 
-|`*ES_INSTANCE_RAM*`
-|Amount of RAM to reserve per Elasticsearch instance. The default is 8GB, and it
-must be at least 512MB.
-
-|`*ENABLE_OPS_CLUSTER*`
-|If set to `*true*`, configures a second Elasticsearch cluster and Kibana for
-operations logs.
-
-|`*KIBANA_OPS_HOSTNAME*`, `*ES_OPS_INSTANCE_RAM*`, `*ES_OPS_CLUSTER_SIZE*`
-|Variables for the operations log cluster.
+|`*IMAGE_VERSION*`
+|The version for logging component images. For example, setting the version to
+*v3.1* creates *registry.access.redhat.com/openshift3/ose-logging-deployer:v3.1*.
+endif::openshift-enterprise[]
 |===
-+
-[NOTE]
-====
-When setting the `*ENABLE_OPS_CLUSTER*` parameter to `*true*`, Fluentd splits
-logs between the Elasticsearch cluster and a cluster reserved for operations
-logs. This means a second Elasticsearch and Kibana are deployed. The deployments
-are distinguishable by the *-ops* included in their names.
-====
 +
 Running the deployer creates a deployer pod and prints its name. Wait until the
 pod is running. This can take up to a few minutes to retrieve the deployer image
@@ -270,7 +339,7 @@ from the registry. You can watch its process with:
 $ oc get pod/<pod_name> -w
 ----
 +
-If it seems to be taking too long, you can retrieve more details about the pod
+If it seems to be taking too long to start, you can retrieve more details about the pod
 and any associated events with:
 +
 ----
@@ -284,6 +353,7 @@ deployment was successful:
 $ oc logs -f <pod_name>
 ----
 
+ifdef::openshift-enterprise[]
 . As a cluster administrator, deploy a template that is created by the deployer:
 +
 ====
@@ -291,17 +361,18 @@ $ oc logs -f <pod_name>
 $ oc process logging-support-template | oc create -f -
 ----
 ====
+endif::openshift-enterprise[]
 
 == Post-deployment Configuration
 
 === Elasticsearch
 
-All pods created from an OpenShift deployment share the storage volumes
-specified for the deployment. However, Elasticsearch pods cannot share storage.
-The ability to specify multiple volumes to be allocated to each instance in a
-deployment is currently being completed. Currently, multiple deployments are
-used in order to scale Elasticsearch. To view all current deployments used by
-Elasticsearch:
+In any production employment, Elasticsearch should be deployed with a
+cluster size of at least three for resiliency to node failures. Each instance
+requires individual storage, but an OpenShift deployment can only provide
+volumes shared by all its pods, so the Elasticsearch cluster cannot be
+implemented with a single deployment. The EFK deployer instead creates one
+deployment per instance. To view all current deployments of Elasticsearch:
 
 ====
 ----
@@ -309,45 +380,30 @@ $ oc get dc --selector logging-infra=elasticsearch
 ----
 ====
 
-////
-To scale Elasticsearch deployments, create and add more deployments, being aware
-of the cluster parameter restrictions. The deployer uses a template to create
-Elasticsearch deployments. These deployments will be named differently, but will
-all have the 'service/logging-es-cluster' prefix:
-
-====
-----
-$ oc process logging-es-template | oc create -f -
-----
-====
-////
-
 *Persistent Elasticsearch Storage*
 
-The deployer creates an ephemeral deployment in which all of a pod's data is
-lost upon restart. For production, persistent storage is recommended. The
-following example specifies a persistent storage volume for the Elasticsearch
-deployment. You can use the `oc volume` command to add a created volume to a
-deployment:
+The deployer creates an ephemeral deployment in which all of a pod's
+data is lost upon restart. For production usage, persistent storage is
+required. You can use the `oc volume` command to add a created volume
+to each deployment. The following example specifies a volume for an
+Elasticsearch instance (using a
+link:../architecture/additional_concepts/storage.html#persistent-volume-claims[PersistentVolumeClaim]):
 
 ====
 ----
 $ oc volume dc/logging-es-rca2m9u8 \
           --add --overwrite --name=elasticsearch-storage \
-          --type=hostPath --path=/path/to/storage
+          --type=persistentVolumeClaim --claim-name=logging-es-1
 ----
 ====
 
 [NOTE]
 ====
-Allowing the pods to mount host volumes as above usually requires adding the
-`aggregated-logging-elasticsearch` service account to the privileged SCC,
-similarly as for Fluentd above.
+Any available volume type can be used, such as a host-mount, but the
+recommended volume type is a PersistentVolumeClaim.
 ====
 
-You can use any volume type, such as
-link:../install_config/persistent_storage/persistent_storage_nfs.html[NFS].
-
+ifdef::openshift-enterprise[]
 [[logging-node-selector]]
 *Node Selector*
 
@@ -379,10 +435,30 @@ $ oc patch dc/logging-es-<unique_name> \
    -p '{"spec":{"template":{"spec":{"nodeSelector":{"nodeLabel":"logging-es-node-1"}}}}}'
 ----
 ====
+endif::openshift-enterprise[]
+
+[[scaling-elasticsearch]]
+*Changing the Scale of Elasticsearch*
+
+To scale Elasticsearch up, create more deployments. The deployer provides
+a template to create Elasticsearch deployments:
+
+====
+----
+$ oc process logging-es-template | oc create -f -
+----
+====
+
+These deployments will be named differently, but all will have the
+*logging-es* prefix. You should be aware of the cluster
+parameters (described in the deployer parameters) based on cluster size
+that may need corresponding adjustment in the template as well as
+existing deployments.
 
 
 === Fluentd
 
+ifdef::openshift-enterprise[]
 Once Elasticsearch is running, scale Fluentd to every node to feed logs into
 Elasticsearch. The following example is for an OpenShift instance with three
 nodes:
@@ -390,31 +466,24 @@ nodes:
 ====
 ----
 $ oc scale dc/logging-fluentd --replicas=3
-$ oc scale rc/logging-fluentd-1 --replicas=3
 ----
 ====
 
 You will need to scale Fluentd if nodes are added or subtracted.
+endif::openshift-enterprise[]
 
-If the logging project was created using a node selector, then scaling Fluentd
-will fail. The scheduler will try to place all Fluentd replicas onto the same
-node. To fix this, edit the project:
-
-====
-----
-$ oc edit project logging
-----
-====
-
-And remove the entry for the node selector:
+ifdef::openshift-origin[]
+Once Elasticsearch is running, label nodes to enable Fluentd to run on them
+and feed logs to Elasticsearch. Use the `*FLUENTD_NODESELECTOR*` given to
+the deployer (if different) in the command below:
 
 ====
 ----
-...
-openshift.io/node-selector: region=infra
-...
+$ oc label nodes --all logging-infra-fluentd=true
 ----
 ====
+
+endif::openshift-origin[]
 
 === Kibana
 
@@ -442,7 +511,6 @@ You can scale the Kibana deployment as usual for redundancy:
 ====
 ----
 $ oc scale dc/logging-kibana --replicas=2
-$ oc scale rc/logging-kibana-1 --replicas=2
 ----
 ====
 
@@ -454,19 +522,19 @@ documentation] for more information on Kibana.
 
 === Cleanup
 
-After deployment, the deployer can be removed:
-
-----
-$ oc delete sa/logging-deployer secret/logging-deployer
-----
-
-Similarly, you can remove everything generated during the deployment that will
-not destroy the project:
+You can remove everything generated during the deployment while
+leaving other project contents intact:
 
 ----
 $ oc delete all --selector logging-infra=kibana
+ifdef::openshift-enterprise[]
 $ oc delete all --selector logging-infra=fluentd
+endif::openshift-enterprise[]
+ifdef::openshift-origin[]
+$ oc delete all,daemonsets --selector logging-infra=fluentd
+endif::openshift-origin[]
 $ oc delete all --selector logging-infra=elasticsearch
+$ oc delete all --selector logging-infra=curator
 $ oc delete all,sa,oauthclient --selector logging-infra=support
 $ oc delete secret logging-fluentd logging-elasticsearch \
     logging-es-proxy logging-kibana logging-kibana-proxy \
