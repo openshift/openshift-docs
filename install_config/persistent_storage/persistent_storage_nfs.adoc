@@ -39,8 +39,10 @@ You must first create an object definition for the PV:
 
 .PV Object Definition Using NFS
 ====
+
 [source,yaml]
 ----
+
 apiVersion: v1
 kind: PersistentVolume
 metadata:
@@ -54,6 +56,7 @@ spec:
     path: /tmp <5>
     server: 172.17.0.2 <6>
   persistentVolumeReclaimPolicy: Recycle <7>
+
 ----
 <1> The name of the volume. This is the PV identity in various `oc <command>
 pod` commands.
@@ -65,22 +68,12 @@ access rules are enforced based on the `*accessModes*`.
 <5> The path that is exported by the NFS server.
 <6> The host name or IP address of the NFS server.
 <7> The reclaim policy for the PV. This defines what happens to a volume when released
-from its claim. Valid options are *Retain* (default) and *Recycle*. See
-link:#nfs-reclaiming-resources[Reclaiming Resources].
+from its claim. Valid options are *Retain* (default) and *Recycle*. See link:#nfs-reclaiming-resources[Reclaiming Resources].
 ====
 
 [NOTE]
 ====
 Each NFS volume must be mountable by all schedulable nodes in the cluster.
-====
-
-Save the definition to a file, for example *_nfs-pv.yaml_*, and create the PV:
-
-====
-----
-$ oc create -f nfs-pv.yaml
-persistentvolume "pv0001" created
-----
 ====
 
 Verify that the PV was created:
@@ -92,6 +85,7 @@ NAME                     LABELS    CAPACITY     ACCESSMODES   STATUS      CLAIM 
 pv0001                   <none>    5368709120   RWO           Available                       31s
 ----
 ====
+
 
 The next step can be to create a persistent volume claim (PVC) which will bind
 to the new PV:
@@ -163,6 +157,7 @@ which is the desired behavior.
 
 As an example, if the target NFS directory appears on the NFS server as:
 
+
 [[nfs-export]]
 ====
 ----
@@ -184,6 +179,169 @@ The owner ID of 65534 is used as an example. Even though NFS's *root_squash*
 maps *root* (0) to *nfsnobody* (65534), NFS exports can have arbitrary owner
 IDs. Owner 65534 is not required for NFS exports.
 ====
+
+[[nfs-supplemental-groups]]
+=== Group IDs
+
+The recommended way to handle NFS access (assuming it is not an option to change
+permissions on the NFS export) is to use supplemental groups. Supplemental
+groups in OpenShift are used for shared storage, of which NFS is an example. In
+contrast, block storage, such as Ceph RBD or iSCSI, use the *fsGroup* SCC
+strategy and  the *fsGroup* value in the pod's `*securityContext*`.
+
+[NOTE]
+====
+It is generally preferable to use supplemental group IDs to gain access to
+persistent storage versus using link:#nfs-user-ids[user IDs]. Supplemental
+groups are covered further in the full
+link:pod_security_context.html#supplemental-groups[Volume Security] topic.
+====
+
+Because the group ID on the link:#nfs-export[example target NFS directory] shown
+above is 5555, the pod can define that group ID using `*supplementalGroups*`
+under the pod's global `*securityContext*` definition. For example:
+
+====
+----
+spec:
+  containers:
+    - name:
+    ...
+  securityContext: <1>
+    supplementalGroups: [5555] <2>
+----
+<1> `*securityContext*` must be defined globally to the pod, not under a
+specific container.
+<2> An array of GIDs defined globally for the pod. In this case, there is one
+element in the array; additional GIDs would be comma-separated.
+====
+
+Assuming there are no custom SCCs that might satisfy the pod's requirements, the
+pod will likely match the *restricted* SCC. This SCC has the
+`*supplementalGroups*` strategy set to *RunAsAny*, meaning that any supplied
+group ID will be accepted without range checking.
+
+As a result, the above pod will pass admissions and will be launched. However,
+if group ID range checking is desired, a custom SCC, as described in
+link:pod_security_context#scc-supplemental-groups[pod security and custom SCCs],
+is the preferred solution. A custom SCC can be created such that minimum and
+maximum group IDs are defined, group ID range checking is enforced, and a group
+ID of 5555 is allowed.
+
+[[nfs-user-ids]]
+=== User IDs
+
+User IDs can be defined in the container image or in the pod definition. The
+full link:pod_security_context.html#user-id[Volume Security] topic covers
+controlling storage access based on user IDs, and should be read prior to
+setting up NFS persistent storage.
+
+[NOTE]
+====
+It is generally preferable to use link:#nfs-supplemental-groups[supplemental
+group IDs] to gain access to persistent storage versus using user IDs.
+====
+
+In the link:#nfs-export[example target NFS directory] shown above, the container
+needs its UID set to 65534 (ignoring group IDs for the moment), so the following
+can be added to the pod definition:
+
+====
+[source,yaml]
+----
+
+spec:
+  containers: <1>
+  - name:
+  ...
+    securityContext:
+      runAsUser: 65534 <2>
+----
+<1> Pods contain a `*securtityContext*` specific to each container (shown here)
+and a global `*securityContext*` which applies to all containers defined in the
+pod.
+<2> *nfsnobody* owner.
+====
+
+Assuming the *default* project and the *restricted* SCC, the pod's requested
+user ID of 65534 will, unfortunately, not be allowed, and therefore the pod will
+fail. The pod fails because of the following:
+
+- It requests 65534 as its user ID.
+- All SCCs available to the pod are examined to see which SCC will allow a user ID
+of 65534 (actually, all policies of the SCCs are checked but the focus here is
+on user ID).
+- Because all available SCCs use *MustRunAsRange* for their `*runAsUser*`
+strategy, UID range checking is required.
+- 65534 is not included in the SCC or project's user ID range.
+
+It is generally considered a good practice not to modify the predefined SCCs.
+The preferred way to fix this situation is to create a custom SCC, as described
+in the full link:pod_security_context.html#scc-runasuser[Volume Security] topic.
+A custom SCC can be created such that minimum and maximum user IDs are defined,
+UID range checking is still enforced, and the UID of 65534 will be allowed.
+
+[[nfs-selinux]]
+=== SELinux
+
+[NOTE]
+====
+See the full link:pod_security_context.html#volsec-selinux[Volume Security]
+topic for information on controlling storage access in conjunction with using
+SELinux.
+====
+
+By default, SELinux does not allow writing from a pod to a remote NFS server.
+The NFS volume mounts correctly, but is read-only.
+
+To enable writing to NFS volumes with SELinux enforcing on each node, run:
+
+----
+# setsebool -P virt_use_nfs 1
+# setsebool -P virt_sandbox_use_nfs 1
+----
+
+The `-P` option above makes the bool persistent between reboots.
+
+The *virt_use_nfs* boolean is defined by the *_docker-selinux_* package. If an
+error is seen indicating that this bool is not defined, ensure this package has
+been installed.
+
+[[nfs-export-settings]]
+=== Export Settings
+
+In order to enable arbitrary container users to read and write the volume, each
+exported volume on the NFS server should conform to the following conditions:
+
+- Each export must be:
++
+----
+/<example_fs> *(rw,root_squash)
+----
+- The firewall must be configured to allow traffic to the mount point. For NFSv4,
+the default port is 2049 (*nfs*). For NFSv3, there are three ports to configure:
+2049 (*nfs*), 20048 (*mountd*), and 111 (*portmapper*).
++
+.NFSv4
+----
+# iptables -I INPUT 1 -p tcp --dport 2049 -j ACCEPT
+----
+
++
+.NFSv3
+----
+# iptables -I INPUT 1 -p tcp --dport 2049 -j ACCEPT
+# iptables -I INPUT 1 -p tcp --dport 20048 -j ACCEPT
+# iptables -I INPUT 1 -p tcp --dport 111 -j ACCEPT
+----
+- The NFS export and directory must be set up so that it is accessible by the
+target pods. Either set the export to be owned by the container's primary UID,
+or supply the pod group access using `*suppplementalGroups*`, as shown in
+link:#nfs-supplemental-groups[Group IDs] above. See the full
+link:pod_security_context.html[Volume Security] topic for additional pod
+security information as well.
+
+
 
 [[nfs-supplemental-groups]]
 === Group IDs
