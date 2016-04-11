@@ -1,0 +1,161 @@
+
+= Backing Docker Registry with GlusterFS Storage
+{product-author}
+{product-version}
+:data-uri:
+:icons:
+:experimental:
+:toc: macro
+:toc-title:
+:prewrap:
+
+toc::[]
+
+== Overview
+
+This guide will cover the how to attach a GlusterFS persistent volume to the Docker Registry.
+It is assumed that the docker registry service has already been started and the gluster volume has been created.
+
+  
+=== Prerequisites
+* The link:../install/docker_registry.html#deploy-registry[docker-registry] has been deployed *without*
+configuring storage.
+* A gluster volume exists and *glusterfs-fuse* is installed on schedulable nodes.
+* Definitions written for GlusterFS link:../persistent_storage/persistent_storage_glusterfs.html#creating-gluster-endpoints[endpoints and service],
+link:../persistent_storage/persistent_storage_glusterfs.html#gfs-creating-persistent-volume[persistent volume (*pv*)],
+and
+link:../../architecture/additional_concepts/storage.html#persistent-volume-claims[persistent volume claim (*pvc*)].
+** For this guide, these will be:
+*** `gluster-endpoints-service.yaml`
+*** `gluster-endpoints.yaml`
+*** `gluster-pv.yaml`
+*** `gluster-pvc.yaml`
+* A user with the
+link:../../admin_guide/manage_authorization_policy.html#managing-role-bindings[*cluster-admin*] role binding.
+** For this guide, that user is `admin`
+
+NOTE:  All `$ oc` commands are executed on the master node as the `admin` user
+
+
+[[create-gfs-pvc]]
+=== Create the Gluster Persistent Volume
+
+First, make the Gluster volume available to the registry.
+
+----
+$ oc create -f gluster-endpoints-service.yaml
+$ oc create -f gluster-endpoints.yaml
+$ oc create -f gluster-pv.yaml
+$ oc create -f gluster-pvc.yaml
+----
+
+Check to make sure the *pv* and *pvc* were created and bound successfully.  The expected
+output should resemble the following.  Note that the *pvc* status is `Bound`, indicating that
+it has bound to the *pv*.
+
+----
+$ oc get pv
+NAME         LABELS    CAPACITY   ACCESSMODES   STATUS      CLAIM     REASON    AGE
+gluster-pv   <none>    1Gi        RWX           Available                       37s
+$ oc get pvc
+NAME            LABELS    STATUS    VOLUME       CAPACITY   ACCESSMODES   AGE
+gluster-claim   <none>    Bound     gluster-pv   1Gi        RWX           24s
+----
+
+
+
+NOTE: If either the *pvc* or *pv* failed to create or the pvc failed to bind, refer back to the
+link:../persistent_storage/persistent_storage_glusterfs.html[GlusterFS Persistent Storage] guide.
+*Do not* proceed until they initialize and the pvc status is `Bound`
+
+[[attach-pvc-to-reg]]
+=== Attach the PVC to the Docker Registry
+
+Before moving forward, ensure that the docker-registry service is running.
+
+----
+$ oc get svc
+NAME              CLUSTER_IP       EXTERNAL_IP   PORT(S)                 SELECTOR                  AGE
+docker-registry   172.30.167.194   <none>        5000/TCP                docker-registry=default   18m
+----
+
+NOTE:  If either the docker-registry service or it's associated pod is not running, refer back to the
+link:../install/docker_registry.html#deploy-registry[docker-registry] setup instructions for troubleshooting
+before continuing.
+
+
+Then attach the *pvc*.
+
+----
+$ oc volume deploymentconfigs/docker-registry --add --name=v1 -t pvc \
+     --claim-name=gluster-claim --overwrite
+----
+
+For further information on utilizing the Docker Registry, navigate to
+link:../install/docker_registry.html[Deploying a Docker Registry].
+
+== Known Issues
+
+=== Pod Cannot Resolve the Volume Host
+
+In non-production cases where the dnsmasq server is located on the same node as the OpenShift master service,
+it is possible that the pods cannot resolve the host machines when mounting the volume,
+causing the `docker-registry-1-deploy` pod to error.
+This can happen when `dnsmasq.service` fails to start because of a collision with OpenShift DNS on port 53.
+To run the DNS server on the master host, some configurations needs to be changed.
+
+In */etc/dnsmasq.conf*, add:
+====
+----
+# Reverse DNS record for master
+host-record=master.example.com,<master-IP>
+# Wildcard DNS for OpenShift Applications - Points to Router
+address=/apps.example.com/<master-IP>
+# Forward .local queries to SkyDNS
+server=/local/127.0.0.1#8053
+# Forward reverse queries for service network to SkyDNS.
+# This is for default OpenShift SDN - change as needed.
+server=/17.30.172.in-addr.arpa/127.0.0.1#8053
+----
+====
+
+With these settings, `dnsmasq` will pull from the `/etc/hosts` file on the master node.
+Add the appropriate hostnames and IPs for all necessary hosts.
+
+In *master-config.yaml*, change `bindAddress` to:
+====
+----
+dnsConfig:
+ bindAddress: 127.0.0.1:8053
+----
+====
+
+When pods are created, they receive a copy of */etc/resolve.conf*, which typically contains
+only the master DNS server so they can resolve external DNS requests.  To enable internal
+DNS resolution, insert the dnsmasq server to the beginning.  This way, dnsmasq will attempt to resolve
+requests internally first.
+
+In */etc/resolve.conf* all scheduled nodes,
+====
+----
+nameserver 192.168.1.100  <1>
+nameserver 192.168.1.1    <2>
+----
+<1> Add the internal DNS server
+<2> Pre-existing External DNS server
+====
+
+Once the configurations have been changed, restart the OpenShift Master and dnsmasq services.
+
+ifdef::openshift-enterprise[]
+----
+$ oc systemctl restart atomic-openshift-master
+$ oc systemctl restart dnsmasq
+----
+endif::openshift-enterprise[]
+ifdef::openshift-origin[]
+----
+$ oc systemctl restart origin-master
+$ oc systemctl restart dnsmasq
+----
+endif::openshift-origin[]
