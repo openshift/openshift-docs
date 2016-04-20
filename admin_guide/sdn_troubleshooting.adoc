@@ -1,0 +1,569 @@
+= Troubleshooting OpenShift SDN
+{product-author}
+{product-version}
+:data-uri:
+:icons:
+:experimental:
+:toc: macro
+:toc-title:
+
+toc::[]
+
+== Overview
+
+As described in the
+link:../architecture/additional_concepts/sdn.html[SDN documentation]
+there are multiple layers of interfaces that are created to correctly
+pass the traffic from one container to another.  In order to debug
+connectivity issues, you have to test the different layers of the
+stack to work out where the problem arises.  This guide will help you
+dig down through the layers to identify the problem and how to fix it.
+
+Part of the problem is that OpenShift can be set up many ways, and the
+networking can be wrong in a few different places.  So this document
+will work through some scenarios that, hopefully, will cover the
+majority of cases.  If your problem is not covered, the tools and
+concepts that are introduced should help guide debugging efforts.
+
+
+== Nomenclature
+
+Cluster:: The set of machines in the cluster.  _i.e._ the Masters
+and the Nodes.
+Master:: A controller of the OpenShift cluster.  Note that the
+master may not be a node in the cluster, and thus, may not have IP
+connectivity to the pods.
+Node:: Host in the cluster running OpenShift that can host pods.
+Pod:: Group of containers running on a node, managed by OpenShift.
+Service:: Abstraction that presents a unified network interface that
+is backed by one or more pods.
+Router:: A web proxy that can map various URLs and paths into
+OpenShift services to allow external traffic to travel into the
+cluster.
+Node Address:: The IP address of a node.  This is assigned and managed
+by the owner of the network to which the node is attached.  Must be
+reachable from any node in the cluster (master and client).
+Pod Address:: The IP address of a pod.  These are assigned and managed
+by OpenShift.  By default they are assigned out of the 10.128.0.0/14
+network (or, in older versions, 10.1.0.0/16).  Only reachable from the
+client nodes.
+Service Address:: An IP address that represents the service, and is
+mapped to a pod address internally.  These are assigned and managed by
+OpenShift.  By default they are assigned out of the 172.30.0.0/16
+network.  Only reachable from the client nodes.
+
+The following diagram shows all of the pieces involved with external access.
+
+image::Topologies.png["External Access to a Pod"]
+
+== Debugging External Access to an HTTP Service
+
+If you are on an machine outside the cluster and are trying to access
+a resource provided by the cluster there needs to be a process running
+in a pod that listens on a public IP address and "routes" that traffic
+inside the cluster.  The
+link:../architecture/core_concepts/routes.html[OpenShift router]
+serves that purpose for HTTP, HTTPS (with SNI), WebSockets, or TLS
+(with SNI).
+
+Assuming you can't access an HTTP service from the outside of the
+cluster, let's start by reproducing the problem on the command line of
+the machine where things are failing.  Try:
+....
+curl -kv http://foo.example.com:8000/bar    # But replace the argument with your URL
+....
+
+If that works, are you reproducing the bug from the right place?  It
+is also possible that the service has some pods that work, and some
+that don't.  So jump ahead to the <<debugging-the-router>> section.
+
+
+If that failed, then let's resolve the DNS name to an IP address (assuming it isn't already one):
+....
+dig +short foo.example.com                  # But replace the hostname with yours
+....
+
+If that doesn't give back an IP address, it's time to troubleshoot
+DNS, but that's outside the scope of this guide.
+
+IMPORTANT: Make sure that the IP address that you got back is one that you expect to be running
+the router.  If it's not, fix your DNS.
+
+Next, use `ping -c _address_` and `tracepath _address_` to check that
+you can reach the router host.  It is possible that they will not
+respond to ICMP packets, in which case those tests will fail, but the
+router machine may be reachable.  In which case, try using the telnet
+command to access the port for the router directly:
+....
+telnet 1.2.3.4 8000
+....
+
+You may get:
+....
+Trying 1.2.3.4...
+Connected to 1.2.3.4.
+Escape character is '^]'.
+....
+
+If so, there's something listening on the port on the IP address.
+That's good.  Hit `ctrl-]` then hit the _enter_ key and then type
+`close` to quit telnet.  Move on to the <<debugging-the-router>>
+section to check other things on the router.
+
+Or you could get:
+....
+Trying 1.2.3.4...
+telnet: connect to address 1.2.3.4: Connection refused
+....
+
+Which tells us that the router is not listening on that port.  Please
+see the <<debugging-the-router>> section for more pointers on how to
+configure the router.
+
+
+Or if you see:
+[source,sh]
+....
+Trying 1.2.3.4...
+  telnet: connect to address 1.2.3.4: Connection timed out
+....
+
+Which tells us that you can't talk to anything on that IP address.
+Check your routing, firewalls, and that you have a router listening on
+that IP address.  To debug the router, see the
+<<debugging-the-router>> section. For IP routing and firewall issues,
+debugging that is beyond the purview of this guide.
+
+
+== Debugging the Router
+
+Now that you have an IP address, we need to `ssh` to that machine and
+check that the router software is running on that machine and
+configured correctly.  So let's `ssh` there and get administrative
+OpenShift credentials.
+
+include::dev_guide/authentication.adoc[tag=systemadminlogin]
+
+Check that the router is running:
+....
+# oc get endpoints --namespace=default --selector=router
+NAMESPACE   NAME              ENDPOINTS
+default     router            10.128.0.4:80
+....
+
+If that command fails, then your OpenShift configuration is broken.
+Fixing that is outside the scope of this document.
+
+You should see one or more router endpoints listed, but that won't
+tell you if they are running on the machine with the given external IP
+address, since the endpoint IP address will be one of the pod
+addresses that is internal to the cluster.  To get the list of router
+host IP addresses, run:
+....
+# oc get pods --all-namespaces --selector=router --template='{{range .items}}HostIP: {{.status.hostIP}}   PodIP: {{.status.podIP}}{{end}}{{"\n"}}'
+HostIP: 192.168.122.202   PodIP: 10.128.0.4
+....
+
+You should see the host IP that corresponds to your external address.
+If you do not, please refer to the
+link:../architecture/core_concepts/routes.html[router documentation] to
+configure the router pod to run on the right node (by setting the
+affinity correctly) or update your DNS to match the IP addresses where
+the routers are running.
+
+At this point in the guide, you should be on a node, running your
+router pod, but you still can not get the http request to work.  First
+we need to make sure that the router is mapping the external URL to
+the correct service, and if that works, we need to dig into that
+service to make sure that all endpoints are reachable.
+
+Let's list all of the routes that OpenShift knows about:
+....
+# oc get route --all-namespaces
+NAME              HOST/PORT         PATH      SERVICE        LABELS    TLS TERMINATION
+route-unsecured   www.example.com   /test     service-name
+....
+
+If the hostname and path from your URL don't match anything in the
+list of returned routes, then you need to add a route.  See the
+link:../architecture/core_concepts/routes.html[router documentation].
+
+If your route is present, then you need to debug access to the
+endpoints.  That's the same as if you were debugging problems with a
+service, so please continue on with the next <<debugging-a-service>>
+section.
+
+
+== Debugging a Service
+
+If you can't communicate with a service from inside the cluster
+(either because your services can't communicate directly, or because
+you are using the router and everything works until you get into the
+cluster) then you need to work out what endpoints are associated with
+a service and debug them.
+
+First, let's get the services:
+....
+# oc get services --all-namespaces
+NAMESPACE   NAME              LABELS                                    SELECTOR                  IP(S)            PORT(S)
+default     docker-registry   docker-registry=default                   docker-registry=default   172.30.243.225   5000/TCP
+default     kubernetes        component=apiserver,provider=kubernetes   <none>                    172.30.0.1       443/TCP
+default     router            router=router                             router=router             172.30.213.8     80/TCP
+....
+
+You should see your service in the list.  If not, then you need to
+define your
+link:../architecture/core_concepts/pods_and_services.html[service].
+
+The IP addresses listed in the service output are the Kubernetes
+service IP addresses that Kubernetes will map to one of the pods that
+backs that service.  So you should be able to talk to that IP address.
+But, unfortunately, even if you can, it doesn't mean all pods are reachable;
+and if you can't, it doesn't mean all pods aren't reachable.  It just
+tells you the status of the _one_ that kubeproxy hooked you up to.
+
+Let's test the service anyway.  From one of your nodes:
+....
+curl -kv http://172.30.243.225:5000/bar                  # Replace the argument with your service IP address and port
+....
+
+Then, let's work out what pods are backing our service (replace `docker-registry` with the name of the broken service):
+....
+# oc get endpoints --selector=docker-registry
+NAME              ENDPOINTS
+docker-registry   10.128.2.2:5000
+....
+
+From this, we can see that there's only one endpoint.  So, if your
+service test succeeded, and the router test succeeded, then something
+really odd is going on.  But if there's more than one endpoint, or the
+service test failed, try the following _for each_ endpoint.  Once you
+identify what endpoints aren't working, then proceed to the next
+section.
+
+First, test each endpoint (change the URL to have the right endpoint IP, port, and path):
+....
+curl -kv http://10.128.2.2:5000/bar
+....
+
+If that works, great, try the next one.  If it failed, make a note of
+it and we'll work out why, in the next section.
+
+If all of them failed, then it is possible that the local node is not
+working, jump to the <<debugging-local-networking>> section.
+
+If all of them worked, then jump to the <<debugging-kubernetes>>
+section to work out why the service IP address isn't working.
+
+
+== Debugging Node to Node Networking
+
+Using our list of non-working endpoints, we need to test connectivity
+to the node.  Let's start by making sure that all of our nodes have
+the expected IP addresses:
+....
+# oc get hostsubnet
+NAME                   HOST                   HOST IP           SUBNET
+rh71-os1.example.com   rh71-os1.example.com   192.168.122.46    10.1.1.0/24
+rh71-os2.example.com   rh71-os2.example.com   192.168.122.18    10.1.2.0/24
+rh71-os3.example.com   rh71-os3.example.com   192.168.122.202   10.1.0.0/24
+....
+
+Look over that list and make sure the hostnames, IP addresses, and subnets match what you expect.  Especially if you are on DHCP and they could have changed.  If that is the problem, use `oc edit hostsubnet` to open an editor, and then correct the entries.
+
+Next, now that we have ensured the node addresses and hostnames are correct, get a list of the endpoint IPs and node IPs:
+....
+# oc get pods --selector=docker-registry --template='{{range .items}}HostIP: {{.status.hostIP}}   PodIP: {{.status.podIP}}{{end}}{{"\n"}}'  # Again, replace docker registry with the one you are interested in
+HostIP: 192.168.122.202   PodIP: 10.128.0.4
+....
+
+Then find the endpoint IP address you made note of before and look for
+it in the PodIP column, and find the corresponding Host IP address.
+Then test connectivity at the node (host) level (using the address from
+`HostIP`):
+
+* `ping -c 3 _address_`: This should show a response, but if it
+  doesn't it is possible that an intermediate router is eating the
+  ICMP traffic.
+* `tracepath _address_`: This will show the IP route taken to the
+  target (if ICMP packets are returned by all hops)
+
+If both `tracepath` and `ping` failed, then you need to look for
+connectivity issues with your local network (or any containing VMs, if
+any).
+
+Things to check for the local networking:
+
+* `ip route get _address_`: Prints the route the packet will take out of the box to the target address
+....
+# ip route get 192.168.122.202
+  192.168.122.202 dev ens3  src 192.168.122.46
+    cache
+....
+** In this case it says it will go out the interface named `ens3` with
+   the source address of 192.168.122.46 and go directly to the target.
+   Is that what you expected?
+*** If so, use `ip a show dev ens3` to get the interface details and
+    make sure that is the expected interface
+** The other possibility is that it might say:
+....
+# ip route get 192.168.122.202
+  1.2.3.4 via 192.168.122.1 dev ens3  src 192.168.122.46
+....
+*** If so, the via means that it will pass it to that router to route
+appropriately... you will have to make sure that the router is doing
+the right thing with the traffic, and debugging that is beyond the
+scope of this guide.
+* Do you have ethernet link (on both ends)?  (Look for `Link detected:
+  yes` in the output from `ethtool _interface_`)
+* Are your duplex settings, and ethernet speeds right (on both ends)?
+  (Look through the rest of the `ethtool _interface_` information)
+* Are the cables plugged in correctly?  To the correct ports?
+* Are the switches configured correctly?
+
+
+Once you have ascertained that the node to node connectivity is fine,
+we need to look at the SDN configuration on both ends.  Please proceed
+to the <<debugging-local-networking>> section.
+
+
+== Debugging Local Networking
+
+At this point we should have a list of one or more endpoints that you
+can't communicate with, but that have node to node connectivity.  For
+each one, we need to work out what is wrong, but first you need to
+understand how the SDN sets up the networking on a node for the
+different pods.
+
+=== The Interfaces on a Node
+
+These are the interfaces that the OpenShift SDN creates:
+
+* `br0`: The OVS bridge device that containers will be attached to.
+OpenShift SDN also configures a set of non-subnet-specific flow rules
+on this bridge. (The `multitenant` plugin does this immediately; the
+`ovssubnet` plugin waits until the SDN master announces the creation
+of the new node subnet.)
+* `lbr0`: A Linux bridge device, which is configured as Docker's bridge and
+given the cluster subnet gateway address (eg, 10.128.x.1/23).
+* `tun0`: An OVS internal port (port 2 on `br0`). This *also* gets assigned the
+cluster subnet gateway address, and is used for external network
+access. OpenShift SDN configures `netfilter` and routing rules to enable access
+from the cluster subnet to the external network via NAT.
+* `vlinuxbr` and `vovsbr`: Two Linux peer virtual Ethernet interfaces.
+`vlinuxbr` is added to `lbr0`, and `vovsbr` is added to `br0` (port 3), to
+provide connectivity for containers created directly with Docker outside of
+OpenShift.
+* `vxlan0`: The OVS VXLAN device (port 1 on `br0`), which provides access to
+containers on remote nodes.
+* `vethX` (in the main netns): A Linux virtual ethernet peer of `eth0` in the docker netns.  It will be attached to the OVS bridge on one of the other ports.
+
+
+=== SDN Flows Inside a Node
+
+image:SDN.png[The possible SDN paths]
+
+Depending on what you are trying to access (or be accessed from) the
+path will vary.  There are four different places the SDN connects
+(inside a node).  They are labeled in red on the diagram above.
+
+* *Pod:* Traffic is going from one pod to another on the same machine (1 to a different 1)
+* *Remote Node (or Pod):* Traffic is going from a local pod to a remote node or pod in the same cluster (1 to 2)
+* *External Machine:* Traffic is going from a local pod outside the cluster (1 to 3)
+* *Local Docker:* Traffic is going from a local pod to a local docker container that is not managed by Kubernetes (1 to 4)
+
+Of course the opposite traffic flows are also possible.
+
+=== Debugging Steps
+
+==== Is IP Forwarding Enabled?
+
+Check that `sysctl net.ipv4.ip_forward` is set to 1 (and check the host if this is a VM)
+
+==== Is `firewalld` Disabled?
+
+Check that `firewalld` is disabled using `systemctl status firewalld`.
+If it is running, you either need to disable it, or check
+that it is not blocking traffic.  That is outside the scope of this
+guide.
+
+====  Are your routes correct?
+
+Check the route tables with `ip route`:
+....
+# ip route
+default via 192.168.122.1 dev ens3
+10.128.0.0/14 dev tun0  proto kernel  scope link                        # This sends all pod traffic into OVS
+10.128.2.0/23 dev tun0  proto kernel  scope link  src 10.128.2.1        # This is traffic going to local pods, overriding the above
+169.254.0.0/16 dev ens3  scope link  metric 1002                        # This is for Zeroconf (may not be present)
+172.17.0.0/16 dev docker0  proto kernel  scope link  src 172.17.42.1    # Docker's private IPs... used only by things directly configured by docker; not OpenShift
+192.168.122.0/24 dev ens3  proto kernel  scope link  src 192.168.122.46 # The physical interface on the local subnet
+....
+
+You should see the 10.128.x.x lines (assuming you have your pod network set to the default range in your configuration).  If you do not, check the OpenShift logs (see the <<reading-the-logs>> section)
+
+=== Is the Open vSwitch confured correctly?
+
+Check the Open vSwitch bridges on both sides:
+....
+# ovs-vsctl list-br
+br0
+....
+
+This should just be br0.
+
+You can list all of the ports that ovs knows about:
+....
+# ovs-ofctl -O OpenFlow13 dump-ports-desc br0
+OFPST_PORT_DESC reply (OF1.3) (xid=0x2):
+ 1(vxlan0): addr:9e:f1:7d:4d:19:4f
+     config:     0
+     state:      0
+     speed: 0 Mbps now, 0 Mbps max
+ 2(tun0): addr:6a:ef:90:24:a3:11
+     config:     0
+     state:      0
+     speed: 0 Mbps now, 0 Mbps max
+ 8(vethe19c6ea): addr:1e:79:f3:a0:e8:8c
+     config:     0
+     state:      0
+     current:    10GB-FD COPPER
+     speed: 10000 Mbps now, 0 Mbps max
+ 9(vovsbr): addr:6e:dc:28:df:63:c3
+     config:     0
+     state:      0
+     current:    10GB-FD COPPER
+     speed: 10000 Mbps now, 0 Mbps max
+ LOCAL(br0): addr:0a:7f:b4:33:c2:43
+     config:     PORT_DOWN
+     state:      LINK_DOWN
+     speed: 0 Mbps now, 0 Mbps max
+....
+
+Next list the flows that are configured on that bridge.  In output
+below I have removed the `cookie`, `duration`, `n_packets` and
+`n_bytes` columns; and I have lined up the various columns to make it
+easier to understand, and added in-line comments and blank lines:
+....
+# ovs-ofctl -O OpenFlow13 dump-flows br0
+OFPST_FLOW reply (OF1.3) (xid=0x2):
+
+# External access is the default if no higher priority matches
+table=0, priority=50                           actions=output:2
+
+# ARP and IP Traffic destined for the local subnet gateway goes out of the switch to
+# IP tables and the main route table
+table=0, priority=100,arp,arp_tpa=10.128.2.1     actions=output:2
+table=0, priority=100, ip, nw_dst=10.128.2.1     actions=output:2
+
+# All remote nodes should have two entries here, one for IP and one for ARP.
+# Here we see the entries for two remote nodes
+table=0, priority=100,arp,arp_tpa=10.128.4.0/23  actions=set_field:192.168.122.18->tun_dst,output:1
+table=0, priority=100, ip, nw_dst=10.128.4.0/23  actions=set_field:192.168.122.18->tun_dst,output:1
+
+table=0, priority=100,arp,arp_tpa=10.128.0.0/23  actions=set_field:192.168.122.202->tun_dst,output:1
+table=0, priority=100, ip, nw_dst=10.128.0.0/23  actions=set_field:192.168.122.202->tun_dst,output:1
+
+# Other traffic destined for a local pod IP that hasn't been handled by a higher priority rule
+# goes out port 9 to the virtual bridge for docker
+table=0, priority=75,  ip, nw_dst=10.128.2.0/23  actions=output:9
+table=0, priority=75, arp,arp_tpa=10.128.2.0/23  actions=output:9
+
+# Then ports 3-8 or 10+ are for local pods, here there are two local pods
+table=0, priority=100, ip, nw_dst=10.128.2.7     actions=output:8
+table=0, priority=100,arp,arp_tpa=10.128.2.7     actions=output:8
+
+table=0, priority=100, ip, nw_dst=10.128.2.10    actions=output:12
+table=0, priority=100,arp,arp_tpa=10.128.2.10    actions=output:12
+....
+
+The SDN networking plugin configures two entries (one for arp and one
+for ip) with `output=1` per peer endpoint (i.e. if there are five
+nodes, then there should be 4 * 2 rules; In the example above we have
+3 nodes total, so there are four entries above).  It also sets up the
+other entries on ports 2 and 9 that are shown above.  If there are
+flows missing, please look in the <<reading-the-logs>> section.
+
+==== Is the `iptables` configuration correct?
+
+Check the output from `iptables-save` to make sure you are not
+filtering traffic.  However, OpenShift sets up iptables rules during
+normal operation, so do not be surprised to see entries there.
+
+
+==== Is your external network correct?
+
+Check external firewalls, if any, allow traffic to the target address (this is site-dependent, and beyond the purview of this guide).
+
+== Debugging Pod Egress
+
+If you are trying to access an external service from a pod, e.g.:
+....
+curl -kv github.com
+....
+
+Make sure that the DNS is resolving correctly:
+....
+dig +search +noall +answer github.com
+....
+
+That should return the IP address for the github server, but check
+that you got back the correct address.  If you get back no address, or
+the address of one of your machines, then you may be matching the
+wildcard entry in yoir local DNS server.
+
+To fix that, you either need to make sure that DNS server that has the
+wildcard entry is not listed as a `nameserver` in your
+`/etc/resolv.conf` _or_ you need to make sure that the wildcard domain
+is not listed in the `search` list.
+
+If the correct IP address was returned, then try the debugging advice
+listed above in <<debugging-local-networking>>.  Your traffic should
+leave the Open vSwitch on port 2 to pass through the `iptables` rules, then
+out the route table normally.
+
+
+== Reading the Logs
+ifdef::openshift-origin[]
+Run: `journalctl -u origin-node.service --boot | less`
+endif::[]
+ifdef::openshift-enterprise[]
+Run: `journalctl -u atomic-openshift-node.service --boot | less`
+endif::[]
+
+Look for the `Output of setup script:` line.  Everything starting with
+'+' below that are the script steps.  Look through that for obvious
+errors.
+
+Following the script you should see lines with `Output of adding
+table=0`.  Those are the OVS rules, and there should be no errors.
+
+
+== Debugging Kubernetes
+
+Check `iptables -t nat -L` to make sure that the service is being
+NAT'd to the right port on the local machine for the `kubeproxy`.
+
+WARNING: This is all changing soon... Kubeproxy is being eliminated and
+replaced with an `iptables`-only solution.
+
+== Further Help
+
+. Run the script at
+https://raw.githubusercontent.com/openshift/openshift-sdn/master/hack/debug.sh
+on the master (or from another machine with access to the master) to
+generate useful debugging information.
+. Ask for help on Freenode IRC #openshift-dev (but be prepared to
+provide the output from the debugging script)
+
+
+== Miscellaneous Notes
+
+=== Other clarifications on ingress
+* Kube - declare a service as NodePort and it will claim that port on all machines in the cluster (on what interface?) and then route into kube-proxy and then to a backing pod.  See http://kubernetes.io/v1.0/docs/user-guide/services.html#type-nodeport (some node must be accessible from outside)
+* Kube - declare as a LoadBalancer and something _you_ have to write does the rest
+* OS/AE - Both use the router
+
+=== Other debugging notes
+* Peer interfaces (of a Linux virtual ethernet pair) can be determined with `ethtool -S _ifname_`
+* Driver type: `ethtool -i _ifname_`

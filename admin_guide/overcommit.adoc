@@ -1,0 +1,259 @@
+= Overcommitting
+{product-author}
+{product-version}
+:data-uri:
+:icons:
+:experimental:
+:toc: macro
+:toc-title:
+
+toc::[]
+
+== Overview
+
+Containers can specify link:../dev_guide/compute_resources.html[compute resource
+requests and limits]. Requests are used for scheduling your container and
+provide a minimum service guarantee. Limits constrain the amount of compute
+resource that may be consumed on your node.
+
+The link:../admin_guide/scheduler.html[scheduler] attempts to improve the
+utilization of compute resources across all nodes in the cluster. It places pods
+on nodes relative to the pods' compute resource requests to find a node that
+provides the best fit.
+
+Requests and limits enable administrators to allow and manage the overcommitment
+of resources on a node, which may be desirable in development environments where
+performance is not a concern.
+
+[[requests-and-limits]]
+== Requests and Limits
+
+For each compute resource, a container may specify a resource request and limit.
+Scheduling decisions are made based on the request to ensure that a node has
+enough capacity available to meet the requested value. If a container specifies
+limits, but omits requests, the requests are defaulted to the limits. A
+container is not able to exceed the specified limit on the node.
+
+The enforcement of limits is dependent upon the compute resource type. If a
+container makes no request or limit, the container is scheduled to a node with
+no resource guarantees. In practice, the container is able to consume as much of
+the specified resource as is available with the lowest local priority. In low
+resource situations, containers that specify no resource requests are given the
+lowest quality of service.
+
+[[compute-resources]]
+== Compute Resources
+
+The node-enforced behavior for compute resources is specific to the resource
+type.
+
+[[overcommit-cpu]]
+=== CPU
+
+A container is guaranteed the amount of CPU it requests, but it may or may not
+get more CPU time based on local node conditions. If a container does not
+specify a corresponding limit, it is able to consume excess CPU available on the
+node. If multiple containers are attempting to use excess CPU, CPU time is
+distributed based on the amount of CPU requested by each container.
+
+For example, if one container requested 500m of CPU time, and another container
+requested 250m of CPU time, any extra CPU time available on the node is
+distributed among the containers in a 2:1 ratio. If a container specified a
+limit, it will be throttled to not use more CPU than the specified limit.
+
+CPU requests are enforced using the CFS shares support in the Linux kernel. By
+default, CPU limits are enforced using the CFS quota support in the Linux kernel
+over a 100ms measuring interval, though link:#enforcing-cpu-limits[this can be
+disabled].
+
+[[overcommit-memory]]
+=== Memory
+
+A container is guaranteed the amount of memory it requests. A container may use
+more memory than requested, but once it exceeds its requested amount, it could
+be killed in a low memory situation on the node.
+
+If a container uses less memory than requested, it will not be killed unless
+system tasks or daemons need more memory than was accounted for in the node's
+resource reservation. If a container specifies a limit on memory, it is
+immediately killed if it exceeds the limited amount.
+
+[[qos-classes]]
+== Quality of Service Classes
+
+A node is _overcommitted_ when it has a pod scheduled that makes no request, or
+when the sum of limits across all pods on that node exceeds available machine
+capacity.
+
+In an overcommitted environment, it is possible that the pods on the node will
+attempt to use more compute resource than is available at any given point in
+time. When this occurs, the node must give priority to one pod over another. The
+facility used to make this decision is referred to as a Quality of Service (QoS)
+Class.
+
+For each compute resource, a container is divided into one of three QoS classes
+with decreasing order of priority:
+
+.Quality of Service Classes
+[options="header",cols="1,1,5"]
+|===
+|Priority |Class Name |Description
+
+|1 (highest)
+|*Guaranteed*
+|If limits and optionally requests are set (not equal to 0) for all resources
+and they are equal, then the container is classified as *Guaranteed*.
+
+|2
+|*Burstable*
+|If requests and optionally limits are set (not equal to 0) for all resources,
+and they are not equal, then the container is classified as *Burstable*.
+
+|3 (lowest)
+|*BestEffort*
+|If requests and limits are not set for any of the resources, then the container
+is classified as *BestEffort*.
+|===
+
+Memory is an incompressible resource, so in low memory situations, containers
+are killed that have the lowest priority:
+
+- *Guaranteed* containers are considered top priority, and are guaranteed to
+only be killed if they exceed their limits, or if the system is under memory
+pressure and there are no lower priority containers that can be evicted.
+- *Burstable* containers under system memory pressure are more likely to be
+killed once they exceed their requests and no other *BestEffort* containers
+exist.
+- *BestEffort* containers are treated with the lowest priority. Processes in
+these containers are first to be killed if the system runs out of memory.
+
+[[configuring-nodes-for-overcommitment]]
+== Configuring Nodes for Overcommitment
+
+In an overcommitted environment, it is important to properly configure your node
+to provide best system behavior.
+
+[[enforcing-cpu-limits]]
+=== Enforcing CPU Limits
+
+Nodes by default enforce specified CPU limits using the CPU CFS quota support in
+the Linux kernel. If you do not want to enforce CPU limits on the node, you can
+disable its enforcement by modifying the
+link:../install_config/master_node_configuration.html[node configuration file]
+(the *_node-config.yaml_* file) to include the following:
+
+====
+----
+kubeletArguments:
+  cpu-cfs-quota:
+    - "false"
+----
+====
+
+If CPU limit enforcement is disabled, it is important to understand the impact that will have on your node:
+
+- If a container makes a request for CPU, it will continue to be enforced by CFS
+shares in the Linux kernel.
+- If a container makes no explicit request for CPU, but it does specify a limit,
+the request will default to the specified limit, and be enforced by CFS shares
+in the Linux kernel.
+- If a container specifies both a request and a limit for CPU, the request will
+be enforced by CFS shares in the Linux kernel, and the limit will have no
+impact on the node.
+
+[[reserving-resources-for-system-processes]]
+=== Reserving Resources for System Processes
+
+The link:../admin_guide/scheduler.html[scheduler] ensures that there are enough
+resources for all pods on a node based on the pod requests. It verifies that the
+sum of requests of containers on the node is no greater than the node capacity.
+It includes all containers started by the node, but not containers or processes
+started outside the knowledge of the cluster.
+
+It is recommended that you reserve some portion of the node capacity to allow
+for the system daemons that are required to run on your node for your cluster to
+function (*sshd*, *docker*, etc.). In particular, it is recommended that you
+reserve resources for incompressible resources such as memory.
+
+If you want to explicitly reserve resources for non-pod processes, there are two
+ways to do so:
+
+- The preferred method is to allocate node resources by specifying resources
+available for scheduling. See
+link:../admin_guide/allocating_node_resources.html[Allocating Node Resources]
+for more details.
+
+- Alternatively, you can create a *resource-reserver* pod that does nothing but
+reserve capacity from being scheduled on the node by the cluster. For example:
++
+.*resource-reserver* Pod Definition
+====
+----
+apiVersion: v1
+kind: Pod
+metadata:
+  name: resource-reserver
+spec:
+  containers:
+  - name: sleep-forever
+    image: gcr.io/google_containers/pause:0.8.0
+    resources:
+      limits:
+        cpu: 100m <1>
+        memory: 150Mi <2>
+----
+<1> The amount of CPU to reserve on a node for host-level daemons unknown to the
+cluster.
+<2> The amount of memory to reserve on a node for host-level daemons unknown to
+the cluster.
+====
++
+You can save your definition to a file, for example *_resource-reserver.yaml_*,
+then place the file in the node configuration directory, for example
+*_/etc/origin/node/_* or the `--config=<dir>` location if otherwise specified.
++
+With this file in place, on start of the node, the node agent launches the
+specified container, and the remaining capacity for the scheduler to place
+cluster pods adjusts accordingly.
+
+[[kernel-tunable-flags]]
+=== Kernel Tunable Flags
+
+When the node starts, it ensures that the kernel tunable flags for memory
+management are set properly. The kernel should never fail memory allocations
+unless it runs out of physical memory.
+
+To ensure this behavior, the node instructs the kernel to always overcommit
+memory:
+
+----
+$ sysctl -w vm.overcommit_memory=1
+----
+
+The node also instructs the kernel not to panic when it runs out of memory.
+Instead, the kernel OOM killer should kill processes based on priority:
+
+----
+$ sysctl -w vm.panic_on_oom=0
+----
+
+[NOTE]
+====
+The above flags should already be set on nodes, and no further action is
+required.
+====
+
+[[disabling-swap-memory]]
+=== Disabling Swap Memory
+
+It is important to disable the use of swap memory on the node as it makes it
+difficult for the resource guarantees that the scheduler makes during pod
+placement to hold. For example, if two guaranteed pods have reached their memory
+limit, each container would start allocating memory on swap space. Eventually,
+if there was not enough swap space, processes in the pods might get killed.
+
+Disable swap memory on each node by running:
+
+----
+$ swapoff -a
+----

@@ -151,8 +151,8 @@ $ ping hello-openshift.shard1.v3.rhcloud.com
 
 == Configuring IP Failover
 
-Using IP failover involves switching to a redundant or stand-by set of IP
-addresses if the initial set fails, and is a more reliable method than DNS round robin.
+Using IP failover involves switching IP addresses to a redundant or stand-by
+set of nodes on failure conditions.
 
 The `oadm ipfailover` command helps set up the VIP failover configuration. As
 an administrator, you can configure IP failover on an entire cluster, or on a
@@ -165,13 +165,14 @@ number of nodes for the given labeled selector:
 $ oadm ipfailover [<Ip_failover_config_name>] <options> --replicas=<n>
 ----
 
-Alternatively, you can produce a test from a JSON file:
+////
+You can view what the configuration configuration that would look like
+using one of the supported formats (the example below uses the JSON format):
 
 ----
 $ oadm ipfailover [<Ip_failover_config_name>] <options> -o json
 ----
 
-////
 ==== ipfailover command options (subset)
 The list of command options described here are a subset that are relevant to this document.
 
@@ -195,24 +196,25 @@ The list of command options described here are a subset that are relevant to thi
             <number> = a number ([0-9]*).
 ////
 
-The `oadm ipfailover` command ensures that a pod with failover runs on each of
-the nodes matching the constraints or label used. This pod uses a VRRP (Virtual
+The `oadm ipfailover` command ensures that a failover pod runs on each of
+the nodes matching the constraints or label used. This pod uses VRRP (Virtual
 Router Redundancy Protocol) with link:http://www.keepalived.org/[Keepalived] to ensure that the service on the
 watched port is available, and, if needed, Keepalived will automatically float
 the VIPs if the service is not available.
 
 === Configuring a Highly-available Routing Service
-The following steps describe how to setup a highly-available router environment with IP failover:
+The following steps describe how to set up a highly-available router environment
+with IP failover:
 
 . Label the nodes for the service. This step can be optional if you run the
 service on any of the nodes in your Kubernetes cluster and use VIPs that can
 float within those nodes. This process may already exist within a complex
 cluster, in that nodes may be filtered by any constraints or requirements
-specified (e.g., nodes with SSD drives, or higher CPU/memory/disk requirements,
-etc.).
+specified (e.g., nodes with SSD drives, or higher CPU, memory, or disk
+requirements, etc.).
 +
 The following example defines a label as router instances that are servicing
-traffic in the US west geography "ha-router=geo-us-west":
+traffic in the US west geography *ha-router=geo-us-west*:
 +
 ====
 ----
@@ -220,33 +222,130 @@ $ oc label nodes openshift-node-{5,6,7,8,9} "ha-router=geo-us-west"
 ----
 ====
 
-. Start the router with at least two replicas on nodes matching the labels used in
-the first step. The following example runs three instances:
+. OpenShift's *ipfailover* internally uses *keepalived*, so ensure that
+multicast is enabled on the nodes labeled above and that the nodes can accept
+network traffic for 224.0.0.18 (the VRRP multicast IP address). Depending on
+your environment's multicast configuration, you may need to add an `iptables`
+rule to each of the above labeled nodes. If you do need to add the `iptables`
+rules, please also ensure that the rules persist after a system restart:
 +
 ====
 ----
-$ oadm router ha-router-us-west --replicas=3 --selector="ha-router=geo-us-west" --labels="ha-router=geo-us-west" --credentials="$KUBECONFIG" --create
+$ for node in openshift-node-{5,6,7,8,9}; do   ssh $node <<EOF
+
+export interface=${interface:-"eth0"}
+echo "Check multicast enabled ... ";
+ifconfig $interface | grep -i MULTICAST
+
+echo "Check multicast groups ... "
+netstat -g -n | grep 224.0.0 | grep $interface
+
+echo "Optionally, add accept rule and persist it ... "
+sudo /sbin/iptables -I INPUT -i $interface -d 224.0.0.18/32 -j ACCEPT
+
+echo "Please ensure the above rule is added on system restarts."
+
+EOF
+done;
 ----
 ====
+
+. Depending on your environment policies, you can either reuse the *router*
+service account created previously or create a new *ipfailover* service account.
 +
-Note that the above command runs fewer router replicas than available nodes, so
+Ensure that either the *router* service account exists as described in
+link:../install_config/install/deploy_router.html[Deploying a Router] or create
+a new *ipfailover* service account. The example below creates a new service
+account with the name *ipfailover* in the *default* namespace:
++
+====
+----
+$ oc create serviceaccount ipfailover -n default
+----
+====
+
+. Add the *ipfailover* service account in the *default* namespace to the *privileged* SCC: 
++
+====
+----
+$ oadm policy add-scc-to-user privileged system:serviceaccount:default:ipfailover
+----
+====
+
+. Start the router with at least two replicas on nodes matching the labels used
+in the first step. The following example runs three instances using the
+*ipfailover* service account:
++
+ifdef::openshift-enterprise[]
+====
+----
+$ oadm router ha-router-us-west --replicas=3 \
+    --selector="ha-router=geo-us-west" \
+    --labels="ha-router=geo-us-west" \
+    --credentials=/etc/origin/master/openshift-router.kubeconfig \
+    --service-account=ipfailover
+----
+====
+endif::[]
+ifdef::openshift-origin[]
+====
+----
+$ oadm router ha-router-us-west --replicas=3 \
+    --selector="ha-router=geo-us-west" \
+    --labels="ha-router=geo-us-west" \
+    --credentials="$KUBECONFIG" \
+    --service-account=ipfailover
+----
+====
+endif::[]
++
+[NOTE]
+====
+The above command runs fewer router replicas than available nodes, so
 that, in the chance of node failures, Kubernetes can still ensure three
 available instances until the number of available nodes labeled
-"ha-router=geo-us-west" is below three. Additionally, the router uses the host
+*ha-router=geo-us-west* is below three. Additionally, the router uses the host
 network as well as ports 80 and 443, so fewer number of replicas are running to
 ensure a higher Service Level Availability (SLA). If there are no constraints on
 the service being setup for failover, it is possible to target the service to
 run on one or more, or even all, of the labeled nodes.
+====
 
-. Finally, configure the VIPs and failover for the nodes labeled with "ha-router=geo-us-west" in step one. Ensure the number of replicas match the number of nodes and that they satisfy the label setup in step one. Specify the VIPs addresses and the port number that IP failover should monitor on the desired instances:
+. Finally, configure the VIPs and failover for the nodes labeled with
+*ha-router=geo-us-west* in the first step. Ensure the number of replicas match
+the number of nodes and that they satisfy the label setup in the first step. The
+name of the *ipfailover* configuration (*ipf-ha-router-us-west* in the example
+below) should be different from the name of the router configuration
+(*ha-router-us-west*) as both the router and *ipfailover* create deployment
+configuration with those names. Specify the VIPs addresses and the port number
+that *ipfailover* should monitor on the desired instances:
 +
+ifdef::openshift-enterprise[]
 ====
 ----
-$ oadm ipfailover ha-router-us-west --replicas=5 --selector="ha-router=geo-us-west" --virtual-ips="10.245.2.101-105" --watch-port=80 --credentials="$KUBECONFIG" --create
+$ oadm ipfailover ipf-ha-router-us-west \
+    --replicas=5 --watch-port=80 \
+    --selector="ha-router=geo-us-west" \
+    --virtual-ips="10.245.2.101-105" \
+    --credentials=/etc/origin/master/openshift-router.kubeconfig \
+    --service-account=ipfailover --create
 ----
 ====
+endif::[]
+ifdef::openshift-origin[]
+====
+----
+$ oadm ipfailover ipf-ha-router-us-west \
+    --replicas=5 --watch-port=80 \
+    --selector="ha-router=geo-us-west" \
+    --virtual-ips="10.245.2.101-105" \
+    --credentials="$KUBECONFIG" \
+    --service-account=ipfailover --create
+----
+====
+endif::[]
 
-=== Configuring a Highly-availabile Network Service [[ip-failover]]
+=== Configuring a Highly-available Network Service [[ip-failover]]
 
 The following steps describe how to set up a highly-available IP-based network
 service with IP failover:
@@ -255,11 +354,11 @@ service with IP failover:
 service on any of the nodes in your Kubernetes cluster and use VIPs that can
 float within those nodes. This process may already exist within a complex
 cluster, in that the nodes may be filtered by any constraints or requirements
-specified (e.g., nodes with SSD drives, or higher CPU/memory/disk requirements,
-etc.).
+specified (e.g., nodes with SSD drives, or higher CPU, memory, or disk
+requirements, etc.).
 +
-The following example labels a highly-available cache service that is
-binding/listening on port 9736 as "ha-cache=geo":
+The following example labels a highly-available cache service that is listening
+on port 9736 as *ha-cache=geo*:
 +
 ====
 ----
@@ -267,30 +366,93 @@ $ oc label nodes openshift-node-{6,3,7,9} "ha-cache=geo"
 ----
 ====
 
-. Run the geo cache service with two or more replicas. An example configuration
-for running a geo-cache service
+. OpenShift's *ipfailover* internally uses *keepalived*, so ensure that
+multicast is enabled on the nodes labeled above and that the nodes can accept
+network traffic for 224.0.0.18 (the VRRP multicast IP address). Depending on
+your environment's multicast configuration, you may need to add an `iptables`
+rule to each of the above labeled nodes. If you do need to add the `iptables`
+rules, please also ensure that the rules persist after a system restart:
++
+====
+----
+$ for node in openshift-node-{6,3,7,9}; do   ssh $node <<EOF
+export interface=${interface:-"eth0"}
+echo "Check multicast enabled ... ";
+ifconfig $interface | grep -i MULTICAST
+
+echo "Check multicast groups ... "
+netstat -g -n | grep 224.0.0 | grep $interface
+
+echo "Optionally, add accept rule and persist it ... "
+sudo /sbin/iptables -I INPUT -i $interface -d 224.0.0.18/32 -j ACCEPT
+
+echo "Please ensure the above rule is added on system restarts."
+
+EOF
+done;
+----
+====
+
+. Create a new *ipfailover* service account in the *default* namespace:
++
+====
+----
+$ oc create serviceaccount ipfailover -n default
+----
+====
+
+. Add the *ipfailover* service account in the *default* namespace to the *privileged* SCC: 
++
+====
+----
+$ oadm policy add-scc-to-user privileged system:serviceaccount:default:ipfailover
+----
+====
+
+. Run a *geo-cache* service with two or more replicas. An example configuration
+for running a *geo-cache* service
 https://raw.githubusercontent.com/openshift/openshift-docs/master/admin_guide/examples/geo-cache.json[is
 provided here].
 +
-IMPORTANT: Be sure to replace the `myimages/geo-cache` docker image referenced in the
+[IMPORTANT]
+====
+Be sure to replace the *myimages/geo-cache* Docker image referenced in the
 file with your intended image. Also, change the number of replicas to the
-desired amount and ensure the label matches the one used in step one.
+desired amount and ensure the label matches the one used in the first step.
+====
 +
 ----
 $ oc create -n <namespace> -f ./examples/geo-cache.json
 ----
 
 . Finally, configure the VIPs and failover for the nodes labeled with
-"ha-cache=geo" in step one. Ensure the number of replicas match the number of
-nodes and that they satisfy the label setup in step one. Specify the VIP
-addresses and the port number that IP failover should monitor for the desired
+*ha-cache=geo* in the first step. Ensure the number of replicas match the number
+of nodes and that they satisfy the label setup in first step. Specify the VIP
+addresses and the port number that *ipfailover* should monitor for the desired
 instances:
 +
+ifdef::openshift-enterprise[]
 ====
 ----
-$ oadm ipfailover ha-geo-cache --replicas=4 --selector="ha-cache=geo" --virtual-ips=10.245.2.101-104 --watch-port=9736 --credentials="$KUBECONFIG" --create
+$ oadm ipfailover ipf-ha-geo-cache \
+    --replicas=4 --selector="ha-cache=geo" \
+    --virtual-ips=10.245.2.101-104 --watch-port=9736  \
+    --credentials=/etc/origin/master/openshift-router.kubeconfig \
+    --service-account=ipfailover --create
 ----
 ====
+endif::[]
+ifdef::openshift-origin[]
+====
+----
+$ oadm ipfailover ipf-ha-geo-cache \
+    --replicas=4 --selector="ha-cache=geo" \
+    --virtual-ips=10.245.2.101-104 --watch-port=9736 \
+    --credentials="$KUBECONFIG" \
+    --service-account=ipfailover --create
+----
+====
+endif::[]
 ////
 +
 As an alternative, the following example creates an IP failover configuration on
@@ -299,7 +461,7 @@ VIPs monitoring a service listening on port 4242:
 +
 ====
 ----
-$ oadm ipfailover harreporter --selector="my-ha-service=har-reporter" --virtual-ips="10.245.2.42,10.245.2.100-104,10.245.2.142,10.245.2.242" --watch-port=4242 --replicas=7 --create
+$ oadm ipfailover harreporter --selector="my-ha-service=har-reporter" --virtual-ips="10.245.2.42,10.245.2.100-104,10.245.2.142,10.245.2.242" --watch-port=4242 --replicas=7 --service-account=ipfailover --create
 ----
 ====
 ////

@@ -1,0 +1,991 @@
+= Deploying a Docker Registry
+{product-author}
+{product-version]
+:data-uri:
+:icons:
+:experimental:
+:toc: macro
+:toc-title:
+:prewrap!:
+
+toc::[]
+
+== Overview
+OpenShift can build
+link:../../architecture/core_concepts/containers_and_images.html#docker-images[Docker
+images] from your source code, deploy them, and manage their lifecycle. To
+enable this, OpenShift provides an internal,
+link:../../architecture/infrastructure_components/image_registry.html#integrated-openshift-registry[integrated
+Docker registry] that can be deployed in your OpenShift environment to locally
+manage images.
+
+[[deploy-registry]]
+== Deploying the Registry
+
+ifdef::openshift-origin[]
+To deploy the integrated Docker registry, use the `oadm registry` command from
+the *_admin.kubeconfig_* file's location, as a user with cluster administrator
+privileges:
+
+----
+$ oadm registry --config=admin.kubeconfig \//<1>
+    --credentials=openshift-registry.kubeconfig <2>
+----
+endif::[]
+ifdef::openshift-enterprise[]
+To deploy the integrated Docker registry, use the `oadm registry` command as a
+user with cluster administrator privileges. For example:
+
+----
+$ oadm registry --config=/etc/origin/master/admin.kubeconfig \//<1>
+    --credentials=/etc/origin/master/openshift-registry.kubeconfig \//<2>
+    --images='registry.access.redhat.com/openshift3/ose-${component}:${version}' <3>
+----
+endif::[]
+<1> `--config` is the path to the
+link:../../cli_reference/manage_cli_profiles.html[CLI configuration file] for
+the link:../../architecture/additional_concepts/authorization.html#roles[cluster
+administrator].
+<2> `--credentials` is the path to the
+link:../../cli_reference/manage_cli_profiles.html[CLI configuration file] for
+the *openshift-registry*.
+ifdef::openshift-enterprise[]
+<3> Required to pull the correct image for OpenShift Enterprise.
+endif::[]
+
+This creates a service and a deployment configuration, both called
+*docker-registry*. Once deployed successfully, a pod is created with a name
+similar to *docker-registry-1-cpty9*.
+
+To see a full list of options that you can specify when creating the registry:
+
+----
+$ oadm registry --help
+----
+
+[[storage-for-the-registry]]
+=== Storage for the Registry
+
+The registry stores Docker images and metadata. If you simply deploy a pod with
+the registry, it uses an ephemeral volume that is destroyed if the pod exits.
+Any images anyone has built or pushed into the registry would disappear.
+
+==== Production Use
+
+For production use, attach a remote volume or
+link:../../install_config/persistent_storage/index.html[define and use the
+persistent storage method of your choice].
+
+For example, to use an existing persistent volume claim:
+----
+$ oc volume deploymentconfigs/docker-registry --add --name=v1 -t pvc \
+     --claim-name=<pvc_name> --overwrite
+----
+
+Or, to attach an existing NFS volume to the registry:
+
+----
+$ oc volume deploymentconfigs/docker-registry \
+     --add --overwrite --name=registry-storage --mount-path=/registry \
+     --source='{"nfs": { "server": "<fqdn>", "path": "/path/to/export"}}'
+----
+
+[[session-affinity-workaround]]
+There are link:#registry-known-issues[known issues] when using multiple registry
+replicas with the same NFS volume. We recommend changing the docker-registry
+service's `*sessionAffinity*` to *ClientIP*:
+
+----
+$ oc get -o yaml svc docker-registry | \
+      sed 's/\(sessionAffinity:\s*\).*/\1ClientIP/' | \
+      oc replace -f -
+----
+
+[[non-production-use]]
+==== Non-Production use
+
+For non-production use, you can use the `--mount-host=<path>` option to specify
+a directory for the registry to use for persistent storage. The registry volume
+is then created as a host-mount at the specified `<path>`.
+
+[IMPORTANT]
+====
+The `--mount-host` option mounts a directory from the node on which the registry
+container lives. If you scale up the *docker-registry* deployment configuration,
+it is possible that your registry pods and containers will run on different
+nodes, which can result in two or more registry containers, each with its own
+local storage. This will lead to unpredictable behavior, as subsequent requests
+to pull the same image repeatedly may not always succeed, depending on which
+container the request ultimately goes to.
+====
+
+The `--mount-host` option requires that the registry container run in privileged
+mode. This is automatically enabled when you specify `--mount-host`.
+However, not all pods are allowed to run
+link:prerequisites.html#security-warning[privileged containers] by default.
+ifdef::openshift-enterprise[]
+If you still want to use this option, create the registry and specify that it use the *registry* service account that was created during installation:
+endif::[]
+ifdef::openshift-origin[]
+If you still want to use this option:
+
+. Create a new link:../../admin_guide/service_accounts.html[service account] in
+the *default* project for the registry to run as. The following example creates
+a service account named *registry*:
++
+----
+$ oc create serviceaccount registry -n default
+----
+
+. To add the new *registry* service account in the *default* namespace
+to the list of users allowed to run privileged containers:
++
+----
+$ oadm policy add-scc-to-user privileged system:serviceaccount:default:registry
+----
+
+. Create the registry and specify that it use the new *registry* service
+account:
++
+----
+$ oadm registry --service-account=registry \
+    --config=admin.kubeconfig \
+    --credentials=openshift-registry.kubeconfig \
+    --mount-host=<path>
+----
+endif::[]
+ifdef::openshift-enterprise[]
+----
+$ oadm registry --service-account=registry \
+    --config=/etc/origin/master/admin.kubeconfig \
+    --credentials=/etc/origin/master/openshift-registry.kubeconfig \
+    --images='registry.access.redhat.com/openshift3/ose-${component}:${version}' \
+    --mount-host=<path>
+----
+endif::[]
+
+[IMPORTANT]
+====
+The Docker registry pod runs as user *1001*. This user must be able to write to
+the host directory. You may need to change directory ownership to user ID *1001*
+with this command:
+
+----
+$ sudo chown 1001:root <path>
+----
+====
+
+==== Setting Storage Quota
+To protect the storage from being accidentally filled up or to prevent users
+from abusing the space, you may set size constraints on images, image streams,
+and projects.
+
+link:../../dev_guide/quota.html#create-a-quota[Create a quota object] on a
+particular namespace with one or more of the following resources:
+
+[cols="1,4",options="header"]
+|===
+|Resource|Purpose
+|`openshift.io/imagesize`
+|To constrain the maximum size of an image
+
+|`openshift.io/imagestreamsize`
+|To limit an image's total size when tagged in an image stream (also known as a
+repository)
+
+|`openshift.io/projectimagessize`
+|To limit the total combined size of all images per project
+
+|===
+
+Once the quota is exceeded, an image push will fail with:
+
+----
+Failed to push image: unknown: requested access to the resource is denied
+----
+
+Then, you can link:../../admin_guide/pruning_resources.html#pruning-images[prune obsoleted images] to retrieve some space back.
+
+
+[[maintaining-the-registry-ip-address]]
+=== Maintaining the Registry IP Address
+
+OpenShift refers to the integrated registry by its service IP address,
+so if you decide to delete and recreate the *docker-registry* service,
+you can ensure a completely transparent transition by arranging to
+re-use the old IP address in the new service.
+If a new IP address cannot be avoided, you can minimize cluster
+disruption by rebooting only the masters.
+
+[[re-using-the-address]]
+Re-using the Address::
+
+To re-use the IP address, you must save the IP address of the old *docker-registry*
+service prior to deleting it, and arrange to replace the newly assigned IP address
+with the saved one in the new *docker-registry* service.
+
+// NB: Snarfed from <https://github.com/openshift/openshift-docs/issues/1494>.
+. Make a note of the `ClusterIP` for the service:
++
+----
+$ oc get svc/docker-registry -o yaml | grep clusterIP:
+----
+
+. Delete the service:
++
+----
+$ oc delete svc/docker-registry dc/docker-registry
+----
+
+. Create the registry definition in *_registry.yaml_*,
+replacing `<options>` with, for example, those used in step 3 of the
+instructions in the link:#non-production-use[Non-Production use] section:
++
+----
+$ oadm registry <options> -o yaml > registry.yaml
+----
+
+. Edit *_registry.yaml_*, find the `Service` there,
+and change its `ClusterIP` to the address noted in step 1.
+
+. Create the registry using the modified *_registry.yaml_*:
++
+----
+$ oc create -f registry.yaml
+----
+
+[[rebooting-the-masters]]
+Rebooting the Masters::
+
+If you are unable to re-use the IP address, any operation that uses a link:../../architecture/core_concepts/builds_and_image_streams.html#referencing-images-in-image-streams[pull specification]
+that includes the old IP address will fail.
+To minimize cluster disruption, you must reboot the masters:
++
+----
+ifdef::openshift-origin[]
+# systemctl restart origin-master
+endif::[]
+ifdef::openshift-enterprise[]
+# systemctl restart atomic-openshift-master
+endif::[]
+----
+// Code block snarfed from ../http_proxies.adoc, w/ node-reboot stuff removed.
+// tnguyen opines: It would be nice to #define this somewhere and include it here...
++
+This ensures that the old registry URL, which includes the old IP address,
+is cleared from the cache.
++
+[NOTE]
+We recommend against rebooting the entire cluster because that incurs
+unnecessary downtime for pods and does not actually clear the cache.
+
+[[viewing-logs]]
+== Viewing Logs
+
+To view the logs for the Docker registry, use the `oc logs` command with the deployment config:
+
+====
+----
+$ oc logs dc/docker-registry
+2015-05-01T19:48:36.300593110Z time="2015-05-01T19:48:36Z" level=info msg="version=v2.0.0+unknown"
+2015-05-01T19:48:36.303294724Z time="2015-05-01T19:48:36Z" level=info msg="redis not configured" instance.id=9ed6c43d-23ee-453f-9a4b-031fea646002
+2015-05-01T19:48:36.303422845Z time="2015-05-01T19:48:36Z" level=info msg="using inmemory layerinfo cache" instance.id=9ed6c43d-23ee-453f-9a4b-031fea646002
+2015-05-01T19:48:36.303433991Z time="2015-05-01T19:48:36Z" level=info msg="Using OpenShift Auth handler"
+2015-05-01T19:48:36.303439084Z time="2015-05-01T19:48:36Z" level=info msg="listening on :5000" instance.id=9ed6c43d-23ee-453f-9a4b-031fea646002
+----
+====
+
+[[file-storage]]
+
+== File Storage
+
+Tag and image metadata is stored in OpenShift, but the registry stores layer and
+signature data in a volume that is mounted into the registry container at
+*_/registry_*. As `oc exec` does not work on privileged containers, to view a
+registry's contents you must manually SSH into the node housing the registry
+pod's container, then run `docker exec` on the container itself:
+
+. List the current pods to find the pod name of your Docker registry:
++
+----
+# oc get pods
+----
++
+Then, use `oc describe` to find the host name for the node running the
+container:
++
+----
+# oc describe pod <pod_name>
+----
+
+. Log into the desired node:
++
+----
+# ssh node.example.com
+----
+
+. List the running containers on the node host and identify the container ID for
+the Docker registry:
++
+----
+# docker ps | grep ose-docker-registry
+----
+
+. List the registry contents using the `docker exec` command:
++
+====
+----
+# docker exec -it 4c01db0b339c find /registry
+/registry/docker
+/registry/docker/registry
+/registry/docker/registry/v2
+/registry/docker/registry/v2/blobs <1>
+/registry/docker/registry/v2/blobs/sha256
+/registry/docker/registry/v2/blobs/sha256/ed
+/registry/docker/registry/v2/blobs/sha256/ed/ede17b139a271d6b1331ca3d83c648c24f92cece5f89d95ac6c34ce751111810
+/registry/docker/registry/v2/blobs/sha256/ed/ede17b139a271d6b1331ca3d83c648c24f92cece5f89d95ac6c34ce751111810/data <2>
+/registry/docker/registry/v2/blobs/sha256/a3
+/registry/docker/registry/v2/blobs/sha256/a3/a3ed95caeb02ffe68cdd9fd84406680ae93d633cb16422d00e8a7c22955b46d4
+/registry/docker/registry/v2/blobs/sha256/a3/a3ed95caeb02ffe68cdd9fd84406680ae93d633cb16422d00e8a7c22955b46d4/data
+/registry/docker/registry/v2/blobs/sha256/f7
+/registry/docker/registry/v2/blobs/sha256/f7/f72a00a23f01987b42cb26f259582bb33502bdb0fcf5011e03c60577c4284845
+/registry/docker/registry/v2/blobs/sha256/f7/f72a00a23f01987b42cb26f259582bb33502bdb0fcf5011e03c60577c4284845/data
+/registry/docker/registry/v2/repositories <3>
+/registry/docker/registry/v2/repositories/p1
+/registry/docker/registry/v2/repositories/p1/pause <4>
+/registry/docker/registry/v2/repositories/p1/pause/_manifests
+/registry/docker/registry/v2/repositories/p1/pause/_manifests/revisions
+/registry/docker/registry/v2/repositories/p1/pause/_manifests/revisions/sha256
+/registry/docker/registry/v2/repositories/p1/pause/_manifests/revisions/sha256/e9a2ac6418981897b399d3709f1b4a6d2723cd38a4909215ce2752a5c068b1cf
+/registry/docker/registry/v2/repositories/p1/pause/_manifests/revisions/sha256/e9a2ac6418981897b399d3709f1b4a6d2723cd38a4909215ce2752a5c068b1cf/signatures <5>
+/registry/docker/registry/v2/repositories/p1/pause/_manifests/revisions/sha256/e9a2ac6418981897b399d3709f1b4a6d2723cd38a4909215ce2752a5c068b1cf/signatures/sha256
+/registry/docker/registry/v2/repositories/p1/pause/_manifests/revisions/sha256/e9a2ac6418981897b399d3709f1b4a6d2723cd38a4909215ce2752a5c068b1cf/signatures/sha256/ede17b139a271d6b1331ca3d83c648c24f92cece5f89d95ac6c34ce751111810
+/registry/docker/registry/v2/repositories/p1/pause/_manifests/revisions/sha256/e9a2ac6418981897b399d3709f1b4a6d2723cd38a4909215ce2752a5c068b1cf/signatures/sha256/ede17b139a271d6b1331ca3d83c648c24f92cece5f89d95ac6c34ce751111810/link <6>
+/registry/docker/registry/v2/repositories/p1/pause/_uploads <7>
+/registry/docker/registry/v2/repositories/p1/pause/_layers <8>
+/registry/docker/registry/v2/repositories/p1/pause/_layers/sha256
+/registry/docker/registry/v2/repositories/p1/pause/_layers/sha256/a3ed95caeb02ffe68cdd9fd84406680ae93d633cb16422d00e8a7c22955b46d4
+/registry/docker/registry/v2/repositories/p1/pause/_layers/sha256/a3ed95caeb02ffe68cdd9fd84406680ae93d633cb16422d00e8a7c22955b46d4/link <9>
+/registry/docker/registry/v2/repositories/p1/pause/_layers/sha256/f72a00a23f01987b42cb26f259582bb33502bdb0fcf5011e03c60577c4284845
+/registry/docker/registry/v2/repositories/p1/pause/_layers/sha256/f72a00a23f01987b42cb26f259582bb33502bdb0fcf5011e03c60577c4284845/link
+----
+<1> This directory stores all layers and signatures as blobs.
+<2> This file contains the blob's contents.
+<3> This directory stores all the image repositories.
+<4> This directory is for a single image repository *p1/pause*.
+<5> This directory contains signatures for a particular image manifest revision.
+<6> This file contains a reference back to a blob (which contains the signature
+data).
+<7> This directory contains any layers that are currently being uploaded and
+staged for the given repository.
+<8> This directory contains links to all the layers this repository references.
+<9> This file contains a reference to a specific layer that has been linked into
+this repository via an image.
+====
+
+[[access]]
+== Accessing the Registry Directly
+For advanced usage, you can access the registry directly to invoke `docker`
+commands. This allows you to push images to or pull them from the integrated
+registry directly using operations like `docker push` or `docker pull`. To do
+so, you must be logged in to the registry using the `docker login` command. The
+operations you can perform depend on your user permissions, as described in the
+following sections.
+
+[[access-user-prerequisites]]
+=== User Prerequisites
+To access the registry directly, the user that you use must satisfy the
+following, depending on your intended usage:
+
+- For any direct access, you must have a
+link:../../architecture/core_concepts/projects_and_users.html#users[regular
+user], if one does not already exist, for your
+preferred link:../../install_config/configuring_authentication.html[identity
+provider]. A regular user can generate an access token required for logging in to
+the registry.
+link:../../architecture/core_concepts/projects_and_users.html#users[System
+users], such as *system:admin*, cannot obtain access tokens and, therefore,
+cannot access the registry directly.
++
+For example, if you are using `HTPASSWD` authentication, you can create one
+using the following command:
++
+----
+# htpasswd /etc/origin/openshift-htpasswd <user_name>
+----
+
+- The user must have the *system:registry* role. To add this role:
++
+----
+# oadm policy add-role-to-user system:registry <user_name>
+----
+
+- Have the *admin* role for the project associated with the Docker operation. For
+example, if accessing images in the global *openshift* project:
++
+----
+ $ oadm policy add-role-to-user admin <user_name> -n openshift
+----
+
+- For writing or pushing images, for example when using the `docker push` command,
+the user must have the *system:image-builder* role. To add this role:
++
+----
+$ oadm policy add-role-to-user system:image-builder <user_name>
+----
+
+For more information on user permissions, see
+link:../../admin_guide/manage_authorization_policy.html#managing-role-bindings[Managing
+Role Bindings].
+
+[[access-logging-in-to-the-registry]]
+=== Logging in to the Registry
+
+[NOTE]
+====
+Ensure your user satisfies the link:#access-user-prerequisites[prerequisites]
+for accessing the registry directly.
+====
+
+To log in to the registry directly:
+
+. Ensure you are logged in to OpenShift as a *regular user*:
++
+----
+$ oc login
+----
+
+. Get your access token:
++
+----
+$ oc whoami -t
+----
+
+. Log in to the Docker registry:
++
+----
+$ docker login -u <username> -e <any_email_address> \
+    -p <token_value> <registry_ip>:<port>
+----
+
+[[access-pushing-and-pulling-images]]
+=== Pushing and Pulling Images
+After link:#access-logging-in-to-the-registry[logging in to the registry], you
+can perform `docker pull` and `docker push` operations against your registry.
+
+[IMPORTANT]
+====
+You can pull arbitrary images, but if you have the *system:registry* role
+added, you can only push images to the registry in your project.
+====
+
+In the following examples, we use:
+|====
+
+|Component |Value
+
+|*<registry_ip>*
+|`172.30.124.220`
+
+|*<port>*
+|`5000`
+
+|*<project>*
+|`openshift`
+
+|*<image>*
+|`busybox`
+
+|*<tag>*
+| omitted (defaults to `latest`)
+
+|====
+
+. Pull an arbitrary image:
++
+====
+----
+$ docker pull docker.io/busybox
+----
+====
+
+. Tag the new image with the form `<registry_ip>:<port>/<project>/<image>`.
+The project name *must* appear in this
+link:../../architecture/core_concepts/builds_and_image_streams.html#referencing-images-in-image-streams[pull specification]
+for OpenShift to
+correctly place and later access the image in the registry.
++
+====
+----
+$ docker tag docker.io/busybox 172.30.124.220:5000/openshift/busybox
+----
+====
++
+[NOTE]
+====
+Your regular user must have the *system:image-builder* role for the specified
+project, which allows the user to write or push an image. Otherwise, the `docker
+push` in the next step will fail. To test, you can
+link:../../dev_guide/projects.html#create-a-project[create a new project] to
+push the *busybox* image.
+====
+
+. Push the newly-tagged image to your registry:
++
+====
+----
+$ docker push 172.30.124.220:5000/openshift/busybox
+...
+cf2616975b4a: Image successfully pushed
+Digest: sha256:3662dd821983bc4326bee12caec61367e7fb6f6a3ee547cbaff98f77403cab55
+----
+====
+
+== Securing the Registry
+
+Optionally, you can secure the registry so that it serves traffic via TLS:
+
+. link:#deploy-registry[Deploy the registry].
++
+. Fetch the service IP and port of the registry:
++
+====
+----
+$ oc get svc/docker-registry
+NAME              LABELS                                    SELECTOR                  IP(S)            PORT(S)
+docker-registry   docker-registry=default                   docker-registry=default   172.30.124.220   5000/TCP
+----
+====
++
+. You can use an existing server certificate, or create a key and server
+certificate valid for specified IPs and host names, signed by a specified CA. To
+create a server certificate for the registry service IP and the
+*docker-registry.default.svc.cluster.local* host name:
++
+----
+$ oadm ca create-server-cert --signer-cert=ca.crt \
+    --signer-key=ca.key --signer-serial=ca.serial.txt \
+    --hostnames='docker-registry.default.svc.cluster.local,172.30.124.220' \
+    --cert=registry.crt --key=registry.key
+----
++
+. Create the secret for the registry certificates:
++
+----
+$ oc secrets new registry-secret registry.crt registry.key
+----
++
+. Add the secret to the registry pod's service account (i.e., the *default*
+service account):
++
+----
+$ oc secrets add serviceaccounts/default secrets/registry-secret
+----
++
+. Add the secret volume to the registry deployment configuration:
++
+----
+$ oc volume dc/docker-registry --add --type=secret \
+    --secret-name=registry-secret -m /etc/secrets
+----
++
+. Enable TLS by adding the following environment variables to the registry
+deployment configuration:
++
+----
+$ oc env dc/docker-registry \
+    REGISTRY_HTTP_TLS_CERTIFICATE=/etc/secrets/registry.crt \
+    REGISTRY_HTTP_TLS_KEY=/etc/secrets/registry.key
+----
++
+See more details on
+https://github.com/docker/distribution/blob/master/docs/configuration.md#override-configuration-options[overriding
+registry options].
+
+. Update the scheme used for the registry's liveness probe from HTTP to HTTPS:
++
+----
+$ oc patch dc/docker-registry --api-version=v1 -p '{"spec": {"template": {"spec": {"containers":[{
+    "name":"registry",
+    "livenessProbe":  {"httpGet": {"scheme":"HTTPS"}}
+  }]}}}}'
+----
+
+. If your registry was initially deployed on {product-title}
+ifdef::openshift-enterprise[]
+3.2
+endif::[]
+ifdef::openshift-origin[]
+1.1.2
+endif::[]
+or later, update the scheme used for the registry's readiness probe from HTTP to HTTPS:
++
+----
+$ oc patch dc/docker-registry --api-version=v1 -p '{"spec": {"template": {"spec": {"containers":[{
+    "name":"registry",
+    "readinessProbe":  {"httpGet": {"scheme":"HTTPS"}}
+  }]}}}}'
+----
+
+. Validate the registry is running in TLS mode. Wait until the latest *docker-registry*
+deployment completes and verify the Docker logs for the registry container. You should
+find an entry for `listening on :5000, tls`.
++
+====
+----
+$ oc logs dc/docker-registry | grep tls
+time="2015-05-27T05:05:53Z" level=info msg="listening on :5000, tls" instance.id=deeba528-c478-41f5-b751-dc48e4935fc2
+----
+====
++
+. Copy the CA certificate to the Docker certificates directory. This must be
+done on all nodes in the cluster:
++
+----
+$ sudo mkdir -p /etc/docker/certs.d/172.30.124.220:5000
+$ sudo cp ca.crt /etc/docker/certs.d/172.30.124.220:5000
+
+$ sudo mkdir -p /etc/docker/certs.d/docker-registry.default.svc.cluster.local:5000
+$ sudo cp ca.crt /etc/docker/certs.d/docker-registry.default.svc.cluster.local:5000
+----
++
+. Remove the `--insecure-registry` option only for this particular registry in
+the *_/etc/sysconfig/docker_* file. Then, reload the daemon and restart the
+*docker* service to reflect this configuration change:
++
+----
+$ sudo systemctl daemon-reload
+$ sudo systemctl restart docker
+----
++
+. Validate the `docker` client connection. Running
+https://docs.docker.com/reference/commandline/push/[`docker push`]
+to the registry or
+https://docs.docker.com/reference/commandline/pull/[`docker pull`] from the registry should succeed.  Make sure you have
+link:#access[logged into the registry].
++
+----
+$ docker tag|push <registry/image> <internal_registry/project/image>
+----
++
+For example:
++
+====
+----
+$ docker pull busybox
+$ docker tag docker.io/busybox 172.30.124.220:5000/openshift/busybox
+$ docker push 172.30.124.220:5000/openshift/busybox
+...
+cf2616975b4a: Image successfully pushed
+Digest: sha256:3662dd821983bc4326bee12caec61367e7fb6f6a3ee547cbaff98f77403cab55
+----
+====
+
+[[advanced-overriding-the-registry-configuration]]
+== Advanced: Overriding the Registry Configuration
+
+You can override the integrated registry's default configuration, found by
+default at *_/config.yml_* in a running registry's container, with your own
+custom configuration. See the upstream registry documentation's
+https://docs.docker.com/registry/configuration/[Registry Configuration
+Reference] for the full list of available options.
+
+To enable managing the registry configuration file directly, it
+is recommended that the configuration file be mounted as a
+link:../../dev_guide/secrets.html[secret volume]:
+
+. link:#deploy-registry[Deploy the registry].
+
+. Edit the registry configuration file locally as needed. The initial YAML file
+deployed on the registry is provided below:
++
+====
+----
+version: 0.1
+log:
+  level: debug
+http:
+  addr: :5000
+storage:
+  cache:
+    layerinfo: inmemory
+  filesystem:
+    rootdirectory: /registry
+  delete:
+    enabled: true
+auth:
+  openshift:
+    realm: openshift
+middleware:
+  repository:
+    - name: openshift
+      options:
+        pullthrough: true
+----
+====
++
+See https://docs.docker.com/registry/configuration/[Registry Configuration
+Reference] for more options.
+
+. Create a new secret called *registry-config* from your custom registry
+configuration file you edited locally:
++
+----
+$ oc secrets new registry-config config.yml=</path/to/custom/registry/config.yml>
+----
+
+. Add the *registry-config* secret as a volume to the registry's deployment
+configuration to mount the custom configuration file at
+*_/etc/docker/registry/_*:
++
+----
+$ oc volume dc/docker-registry --add --type=secret \
+    --secret-name=registry-config -m /etc/docker/registry/
+----
++
+. Update the registry to reference the configuration path from the previous step
+by adding the following environment variable to the registry's deployment
+configuration:
++
+----
+$ oc env dc/docker-registry \
+    REGISTRY_CONFIGURATION_PATH=/etc/docker/registry/config.yml
+----
+
+This may be performed as an iterative process to achieve the desired
+configuration. For example, during troubleshooting, the configuration may be
+temporarily updated to put it in *debug* mode.
+
+To update an existing configuration:
+
+[WARNING]
+====
+This procedure will overwrite the currently deployed registry configuration.
+====
+
+. Edit the local registry configuration file, *_config.yml_*.
+
+. Delete the *registry-config* secret:
++
+----
+$ oc delete secret registry-config
+----
++
+. Recreate the secret to reference the updated configuration file the first
+step:
++
+----
+$ oc secrets new registry-config config.yml=</path/to/custom/registry/config.yml>
+----
++
+. Redeploy the registry to read the updated configuration:
++
+----
+$ oc deploy docker-registry --latest
+----
+
+[TIP]
+====
+It is recommended that configuration files be maintained in a source control
+repository.
+====
+
+[[whitelisting-docker-registries]]
+== Whitelisting Docker Registries
+
+You can specify a whitelist of docker registries, allowing you to curate a set
+of images and templates that are available for download by OpenShift users. This
+curated set can be placed in one or more docker registries, and then added to
+the whitelist. When using a whitelist, only the specified registries are
+accessible within OpenShift, and all other registries are denied access by
+default.
+
+To configure a whitelist:
+
+. Edit the *_/etc/sysconfig/docker_* file to block all registries:
++
+----
+BLOCK_REGISTRY='--block-registry=all'
+----
++
+You may need to uncomment the `*BLOCK_REGISTRY*` line.
+. In the same file, add registries to which you want to allow access:
++
+----
+ADD_REGISTRY='--add-registry=<registry1> --add-registry=<registry2>'
+----
++
+.Allowing Access to Registries
+====
+----
+ADD_REGISTRY='--add-registry=registry.access.redhat.com'
+----
+====
++
+This example would restrict access to images available on the
+link:https://access.redhat.com/search/#/container-images[Red Hat Customer Portal].
+
+Once the whitelist is configured, if a user tries to pull from a docker registry
+that is not on the whitelist, they will receive an error message stating that
+this registry is not allowed.
+
+[[exposing-the-registry]]
+== Exposing the Registry
+
+To expose your internal registry externally, it is recommended that you run a
+link:#securing-the-registry[secure registry]. To expose the registry you must
+first have link:deploy_router.html[deployed a router].
+
+. link:#deploy-registry[Deploy the registry].
++
+. link:#securing-the-registry[Secure the registry].
++
+. link:deploy_router.html[Deploy a router].
++
+. Create a
+link:https://docs.openshift.org/latest/architecture/core_concepts/routes.html#secured-routes[passthrough]
+route via `oc create route passthrough` by pointing the `--service` flag to the service
+of the registry. You can optionally provide a route name by passing an argument, otherwise
+the name of the service will be used as the route name.
++
+For example:
++
+====
+----
+$ oc get svc
+NAME              CLUSTER_IP       EXTERNAL_IP   PORT(S)                 SELECTOR                  AGE
+docker-registry   172.30.69.167    <none>        5000/TCP                docker-registry=default   4h
+kubernetes        172.30.0.1       <none>        443/TCP,53/UDP,53/TCP   <none>                    4h
+router            172.30.172.132   <none>        80/TCP                  router=router             4h
+
+$ oc create route passthrough --service=docker-registry --hostname=<host>
+route "docker-registry" created
+----
+====
++
+====
+----
+$ oc get route/docker-registry -o yaml
+apiVersion: v1
+kind: Route
+metadata:
+  name: docker-registry
+spec:
+  host: <host> <1>
+  to:
+    kind: Service
+    name: docker-registry <2>
+  tls:
+    termination: passthrough <3>
+----
+<1> The host for your route.  You must be able to resolve this name externally via DNS to the router's IP address.
+<2> The service name for your registry.
+<3> Specify this route as a passthrough route.
+====
++
+[NOTE]
+====
+Passthrough is currently the only type of route supported for exposing the
+secure registry.
+====
++
+. Next, you must trust the certificates being used for the registry on your host system.
+The certificates referenced were created when you secured your registry.
++
+====
+----
+$ sudo mkdir -p /etc/docker/certs.d/<host>
+$ sudo cp <ca certificate file> /etc/docker/certs.d/<host>
+$ sudo systemctl restart docker
+----
+====
++
+
+. link:#access[Log in to the registry] using the information from securing the
+registry. However, this time point to the host name used in the route rather
+than your service IP. You should now be able to tag and push images using the
+route host.
++
+====
+----
+$ oc get imagestreams -n test
+NAME      DOCKER REPO   TAGS      UPDATED
+
+$ docker pull busybox
+$ docker tag busybox <host>/test/busybox
+$ docker push <host>/test/busybox
+The push refers to a repository [<host>/test/busybox] (len: 1)
+8c2e06607696: Image already exists
+6ce2e90b0bc7: Image successfully pushed
+cf2616975b4a: Image successfully pushed
+Digest: sha256:6c7e676d76921031532d7d9c0394d0da7c2906f4cb4c049904c4031147d8ca31
+
+$ docker pull <host>/test/busybox
+latest: Pulling from <host>/test/busybox
+cf2616975b4a: Already exists
+6ce2e90b0bc7: Already exists
+8c2e06607696: Already exists
+Digest: sha256:6c7e676d76921031532d7d9c0394d0da7c2906f4cb4c049904c4031147d8ca31
+Status: Image is up to date for <host>/test/busybox:latest
+
+$ oc get imagestreams -n test
+NAME      DOCKER REPO                       TAGS      UPDATED
+busybox   172.30.11.215:5000/test/busybox   latest    2 seconds ago
+----
+====
++
+[NOTE]
+====
+Your image streams will have the IP address and port of the registry service,
+not the route name and port. See `oc get imagestreams` for details.
+====
++
+[NOTE]
+====
+In the `<host>/test/busybox` example above, `test` refers to the project name.
+====
+
+[[registry-known-issues]]
+== Known Issues
+
+The following are the known issues when deploying or using the integrated
+registry.
+
+*Image Push Errors with Scaled Registry Using Shared NFS Volume*
+
+During a push of an image, you may see one of the following errors:
+
+* `digest invalid: provided digest did not match uploaded content`
+* `blob upload unknown`
+
+The error is returned by an internal registry service when Docker attempts to
+push the image. Its cause originates in the synchronization of file attributes
+across nodes. Factors such as NFS client side caching, network latency, and
+layer size can all contribute to potential errors that might occur when pushing
+an image using the default round-robin load balancing configuration.
+
+link:#session-affinity-workaround[One possible workaround] is to set the
+*docker-registry* service's `*sessionAffinity*` to *ClientIP*. This ensures that
+requests from a particular Docker client will always be handled by the same
+replica.
+
+[[registry-whats-next]]
+== What's Next?
+
+After you have a registry deployed, you can:
+
+- link:../../install_config/configuring_authentication.html[Configure
+authentication]; by default, authentication is set to
+ifdef::openshift-enterprise[]
+link:../../install_config/configuring_authentication.html#DenyAllPasswordIdentityProvider[Deny
+All].
+endif::[]
+ifdef::openshift-origin[]
+link:../../install_config/configuring_authentication.html#AllowAllPasswordIdentityProvider[Allow
+All].
+endif::[]
+- Deploy a link:deploy_router.html[router].
+ifdef::openshift-origin[]
+- link:../../install_config/imagestreams_templates.html[Populate your OpenShift installation]
+with a useful set of Red Hat-provided image streams and templates.
+endif::[]
