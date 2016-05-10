@@ -78,6 +78,22 @@ $ oadm registry --help
 ----
 endif::[]
 
+ifdef::openshift-enterprise,openshift-origin[]
+[[registry-compute-resource]]
+=== Registry Compute Resources
+
+By default, the registry is created with no settings for
+link:../../dev_guide/compute_resources.html[compute resource requests or
+limits]. For production, it is highly recommended that the deployment
+configuration for the registry be updated to set resource requests and limits
+for the registry pod. Otherwise, the registry pod will be considered a
+link:../../dev_guide/compute_resources.html#quality-of-service-tiers[*BestEffort*
+pod].
+
+See link:../../dev_guide/compute_resources.html[Compute Resources] for more
+information on configuring requests and limits.
+endif::openshift-enterprise,openshift-origin[]
+
 [[storage-for-the-registry]]
 === Storage for the Registry
 
@@ -162,16 +178,14 @@ the *default* project for the registry to run as. The following example creates
 a service account named *registry*:
 +
 ----
-$ echo \
-    '{"kind":"ServiceAccount","apiVersion":"v1","metadata":{"name":"registry"}}' \
-    | oc create -n default -f -
+$ oc create serviceaccount registry -n default
 ----
 
-. To add the new *registry* service account to the list of users allowed to run
-privileged containers:
+. To add the new *registry* service account in the *default* namespace
+to the list of users allowed to run privileged containers:
 +
 ----
-$ oadm policy add-scc-to-user privileged registry
+$ oadm policy add-scc-to-user privileged system:serviceaccount:default:registry
 ----
 
 . Create the registry and specify that it use the new *registry* service
@@ -205,7 +219,36 @@ $ sudo chown 1001:root <path>
 ----
 ====
 
+==== Setting Storage Quota
+To protect the storage from being accidentally filled up or to prevent users
+from abusing the space, you may set size constraints on images, image streams,
+and projects.
 
+link:../../admin_guide/quota.html#create-a-quota[Create a quota object] on a
+particular namespace with one or more of the following resources:
+
+[cols="1,4",options="header"]
+|===
+|Resource|Purpose
+|`openshift.io/imagesize`
+|To constrain the maximum size of an image
+
+|`openshift.io/imagestreamsize`
+|To limit an image's total size when tagged in an image stream (also known as a
+repository)
+
+|`openshift.io/projectimagessize`
+|To limit the total combined size of all images per project
+
+|===
+
+Once the quota is exceeded, an image push will fail with:
+
+----
+Failed to push image: unknown: requested access to the resource is denied
+----
+
+Then, you can link:../../admin_guide/pruning_resources.html#pruning-images[prune obsoleted images] to retrieve some space back.
 
 [[maintaining-the-registry-ip-address]]
 === Maintaining the Registry IP Address
@@ -282,11 +325,11 @@ unnecessary downtime for pods and does not actually clear the cache.
 [[viewing-logs]]
 == Viewing Logs
 
-To view the logs for the Docker registry, run the `oc logs` indicating the desired pod:
+To view the logs for the Docker registry, use the `oc logs` command with the deployment config:
 
 ====
 ----
-$ oc logs docker-registry-1-da73t
+$ oc logs dc/docker-registry
 2015-05-01T19:48:36.300593110Z time="2015-05-01T19:48:36Z" level=info msg="version=v2.0.0+unknown"
 2015-05-01T19:48:36.303294724Z time="2015-05-01T19:48:36Z" level=info msg="redis not configured" instance.id=9ed6c43d-23ee-453f-9a4b-031fea646002
 2015-05-01T19:48:36.303422845Z time="2015-05-01T19:48:36Z" level=info msg="using inmemory layerinfo cache" instance.id=9ed6c43d-23ee-453f-9a4b-031fea646002
@@ -621,17 +664,29 @@ $ oc patch dc/docker-registry --api-version=v1 -p '{"spec": {"template": {"spec"
   }]}}}}'
 ----
 
-. Validate the registry is running in TLS mode. Wait until the *docker-registry*
-pod status changes to `Running` and verify the Docker logs for the registry
-container. You should find an entry for `listening on :5000, tls`.
+. If your registry was initially deployed on {product-title}
+ifdef::openshift-enterprise[]
+3.2
+endif::[]
+ifdef::openshift-origin[]
+1.1.2
+endif::[]
+or later, update the scheme used for the registry's readiness probe from HTTP to HTTPS:
++
+----
+$ oc patch dc/docker-registry --api-version=v1 -p '{"spec": {"template": {"spec": {"containers":[{
+    "name":"registry",
+    "readinessProbe":  {"httpGet": {"scheme":"HTTPS"}}
+  }]}}}}'
+----
+
+. Validate the registry is running in TLS mode. Wait until the latest *docker-registry*
+deployment completes and verify the Docker logs for the registry container. You should
+find an entry for `listening on :5000, tls`.
 +
 ====
 ----
-$ oc get pods
-POD                       IP           CONTAINER(S)   IMAGE(S)                                  HOST                           LABELS                                                                                  STATUS    CREATED    MESSAGE
-docker-registry-1-da73t   172.17.0.1                                                            openshiftdev.local/127.0.0.1   deployment=docker-registry-4,deploymentconfig=docker-registry,docker-registry=default   Running   38 hours
-
-$ oc log docker-registry-1-da73t | grep tls
+$ oc logs dc/docker-registry | grep tls
 time="2015-05-27T05:05:53Z" level=info msg="listening on :5000, tls" instance.id=deeba528-c478-41f5-b751-dc48e4935fc2
 ----
 ====
@@ -788,6 +843,45 @@ It is recommended that configuration files be maintained in a source control
 repository.
 ====
 
+[[whitelisting-docker-registries]]
+== Whitelisting Docker Registries
+
+You can specify a whitelist of docker registries, allowing you to curate a set
+of images and templates that are available for download by OpenShift users. This
+curated set can be placed in one or more docker registries, and then added to
+the whitelist. When using a whitelist, only the specified registries are
+accessible within OpenShift, and all other registries are denied access by
+default.
+
+To configure a whitelist:
+
+. Edit the *_/etc/sysconfig/docker_* file to block all registries:
++
+----
+BLOCK_REGISTRY='--block-registry=all'
+----
++
+You may need to uncomment the `*BLOCK_REGISTRY*` line.
+. In the same file, add registries to which you want to allow access:
++
+----
+ADD_REGISTRY='--add-registry=<registry1> --add-registry=<registry2>'
+----
++
+.Allowing Access to Registries
+====
+----
+ADD_REGISTRY='--add-registry=registry.access.redhat.com'
+----
+====
++
+This example would restrict access to images available on the
+link:https://access.redhat.com/search/#/container-images[Red Hat Customer Portal].
+
+Once the whitelist is configured, if a user tries to pull from a docker registry
+that is not on the whitelist, they will receive an error message stating that
+this registry is not allowed.
+
 [[exposing-the-registry]]
 == Exposing the Registry
 
@@ -934,6 +1028,39 @@ link:../persistent_storage/persistent_storage_nfs.html#nfs-export-settings[Expor
 Settings] in the
 link:../../install_config/persistent_storage/persistent_storage_nfs.html[Persistent
 Storage Using NFS] topic for details.
+
+*Pull of Internally Managed Image Fails with `not found` Error*
+
+This error occurs when the pulled image is pushed to an image stream different
+from the one it is being pulled from. This is caused by
+link:../../architecture/core_concepts/builds_and_image_streams.html#adding-tag[re-tagging]
+a built image into an arbitrary image stream:
+
+====
+----
+$ oc tag srcimagestream:latest anyproject/pullimagestream:latest
+----
+====
+
+And subsequently pulling from it, using an image reference such as:
+
+====
+----
+internal.registry.url:5000/anyproject/pullimagestream:latest
+----
+====
+
+During a manual Docker pull, this will produce a similar error:
+
+====
+----
+Error: image anyproject/pullimagestream:latest not found
+----
+====
+
+To prevent this, avoid the tagging of internally managed images completely, or
+re-push the built image to the desired namespace
+link:#access-pushing-and-pulling-images[manually].
 
 [[registry-whats-next]]
 == What's Next?
