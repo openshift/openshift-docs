@@ -76,9 +76,20 @@ $ oc create serviceaccount router -n default
 
 To add a privileged SCC to the *router* service account in the *default* namespace:
 
+====
 ----
 $ oadm policy add-scc-to-user privileged system:serviceaccount:default:router
 ----
+====
+
+Use of labels requires `cluster-reader` permission. So if the router definition sets
+`NAMESPACE_LABELS` then you need to give it the following permission.
+
+====
+----
+$ oadm policy add-cluster-role-to-user cluster-reader system:serviceaccount:default:router
+----
+====
 endif::[]
 
 [[haproxy-router]]
@@ -284,8 +295,114 @@ $ iptables -A INPUT -p tcp --dport 10443 -j ACCEPT
 ====
 
 
+[[working-with-multiple-routers]]
+=== Working With Multiple Routers
+
+An administrator can create multiple routers with the same definition
+that will all serve the same set of routes. By having different groups
+of routers with different namespace or route selectors, they can vary
+the routes that the router will serve.
+
+Multiple routers can be grouped to distribute routing load in the cluster
+and separate tenants to different routers or shards.  Each router or shard in the
+group handles routes based on the selectors in the router.  The administrator
+can create shards over the whole cluster using `ROUTE_LABELS`.  The user can
+create shards over a namespace (project) by using `NAMESPACE_LABELS`.
+
+
+[[adding-nodeselector-to-a-deployment]]
+=== Adding a Node Selector to a Deployment Configuration
+
+You can make specific routers deploy on specific nodes by labeling the nodes and
+adding a node selector to the router deployment controller.
+
+Add a label to the desired node.
+====
+----
+$ oc label node 10.254.254.28 "router=first"
+----
+====
+Add a node selector to the deployment configuration.
+====
+----
+$ oc edit dc <deploymentConfigName>
+----
+====
+Find the section “spec” under “template” and add node selector section.
+Also, add the nodeSelector.
+====
+----
+  template:
+    metadata:
+      creationTimestamp: null
+      labels:
+        router: router1
+    spec:
+      nodeSelector:
+        router: "first"
+----
+====
+When the edit is saved the deployment is updated.
+
+[[using-router-shards]]
+=== Using Router Shards
+
+Each xref:../../architecture/core_concepts/projects_and_users.adoc#projects[project has its own namespace].
+By default, a router selects routes from all the namespaces it has
+access to. The access controls are based on the service account that the
+router is run with.
+
+Using `NAMESPACE_LABELS` and/or `ROUTE_LABELS`, a router can filter out the
+namespaces and/or routes that it should service. This enables you to
+partition routes amongst multiple router deployments effectively
+distributing the set of routes.
+
+Example: A router deployment `finops-router` is run with route selector
+        `NAMESPACE_LABELS="name in (finance, ops)"`
+        and a router deployment `dev-router` is run with route selector
+        `NAMESPACE_LABELS="name=dev"`
+
+If all routes are in the 3 namespaces `finance`, `ops` or `dev`,
+then this could effectively distribute our routes across two
+router deployments.
+
+In the above scenario, sharding becomes a special case of partitioning
+with no overlapping sets. Routes are divided amongst multiple router shards.
+
+The criteria for route selection governs how the routes are distributed - it
+is possible to have routes that overlap accross multiple router deployments.
+
+Example: In addition to the `finops-router` and `dev-router` in the example
+         above, we also have an `devops-router` which is run with a route
+         selector `NAMESPACE_LABELS="name in (dev, ops)"`.
+
+The routes in namespaces `dev` or `ops` now are serviced by two different
+router deployments. This becomes a case where we have partitioned the
+routes with an overlapping set.
+
+
+In addition, this enables us to create more complex routing rules ala
+divert high priority traffic to the dedicated `finops-router` but send
+the lower priority ones to the `devops-router`.
+
+`NAMESPACE_LABELS` allows filtering the projects to service and selecting
+all the routes from those projects. But we may want to partition routes
+based on other criteria in the routes themselves. The `ROUTE_LABELS`
+selector allows you to slice-and-dice the routes themselves.
+
+Example: A router deployment `prod-router` is run with route selector
+        `ROUTE_LABELS="mydeployment=prod"`
+        and a router deployment `devtest-router` is run with route selector
+        `ROUTE_LABELS="mydeployment in (dev, test)"`
+        
+Example assumes you have all the routes you wish to serviced tagged with a
+label `"mydeployment=<tag>"`.
+
 [[creating-router-shards]]
 === Creating Router Shards
+
+Router sharding lets you select how routes are distributed among a set of
+routers. As above the routers are created on different nodes.
 
 Router sharding is
 xref:../../architecture/core_concepts/routes.adoc#architecture-core-concepts-routes[based on labels];
@@ -498,6 +615,74 @@ $ modshard 3 \
     NAMESPACE_LABELS='frequency=weekly' \
     ROUTE_LABELS='sla=low'
 ----
+
+[[using-namespace-router-shards]]
+=== Using Namespace Router Shards
+
+Each
+xref:../../architecture/core_concepts/projects_and_users.adoc#projects[project has its own namespace].
+The routes for a project can be handled by a selected router by using
+`NAMESPACE_LABELS`.  The router is given a selector for a `NAMESPACE_LABELS`
+label and the project that wants to use the router applies the `NAMESPACE_LABELS`
+label to its namespace.
+
+Because `NAMESPACE_LABELS` labels are used, the router service account associated with the
+router must have `cluster-reader` permission. This permits the router to read the labels
+that are applied to the namespaces. Multiple routers can be deployed using the
+same service account.
+
+Add `cluster-reader` to the router service account, in this case the default route:
+====
+----
+$ oadm policy add-cluster-role-to-user cluster-reader system:serviceaccount:default:router
+----
+====
+Now create and label the router:
+====
+----
+$ oadm router ...  --service-account=router
+$ oc env dc/router NAMESPACE_LABELS="router=r1"
+----
+====
+Because the router has a selector for a namespace, the router will handle
+routes for that namespace.  So, for example:
+====
+----
+$ oc label namespace default "router=r1"
+----
+====
+Now create routes in the default namespace, and the route is
+available in the default router:
+====
+----
+$ oc create -f route1.yaml
+----
+====
+Now create a new project (namespace) and create a route, route2.
+====
+----
+$ oc new-project p1
+$ oc create -f route2.yaml
+----
+====
+And notice the route is not available in your router.
+Now label namespace p1 with "router=r1"
+====
+----
+$ oc label namespace p1 "router=r1"
+----
+====
+Which makes the route available to the router.
+
+Note that removing the label from the namespace won't have immediate effect
+(as we don't see the updates in the router), so if you redeploy/start a new
+router pod, you should see the unlabelled effects.
+====
+----
+$ oc scale dc/router --replicas=0 && oc scale dc/router --replicas=1
+----
+====
+
 
 [[customizing-the-default-routing-subdomain]]
 === Customizing the Default Routing Subdomain
@@ -852,6 +1037,7 @@ link:http://golang.org/pkg/text/template/[*golang* template] that
 generates the HAProxy configuration file from a list of routes. If you
 want a customized template router to meet your needs, you can customize
 the template file, build a new Docker image, and run a customized router.
+Alternatively you can use a xref:../../dev_guide/configmaps.adoc#[configMap].
 
 One common case for this might be implementing new features within the
 application back ends. For example, it might be desirable in a highly-available
@@ -874,6 +1060,74 @@ endif::[]
 ----
 
 Save this content to a file for use as the basis of your customized template.
+
+[[using-configmap-replace-template]]
+
+=== Using a ConfigMap to Replace the Router Configuration Template
+
+A xref:../../dev_guide/configmaps.adoc#[configMap] permits you to customize
+the router instance without rebuilding the router image. The
+*_haproxy-config.template_*, *_reload-haproxy_* and other scripts can be modified
+as well as creating and modifying router environment variables.
+
+The following example shows how to use a custom *_haproxy-config.template_* in
+your router.
+
+First get a copy of the *_haproxy-config.template_* that you want to modify as
+xref:#deploying-customized-router[described above]. Modify the
+*_haproxy-config.template_* as desired.
+
+Create a configmap:
+====
+----
+$ oc create configmap customrouter --from-file=haproxy-config.template
+----
+====
+The configMap contains a copy of your modified *_haproxy-config.template_* file.
+The router dc is next modified to mount the configMap as a file and the
+`TEMPLATE_FILE` environment variable is modified to point to it. This can be
+done using "oc env" and "oc volume" or alternaitvely by editing the router dc.
+
+====
+----
+$ oc env dc/router TEMPLATE_FILE=/var/lib/haproxy/conf/custom/haproxy-config.template
+$ oc volume dc/router --add --overwrite --name=config-volume \
+  --mount-path=/var/lib/haproxy/conf/custom \
+  --source='{"configMap": { "name": "customrouter"}}'
+----
+====
+
+Alternatively, edit the router dc to mention the configMap in all the needed places.
+In the `*spec.container.env*` section add the `TEMPLATE_FILE` environment variable to
+point to the mounted *_haproxy-config.template_*. Add the `*spec.container.volumeMounts*`
+to create the needed mount point. Add a new `*spec.volumes*` mentioning the configMap.
+
+====
+----
+$ oc edit dc router
+...
+        - name: STATS_USERNAME
+          value: admin
+        - name: TEMPLATE_FILE
+          value: /var/lib/haproxy/conf/custom/haproxy-config.template
+        image: openshift/origin-haproxy-routerp
+...
+        terminationMessagePath: /dev/termination-log
+        volumeMounts:
+        - mountPath: /var/lib/haproxy/conf/custom
+          name: config-volume
+      dnsPolicy: ClusterFirst
+...
+      terminationGracePeriodSeconds: 30
+      volumes:
+      - configMap:
+          name: customrouter
+        name: config-volume
+  test: false
+...
+----
+====
+Save the changes and exit the editor.  This restarts the router.
 
 [[using-stick-tables]]
 
