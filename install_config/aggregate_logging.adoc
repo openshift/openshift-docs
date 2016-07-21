@@ -57,7 +57,7 @@ Otherwise you can create it with the following command:
 +
 ====
 ----
-$ oc create -n openshift -f \
+$ oc apply -n openshift -f \
     /usr/share/openshift/examples/infrastructure-templates/enterprise/logging-deployer.yaml
 ----
 ====
@@ -69,7 +69,7 @@ may not exist. In that case you can create them with the following command:
 +
 ====
 ----
-$ oc create -n openshift -f \
+$ oc apply -n openshift -f \
     https://raw.githubusercontent.com/openshift/origin-aggregated-logging/master/deployer/deployer.yaml
 ----
 ====
@@ -87,18 +87,170 @@ $ oc project logging
 +
 [NOTE]
 ====
-Specifying a non-empty
+Specifying an empty
 xref:../admin_guide/managing_projects.adoc#using-node-selectors[node
-selector] on the project is not recommended, as this would restrict
-where Fluentd can be deployed. Instead, specify node selectors for the
-deployer to be applied to your other deployment configurations.
+selector] on the project is recommended, as Fluentd should be deployed
+throughout the cluster and any selector would restrict where it is
+deployed. To control component placement, specify node selectors per component to
+be applied to their deployment configurations.
 ====
 
-. Create a xref:../dev_guide/secrets.adoc#dev-guide-secrets[secret] to provide security-related files to the deployer. While the secret is necessary, the contents of the secret are optional, and will be generated for you if none are supplied.
+. Create the logging xref:../admin_guide/service_accounts.adoc#admin-guide-service-accounts[service
+accounts] and custom roles:
 +
-You can supply the following files when creating a new secret:
+----
+$ oc new-app logging-deployer-account-template
+----
 +
-[cols="2",options="header"]
+[NOTE]
+====
+If you have deployed logging previously, for example in a different project, then
+it is normal for the cluster roles to fail to be created as they already exist.
+====
+
+. Enable the deployer service account to create an OAuthClient (normally
+a cluster-admin privilege) for Kibana to use later when authenticating
+against the master.
++
+====
+----
+$ oadm policy add-cluster-role-to-user oauth-editor \
+       system:serviceaccount:logging:logging-deployer <1>
+----
+<1> Use the project you created earlier (e.g., *logging*) when specifying
+this service account.
+====
+
+. Enable the Fluentd service account to mount and read system logs by adding
+it to the *privileged* security context, and also enable it to read pod metadata
+by giving it the *cluster-reader* role:
++
+====
+----
+$ oadm policy add-scc-to-user privileged  \
+    system:serviceaccount:logging:aggregated-logging-fluentd <1>
+$ oadm policy add-cluster-role-to-user cluster-reader \
+    system:serviceaccount:logging:aggregated-logging-fluentd <1>
+----
+<1> Use the project you created earlier (e.g., *logging*) when specifying
+this service account.
+====
+
+[[aggregate-logging-specifying-deployer-parameters]]
+== Specifying Deployer Parameters
+
+Parameters for the EFK deployment may be specified in the
+form of a xref:../dev_guide/configmaps.adoc[configmap],
+a xref:../dev_guide/secrets.adoc#dev-guide-secrets[secret],
+or template parameters (which are passed to the deployer in
+environment variables). The deployer looks for each value first in a
+*logging-deployer* configmap, then a *logging-deployer* secret, then as
+an environment variable. Any or all may be omitted if not needed.
+
+Read about the available parameters below. Typically you should at
+least specify the hostname at which Kibana should be exposed to client
+browsers, and also the master URL where client browsers will be directed
+for authenticating to OpenShift.
+
+. Create a xref:../dev_guide/configmaps.adoc[configmap] to provide most deployer parameters. An invocation supplying the most important parameters might be:
++
+----
+$ oc create configmap logging-deployer \
+   --from-literal kibana-hostname=kibana.example.com \
+   --from-literal public-master-url=https://master.example.com:8443 \
+   --from-literal es-cluster-size=3 \
+   --from-literal es-instance-ram=8G
+----
++
+It is also easy to edit ConfigMap YAML after creating it:
++
+----
+$ oc edit configmap logging-deployer
+----
++
+These and other parameters are available (you should read the ElasticSearch section below before choosing ElasticSearch parameters for the deployer):
++
+[cols="3,7",options="header"]
+|===
+|Parameter
+|Description
+
+|*_kibana-hostname_*
+| The external host name for web clients to reach Kibana.
+
+|*_public-master-url_*
+|The external URL for the master. For OAuth purposes.
+
+|*_es-cluster-size_* (default: 1)
+| The number of instances of
+Elasticsearch to deploy. Redundancy requires at least three, and more can be
+used for scaling.
+
+|*_es-instance-ram_* (default: 8G)
+|Amount of RAM to reserve per Elasticsearch instance. The default is 8G (for 8GB), and it
+must be at least 512M. Possible suffixes are G,g,M,m.
+
+|*_es-pvc-prefix_* (default: *logging-es-*)
+| Prefix for the names of PersistentVolumeClaims to be used as storage for Elasticsearch instances; a number will be appended per instance (e.g. *logging-es-1*). If they don't already exist, they will be created with size *_es-pvc-size_*.
+
+|*_es-pvc-size_*
+| Size of the PersistentVolumeClaim to create per ElasticSearch instance, e.g. 100G. If omitted, no PVCs will be created and ephemeral volumes are used instead.
+
+|*_es-pvc-dynamic_*
+| Set to true to have created PersistentVolumeClaims annotated such that their backing storage can be dynamically provisioned (if that is available for your cluster).
+
+|*_storage-group_*
+| Number of a supplemental group ID for access to Elasticsearch storage volumes; backing volumes should allow access by this group ID (defaults to 65534).
+
+|*_fluentd-nodeselector_* (default: *logging-infra-fluentd=true*)
+| A node selector that specifies which nodes are eligible targets
+for deploying Fluentd instances.
+All nodes where Fluentd should run (typically, all) must have this label
+before Fluentd will be able to run and collect logs.
+
+|*_es-nodeselector_*
+| A node selector that specifies which nodes are eligible targets
+for deploying Elasticsearch instances. This can be used to place
+these instances on nodes reserved and/or optimized for running them.
+For example, the selector could be `*node-type=infrastructure*`. At least
+one active node must have this label before Elasticsearch will deploy.
+
+|*_kibana-nodeselector_*
+| A node selector that specifies which nodes are eligible targets
+for deploying Kibana instances.
+
+|*_curator-nodeselector_*
+| A node selector that specifies which nodes are eligible targets
+for deploying Curator instances.
+
+|*_enable-ops-cluster_*
+|If set to `*true*`, configures a second Elasticsearch cluster and Kibana for
+operations logs. Fluentd splits
+logs between the main cluster and a cluster reserved for operations
+logs (which consists of *_/var/log/messages_* on nodes and the logs from the
+projects *default*, *openshift*, and *openshift-infra*).
+This means a second Elasticsearch and Kibana are deployed. The deployments
+are distinguishable by the *-ops* included in their names and have parallel
+deployment options listed below.
+
+|*_kibana-ops-hostname, es-ops-instance-ram, es-ops-pvc-size, es-ops-pvc-prefix, es-ops-cluster-size, es-ops-nodeselector, kibana-ops-nodeselector, curator-ops-nodeselector_*
+| Parallel parameters for the ops log cluster.
+
+|*_image-pull-secret_*
+| Specify the name of an existing pull secret to be used for pulling component images from an authenticated registry.
+|===
+
+. Create a xref:../dev_guide/secrets.adoc#dev-guide-secrets[secret] to provide security-related files to the deployer. The contents of the secret are optional, and will be randomly generated if not supplied.
++
+You can supply the following files when creating a new secret, for example:
++
+----
+$ oc create secret generic logging-deployer \
+   --from-file kibana.crt=/path/to/cert \
+   --from-file kibana.key=/path/to/key
+----
++
+[cols="3,7",options="header"]
 |===
 |File Name
 |Description
@@ -127,200 +279,68 @@ the deployer.
 |*_ca.key_*
 |A matching CA key.
 |===
-+
-For example:
-+
-----
-$ oc secrets new logging-deployer \
-   kibana.crt=/path/to/cert kibana.key=/path/to/key
-----
-+
-If a certificate file is not passed as a secret, the deployer will generate a
-self-signed certificate instead. However, a secret is still required for
-the deployer to run. In this case, you can create a "dummy" secret that
-does not specify a certificate value:
-+
-----
-$ oc secrets new logging-deployer nothing=/dev/null
-----
-
-ifdef::openshift-enterprise[]
-. Create the deployer xref:../admin_guide/service_accounts.adoc#admin-guide-service-accounts[service
-account]:
-+
-====
-----
-$ oc create -f - <<API
-apiVersion: v1
-kind: ServiceAccount
-metadata:
-  name: logging-deployer
-secrets:
-- name: logging-deployer
-API
-----
-====
-endif::openshift-enterprise[]
-ifdef::openshift-origin[]
-. Create the deployer xref:../admin_guide/service_accounts.adoc#admin-guide-service-accounts[service
-account] and custom roles:
-+
-====
-----
-$ oc new-app logging-deployer-account-template
-----
-====
-endif::openshift-origin[]
-+
-Then, enable the *logging-deployer* service account to create the objects
-needed for a logging deployment:
-ifdef::openshift-enterprise[]
-+
-====
-----
-$ oc policy add-role-to-user edit --serviceaccount logging-deployer
-----
-====
-endif::openshift-enterprise[]
-ifdef::openshift-origin[]
-+
-====
-----
-$ oc policy add-role-to-user edit --serviceaccount logging-deployer
-$ oc policy add-role-to-user daemonset-admin --serviceaccount logging-deployer
-$ oadm policy add-cluster-role-to-user oauth-editor \
-       system:serviceaccount:logging:logging-deployer <1>
-----
-<1> Use the new project you created earlier (e.g., *logging*) when specifying
-this service account.
-====
-endif::openshift-origin[]
-
-. Enable the Fluentd service account, which the deployer will create, that
-requires special privileges to operate Fluentd. Add the service account user to
-the security context:
-+
-====
-----
-$ oadm policy add-scc-to-user  \
-    privileged system:serviceaccount:logging:aggregated-logging-fluentd <1>
-----
-<1> Use the new project you created earlier (e.g., *logging*) when specifying
-this service account.
-====
-+
-Give the Fluentd service account permission to read labels from all pods:
-+
-====
-----
-$ oadm policy add-cluster-role-to-user cluster-reader \
-    system:serviceaccount:logging:aggregated-logging-fluentd <1>
-----
-<1> Use the new project you created earlier (e.g., *logging*) when specifying
-this service account.
-====
 
 [[deploying-the-efk-stack]]
 == Deploying the EFK Stack
 
-The EFK stack is deployed xref:../dev_guide/templates.adoc#dev-guide-templates[using a template].
+The EFK stack is deployed using a
+xref:../dev_guide/templates.adoc#dev-guide-templates[template] to
+create a deployer pod that reads the deployment parameters and manages
+the deployment.
 
-. Run the deployer, specifying at least the parameters in the following example (more are described in the table below):
+. Run the deployer, optionally specifying parameters (described in the table below), for example:
 +
 ====
+Without template parameters:
+
+----
+$ oc new-app logging-deployer-template
+----
+
+With parameters:
+
+ifdef::openshift-origin[]
 ----
 $ oc new-app logging-deployer-template \
-    --param KIBANA_HOSTNAME=kibana.example.com \
-    --param ES_CLUSTER_SIZE=1 \
-    --param PUBLIC_MASTER_URL=https://localhost:8443
+             --param IMAGE_VERSION=v1.2.0 \
+             --param MODE=install
 ----
+endif::openshift-origin[]
+ifdef::openshift-enterprise[]
+----
+$ oc new-app logging-deployer-template \
+             --param IMAGE_VERSION=3.3.0 \
+             --param MODE=install
+----
+endif::openshift-enterprise[]
 ====
-+
-Be sure to replace at least `*KIBANA_HOSTNAME*` and `*PUBLIC_MASTER_URL*` with
-values relevant to your deployment.
-+
-The available parameters are:
 +
 [cols="3,7",options="header"]
 |===
-|Variable Name
+|Parameter Name
 |Description
 
-|`*PUBLIC_MASTER_URL*`
-|(Required with the `oc new-app` command) The external URL for the master. For
-OAuth use.
-
-|`*ENABLE_OPS_CLUSTER*`
-|If set to `*true*`, configures a second Elasticsearch cluster and Kibana for
-operations logs. Fluentd splits
-logs between the main cluster and a cluster reserved for operations
-logs (which consists of *_/var/log/messages_* on nodes and the logs from the
-projects *default*, *openshift*, and *openshift-infra*).
-This means a second Elasticsearch and Kibana are deployed. The deployments
-are distinguishable by the *-ops* included in their names and have parallel
-deployment options listed below.
-
-|`*KIBANA_HOSTNAME*`, `*KIBANA_OPS_HOSTNAME*`
-|(Required with the `oc new-app` command) The external host name for web clients
-to reach Kibana.
-
-|`*ES_CLUSTER_SIZE*`, `*ES_OPS_CLUSTER_SIZE*`
-|(Required with the `oc new-app` command) The number of instances of
-Elasticsearch to deploy. Redundancy requires at least three, and more can be
-used for scaling.
-
-|`*ES_INSTANCE_RAM*`, `*ES_OPS_INSTANCE_RAM*`
-|Amount of RAM to reserve per Elasticsearch instance. The default is 8G (for 8GB), and it
-must be at least 512M. Possible suffixes are G,g,M,m.
-
-|`*ES_NODE_QUORUM*`, `*ES_OPS_NODE_QUORUM*`
-|The quorum required to elect a new master. Should be more than half the intended cluster size.
-
-|`*ES_RECOVER_AFTER_NODES*`, `*ES_OPS_RECOVER_AFTER_NODES*`
-|When restarting the cluster, require this many nodes to be present before starting recovery.
-Defaults to one less than the cluster size to allow for one missing node.
-
-|`*ES_RECOVER_EXPECTED_NODES*`, `*ES_OPS_RECOVER_EXPECTED_NODES*`
-|When restarting the cluster, wait for this number of nodes to be present before starting recovery.
-By default, the same as the cluster size.
-
-|`*ES_RECOVER_AFTER_TIME*`, `*ES_OPS_RECOVER_AFTER_TIME*`
-|When restarting the cluster, this is a timeout for waiting for the expected number of nodes to be present.
-Defaults to "5m".
-
 ifdef::openshift-origin[]
-|`*ES_NODESELECTOR*`, `*ES_OPS_NODESELECTOR*`
-| A node selector that specifies which nodes are eligible targets
-for deploying Elasticsearch instances. This can be used to place
-these instances on nodes reserved and/or optimized for running them.
-For example, the selector could be `*node-type=infrastructure*`. At least
-one active node must have this label before Elasticsearch will deploy.
-
-|`*KIBANA_NODESELECTOR*`, `*KIBANA_OPS_NODESELECTOR*`, `*CURATOR_NODESELECTOR*`
-| A node selector that specifies which nodes are eligible targets
-for deploying Kibana or Curator instances.
-
-|`*FLUENTD_NODESELECTOR*`
-| A node selector that specifies which nodes are eligible targets
-for deploying Fluentd instances. Defaults to "logging-infra-fluentd=true".
-
-|`*IMAGE_PREFIX*`
+|*_IMAGE_PREFIX_*
 |The prefix for logging component images. For example, setting the prefix to
 *openshift/origin-* creates *openshift/origin-logging-deployer:v1.2*.
 
-|`*IMAGE_VERSION*`
+|*_IMAGE_VERSION_*
 |The version for logging component images. For example, setting the version to
 *v1.2* creates *openshift/origin-logging-deployer:v1.2*.
 endif::openshift-origin[]
 ifdef::openshift-enterprise[]
-|`*IMAGE_PREFIX*`
+|*_IMAGE_PREFIX_*
 |The prefix for logging component images. For example, setting the prefix to
 *registry.access.redhat.com/openshift3/ose-* creates *registry.access.redhat.com/openshift3/ose-logging-deployer:latest*.
 
-|`*IMAGE_VERSION*`
+|*_IMAGE_VERSION_*
 |The version for logging component images. For example, setting the version to
 *v3.2* creates *registry.access.redhat.com/openshift3/ose-logging-deployer:v3.2*.
 endif::openshift-enterprise[]
+
+|*_MODE_* (default: *install*)
+| Mode to run the deployer in; one of `*install, uninstall, reinstall, upgrade, migrate, start, stop*`.
 |===
 +
 Running the deployer creates a deployer pod and prints its name.
@@ -341,6 +361,7 @@ You can watch its progress with:
 $ oc get pod/<pod_name> -w
 ----
 +
+It should eventually enter Running status and end in Complete status.
 If it seems to be taking too long to start, you can retrieve more details about
 the pod and any associated events with:
 +
@@ -348,55 +369,27 @@ the pod and any associated events with:
 $ oc describe pod/<pod_name>
 ----
 +
-When it runs, you can check the logs of the resulting pod to see if the
-deployment was successful:
+You can also check the logs if the deployment does not complete successfully:
 +
 ----
 $ oc logs -f <pod_name>
 ----
 
-ifdef::openshift-enterprise[]
-. As a cluster administrator, deploy the `logging-support-template` template
-that the deployer created:
-+
-----
-$ oc new-app logging-support-template
-----
-+
-[IMPORTANT]
-====
-Deployment of logging components should begin automatically. However,
-because deployment is triggered based on tags being imported into the
-ImageStreams created in this step, and not all tags are automatically
-imported, this mechanism has become unreliable as multiple versions are
-released. Therefore, manual importing may be necessary as follows.
+== Understanding and Adjusting the Deployment
 
-For each ImageStream `logging-auth-proxy`, `logging-kibana`,
-`logging-elasticsearch`, and `logging-fluentd`, manually import the
-tag corresponding to the `*IMAGE_VERSION*` specified (or defaulted)
-for the deployer.
+[[aggregated-ops]]
+=== Ops Cluster
 
-----
-$ oc import-image <name>:<version> --from <prefix><name>:<tag>
-----
-
-For example:
-
-----
-$ oc import-image logging-auth-proxy:3.2.0 \
-     --from registry.access.redhat.com/openshift3/logging-auth-proxy:3.2.0
-$ oc import-image logging-kibana:3.2.0 \
-     --from registry.access.redhat.com/openshift3/logging-kibana:3.2.0
-$ oc import-image logging-elasticsearch:3.2.0 \
-     --from registry.access.redhat.com/openshift3/logging-elasticsearch:3.2.0
-$ oc import-image logging-fluentd:3.2.0 \
-     --from registry.access.redhat.com/openshift3/logging-fluentd:3.2.0
-----
-====
-
-endif::openshift-enterprise[]
-
-== Post-deployment Configuration
+If you set `*enable-ops-cluster*` to `true` for the deployer, Fluentd
+is configured to split logs between the main ElasticSearch cluster
+and another cluster reserved for operations logs (which are defined
+as node system logs and the projects `default`, `openshift`, and
+`openshift-infra`). Thus a separate Elasticsearch cluster, a separate
+Kibana, and a separate Curator are deployed to index, access, and manage
+operations logs. These deployments are set apart with names that include
+`-ops`. Keep these separate deployments in mind if you have enabled this
+option. Most of the following discussion also applies to the operations
+cluster if present, just with the names changed to include `-ops`.
 
 [[aggregated-elasticsearch]]
 === Elasticsearch
@@ -406,6 +399,17 @@ Elasticsearch; each on a different host. Elasticsearch replicas require their
 own storage, but an {product-title} deployment configuration shares storage
 volumes between all its pods. So, when scaled up, the EFK deployer ensures each
 replica of Elasticsearch has its own deployment configuration.
+
+It is possible to scale your cluster up after creation by adding more
+deployments from a template; however, scaling up (or down) requires
+the correct procedure and an awareness of clustering parameters (to be
+described in a separate section). It is best if you can indicate the
+desired scale at first deployment.
+
+Refer to
+link:https://www.elastic.co/guide/en/elasticsearch/guide/current/hardware.html[Elastic's
+documentation] for considerations involved in choosing storage and
+network location as directed below.
 
 *Viewing all Elasticsearch Deployments*
 
@@ -417,25 +421,68 @@ $ oc get dc --selector logging-infra=elasticsearch
 ----
 ====
 
+[[logging-node-selector]]
+*Node Selector*
+
+Because Elasticsearch can use a lot of resources, all members of a
+cluster should have low latency network connections to each other
+and to any remote storage. Ensure this by directing the instances to
+dedicated nodes, or a dedicated region within your cluster, using a
+xref:../admin_guide/managing_projects.adoc#using-node-selectors[node
+selector].
+
+To configure a node selector, specify the `*es-nodeselector*`
+configuration option at deployment. This applies to all Elasticsearch
+deployments; if you need to individualize the node selectors, you must
+manually edit each deployment configuration after deployment.
+
 [[aggregated-logging-persistent-storage]]
 *Persistent Elasticsearch Storage*
 
-The deployer creates an ephemeral deployment in which all of a pod's data is
-lost upon restart. For production usage, add a persistent storage volume to each
-Elasticsearch deployment configuration.
+By default, the deployer creates an ephemeral deployment in which all of a pod's data is
+lost upon restart. For production usage, specify a persistent storage volume for each
+Elasticsearch deployment configuration. You may either create the necessary
+xref:../architecture/additional_concepts/storage.adoc#persistent-volume-claims[PersistentVolumeClaims]
+before deploying or have them created for you. The PVCs must be named based on
+the `*es-pvc-prefix*` setting, which defaults to `logging-es-`; each PVC name will have
+a sequence number added to it, so `logging-es-1`, `logging-es-2`, etc. If a PVC needed for
+the deployment exists already, it will be used; if not, and `*es-pvc-size*` has
+been specified, it will be created with a request for that size.
 
-The best-performing volumes are local disks, if it is possible to use
-them. Doing so requires some preparation as follows.
+[WARNING]
+====
+Using NFS storage as a volume or a PersistentVolume (or via NAS
+such as Gluster) is not supported for Elasticsearch storage, as Lucene
+relies on filesystem behavior that NFS does not supply. Data corruption
+and other problems can occur. If NFS storage is a requirement, you can
+allocate a large file on that storage to serve as a storage device and
+treat it as a local mount on each host. For example:
+
+----
+$ truncate -s 1T /nfs/storage/elasticsearch-1
+$ mkfs.xfs /nfs/storage/elasticsearch-1
+$ mount -o loop /nfs/storage/elasticsearch-1 /usr/local/es-storage
+$ chown 1000:1000 /usr/local/es-storage
+----
+
+Then, use *_/usr/local/es-storage_* as a host-mount as
+described below. Performance under this solution is significantly
+worse than using actual local drives.
+====
+
+It is possible to use a local disk volume (if available) on each
+node host as storage for an Elasticsearch replica. Doing so requires
+some preparation as follows.
 
 . The relevant service account must be given the privilege to mount and edit a
-local volume, as follows:
+local volume:
 +
 ====
 ----
 $ oadm policy add-scc-to-user privileged  \
        system:serviceaccount:logging:aggregated-logging-elasticsearch <1>
 ----
-<1> Use the new project you created earlier (e.g., *logging*) when specifying
+<1> Use the project you created earlier (e.g., *logging*) when specifying
 this service account.
 ====
 
@@ -450,17 +497,37 @@ $ for dc in $(oc get deploymentconfig --selector logging-infra=elasticsearch -o 
   done
 ----
 
-. The Elasticsearch pods must be located on the correct nodes to use
+. The Elasticsearch replicas must be located on the correct nodes to use
 the local storage, and should not move around even if those nodes are
 taken down for a period of time. This requires giving each Elasticsearch
-replica a node selector that is unique to the node where an administrator
-has allocated storage for it. xref:logging-node-selector[See below
-for directions on setting a node selector].
+replica a node selector that is unique to a node where an administrator
+has allocated storage for it. To configure a node selector, edit each
+Elasticsearch deployment configuration and add or edit the *nodeSelector* section to specify
+a unique label that you have applied for each desired node:
++
+====
+----
+apiVersion: v1
+kind: DeploymentConfig
+spec:
+  template:
+    spec:
+      nodeSelector:
+        logging-es-node: "1" <1>
+----
+<1> This label should uniquely identify a replica with a single node that bears that label, in this case `*logging-es-node=1*`. Use the `oc label` command to apply labels to nodes as needed.
+
+To automate applying the node selector you can instead use the `oc patch` command:
+
+----
+$ oc patch dc/logging-es-<suffix> \
+   -p '{"spec":{"template":{"spec":{"nodeSelector":{"logging-es-node":"1"}}}}}'
+----
+====
 
 . Once these steps are taken, a local host mount can be applied to each replica
 as in this example (where we assume storage is mounted at the same path on each node):
 +
-ifdef::openshift-origin[]
 ----
 $ for dc in $(oc get deploymentconfig --selector logging-infra=elasticsearch -o name); do
     oc set volume $dc \
@@ -470,188 +537,119 @@ $ for dc in $(oc get deploymentconfig --selector logging-infra=elasticsearch -o 
     oc scale $dc --replicas=1
   done
 ----
-endif::openshift-origin[]
-ifdef::openshift-enterprise[]
-----
-$ for dc in $(oc get deploymentconfig --selector logging-infra=elasticsearch -o name); do
-    oc set volume $dc \
-          --add --overwrite --name=elasticsearch-storage \
-          --type=hostPath --path=/usr/local/es-storage
-    oc scale $dc --replicas=1
-  done
-----
-endif::openshift-enterprise[]
-
-If using host mounts is impractical or undesirable, it may be necessary to
-attach block storage as a
-xref:../architecture/additional_concepts/storage.adoc#persistent-volume-claims[PersistentVolumeClaim]
-as in the following example:
-
-----
-$ oc set volume dc/logging-es-<unique> \
-          --add --overwrite --name=elasticsearch-storage \
-          --type=persistentVolumeClaim --claim-name=logging-es-1
-----
-
-[WARNING]
-====
-Using NFS storage directly or as a PersistentVolume (or via other NAS
-such as Gluster) is not supported for Elasticsearch storage, as Lucene
-relies on filesystem behavior that NFS does not supply. Data corruption
-and other problems can occur. If NFS storage is a requirement, you can
-allocate a large file on that storage to serve as a storage device and
-treat it as a host mount on each host. For example:
-
-----
-$ truncate -s 1T /nfs/storage/elasticsearch-1
-$ mkfs.xfs /nfs/storage/elasticsearch-1
-$ mount -o loop /nfs/storage/elasticsearch-1 /usr/local/es-storage
-$ chown 1000:1000 /usr/local/es-storage
-----
-
-Then, use *_/usr/local/es-storage_* as a host-mount as
-described above. Performance under this solution is significantly
-worse than using actual local drives.
-====
-
-
-[[logging-node-selector]]
-*Node Selector*
-
-Because Elasticsearch can use a lot of resources, all members of a cluster
-should have low latency network connections to each other. Ensure this by
-directing the instances to dedicated nodes, or a dedicated region within your
-cluster, using a
-xref:../admin_guide/managing_projects.adoc#using-node-selectors[node selector].
-
-To configure a node selector, edit each deployment configuration and add the
-`*nodeSelector*` parameter to specify the label of the desired nodes:
-
-====
-----
-apiVersion: v1
-kind: DeploymentConfig
-spec:
-  template:
-    spec:
-      nodeSelector:
-        nodelabel: logging-es-node-1
-----
-====
-
-Alternatively you can use the `oc patch` command:
-====
-----
-$ oc patch dc/logging-es-<unique_name> \
-   -p '{"spec":{"template":{"spec":{"nodeSelector":{"nodeLabel":"logging-es-node-1"}}}}}'
-----
-====
 
 [[scaling-elasticsearch]]
 *Changing the Scale of Elasticsearch*
 
 If you need to scale up the number of Elasticsearch instances your cluster uses,
-it is not as simple as changing the number of Elasticsearch cluster nodes. This
+it is not as simple as scaling up an Elasticsearch deployment configuration. This
 is due to the nature of persistent volumes and how Elasticsearch is configured
-to store its data and recover the cluster. Instead, you must create a deployment
+to store its data and recover the cluster. Instead, scaling up requires creating a deployment
 configuration for each Elasticsearch cluster node.
 
+By far the simplest way to change the scale of Elasticsearch is to
+reinstall the whole deployment. Assuming you have supplied persistent
+storage for the deployment, this should not be very disruptive. Simply
+re-run the deployer with the updated `*es-cluster-size*` configuration
+value and the `*MODE=reinstall*` template parameter. For example:
+
+----
+$ oc edit configmap logging-deployer
+  [change es-cluster-size value to 5]
+$ oc new-app logging-deployer-template --param MODE=reinstall
+----
+
+If you previously deployed using template parameters rather than a configmap,
+this would be a good time to create a configmap instead for future deployer execution.
+
+If you do not wish to reinstall, for instance because you have made
+customizations that you would like to preserve, then it is possible to
+add new Elasticsearch deployment configurations to the cluster using
+a template supplied by the deployer. This requires a more complicated
+procedure however.
+
 During installation, the deployer
-xref:../install_config/imagestreams_templates.adoc#install-config-imagestreams-templates[creates templates] with the
-Elasticsearch configurations provided to it: *logging-es-template* and
-*logging-es-ops-template* if the deployer was run with
-`*ENABLE_OPS_CLUSTER=true*`.
+xref:../install_config/imagestreams_templates.adoc#install-config-imagestreams-templates[creates
+templates] with the Elasticsearch configurations provided to it:
+`logging-es-template` (and `logging-es-ops-template` if the deployer was
+run with `*ENABLE_OPS_CLUSTER=true*`). You can use these for scaling, but
+you need to adjust the size-related parameters in the templates:
 
-The node quorum and recovery settings were initially set based on the
-`*CLUSTER_SIZE*` value provided to the deployer. Since the cluster size is
-changing, those values need to be updated.
+[cols="3,7",options="header"]
+|===
+|Parameter
+|Description
 
-. Prior to changing the number of Elasticsearch cluster nodes, the EFK stack
-should first be scaled down to preserve log data as described in
-xref:../install_config/upgrading/manual_upgrades.adoc#manual-upgrading-efk-logging-stack[Upgrading
-the EFK Logging Stack].
+|`*NODE_QUORUM*`
+|The quorum required to elect a new master. Should be more than half the intended cluster size.
 
-. Edit the cluster template you are scaling up and change the parameters to the
-desired value:
-+
-- `*NODE_QUORUM*` is the intended cluster size / 2 (rounded down) + 1. For an
-intended cluster size of 5, the quorum would be 3.
-+
-- `*RECOVER_EXPECTED_NODES*` is the same as the intended cluster size.
-+
-- `*RECOVER_AFTER_NODES*` is the intended cluster size - 1.
-+
-====
-----
-$ oc edit template logging-es[-ops]-template
-----
-====
-+
-. In addition to updating the template, all of the deployment configurations for
+|`*RECOVER_AFTER_NODES*`
+|When restarting the cluster, require this many nodes to be present before starting recovery.
+Defaults to one less than the cluster size to allow for one missing node.
+
+|`*RECOVER_EXPECTED_NODES*`
+|When restarting the cluster, wait for this number of nodes to be present before starting recovery.
+By default, the same as the cluster size.
+|===
+
+The node quorum and recovery settings in the template were set based on the
+`*es-[ops-]cluster-size*` value initially provided to the deployer. Since the cluster size is
+changing, those values need to be overridden.
+
+. The existing deployment configurations for
 that cluster also need to have the three environment variable values above
-updated. To edit each of the configurations for the cluster in series, you use
-the following.
+updated. To edit each of the configurations for the cluster in series, you 
+may use the following command:
 +
 ====
 ----
-$ oc get dc -l component=es[-ops] -o name | xargs -r oc edit
+$ oc edit $(oc get dc -l component=es[-ops] -o name)
 ----
 ====
 +
-. Create an additional deployment configuration, run the following
+Edit the environment variables supplied so that the next time they restart,
+they will begin with the correct values. For example, for a cluster of size
+5, you would set `*NODE_QUORUM*` to `3`, `*RECOVER_AFTER_NODES*` to `4`, and
+`*RECOVER_EXPECTED_NODES*` to `5`.
+
+. Create additional deployment configuration(s) by running the following
 command against the Elasticsearch cluster you want to to scale up for
-(*logging-es-template* or *logging-es-ops-template*).
+(`logging-es-template` or `logging-es-ops-template`), overriding the
+parameters as above.
 +
 ====
 ----
-$ oc new-app logging-es[-ops]-template
+$ oc new-app logging-es[-ops]-template \
+     --param NODE_QUORUM=3 \
+     --param RECOVER_AFTER_NODES=4 \
+     --param RECOVER_EXPECTED_NODES=5
 ----
 ====
 +
-These deployments will be named differently, but all will have the *logging-es*
-prefix. Be aware of the cluster parameters (described in the deployer
-parameters) based on cluster size that may need corresponding adjustment in the
-template, as well as existing deployments.
+These deployments will be named differently, but all will have the `logging-es`
+prefix.
+
+. Each new deployment configuration is created without a persistent volume. If you want to
+attach a persistent volume to it, after creation you can
+use the `oc set volume` command to do so, for example:
++
+----
+$ oc volume dc/logging-es-<suffix> \
+          --add --overwrite --name=elasticsearch-storage \
+          --type=persistentVolumeClaim --claim-name=<your_pvc>`
+----
 
 . After the intended number of deployment configurations are created, scale up
-your cluster, starting with Elasticsearch as described in
-xref:../install_config/upgrading/manual_upgrades.adoc#manual-upgrading-efk-logging-stack[Upgrading
-the EFK Logging Stack].
+each new one to deploy it:
 +
-[NOTE]
-====
-The `oc new-app logging-es[-ops]-template` command creates a deployment
-configuration with a persistent volume. If you want to create a Elasticsearch
-cluster node with a persistent volume attached to it, upon creation you can
-instead run the following command to create your deployment configuration with a
-persistent volume claim (PVC) attached.
-
 ----
-$ oc process logging-es-template | oc volume -f - \
-          --add --overwrite --name=elasticsearch-storage \
-          --type=persistentVolumeClaim --claim-name={your_pvc}`
+$ oc scale --replicas=1 dc/logging-es-<suffix>
 ----
-====
 
 === Fluentd
 
-ifdef::openshift-enterprise[]
-Once Elasticsearch is running, scale Fluentd to every node to feed logs into
-Elasticsearch. The following example is for an {product-title} instance with
-three nodes:
-
-====
-----
-$ oc scale dc/logging-fluentd --replicas=3
-----
-====
-
-You will need to scale Fluentd if nodes are added or subtracted.
-endif::openshift-enterprise[]
-
-ifdef::openshift-origin[]
 Once Elasticsearch is running, label nodes to enable Fluentd to run on them
-and feed logs to Elasticsearch. Use the `*FLUENTD_NODESELECTOR*` given to
+and feed logs to Elasticsearch. Use the `*fluentd-nodeselector*` given to
 the deployer (if different) in the command below:
 
 ====
@@ -660,13 +658,11 @@ $ oc label nodes --all logging-infra-fluentd=true
 ----
 ====
 
-endif::openshift-origin[]
-
 === Kibana
 
 To access the Kibana console from the {product-title} web console, add the
 `loggingPublicURL` parameter in the *_/etc/origin/master/master-config.yaml_*
-file, with the URL of the Kibana console (the `*KIBANA_HOSTNAME*` parameter).
+file, with the URL of the Kibana console (the `*kibana-hostname*` parameter).
 The value must be an HTTPS URL:
 
 ====
@@ -697,25 +693,143 @@ variable.
 See the https://www.elastic.co/guide/en/kibana/4.1/discover.html[Kibana
 documentation] for more information on Kibana.
 
-=== Cleanup
+[[configuring-curator]]
+=== Curator
+
+Curator allows administrators to configure scheduled Elasticsearch maintenance
+operations to be performed automatically on a per-project basis. It is scheduled
+to perform actions daily based on its configuration. Only one Curator pod is
+recommended per Elasticsearch cluster. Curator is configured via a YAML
+configuration file with the following structure:
+
+====
+----
+$PROJECT_NAME:
+  $ACTION:
+    $UNIT: $VALUE
+
+$PROJECT_NAME:
+  $ACTION:
+    $UNIT: $VALUE
+ ...
+
+----
+====
+
+The available parameters are:
+
+[cols="3,7",options="header"]
+|===
+|Variable Name
+|Description
+
+|`*$PROJECT_NAME*`
+|The actual name of a project, such as `myapp-devel`.  For {product-title} `operations`
+logs, use the name `.operations` as the project name.
+
+|`*$ACTION*`
+|The action to take, currently only `delete` is allowed.
+
+|`*$UNIT*`
+|One of `days`, `weeks`, or `months`.
+
+|`*$VALUE*`
+|An integer for the number of units.
+
+|`*.defaults*`
+|Use `.defaults` as the `$PROJECT_NAME` to set the defaults for projects that are
+not specified.
+
+|`*runhour*`
+|(Number) the hour of the day in 24-hour format at which to run the Curator jobs. For
+use with `.defaults`.
+
+|`*runminute*`
+|(Number) the minute of the hour at which to run the Curator jobs. For use with `.defaults`.
+|===
+
+For example, to configure Curator to
+
+- delete indices in the `myapp-dev` project older than `1 day`
+- delete indices in the `myapp-qe` project older than `1 week`
+- delete `operations` logs older than `8 weeks`
+- delete all other projects indices after they are `30 days` old
+- run the Curator jobs at midnight every day
+
+you would use:
+
+----
+myapp-dev:
+ delete:
+   days: 1
+
+myapp-qe:
+  delete:
+    weeks: 1
+
+.operations:
+  delete:
+    weeks: 8
+
+.defaults:
+  delete:
+    days: 30
+  runhour: 0
+  runminute: 0
+----
+
+
+[IMPORTANT]
+====
+When you use `month` as the `$UNIT` for an operation, Curator starts counting at
+the first day of the current month, not the current day of the current month.
+For example, if today is April 15, and you want to delete indices that are 2 months
+older than today (delete: months: 2), Curator does not delete indices that are dated
+older than February 15; it deletes indices older than February 1. That is, it
+goes back to the first day of the current month, then goes back two whole months
+from that date. If you want to be exact with Curator, it is best to use days
+(for example, `delete: days: 30`).
+====
+
+[[aggregate-logging-creating-the-curator-configuration]]
+==== Creating the Curator Configuration
+
+The deployer provides a configmap from which Curator reads its
+configuration.  You may edit or replace this configmap to reconfigure
+Curator. Currently the `logging-curator` configmap is used to
+configure both your ops and non-ops Curator instances. Any `.operations`
+configurations will be in the same location as your application logs
+configurations.
+
+. To edit the provided configmap to configure your Curator instances:
++
+----
+$ oc edit configmap/logging-curator
+----
+
+. To replace the provided configmap instead:
++
+----
+$ create /path/to/mycuratorconfig.yaml
+$ oc create configmap logging-curator -o yaml \
+  --from-file=config.yaml=/path/to/mycuratorconfig.yaml | \
+  oc replace -f -
+----
+
+. After you make your changes, redeploy Curator:
++
+----
+$ oc deploy --latest dc/logging-curator
+$ oc deploy --latest dc/logging-curator-ops
+----
+
+== Cleanup
 
 You can remove everything generated during the deployment while
 leaving other project contents intact:
 
 ----
-$ oc delete all --selector logging-infra=kibana
-ifdef::openshift-enterprise[]
-$ oc delete all --selector logging-infra=fluentd
-endif::openshift-enterprise[]
-ifdef::openshift-origin[]
-$ oc delete all,daemonsets --selector logging-infra=fluentd
-endif::openshift-origin[]
-$ oc delete all --selector logging-infra=elasticsearch
-$ oc delete all --selector logging-infra=curator
-$ oc delete all,sa,oauthclient --selector logging-infra=support
-$ oc delete secret logging-fluentd logging-elasticsearch \
-    logging-es-proxy logging-kibana logging-kibana-proxy \
-    logging-kibana-ops-proxy
+$ oc new-app logging-deployer-template --param MODE=uninstall
 ----
 
 [[aggregate-logging-upgrading]]
@@ -849,18 +963,10 @@ the appropriate `*_CA` value for communicating with your Elasticsearch instance.
 If it uses Mutual TLS as the provided Elasticsearch instance does, patch or
 recreate the `logging-fluentd` secret with your client key, client cert, and CA.
 
-ifdef::openshift-origin[]
 Since Fluentd is deployed by a DaemonSet, update the
 `logging-fluentd-template` template, delete your current DaemonSet, and recreate
 it with `oc new-app logging-fluentd-template` after seeing all previous Fluentd
 pods have terminated.
-endif::openshift-origin[]
-
-ifdef::openshift-enterprise[]
-You can use `oc edit dc/logging-fluentd` to update your Fluentd configuration,
-making sure to first scale down your number of replicas to zero before editing
-the deployment configuration.
-endif::openshift-enterprise[]
 
 [NOTE]
 ====
@@ -870,7 +976,7 @@ user access to a particular project.
 ====
 
 [[aggregate-logging-performing-elasticsearch-maintenance-operations]]
-== Performing Elasticsearch Maintenance Operations
+== Performing Administrative Elasticsearch Operations
 
 As of the Deployer version
 ifdef::openshift-origin[]
@@ -932,192 +1038,3 @@ $ curl --key /etc/elasticsearch/keys/admin-key --cert /etc/elasticsearch/keys/ad
   "https://localhost:9200/logging.3b3594fa-2ccd-11e6-acb7-0eb6b35eaee3.2016.06.15"
 ----
 ====
-
-[[configuring-curator]]
-== Configuring Curator
-
-ifdef::openshift-enterprise[]
-[NOTE]
-====
-With Aggregated Logging version 3.2.1, Curator is available for use as Tech
-Preview. To start it, after completing an installation using the 3.2.1 Deployer,
-scale up the Curator deployment configuration that was created. (It defaults to
-zero replicas.)
-
-There should be one Curator pod running per Elasticsearch cluster. If you
-deployed aggregated logging with `ENABLE_OPS_CLUSTER=true`, then you will have a
-second deployment configuration (one for the ops cluster and one for the non-ops
-cluster).
-
-----
-$ oc scale dc/logging-curator --replicas=1
-$ oc scale dc/logging-curator-ops --replicas=1
-----
-====
-endif::openshift-enterprise[]
-
-Curator allows administrators to configure scheduled Elasticsearch maintenance
-operations to be performed automatically on a per-project basis. It is scheduled
-to perform actions daily based on its configuration. Only one Curator pod is
-recommended per Elasticsearch cluster. Curator is configured via a mounted YAML
-configuration file with the following structure:
-
-====
-----
-$PROJECT_NAME:
-  $ACTION:
-    $UNIT: $VALUE
-
-$PROJECT_NAME:
-  $ACTION:
-    $UNIT: $VALUE
- ...
-
-----
-====
-
-The available parameters are:
-
-[cols="3,7",options="header"]
-|===
-|Variable Name
-|Description
-
-|`*$PROJECT_NAME*`
-|The actual name of a project, such as `myapp-devel`.  For {product-title} `operations`
-logs, use the name `.operations` as the project name.
-
-|`*$ACTION*`
-|The action to take, currently only `delete` is allowed.
-
-|`*$UNIT*`
-|One of `days`, `weeks`, or `months`.
-
-|`*$VALUE*`
-|An integer for the number of units.
-
-|`*.defaults*`
-|Use `.defaults` as the `$PROJECT_NAME` to set the defaults for projects that are
-not specified.
-
-|`*runhour*`
-|(Number) the hour of the day in 24-hour format at which to run the Curator jobs. For
-use with `.defaults`.
-
-|`*runminute*`
-|(Number) the minute of the hour at which to run the Curator jobs. For use with `.defaults`.
-|===
-
-For example, to configure Curator to
-
-- delete indices in the `myapp-dev` project older than `1 day`
-- delete indices in the `myapp-qe` project older than `1 week`
-- delete `operations` logs older than `8 weeks`
-- delete all other projects indices after they are `30 days` old
-- run the Curator jobs at midnight every day
-
-you would use:
-
-----
-myapp-dev:
- delete:
-   days: 1
-
-myapp-qe:
-  delete:
-    weeks: 1
-
-.operations:
-  delete:
-    weeks: 8
-
-.defaults:
-  delete:
-    days: 30
-  runhour: 0
-  runminute: 0
-----
-
-
-[IMPORTANT]
-====
-When you use `month` as the `$UNIT` for an operation, Curator starts counting at
-the first day of the current month, not the current day of the current month.
-For example, if today is April 15, and you want to delete indices that are 2 months
-older than today (delete: months: 2), Curator does not delete indices that are dated
-older than February 15; it deletes indices older than February 1. That is, it
-goes back to the first day of the current month, then goes back two whole months
-from that date. If you want to be exact with Curator, it is best to use days
-(for example, `delete: days: 30`).
-====
-
-[[aggregate-logging-creating-the-curator-configuration]]
-=== Creating the Curator Configuration
-
-ifdef::openshift-origin[]
-The deployer provides a configmap from which Curator reads its configuration.
-Before making any changes:
-
-. Scale down your Curator pods:
-+
-----
-$ oc scale dc/logging-curator --replicas=0
-$ oc scale dc/logging-curator-ops --replicas=0
-----
-
-. Once the pods have stopped, edit the provided configmap to configure your
-Curator instances:
-+
-----
-$ oc edit configmap/logging-curator
-----
-+
-[NOTE]
-====
-Within OpenShift Origin, currently the `logging-curator` configmap is used to
-configure both your ops and non-ops Curator instances. Any `.operations`
-configurations will be in the same location as your application logs
-configurations.
-====
-
-. After you make your changes, scale your Curator pods back up:
-+
-----
-$ oc scale dc/logging-curator --replicas=1
-$ oc scale dc/logging-curator-ops --replicas=1
-----
-endif::openshift-origin[]
-ifdef::openshift-enterprise[]
-To create the Curator configuration:
-
-. Create a YAML file with your configuration settings using your favorite editor.
-
-. Create a secret from your created yaml file:
-+
-----
-$ oc secrets new index-management settings=</path/to/your/yaml/file>
-----
-
-. Mount your created secret as a volume in your Curator DC:
-+
-----
-$ oc volumes dc/logging-curator \
-    --add \
-    --type=secret \
-    --secret-name=index-management \
-    --mount-path=/etc/curator \
-    --name=index-management \
-    --overwrite
-----
-+
-[NOTE]
-====
-The mount-path value (e.g. `/etc/curator`) must match the `CURATOR_CONF_LOCATION` in
-the environment.
-====
-endif::openshift-enterprise[]
-
-You can also specify default values for the run hour, run minute, and age in days
-of the indices when processing the Curator template. Use `CURATOR_RUN_HOUR` and
-`CURATOR_RUN_MINUTE` to set the default *runhour* and *runminute*, and use
-`CURATOR_DEFAULT_DAYS` to set the default index age.
