@@ -780,7 +780,7 @@ ifdef::openshift-enterprise[]
 You can use `oc edit dc/logging-fluentd` to update your Fluentd configuration,
 making sure to first scale down your number of replicas to zero before editing
 the deployment configuration.
-enddef::openshift-enterprise[]
+endif::openshift-enterprise[]
 
 [NOTE]
 ====
@@ -788,3 +788,256 @@ If you are not using the provided Kibana and Elasticsearch images, you will not
 have the same multi-tenant capabilities and your data will not be restricted by
 user access to a particular project.
 ====
+
+[[aggregate-logging-performing-elasticsearch-maintenance-operations]]
+== Performing Elasticsearch Maintenance Operations
+
+As of the Deployer version
+ifdef::openshift-origin[]
+1.2.0,
+endif::openshift-origin[]
+ifdef::openshift-enterprise[]
+3.2.0,
+endif::openshift-enterprise[]
+an admin certificate, key, and CA that can be used to communicate with and perform
+administrative operations on Elasticsearch are provided within the
+`logging-elasticsearch` secret.
+
+[NOTE]
+====
+To confirm whether or not your EFK installation provides these, run:
+----
+$ oc describe secret logging-elasticsearch
+----
+====
+
+If they are not available, refer to
+xref:../install_config/upgrading/manual_upgrades.adoc#manual-upgrading-efk-logging-stack[Manual
+Upgrades] to ensure you are on the latest version first.
+
+Connect to an Elasticsearch pod that is in the cluster on which you are
+attempting to perform maintenance.
+
+To find a pod in a cluster use either:
+
+====
+----
+$ oc get pods -l component=es -o name | head -1
+$ oc get pods -l component=es-ops -o name | head -1
+----
+====
+
+Then, connect to a pod:
+
+====
+----
+$ oc rsh <your_Elasticsearch_pod>
+----
+====
+
+Once connected to an Elasticsearch container, you can use the certificates mounted
+from the secret to communicate with Elasticsearch per its 1.5
+link:https://www.elastic.co/guide/en/elasticsearch/reference/1.5/docs.html[Document APIs].
+
+Fluentd sends its logs to Elasticsearch using the index format "{project_name}.{project_uuid}.YYYY.MM.DD"
+where YYYY.MM.DD is the date of the log record.
+
+For example, to delete all logs for the `logging` project with uuid `3b3594fa-2ccd-11e6-acb7-0eb6b35eaee3`
+from June 15, 2016, we can run:
+
+====
+----
+$ curl --key /etc/elasticsearch/keys/admin-key --cert /etc/elasticsearch/keys/admin-cert \
+  --cacert /etc/elasticsearch/keys/admin-ca -XDELETE \
+  "https://localhost:9200/logging.3b3594fa-2ccd-11e6-acb7-0eb6b35eaee3.2016.06.15"
+----
+====
+
+[[configuring-curator]]
+== Configuring Curator
+
+ifdef::openshift-enterprise[]
+[NOTE]
+====
+With Aggregated Logging version 3.2.1, Curator is available for use as Tech
+Preview. To start it, after completing an installation using the 3.2.1 Deployer,
+scale up the Curator deployment configuration that was created. (It defaults to
+zero replicas.)
+
+There should be one Curator pod running per Elasticsearch cluster. If you
+deployed aggregated logging with `ENABLE_OPS_CLUSTER=true`, then you will have a
+second deployment configuration (one for the ops cluster and one for the non-ops
+cluster).
+
+----
+$ oc scale dc/logging-curator --replicas=1
+$ oc scale dc/logging-curator-ops --replicas=1
+----
+====
+endif::openshift-enterprise[]
+
+Curator allows administrators to configure scheduled Elasticsearch maintenance
+operations to be performed automatically on a per-project basis. It is scheduled
+to perform actions daily based on its configuration. Only one Curator pod is
+recommended per Elasticsearch cluster. Curator is configured via a mounted YAML
+configuration file with the following structure:
+
+====
+----
+$PROJECT_NAME:
+  $ACTION:
+    $UNIT: $VALUE
+
+$PROJECT_NAME:
+  $ACTION:
+    $UNIT: $VALUE
+ ...
+
+----
+====
+
+The available parameters are:
+
+[cols="3,7",options="header"]
+|===
+|Variable Name
+|Description
+
+|`*$PROJECT_NAME*`
+|The actual name of a project, such as `myapp-devel`.  For {product-title} `operations`
+logs, use the name `.operations` as the project name.
+
+|`*$ACTION*`
+|The action to take, currently only `delete` is allowed.
+
+|`*$UNIT*`
+|One of `days`, `weeks`, or `months`.
+
+|`*$VALUE*`
+|An integer for the number of units.
+
+|`*.defaults*`
+|Use `.defaults` as the `$PROJECT_NAME` to set the defaults for projects that are
+not specified.
+
+|`*runhour*`
+|(Number) the hour of the day in 24-hour format at which to run the Curator jobs. For
+use with `.defaults`.
+
+|`*runminute*`
+|(Number) the minute of the hour at which to run the Curator jobs. For use with `.defaults`.
+|===
+
+For example, to configure Curator to
+
+- delete indices in the `myapp-dev` project older than `1 day`
+- delete indices in the `myapp-qe` project older than `1 week`
+- delete `operations` logs older than `8 weeks`
+- delete all other projects indices after they are `30 days` old
+- run the Curator jobs at midnight every day
+
+you would use:
+
+----
+myapp-dev:
+ delete:
+   days: 1
+
+myapp-qe:
+  delete:
+    weeks: 1
+
+.operations:
+  delete:
+    weeks: 8
+
+.defaults:
+  delete:
+    days: 30
+  runhour: 0
+  runminute: 0
+----
+
+
+[IMPORTANT]
+====
+When you use `month` as the `$UNIT` for an operation, Curator starts counting at
+the first day of the current month, not the current day of the current month.
+For example, if today is April 15, and you want to delete indices that are 2 months
+older than today (delete: months: 2), Curator does not delete indices that are dated
+older than February 15; it deletes indices older than February 1. That is, it
+goes back to the first day of the current month, then goes back two whole months
+from that date. If you want to be exact with Curator, it is best to use days
+(for example, `delete: days: 30`).
+====
+
+[[aggregate-logging-creating-the-curator-configuration]]
+=== Creating the Curator Configuration
+
+ifdef::openshift-origin[]
+The deployer provides a configmap from which Curator reads its configuration.
+Before making any changes:
+
+. Scale down your Curator pods:
++
+----
+$ oc scale dc/logging-curator --replicas=0
+$ oc scale dc/logging-curator-ops --replicas=0
+----
+
+. Once the pods have stopped, edit the provided configmap to configure your
+Curator instances:
++
+----
+$ oc edit configmap/logging-curator
+----
++
+[NOTE]
+====
+Within OpenShift Origin, currently the `logging-curator` configmap is used to
+configure both your ops and non-ops Curator instances. Any `.operations`
+configurations will be in the same location as your application logs
+configurations.
+====
+
+. After you make your changes, scale your Curator pods back up:
++
+----
+$ oc scale dc/logging-curator --replicas=1
+$ oc scale dc/logging-curator-ops --replicas=1
+----
+endif::openshift-origin[]
+ifdef::openshift-enterprise[]
+To create the Curator configuration:
+
+. Create a YAML file with your configuration settings using your favorite editor.
+
+. Create a secret from your created yaml file:
++
+----
+$ oc secrets new index-management settings=</path/to/your/yaml/file>
+----
+
+. Mount your created secret as a volume in your Curator DC:
++
+----
+$ oc volumes dc/logging-curator \
+    --add \
+    --type=secret \
+    --secret-name=index-management \
+    --mount-path=/etc/curator \
+    --name=index-management \
+    --overwrite
+----
++
+[NOTE]
+====
+The mount-path value (e.g. `/etc/curator`) must match the `CURATOR_CONF_LOCATION` in
+the environment.
+====
+endif::openshift-enterprise[]
+
+You can also specify default values for the run hour, run minute, and age in days
+of the indices when processing the Curator template. Use `CURATOR_RUN_HOUR` and
+`CURATOR_RUN_MINUTE` to set the default *runhour* and *runminute*, and use
+`CURATOR_DEFAULT_DAYS` to set the default index age.
