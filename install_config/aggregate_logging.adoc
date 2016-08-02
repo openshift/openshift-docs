@@ -385,24 +385,95 @@ The deployer creates an ephemeral deployment in which all of a pod's data is
 lost upon restart. For production usage, add a persistent storage volume to each
 Elasticsearch deployment configuration.
 
-The following example specifies a volume for an Elasticsearch replica (using a
-xref:../architecture/additional_concepts/storage.adoc#persistent-volume-claims[PersistentVolumeClaim]):
+The best-performing volumes are local disks, if it is possible to use
+them. Doing so requires some preparation as follows.
 
+. The relevant service account must be given the privilege to mount and edit a local volume, as follows:
++
 ====
 ----
-$ oc volume dc/logging-es-rca2m9u8 \
+$ oadm policy add-scc-to-user privileged  \
+       system:serviceaccount:logging:aggregated-logging-elasticsearch <1>
+----
+<1> Use the new project you created earlier (e.g., *logging*) when specifying
+this service account.
+====
+
+. Each Elasticsearch replica definition must be patched to claim that privilege, for example:
++
+----
+$ for dc in $(oc get deploymentconfig --selector logging-infra=elasticsearch -o name); do
+    oc scale $dc --replicas=0
+    oc patch $dc \
+       -p '{"spec":{"template":{"spec":{"containers":[{"name":"elasticsearch","securityContext":{"privileged": true}}]}}}}'
+  done
+----
+
+. The Elasticsearch pods must be located on the correct nodes to use
+the local storage, and should not move around even if those nodes are
+taken down for a period of time. This requires giving each Elasticsearch
+replica a node selector that is unique to the node where an administrator
+has allocated storage for it.  xref:#logging-node-selector[See below
+for directions on setting a node selector].
+
+. Once these steps are taken, a local host mount can be applied to each replica
+as in this example (where we assume storage is mounted at the same path on each node):
++
+ifdef::openshift-origin[]
+----
+$ for dc in $(oc get deploymentconfig --selector logging-infra=elasticsearch -o name); do
+    oc set volume $dc \
+          --add --overwrite --name=elasticsearch-storage \
+          --type=hostPath --path=/usr/local/es-storage
+    oc deploy --latest $dc
+    oc scale $dc --replicas=1
+  done
+----
+endif::openshift-origin[]
+ifdef::openshift-enterprise[]
+----
+$ for dc in $(oc get deploymentconfig --selector logging-infra=elasticsearch -o name); do
+    oc set volume $dc \
+          --add --overwrite --name=elasticsearch-storage \
+          --type=hostPath --path=/usr/local/es-storage
+    oc scale $dc --replicas=1
+  done
+----
+endif::openshift-enterprise[]
+
+If using host mounts is impractical or
+undesirable, it may be necessary to attach block storage as a
+xref:../architecture/additional_concepts/storage.adoc#persistent-volume-claims[PersistentVolumeClaim])
+as in the following example:
+
+----
+$ oc set volume dc/logging-es-<unique> \
           --add --overwrite --name=elasticsearch-storage \
           --type=persistentVolumeClaim --claim-name=logging-es-1
 ----
+
+[WARNING]
+====
+Using NFS storage directly or as a PersistentVolume (or via other NAS
+such as Gluster) is not supported for Elasticsearch storage, as Lucene
+relies on filesystem behavior that NFS does not supply. Data corruption
+and other problems can occur. If NFS storage is a requirement, you can
+allocate a large file on that storage to serve as a storage device and
+treat it as a host mount on each host. For example:
+
+----
+$ truncate -s 1T /nfs/storage/elasticsearch-1
+$ mkfs.xfs /nfs/storage/elasticsearch-1
+$ mount -o loop /nfs/storage/elasticsearch-1 /usr/local/es-storage
+$ chown 1000:1000 /usr/local/es-storage
+----
+
+Then, use *_/usr/local/es-storage_* as a host-mount as
+described above. Performance under this solution is significantly
+worse than using actual local drives.
 ====
 
-[NOTE]
-====
-Any available volume type can be used, such as a host-mount, but the
-recommended volume type is a PersistentVolumeClaim.
-====
 
-ifdef::openshift-enterprise[]
 [[logging-node-selector]]
 *Node Selector*
 
@@ -434,7 +505,6 @@ $ oc patch dc/logging-es-<unique_name> \
    -p '{"spec":{"template":{"spec":{"nodeSelector":{"nodeLabel":"logging-es-node-1"}}}}}'
 ----
 ====
-endif::openshift-enterprise[]
 
 [[scaling-elasticsearch]]
 *Changing the Scale of Elasticsearch*
