@@ -380,8 +380,8 @@ your environment, you can run:
 [WARNING]
 ====
 If you have customized default cluster roles and want to ensure a role reconciliation
-does not modify those customized roles, annotate them with `openshift.io/reconcile-protect` 
-set to `true`. Doing so means you are responsible for manually updating those roles with 
+does not modify those customized roles, annotate them with `openshift.io/reconcile-protect`
+set to `true`. Doing so means you are responsible for manually updating those roles with
 any new or required permissions during upgrades.
 ====
 
@@ -1261,13 +1261,12 @@ stack].
 
 [NOTE]
 ====
-The following steps apply when upgrading from {product-title}
+The following steps apply when upgrading to {product-title}
 ifdef::openshift-origin[]
-1.1 to 1.2.
+1.3+.
 endif::[]
 ifdef::openshift-enterprise[]
-3.1 to 3.2, or are applying an asynchronous update to 3.2. These steps pull
-the latest 3.2 logging images.
+3.3+.
 endif::[]
 ====
 
@@ -1278,130 +1277,59 @@ deployed. For example, if the project is named *logging*:
 $ oc project logging
 ----
 
-. Scale down your Fluentd instances to 0:
+. Recreate the deployer templates for service accounts and running the deployer:
 +
-----
-$ oc scale dc/logging-fluentd --replicas=0
-----
-+
-Wait until they have terminated. This helps prevent loss of data by giving them
-time to properly flush their current buffer and send any logs they were
-processing to Elasticsearch.
-
-. Scale down your Kibana instances:
-+
-----
-$ oc scale dc/logging-kibana --replicas=0
-----
-+
-If you have an operations deployment, also run:
-+
-----
-$ oc scale dc/logging-kibana-ops --replicas=0
-----
-
-. Once confirming your Fluentd and Kibana pods have been terminated, scale down
-the Elasticsearch pods:
-+
-----
-$ oc scale dc/logging-es-<unique_name> --replicas=0
-----
-+
-If you have an operations deployment, also run:
-+
-----
-$ oc scale dc/logging-es-ops-<unique_name> --replicas=0
-----
-
-. After confirming your Elasticsearch pods have been terminated, rerun the
-deployer to generate any missing or changed features.
-
-ifdef::openshift-origin[]
-.. xref:../../install_config/aggregate_logging.adoc#deploying-the-efk-stack[Re-deploy
-the EFK Stack]. After the deployer completes, re-attach the persistent volumes
-you were previously using.
-endif::openshift-origin[]
 ifdef::openshift-enterprise[]
-.. Follow the first step in
-xref:../../install_config/aggregate_logging.adoc#deploying-the-efk-stack[Deploying
-the EFK Stack]. After the deployer completes,
-re-attach the persistent volume claims you were previously using, then deploy a
-template that is created by the deployer:
+----
+$ oc apply -n openshift -f \
+    /usr/share/openshift/examples/infrastructure-templates/enterprise/logging-deployer.yaml
+----
+endif::openshift-enterprise[]
+ifdef::openshift-origin[]
+----
+$ oc apply -n openshift -f \
+    https://raw.githubusercontent.com/openshift/origin-aggregated-logging/master/deployer/deployer.yaml
+----
+endif::openshift-origin[]
+
+. Generate any missing service accounts and roles:
 +
 ----
-$ oc process logging-support-template | oc apply -f -
+$ oc process logging-deployer-account-template | oc apply -f -
+----
+
+. Ensure that the cluster role `oauth-editor` is assigned to the logging-deployer
+service account:
++
+----
+$ oadm policy add-cluster-role-to-user oauth-editor \
+       system:serviceaccount:logging:logging-deployer
 ----
 
 . In preparation for running the deployer, ensure that you have the configurations
 for your current deployment in the xref:../aggregate_logging.adoc#aggregate-logging-specifying-deployer-parameters[logging-deployer configmap].
 +
-For each image stream `logging-auth-proxy`, `logging-kibana`,
-`logging-elasticsearch`, and `logging-fluentd`, manually import the
-tag corresponding to the `*IMAGE_VERSION*` specified (or defaulted)
-for the deployer.
-+
-----
-$ oc import-image <name>:<version> --from <prefix><name>:<tag>
-----
-+
-For example:
-+
-----
-$ oc import-image logging-auth-proxy:3.2.1 \
-     --from registry.access.redhat.com/openshift3/logging-auth-proxy:3.2.1
-$ oc import-image logging-kibana:3.2.1 \
-     --from registry.access.redhat.com/openshift3/logging-kibana:3.2.1
-$ oc import-image logging-elasticsearch:3.2.1 \
-     --from registry.access.redhat.com/openshift3/logging-elasticsearch:3.2.1
-$ oc import-image logging-fluentd:3.2.1 \
-     --from registry.access.redhat.com/openshift3/logging-fluentd:3.2.1
-----
-
-endif::openshift-enterprise[]
-
-. Next, scale Elasticsearch back up incrementally so that the cluster has time
-to rebuild.
-
-.. To begin, scale up to 1:
-+
-----
-$ oc scale dc/logging-es-<unique_name> --replicas=1
-----
-+
-Follow the logs of the resulting pod to ensure that it is able to recover its
-indices correctly and that there are no errors:
-+
-----
-$ oc logs -f <pod_name>
-----
-+
-If that is successful, you can then do the same for the operations cluster, if
-one was previously used.
-
-.. After all Elasticsearch nodes have recovered their indices, continue to scale it
-back up to the size it was prior to doing maintenance. Check the logs of the
-Elasticsearch members to verify that they have correctly joined the cluster and
-recovered.
-
-. Now scale Kibana and Fluentd back up to their previous state. Because Fluentd
-was shut down and allowed to push its remaining records to Elasticsearch in the
-previous steps, it can now pick back up from where it left off with no loss of
-logs, provided any unread log files are still available on the node.
-
-. In the latest version, Kibana will display indices differently now in order
-to prevent users from being able to access the logs of previously created
-projects that have been deleted.
-+
-Due to this change, your old logs will not appear automatically. To migrate your
-old indices to the new format, rerun the deployer with `-v MODE=migrate` in addition
-to your prior flags. This should be run while your Elasticsearch cluster is running, as the
-script must connect to it to make changes.
-+
-[NOTE]
+[IMPORTANT]
 ====
-This only impacts non-operations logs. Operations logs will appear the same as
-in previous versions. There should be minimal performance impact to
-Elasticsearch while running this and it will not perform an install.
+Ensure that your image version is the latest version, not the currently installed
+version.
+====
+
+. Run the deployer with the parameter in `upgrade` mode:
++
+----
+$ oc new-app logging-deployer-template -p MODE=upgrade
+----
++
+Running the deployer in this mode handles scaling down the components to minimize
+loss of logs, patching configs, generating missing secrets and keys, and scaling
+the components back up to their previous replica count.
++
+[IMPORTANT]
+====
+Due to the privileges needed to label and unlabel a node for controlling the deployment
+of Fluentd pods, the deployer does delete the logging-fluentd Daemonset and recreates
+it from the `logging-fluentd-template` template.
 ====
 
 [[manual-upgrading-cluster-metrics]]
