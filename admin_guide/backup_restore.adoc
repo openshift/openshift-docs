@@ -25,8 +25,17 @@ The full state of a cluster installation includes:
 
 This topic does not cover how to back up and restore
 xref:../install_config/persistent_storage/index.adoc#install-config-persistent-storage-index[persistent
-storage], as those topics are left to the underlying storage provider.
+storage], as those topics are left to the underlying storage provider. However,
+an example of how to perform a *generic* backup of
+xref:backup-application-data[application data] is provided.
 
+[IMPORTANT]
+====
+This topic only provides a generic way of backing up applications and the
+{product-title} cluster. It can not take into account custom requirements.
+Therefore, you should create a full backup and restore procedure. To prevent
+data loss, necessary precautions should be taken.
+====
 
 [[backup-restore-prerequisites]]
 == Prerequisites
@@ -45,10 +54,22 @@ Installation] method)
 xref:../install_config/install/disconnected_install.adoc#install-config-install-disconnected-install[Disconnected
 Installation] method)
 
+. Backup the procedures for post-installation steps. Some installations may
+involve steps that are not included in the installer. This may include changes
+to the services outside of the control of {product-title} or the installation of
+extra services like monitoring agents.
+Additional configuration that is not supported yet by the advanced installer
+might also be affected, for example when using multiple authentication providers.
+
 . Install packages that provide various utility commands:
 +
 ----
 # yum install etcd
+----
+. If using a containerized installation, pull the etcd image instead:
++
+----
+# docker pull rhel7/etcd
 ----
 
 Note the location of the *etcd* data directory (or `$ETCD_DATA_DIR` in the
@@ -113,6 +134,12 @@ If *etcd* is running on more than one host,
 the various instances regularly synchronize their data,
 so creating a backup for one of them is sufficient.
 ====
++
+[NOTE]
+====
+For a containerized installation, you must use `docker exec` to run *etcdctl*
+inside the container.
+====
 
 . Create a template for all cluster API objects:
 +
@@ -149,6 +176,8 @@ This should be done in the
 xref:../install_config/index.adoc#install-config-index[same way]
 that {product-title} was previously installed.
 
+. Run all necessary post-installation steps.
++
 . Restore the certificates and keys, on each master:
 +
 ----
@@ -190,4 +219,164 @@ namespaces and projects):
 
 ----
 $ oc export all -o yaml > project.yaml
+----
+
+[[backup-rolebindings]]
+=== Role Bindings
+
+Sometimes custom policy
+xref:../admin_guide/manage_authorization_policy.adoc#managing-role-bindings[role
+bindings] are used in a project. For example, a project administrator can give
+another user a certain role in the project and grant that user project access.
+
+These role bindings can be exported:
+
+----
+$ oc get rolebindings -o yaml --export=true > rolebindings.yaml
+----
+
+[[backup-serviceaccounts]]
+=== Service Accounts
+
+If custom service accounts are created in a project, these need to be exported:
+
+----
+$ oc get serviceaccount -o yaml --export=true > serviceaccount.yaml
+----
+
+[[backup-secrets]]
+=== Secrets
+
+Custom secrets like source control management secrets (SSH Public Keys,
+Username/Password) should be exported if they are used:
+
+----
+$ oc get secret -o yaml --export=true > secret.yaml
+----
+
+[[backup-pvc]]
+=== Persistent Volume Claims
+
+If the an application within a project uses a persistent volume through a
+persistent volume claim (PVC), these should be backed up:
+
+----
+$ oc get pvc -o yaml --export=true > pvc.yaml
+----
+
+
+[[project-restore]]
+== Project Restore
+
+To restore a project, recreate the project and recreate all all of the objects
+that were exported during the backup:
+
+----
+$ oc new-project myproject
+$ oc create -f project.yaml
+$ oc create -f secret.yaml
+$ oc create -f serviceaccount.yaml
+$ oc create -f pvc.yaml
+$ oc create -f rolebindings.yaml
+----
+
+[NOTE]
+====
+Some resources can fail to be created (for example, pods and default service
+accounts).
+====
+
+[[backup-application-data]]
+== Application Data Backup
+In many cases, application data can be backed up using the `oc rsync` command,
+assuming `rsync` is installed within the container image. The Red Hat *rhel7*
+base image does contain `rsync`. Therefore, all images that are based on *rhel7*
+contain it as well.
+
+[WARNING]
+====
+This is a _generic_ backup of application data and does not take into account
+application-specific backup procedures, for example special export/import
+procedures for database systems.
+====
+
+Other means of backup may exist depending on the type of the persistent volume
+(for example, Cinder, NFS, Gluster, or others).
+
+The paths to back up are also _application specific_. You can determine
+what path to back up by looking at the `*mountPath*` for volumes in the
+`*deploymentconfig*`.
+
+.Example of Backing up a Jenkins Deployment's Application Data
+
+. Get the application data `*mountPath*` from the `*deploymentconfig*`:
++
+----
+$ oc export dc/jenkins|grep mountPath
+        - mountPath: /var/lib/jenkins
+----
+
+. Get the name of the pod that is currently running:
++
+----
+$ oc get po --selector=deploymentconfig=jenkins
+NAME              READY     STATUS    RESTARTS   AGE
+jenkins-1-a3347   1/1       Running   0          18h
+----
+
+. Use the `oc rsync` command to copy application data:
++
+----
+$ oc rsync jenkins-1-37nux:/var/lib/jenkins /tmp/
+----
+
+[NOTE]
+====
+This type of application data backup can only be performed while an application
+pod is currently running.
+====
+
+
+[[restore-application-data]]
+== Application Data Restore
+
+The process for restoring application data is similar to the
+xref:backup-application-data[application backup procedure] using the `oc rsync`
+tool. The same restrictions apply and the process of restoring application data
+requires a persistent volume.
+
+.Example of Restoring a Jenkins Deployment's Application Data
+
+. Verify the backup:
++
+----
+$ ls -la /tmp/jenkins-backup/
+total 8
+drwxrwxr-x.  3 user     user   20 Sep  6 11:14 .
+drwxrwxrwt. 17 root     root 4096 Sep  6 11:16 ..
+drwxrwsrwx. 12 user     user 4096 Sep  6 11:14 jenkins
+----
+
+. Use the `oc rsync` tool to copy the data into the running pod:
++
+----
+$ oc rsync /tmp/jenkins-backup/jenkins jenkins-1-37nux:/var/lib
+----
++
+[NOTE]
+====
+Depending on the application, you may be required to restart the application.
+====
+
+. Restart the application with new data (_optional_):
++
+----
+$ oc delete po jenkins-1-37nux
+----
++
+Alternatively, you can scale down the deployment to 0, and then up again:
++
+----
+$ oc scale --replicas=0 dc/jenkins
+$ oc scale --replicas=1 dc/jenkins
 ----
