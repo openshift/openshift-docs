@@ -46,7 +46,7 @@ The {product-title} all-in-one host is often not used to run pod workloads and, 
 ====
 
 [[complete-example-using-gusterfs-creating-the-gluster-endpoints]]
-== Creating the Gluster Endpoints
+== Creating the Gluster Endpoints and Gluster Service for Persistence
 
 The named endpoints define each node in the Gluster-trusted storage pool:
 
@@ -99,6 +99,49 @@ gluster-endpoints   192.168.122.21:1,192.168.122.22:1   1m
 ----
 ====
 
+[NOTE]
+====
+To persist the Gluster endpoints, you also need to create a service.
+====
+
+.GlusterFS Service Definition
+====
+[source,yaml]
+----
+apiVersion: v1
+kind: Service
+metadata:
+  name: gluster-service <1>
+spec:
+  ports:
+  - port: 1 <2>
+
+----
+<1> The name of the service.
+<2> The port should match the same port used in the endpoints.
+====
+
+Save the service definition to a file, for example *_gluster-service.yaml_*,
+then create the endpoints object:
+
+====
+----
+# oc create -f gluster-service.yaml
+endpoints "gluster-service" created
+----
+====
+
+Verify that the service was created:
+
+====
+----
+# oc get service gluster-service
+NAME                CLUSTER-IP   EXTERNAL-IP   PORT(S)   AGE
+gluster-service   10.0.0.130   <none>        1/TCP     9s
+
+----
+====
+
 [[complete-example-using-gusterfs-creating-the-persistent-volume]]
 == Creating the Persistent Volume
 Next, before creating the PV object, define the persistent volume in
@@ -133,8 +176,9 @@ do not define any form of access control.
 plug-in is defined.
 <5> This references the endpoints named above.
 <6> This is the Gluster volume name, preceded by `/`.
-<7> A volume reclaim policy of *retain* indicates that the volume will be
-preserved after the pods accessing it terminate.
+<7> A volume reclaim policy of *retain* indicates that the volume will be preserved
+after the pods accessing it terminate. Accepted values include Retain, Delete,
+and Recycle.
 ====
 
 Save the PV definition to a file, for example *_gluster-pv.yaml_*,
@@ -222,7 +266,6 @@ drwxrwx---. yarn hadoop system_u:object_r:fusefs_t:s0    HadoopVol
 uid=592(yarn) gid=590(hadoop) groups=590(hadoop)
     <1>
                   <2>
-                                     <2>
 ----
 <1> The owner has ID 592.
 <2> The group has ID 590.
@@ -251,12 +294,28 @@ is installed.
 ====
 
 [[complete-example-using-gusterfs-creating-the-pod]]
-== Creating the Pod
+== Creating the Pod using NGINX Web Server image
 A pod definition file or a template file can be used to define a pod. Below is a
 pod specification that creates a single container and mounts the Gluster volume
 for read-write access:
 
-.Pod Object Definition
+[NOTE]
+====
+The NGINX image may require to run in privileged mode to create the mount and
+run properly. An easy way to accomplish this is to simply add your user to the
+*privileged* Security Context Constraint (SCC):
+----
+$ oadm policy add-scc-to-user privileged myuser
+----
+
+Then, add the *privileged: true* to the containers `*securityContext:*` section
+of the YAML file (as seen in the example below).
+
+xref:../../admin_guide/manage_scc.adoc#admin-guide-manage-scc[Managing Security
+Context Constraints] provides additional information regarding SCCs.
+====
+
+.Pod Object Definition using NGINX image
 ====
 [source,yaml]
 ----
@@ -269,26 +328,30 @@ metadata:
 spec:
   containers:
   - name: gluster-pod1
-    image: busybox       <2>
-    command: ["sleep", "60000"]
+    image: nginx       <2>
+    ports:
+    - name: web
+      containerPort: 80
+    securityContext:
+      privileged: true
     volumeMounts:
     - name: gluster-vol1 <3>
-      mountPath: /usr/share/busybox <4>
+      mountPath: /usr/share/nginx/html <4>
       readOnly: false
   securityContext:
     supplementalGroups: [590]       <5>
-    privileged: false
   volumes:
   - name: gluster-vol1   <3>
     persistentVolumeClaim:
       claimName: gluster-claim      <6>
 ----
 <1> The name of this pod as displayed by `oc get pod`.
-<2> The image run by this pod. In this case, we are telling *busybox* to sleep.
+<2> The image run by this pod. In this case, we are using a standard NGINX image.
 <3> The name of the volume. This name must be the same in both the
 `*containers*` and `*volumes*` sections.
 <4> The mount path as seen in the container.
-<5> The group ID to be assigned to the container.
+<5> The `*SupplementalGroup*` ID (Linux Groups) to be assigned at the pod level
+and as discussed this should match the POSIX permissions on the Gluster volume.
 <6> The PVC that is bound to the Gluster cluster.
 ====
 
@@ -320,52 +383,51 @@ More details are shown in the `oc describe pod` command:
 ====
 ----
 # oc describe pod gluster-pod1
-Name:				gluster-pod1
-Namespace:			default   <1>
-Image(s):			busybox
-Node:				rhel7.2-dev/192.168.122.177
-Start Time:			Tue, 22 Mar 2016 10:55:57 -0700
-Labels:				name=gluster-pod1
-Status:				Running
-Reason:
-Message:
-IP:				10.1.0.2  <2>
-Replication Controllers:	<none>
+Name:			gluster-pod1
+Namespace:		default  <1>
+Security Policy:	privileged
+Node:			ose1.rhs/192.168.122.251
+Start Time:		Wed, 24 Aug 2016 12:37:45 -0400
+Labels:			name=gluster-pod1
+Status:			Running
+IP:			172.17.0.2  <2>
+Controllers:		<none>
 Containers:
   gluster-pod1:
-    Container ID:	docker://acc0c80c28a5cd64b6e3f2848052ef30a21ee850d27ef5fe959d11da4e5a3f4f
-    Image:		busybox
-    Image ID:		docker://964092b7f3e54185d3f425880be0b022bfc9a706701390e0ceab527c84dea3e3
-    QoS Tier:
-      cpu:		BestEffort
-      memory:		BestEffort
+    Container ID:	docker://e67ed01729e1dc7369c5112d07531a27a7a02a7eb942f17d1c5fce32d8c31a2d
+    Image:		nginx
+    Image ID:		docker://sha256:4efb2fcdb1ab05fb03c9435234343c1cc65289eeb016be86193e88d3a5d84f6b
+    Port:		80/TCP
     State:		Running
-      Started:		Tue, 22 Mar 2016 10:56:00 -0700
+      Started:		Wed, 24 Aug 2016 12:37:52 -0400
     Ready:		True
     Restart Count:	0
-    Environment Variables:
+    Volume Mounts:
+      /usr/share/nginx/html/test from glustervol (rw)
+      /var/run/secrets/kubernetes.io/serviceaccount from default-token-1n70u (ro)
+    Environment Variables:	<none>
 Conditions:
   Type		Status
+  Initialized 	True
   Ready 	True
+  PodScheduled 	True
 Volumes:
-  gluster-vol1:
+  glustervol:
     Type:	PersistentVolumeClaim (a reference to a PersistentVolumeClaim in the same namespace)
     ClaimName:	gluster-claim  <3>
     ReadOnly:	false
-  default-token-rbi9o:
-    Type:	Secret (a secret that should populate this volume)
-    SecretName:	default-token-rbi9o
-
-Events:                        <4>
-  FirstSeen	LastSeen	Count	From			SubobjectPath	Reason		Message
-  ─────────	────────	─────	────			─────────────	──────		───────
-  2m		2m		1	{scheduler }				Scheduled	Successfully assigned gluster-pod1 to rhel7.2-dev
-  2m		2m		1	{kubelet rhel7.2-dev}	implicitly required container POD	Pulled		Container image "openshift3/ose-pod:v3.1.1.6" already present on machine
-  2m		2m		1	{kubelet rhel7.2-dev}	implicitly required container POD	Created		Created with docker id d5c66b4f3aaa
-  2m		2m		1	{kubelet rhel7.2-dev}	implicitly required container POD	Started		Started with docker id d5c66b4f3aaa
-  2m		2m		1	{kubelet rhel7.2-dev}	spec.containers{gluster-pod1}		Pulled		Container image "busybox" already present on machine
-  2m		2m		1	{kubelet rhel7.2-dev}	spec.containers{gluster-pod1}		Created		Created with docker id acc0c80c28a5
-  2m		2m		1	{kubelet rhel7.2-dev}	spec.containers{gluster-pod1}		Started		Started with docker id acc0c80c28a5
+  default-token-1n70u:
+    Type:	Secret (a volume populated by a Secret)
+    SecretName:	default-token-1n70u
+QoS Tier:	BestEffort
+Events:    <4>
+  FirstSeen	LastSeen	Count	From			SubobjectPath			Type		Reason		Message
+  ---------	--------	-----	----			-------------			--------	------		-------
+  10s		10s		1	{default-scheduler }					Normal		Scheduled	Successfully assigned gluster-pod1 to ose1.rhs
+  9s		9s		1	{kubelet ose1.rhs}	spec.containers{gluster-pod1}	Normal		Pulling		pulling image "nginx"
+  4s		4s		1	{kubelet ose1.rhs}	spec.containers{gluster-pod1}	Normal		Pulled		Successfully pulled image "nginx"
+  3s		3s		1	{kubelet ose1.rhs}	spec.containers{gluster-pod1}	Normal		Created		Created container with docker id e67ed01729e1
+  3s		3s		1	{kubelet ose1.rhs}	spec.containers{gluster-pod1}	Normal		Started		Started container with docker id e67ed01729e1
 ----
 <1> The project (namespace) name.
 <2> The IP address of the {product-title} node running the pod.
@@ -384,84 +446,86 @@ apiVersion: v1
 kind: Pod
 metadata:
   annotations:
-    openshift.io/scc: restricted  <1>
-  creationTimestamp: 2016-03-22T17:55:57Z
+    openshift.io/scc: privileged  <1>
+  creationTimestamp: 2016-08-24T16:37:45Z
   labels:
     name: gluster-pod1
   name: gluster-pod1
-  namespace: default              <2>
-  resourceVersion: "511908"
-  selflink: /api/v1/namespaces/default/pods/gluster-pod1
-  uid: 545068a3-f057-11e5-a8e5-5254008f071b
+  namespace: default  <2>
+  resourceVersion: "482"
+  selfLink: /api/v1/namespaces/default/pods/gluster-pod1
+  uid: 15afda77-6a19-11e6-aadb-525400f7256d
 spec:
   containers:
-  - command:
-    - sleep
-    - "60000"
-    image: busybox
-    imagePullPolicy: IfNotPresent
+  - image: nginx
+    imagePullPolicy: Always
     name: gluster-pod1
+    ports:
+    - containerPort: 80
+      name: web
+      protocol: TCP
     resources: {}
     securityContext:
-      privileged: false
-      runAsUser: 1000000000      <3>
-      seLinuxOptions:
-        level: s0:c1,c0          <4>
+      privileged: true  <3>
     terminationMessagePath: /dev/termination-log
     volumeMounts:
-    - mountPath: /usr/share/busybox
-      name: gluster-vol1
+    - mountPath: /usr/share/nginx/html
+      name: glustervol
     - mountPath: /var/run/secrets/kubernetes.io/serviceaccount
-      name: default-token-rbi9o
+      name: default-token-1n70u
       readOnly: true
   dnsPolicy: ClusterFirst
-  host: rhel7.2-dev
+  host: ose1.rhs
   imagePullSecrets:
-  - name: default-dockercfg-2g6go
-  nodeName: rhel7.2-dev
+  - name: default-dockercfg-20xg9
+  nodeName: ose1.rhs
   restartPolicy: Always
   securityContext:
-    seLinuxOptions:
-      level: s0:c1,c0            <4>
     supplementalGroups:
-    - 590                        <5>
+    - 590   <4>
   serviceAccount: default
   serviceAccountName: default
   terminationGracePeriodSeconds: 30
   volumes:
-  - name: gluster-vol1
+  - name: glustervol
     persistentVolumeClaim:
-      claimName: gluster-claim   <6>
-  - name: default-token-rbi9o
+      claimName: gluster-claim  <5>
+  - name: default-token-1n70u
     secret:
-      secretName: default-token-rbi9o
+      secretName: default-token-1n70u
 status:
   conditions:
   - lastProbeTime: null
-    lastTransitionTime: 2016-03-22T17:56:00Z
+    lastTransitionTime: 2016-08-24T16:37:45Z
+    status: "True"
+    type: Initialized
+  - lastProbeTime: null
+    lastTransitionTime: 2016-08-24T16:37:53Z
     status: "True"
     type: Ready
+  - lastProbeTime: null
+    lastTransitionTime: 2016-08-24T16:37:45Z
+    status: "True"
+    type: PodScheduled
   containerStatuses:
-  - containerID: docker://acc0c80c28a5cd64b6e3f2848052ef30a21ee850d27ef5fe959d11da4e5a3f4f
-    image: busybox
-    imageID: docker://964092b7f3e54185d3f425880be0b022bfc9a706701390e0ceab527c84dea3e3
+  - containerID: docker://e67ed01729e1dc7369c5112d07531a27a7a02a7eb942f17d1c5fce32d8c31a2d
+    image: nginx
+    imageID: docker://sha256:4efb2fcdb1ab05fb03c9435234343c1cc65289eeb016be86193e88d3a5d84f6b
     lastState: {}
     name: gluster-pod1
     ready: true
     restartCount: 0
     state:
       running:
-        startedAt: 2016-03-22T17:56:00Z
-  hostIP: 192.168.122.177
+        startedAt: 2016-08-24T16:37:52Z
+  hostIP: 192.168.122.251
   phase: Running
-  podIP: 10.1.0.2
-  startTime: 2016-03-22T17:55:57Z
+  podIP: 172.17.0.2
+  startTime: 2016-08-24T16:37:45Z
 ----
 <1> The SCC used by the pod.
 <2> The project (namespace) name.
-<3> The UID of the busybox container.
-<4> The ⁠SELinux label for the container, and the default ⁠SELinux label for the
-entire pod, which happen to be the same here.
-<5> The supplemental group ID for the pod (all containers).
-<6> The PVC name used by the pod.
+<3> The security context level requested, in this case privileged
+<4> The supplemental group ID for the pod (all containers).
+<5> The PVC name used by the pod.
 ====
