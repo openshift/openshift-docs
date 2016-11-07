@@ -1,0 +1,214 @@
+[[install-config-router-customized-haproxy]]
+= Deploying a Customized HAProxy Router
+{product-author}
+{product-version}
+:data-uri:
+:icons:
+:experimental:
+:toc: macro
+:toc-title:
+:prewrap!:
+
+toc::[]
+
+== Overview
+
+The HAProxy router is based on a
+link:http://golang.org/pkg/text/template/[*golang* template] that
+generates the HAProxy configuration file from a list of routes. If you
+want a customized template router to meet your needs, you can customize
+the template file, build a new container image, and run a customized router.
+Alternatively you can use a xref:../../dev_guide/configmaps.adoc#dev-guide-configmaps[ConfigMap].
+
+One common case for this might be implementing new features within the
+application back ends. For example, it might be desirable in a highly-available
+setup to xref:using-stick-tables[use stick-tables] that synchronizes between
+peers. The router plug-in provides all the facilities necessary to make this
+customization.
+
+[[obtaining-router-configuration-template]]
+== Obtaining the Router Configuration Template
+
+You can obtain a new *_haproxy-config.template_* file from the latest router
+image by running:
+
+----
+ifdef::openshift-enterprise[]
+# docker run --rm --interactive=true --tty --entrypoint=cat \
+    registry.access.redhat.com/openshift3/ose-haproxy-router:v3.0.2.0 haproxy-config.template
+endif::[]
+ifdef::openshift-origin[]
+# docker run --rm --interactive=true --tty --entrypoint=cat \
+    openshift/origin-haproxy-router haproxy-config.template
+endif::[]
+----
+
+Save this content to a file for use as the basis of your customized template.
+
+[[using-configmap-replace-template]]
+== Using a ConfigMap to Replace the Router Configuration Template
+
+You can use xref:../../dev_guide/configmaps.adoc#dev-guide-configmaps[ConfigMap]
+to customize the router instance without rebuilding the router image. The
+*_haproxy-config.template_*, *_reload-haproxy_*, and other scripts can be
+modified as well as creating and modifying router environment variables.
+
+. Copy the *_haproxy-config.template_* that you want to modify as
+xref:obtaining-router-configuration-template[described above]. Modify it as desired.
+
+. Create a ConfigMap:
++
+[source,bash]
+----
+$ oc create configmap customrouter --from-file=haproxy-config.template
+----
++
+The `customrouter` ConfigMap now contains a copy of the modified
+*_haproxy-config.template_* file.
+
+. Modify the router deployment configuration to mount the ConfigMap
+as a file and point the `TEMPLATE_FILE` environment variable to it.
+This can be done via `oc env` and `oc volume` commands,
+or alternatively by editing the router deployment configuration.
++
+Using `oc` commands::
++
+[source,bash]
+----
+$ oc env dc/router \
+    TEMPLATE_FILE=/var/lib/haproxy/conf/custom/haproxy-config.template
+$ oc volume dc/router --add --overwrite \
+    --name=config-volume \
+    --mount-path=/var/lib/haproxy/conf/custom \
+    --source='{"configMap": { "name": "customrouter"}}'
+----
++
+Editing the Router Deployment Configuration::
++
+Use `oc edit dc router` to edit the router deployment configuration
+with a text editor.
++
+====
+[source,yaml]
+----
+...
+        - name: STATS_USERNAME
+          value: admin
+        - name: TEMPLATE_FILE  <1>
+          value: /var/lib/haproxy/conf/custom/haproxy-config.template
+        image: openshift/origin-haproxy-routerp
+...
+        terminationMessagePath: /dev/termination-log
+        volumeMounts: <2>
+        - mountPath: /var/lib/haproxy/conf/custom
+          name: config-volume
+      dnsPolicy: ClusterFirst
+...
+      terminationGracePeriodSeconds: 30
+      volumes: <3>
+      - configMap:
+          name: customrouter
+        name: config-volume
+  test: false
+...
+----
+<1> In the `*spec.container.env*` field, add the `TEMPLATE_FILE` environment
+variable to point to the mounted *_haproxy-config.template_* file.
+<2> Add the `*spec.container.volumeMounts*` field to create the mount point.
+<3> Add a new `*spec.volumes*` field to mention the ConfigMap.
+====
++
+Save the changes and exit the editor. This restarts the router.
+
+
+[[using-stick-tables]]
+
+== Using Stick Tables
+
+The following example customization can be used in a
+xref:../../admin_guide/high_availability.adoc#configuring-a-highly-available-routing-service[highly-available
+routing setup] to use stick-tables that synchronize between peers.
+
+*Adding a Peer Section*
+
+In order to synchronize stick-tables amongst peers you must a define a peers
+section in your HAProxy configuration. This section determines how HAProxy will
+identify and connect to peers. The plug-in provides data to the template under
+the `*.PeerEndpoints*` variable to allow you to easily identify members of the
+router service. You may add a peer section to the *_haproxy-config.template_*
+file inside the router image by adding:
+
+====
+----
+{{ if (len .PeerEndpoints) gt 0 }}
+peers openshift_peers
+  {{ range $endpointID, $endpoint := .PeerEndpoints }}
+    peer {{$endpoint.TargetName}} {{$endpoint.IP}}:1937
+  {{ end }}
+{{ end }}
+----
+====
+
+*Changing the Reload Script*
+
+When using stick-tables, you have the option of telling HAProxy what it should
+consider the name of the local host in the peer section. When creating
+endpoints, the plug-in attempts to set the `*TargetName*` to the value of the
+endpoint's `*TargetRef.Name*`. If `*TargetRef*` is not set, it will set the
+`*TargetName*` to the IP address. The `*TargetRef.Name*` corresponds with the
+Kubernetes host name, therefore you can add the `-L` option to the
+`reload-haproxy` script to identify the local host in the peer section.
+
+====
+----
+peer_name=$HOSTNAME <1>
+
+if [ -n "$old_pid" ]; then
+  /usr/sbin/haproxy -f $config_file -p $pid_file -L $peer_name -sf $old_pid
+else
+  /usr/sbin/haproxy -f $config_file -p $pid_file -L $peer_name
+fi
+----
+<1> Must match an endpoint target name that is used in the peer section.
+====
+
+*Modifying Back Ends*
+
+Finally, to use the stick-tables within back ends, you can modify the HAProxy
+configuration to use the stick-tables and peer set. The following is an example
+of changing the existing back end for TCP connections to use stick-tables:
+
+====
+----
+
+            {{ if eq $cfg.TLSTermination "passthrough" }}
+backend be_tcp_{{$cfgIdx}}
+  balance leastconn
+  timeout check 5000ms
+  stick-table type ip size 1m expire 5m{{ if (len $.PeerEndpoints) gt 0 }} peers openshift_peers {{ end }}
+  stick on src
+                {{ range $endpointID, $endpoint := $serviceUnit.EndpointTable }}
+  server {{$endpointID}} {{$endpoint.IP}}:{{$endpoint.Port}} check inter 5000ms
+                {{ end }}
+            {{ end }}
+----
+====
+
+After this modification, you can xref:rebuilding-your-router[rebuild your router].
+
+[[rebuilding-your-router]]
+== Rebuilding Your Router
+
+After you have made any desired modifications to the template, such as the
+example xref:using-stick-tables[stick tables] customization, you must rebuild
+your router for your changes to go in effect:
+
+. https://access.redhat.com/articles/881893#createimage[Rebuild the container
+image to include your customized template.]
+. xref:../registry/accessing_registry.adoc#access[Push the resulting image to your repository].
+. Create the router specifying your new image, either:
+.. in the pod's object definition directly, or
+.. by adding the `--images=<repo>/<image>:<tag>` flag to the `oadm router`
+command when
+xref:../../admin_guide/high_availability.adoc#configuring-a-highly-available-routing-service[creating
+a highly-available routing service].

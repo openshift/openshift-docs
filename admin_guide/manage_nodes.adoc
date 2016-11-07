@@ -267,6 +267,121 @@ Alternatively, instead of specifying specific node names (e.g., `<node1>
 <node2>`), you can use the `--selector=<node_selector>` option to evacuate pods
 on selected nodes.
 
+[[rebooting-nodes]]
+== Rebooting Nodes
+
+To reboot a node without causing an outage for applications running on the
+platform, it is important to first xref:evacuating-pods-on-nodes[evacuate the
+pods]. For pods that are made highly available by the routing tier, nothing
+else needs to be done. For other pods needing storage, typically databases, it
+is critical to ensure that they can remain in operation with one pod
+temporarily going offline. While implementing resiliency for stateful pods
+is different for each application, in all cases it is important to configure
+the scheduler to use xref:scheduler.adoc#anti-affinity[node anti-affinity] to
+ensure that the pods are properly spread across available nodes.
+
+Another challenge is how to handle nodes that are running critical
+infrastructure such as the router or the registry. The same node evacuation
+process applies, though it is important to understand certain edge cases.
+
+[[infrastructure-nodes]]
+=== Infrastructure Nodes
+
+Infrastructure nodes are nodes that are labeled to run pieces of the
+{product-title} environment. Currently, the easiest way to manage node reboots
+is to ensure that there are at least three nodes available to run
+infrastructure. The scenario below demonstrates a common mistake that can lead
+to service interruptions for the applications running on {product-title} when
+only two nodes are available.
+
+- Node A is marked unschedulable and all pods are evacuated.
+- The registry pod running on that node is now redeployed on node B. This means
+node B is now running both registry pods.
+- Node B is now marked unschedulable and is evacuated.
+- The service exposing the two pod endpoints on node B, for a brief period of
+   time, loses all endpoints until they are redeployed to node A.
+
+The same process using three infrastructure nodes does not result in a service
+disruption. However, due to pod scheduling, the last node that is evacuated and
+brought back in to rotation is left running zero registries. The other two nodes
+will run two and one registries respectively. The best solution is to rely on
+pod anti-affinity. This is an alpha feature in Kubernetes that is available for
+testing now, but is not yet supported for production workloads.
+
+[[pod-anti-affinity]]
+=== Using Pod Anti-Affinity for the Docker Registry Pod
+
+Pod anti-affinity is slightly different than
+xref:scheduler.adoc#anti-affinity[node anti-affinity]. Node anti-affinity can be
+violated if there are no other suitable locations to deploy a pod. Pod
+anti-affinity can be set to either required or preferred.
+
+Using the `*docker-registry*` pod as an example, the first step in enabling
+this feature is to set the `*scheduler.alpha.kubernetes.io/affinity*` on the
+pod. Since this pod uses a deployment configuration, the most appropriate
+place to add the annotation is to the pod template's metadata.
+
+====
+----
+$ oc edit dc/docker-registry -o yaml
+
+...
+  template:
+    metadata:
+      annotations:
+        scheduler.alpha.kubernetes.io/affinity: |
+          {
+            "podAntiAffinity": {
+              "requiredDuringSchedulingIgnoredDuringExecution": [{
+                "labelSelector": {
+                  "matchExpressions": [{
+                    "key": "docker-registry",
+                    "operator": "In",
+                    "values":["default"]
+                  }]
+                },
+                "topologyKey": "kubernetes.io/hostname"
+              }]
+            }
+          }
+----
+====
+
+[IMPORTANT]
+====
+`*scheduler.alpha.kubernetes.io/affinity*` is internally stored as a string
+even though the contents are JSON. The above example shows how this string can
+be added as an annotation to a YAML deployment configuration.
+====
+
+This example assumes the Docker registry pod has a label of
+`*docker-registry=default*`. Pod anti-affinity can use any Kubernetes match
+expression.
+
+The last required step is to enable the `*MatchInterPodAffinity*` scheduler
+predicate in *_/etc/origin/master/scheduler.json_*. With this in place, if only
+two infrastructure nodes are available and one is rebooted, the Docker registry
+pod is prevented from running on the other node. `*oc get pods*` reports the pod
+as unready until a suitable node is available. Once a node is available and all
+pods are back in ready state, the next node can be restarted.
+
+[[handling-nodes-running-routers]]
+=== Handling Nodes Running Routers
+
+In most cases, a pod running an {product-title} router will expose a host port.
+The `*PodFitsPorts*` scheduler predicate ensures that no router pods using the
+same port can run on the same node, and pod anti-affinity is achieved. If the
+routers are relying on
+xref:high_availability.adoc#configuring-ip-failover[IP failover]
+for high availability, there is nothing else that is needed. For router pods
+relying on an external service such as AWS Elastic Load Balancing for high
+availability, it is that service's responsibility to react to router pod
+restarts.
+
+In rare cases, a router pod may not have a host port configured. In those cases,
+it is important to follow the xref:infrastructure-nodes[recommended restart
+process] for infrastructure nodes.
+
 [[configuring-node-resources]]
 == Configuring Node Resources
 
