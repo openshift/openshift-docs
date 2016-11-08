@@ -22,7 +22,7 @@ Build configurations are characterized by a strategy and one or more sources.
 The strategy determines the aforementioned process, while the sources provide
 its input.
 
-There are three build strategies:
+There are four build strategies:
 
 - Source-To-Image (S2I)
 (xref:../architecture/core_concepts/builds_and_image_streams.adoc#source-build[description],
@@ -30,11 +30,14 @@ xref:source-to-image-strategy-options[options])
 - Docker
 (xref:../architecture/core_concepts/builds_and_image_streams.adoc#docker-build[description],
 xref:docker-strategy-options[options])
+- Pipeline
+(xref:../architecture/core_concepts/builds_and_image_streams.adoc#pipeline-build[description],
+xref:pipeline-strategy-options[options])
 - Custom
 (xref:../architecture/core_concepts/builds_and_image_streams.adoc#custom-build[description],
 xref:custom-strategy-options[options])
 
-And there are four types of build source:
+And there are four types of build sources:
 
 - xref:source-code[Git]
 - xref:dockerfile-source[Dockerfile]
@@ -71,49 +74,55 @@ apiVersion: "v1"
 metadata:
   name: "ruby-sample-build" <1>
 spec:
-  triggers: <2>
-    - type: "GitHub"
+  runPolicy: "Serial" <2>
+  triggers: <3>
+    -
+      type: "GitHub"
       github:
         secret: "secret101"
     - type: "Generic"
       generic:
         secret: "secret101"
-    - type: "ImageChange"
-  source: <3>
+    -
+      type: "ImageChange"
+  source: <4>
     type: "Git"
     git:
       uri: "https://github.com/openshift/ruby-hello-world"
     dockerfile: "FROM openshift/ruby-22-centos7\nUSER example"
-  strategy: <4>
+  strategy: <5>
     type: "Source"
     sourceStrategy:
       from:
         kind: "ImageStreamTag"
         name: "ruby-20-centos7:latest"
-  output: <5>
+  output: <6>
     to:
       kind: "ImageStreamTag"
       name: "origin-ruby-sample:latest"
-  postCommit: <6>
+  postCommit: <7>
       script: "bundle exec rake test"
 ----
 
 <1> This specification will create a new `*BuildConfig*` named
 *ruby-sample-build*.
-<2> You can specify a list of xref:build-triggers[triggers], which cause a new
+<2> The `*runPolicy*` field controls whether builds created from this build
+configuration can be run simultaneously. The default value is *Serial*, which means new builds
+will run sequentially, not simultaneously.
+<3> You can specify a list of xref:build-triggers[triggers], which cause a new
 build to be created.
-<3> The `*source*` section defines the source of the build. The `*type*` determines
-the primary source of input, and can be either `*Git*`, to point to a code
-repository location; `*Dockerfile*`, to build from an inline Dockerfile; or
-`*Binary*`, to accept binary payloads. Using multiple sources at once is
-possible. Refer to the documentation for each source type for details.
-<4> The `*strategy*` section describes the build strategy used to execute the
+<4> The `*source*` section defines the source of the build. The source type
+determines the primary source of input, and can be either `*Git*`, to point to
+a code repository location, `*Dockerfile*`, to build from an inline Dockerfile,
+or `*Binary*`, to accept binary payloads. It is possible to have multiple
+sources at once, refer to the documentation for each source type for details.
+<5> The `*strategy*` section describes the build strategy used to execute the
 build. You can specify `*Source*`, `*Docker*` and `*Custom*` strategies here.
 This above example uses the `*ruby-20-centos7*` container image that
 Source-To-Image will use for the application build.
 <6> After the container image is successfully built, it will be pushed into the
 repository described in the `*output*` section.
-<6> The `*postCommit*` section defines an optional xref:build-hooks[build
+<7> The `*postCommit*` section defines an optional xref:build-hooks[build
 hook].
 ====
 
@@ -187,6 +196,98 @@ of a missing *_save-artifacts_* script.
 See the xref:../creating_images/s2i.adoc#creating-images-s2i[S2I Requirements] topic for information
 on how to create a builder image supporting incremental builds.
 ====
+
+
+[[extended-builds]]
+
+=== Extended Builds
+
+[NOTE]
+====
+This feature is in technology preview. This means the API may change without
+notice or the feature may be removed entirely. For a supported mechanism to
+produce application images with runtime-only content, consider using the
+xref:builds.adoc#image-source[Image Source] feature and defining two builds, one
+which produces an image containing the runtime artifacts and a second build
+which consumes the runtime artifacts from that image and adds them to a
+runtime-only image.
+====
+
+For compiled languages (Go, C, C++, Java, etc.) the dependencies necessary for
+compilation might increase the size of the image or introduce vulnerabilities
+that can be exploited.
+
+To avoid these problems, S2I (Source-to-Image) introduces a two-image build process
+that allows an application to be built via the normal flow in a builder image,
+but then injects the resulting application artifacts into a runtime-only image
+for execution.
+
+To offer flexibility in this process, S2I executes an `assemble-runtime`
+script inside the runtime image that allows further customization of the
+resulting runtime image.
+
+More information about this can be found in the official
+https://github.com/openshift/source-to-image/blob/master/docs/runtime_image.md[S2I
+extended builds documents].
+
+This feature is available only for the source strategy.
+====
+[source,yaml]
+----
+strategy:
+  type: "Source"
+  sourceStrategy:
+    from:
+      kind: "ImageStreamTag"
+      name: "builder-image:latest"
+    runtimeImage: <1>
+      kind: "ImageStreamTag"
+      name: "runtime-image:latest"
+    runtimeArtifacts: <2>
+      - sourcePath: "/path/to/source"
+        destinationDir: "path/to/destination"
+----
+<1> The runtime image that the artifacts should be copied to.
+This is the final image that the application will run on. This image should
+contain the minimum application dependencies to run the injected content from
+the builder image.
+
+<2> The runtime artifacts are a mapping of artifacts produced in the builder
+image that should be injected into the runtime image.
+`*sourcePath*` can be the full path to a file or directory inside the builder
+image.
+`*destinationDir*` must be a directory inside the runtime image where the
+artifacts will be copied. This directory is relative to the specified
+*WORKDIR* inside that image.
+
+====
+
+[NOTE]
+====
+In the current implementation, you cannot have incremental extended builds thus,
+the *incremental* option is not valid with `*runtimeImage*`.
+====
+
+If the runtime image needs authentication to be pulled across OpenShift
+projects or from another private registry, the details can be specified
+xref:managing_images.adoc#using-image-pull-secrets[within the image pull
+secret configuration].
+
+[[dev-guide-testing-your-application]]
+
+==== Testing your Application
+
+
+Extended builds offer two ways of running tests against your application.
+
+The first option is to install all test dependencies and run the tests inside
+your *builder image* since that image, in the context of extended builds, will
+not be pushed to a registry. This can be done as a part of the `assemble`
+script for the builder image.
+
+The second option is to specify a script via the xref:build-hooks[postcommit
+hook]. This is executed in an ephemeral container based on the runtime
+image, thus it is not committed to the image.
 
 [[override-builder-image-scripts]]
 
@@ -280,6 +381,9 @@ sourceStrategy:
       value: "true"
 ----
 ====
+
+You can also manage environment variables defined in the `*BuildConfig*` with the
+xref:../dev_guide/environment_variables.adoc#overview[`oc set env`] command.
 
 [[docker-strategy-options]]
 
@@ -402,6 +506,15 @@ dockerStrategy:
 ----
 ====
 
+ifdef::openshift-enterprise,openshift-origin[]
+Cluster administrators can also
+xref:../install_config/http_proxies.adoc#configuring-hosts-for-proxies-using-ansible[configure
+global build settings using Ansible].
+endif::[]
+
+You can also manage environment variables defined in the `*BuildConfig*` with the
+xref:../dev_guide/environment_variables.adoc#overview[`oc set env`] command.
+
 [[custom-strategy-options]]
 
 == Custom Strategy Options
@@ -511,6 +624,112 @@ customStrategy:
 ----
 ====
 
+ifdef::openshift-enterprise,openshift-origin[]
+Cluster administrators can also
+xref:../install_config/http_proxies.adoc#configuring-hosts-for-proxies-using-ansible[configure
+global build settings using Ansible].
+endif::[]
+
+You can also manage environment variables defined in the `*BuildConfig*` with the
+xref:../dev_guide/environment_variables.adoc#overview[`oc set env`] command.
+
+[[pipeline-strategy-options]]
+== Pipeline Strategy Options
+
+The following options are specific to the
+xref:../architecture/core_concepts/builds_and_image_streams.adoc#pipeline-build[Pipeline build strategy].
+
+[[jenkinsfile]]
+=== Providing the Jenkinsfile
+
+You can provide the Jenkinsfile in one of two ways:
+
+1. Embed the Jenkinsfile in the build configuration.
+2. Include in the build configuration a reference to the
+   Git repository that contains the Jenkinsfile.
+
+.Embedded Definition
+====
+[source,yaml]
+----
+kind: "BuildConfig"
+apiVersion: "v1"
+metadata:
+  name: "sample-pipeline"
+spec:
+  strategy:
+    type: "JenkinsPipeline"
+    jenkinsPipelineStrategy:
+      jenkinsfile: "node('agent') {\nstage 'build'\nopenshiftBuild(buildConfig: 'ruby-sample-build', showBuildLogs: 'true')\nstage 'deploy'\nopenshiftDeploy(deploymentConfig: 'frontend')\n}"
+----
+====
+
+.Reference to Git Repository
+====
+[source,yaml]
+----
+kind: "BuildConfig"
+apiVersion: "v1"
+metadata:
+  name: "sample-pipeline"
+spec:
+  source:
+    type: "Git"
+    git:
+      uri: "https://github.com/openshift/ruby-hello-world"
+  strategy:
+    type: "JenkinsPipeline"
+    jenkinsPipelineStrategy:
+      jenkinsfilePath: some/repo/dir/filename <1>
+----
+
+<1> An optional path within the repository that specifies the file to be used as the Jenkinsfile.  This path is relative to the
+source `*contextDir*`, if any.  If left empty, the file must reside in the root of the repository or `*contextDir*`.
+====
+
+[[build-inputs]]
+== Build Inputs
+
+There are several ways to provide content for builds to operate on. In order of precedence:
+
+* Inline Dockerfile definitions
+* Content extracted from existing images
+* Git repositories
+* Binary inputs
+
+These can be combined into a single build. As the inline Dockerfile takes precedence, it can overwrite any other file named Dockerfile provided by another input. Binary input and Git repository are mutually exclusive inputs.
+
+When the build is run, a working directory is constructed and all input content is placed in the working directory (e.g. the input git repository is cloned into the working directory, files specified from input images are copied into the working directory using the target path).  Next the build process will `*cd*` into the `*contextDir*` if one is defined.  Then the inline `*Dockerfile*` (if any) is written to the current directory.  Last, the content from the current directory will be provided to the build process for reference by the `*Dockerfile*`, `*assemble*` script, or custom builder logic.  This means any input content that resides outside the `*contextDir*` will be ignored by the build.
+
+Here is an example of a source definition that includes multiple input types and an explanation of how they are combined.  For more details
+on how each input type is defined, see the specific sections for each input type.
+
+====
+[source,yaml]
+----
+source:
+  git:
+    uri: https://github.com/openshift/ruby-hello-world.git <1>
+  images:
+  - from:
+      kind: ImageStreamTag
+      name: myinputimage:latest
+      namespace: mynamespace
+    paths:
+    - destinationDir: app/dir/injected/dir <2>
+      sourcePath: /usr/lib/somefile.jar
+  contextDir: "app/dir" <3>
+  dockerfile: "FROM centos:7\nRUN yum install -y httpd" <4>
+
+----
+
+<1> The repository to be cloned into the working directory for the build
+<2> `*/usr/lib/somefile.jar*` from `*myinputimage*` will be stored in `*<workingdir>/app/dir/injected/dir*`
+<3> The working dir for the build will become `*<original_workingdir>/app/dir*`
+<4> A `*Dockerfile*` with this content will be created in `*<original_workingdir>/app/dir*`, overwriting any existing file with that name
+====
+
+
 [[source-code]]
 
 == Git Repository Source Options
@@ -590,6 +809,17 @@ source:
 
 // end::using-a-proxy-for-git-cloning-1[]
 
+[[trusted-certificate-authorities]]
+==== Trusted Certificate Authorities
+
+The set of TLS certificate authorities that are trusted during a `git clone`
+operation are built into the {product-title} infrastructure images.  If your Git
+server uses a self-signed certificate or one signed by an authority not trusted
+by the image, you can disable TLS  verification by setting the
+`*GIT_SSL_NO_VERIFY*` environment variable to *true* in the appropriate strategy
+section of your build configuration. You can use the
+xref:../dev_guide/environment_variables.adoc#overview[`oc set env`] command to
+manage `*BuildConfig*` environment variables.
 
 [[using-private-repositories-for-builds]]
 === Using Private Repositories for Builds
@@ -642,12 +872,12 @@ $ oc secrets new-basicauth basicsecret --username=USERNAME --password=PASSWORD -
 ====
 
 . Add the `*secret*` to the builder service account. Each build is run with
-`serviceaccount/builder` role, so you need to give it access your secret with
+the `builder` role, so you need to give it access your secret with the
 following command:
 +
 ====
 ----
-$ oc secrets add serviceaccount/builder secrets/basicsecret
+$ oc secrets link builder basicsecret
 ----
 ====
 
@@ -734,12 +964,12 @@ $ oc secrets new-sshauth sshsecret --ssh-privatekey=$HOME/.ssh/id_rsa --gitconfi
 ====
 
 . Add the `*secret*` to the builder service account. Each build is run with
-`serviceaccount/builder` role, so you need to give it access your secret with
+the `builder` role, so you need to give it access your secret with the
 following command:
 +
 ====
 ----
-$ oc secrets add serviceaccount/builder secrets/sshsecret
+$ oc secrets link builder sshsecret
 ----
 ====
 
@@ -818,12 +1048,12 @@ section in your `.gitconfig` file:
 ====
 
 .  Add the `*secret*` to the builder service account. Each build is run with the
-`serviceaccount/builder` role, so you need to give it access your secret with
+the `builder` role, so you need to give it access your secret with the
 following command:
 +
 ====
 ----
-$ oc secrets add serviceaccount/builder secrets/mysecret
+$ oc secrets link builder mysecret
 ----
 ====
 
@@ -1204,9 +1434,24 @@ $ oc start-build hello-world --from-repo=../hello-world --commit=v2
 
 == Canceling a Build
 Manually cancel a build using the web console, or with the following CLI command:
-
 ----
 $ oc cancel-build <build_name>
+----
+
+Cancel multiple builds at the same time:
+----
+$ oc cancel-build <build1_name> <build2_name> <build3_name>
+----
+
+Cancel all builds created from the build configuration:
+----
+$ oc cancel-build bc/<buildconfig_name>
+----
+
+Cancel all builds in a given state (for example, *new* or *pending*), ignoring
+the builds in other states:
+----
+$ oc cancel-build bc/<buildconfig_name>  --state=<state>
 ----
 
 [[deleting-a-buildconfig]]
@@ -1228,16 +1473,25 @@ $ oc delete --cascade=false bc <BuildConfigName>
 [[viewing-build-details]]
 == Viewing Build Details
 
-You can view build details using the web console or the following CLI command:
+You can view build details with the web console or by using the `oc describe`
+CLI command:
 
+====
 ----
 $ oc describe build <build_name>
 ----
+====
 
-The output of the `describe` command includes details such as the build source,
-strategy, and output destination. If the build uses the Docker or Source
-strategy, it will also include information about the source revision used for
-the build: commit ID, author, committer, and message.
+This displays information such as:
+
+* The build source
+* The strategy
+* The output destination
+* How the build was created
+
+If the build uses the Docker or Source strategy, the `oc describe` output also
+includes information about the source revision used for the build, including the
+commit ID, author, committer, and message.
 
 [[accessing-build-logs]]
 
@@ -1387,12 +1641,21 @@ Therefore, if you are using a Gogs server, you can define a GitHub webhook
 trigger on your `*BuildConfig*` and trigger it via your Gogs server also.
 ====
 
+Given a file containing a valid JSON payload, you can manually trigger the
+webhook via `curl`:
+
+----
+$ curl -H "X-GitHub-Event: push" -H "Content-Type: application/json" -k -X POST --data-binary @github_payload_file.json https://<openshift_api_host:port>/oapi/v1/namespaces/<namespace>/buildconfigs/<name>/webhooks/<secret>/github
+----
+
+The `-k` argument is only necessary if your API server does not have a properly
+signed certificate.
 
 *Generic Webhooks*
 
-Generic webhooks can be invoked from any system capable of making a web request.
-As with a GitHub webhook, you must specify a `*secret*` which will be part of
-the URL, the caller must use to trigger the build. The secret ensures the
+Generic webhooks are invoked from any system capable of making a web request.
+As with a GitHub webhook, you must specify a *secret*, which will be part of
+the URL that the caller must use to trigger the build. The secret ensures the
 uniqueness of the URL, preventing others from triggering the build. The
 following is an example trigger definition YAML within the `*BuildConfig*`:
 
@@ -1403,6 +1666,8 @@ type: "Generic"
 generic:
   secret: "secret101"
 ----
+
+<1> Set to *true* to allow a generic webhook to pass in environment variables.
 ====
 
 To set up the caller, supply the calling system with the URL of the generic
@@ -1411,6 +1676,18 @@ webhook endpoint for your build:
 ----
 http://<openshift_api_host:port>/oapi/v1/namespaces/<namespace>/buildconfigs/<name>/webhooks/<secret>/generic
 ----
+
+The caller must invoke the webhook as a `*POST*` operation.
+
+To invoke the webhook manually you can use `curl`:
+
+----
+$ curl -X POST -k https://<openshift_api_host:port>/oapi/v1/namespaces/<namespace>/buildconfigs/<name>/webhooks/<secret>/generic
+----
+
+The HTTP verb must be set to `*POST*`. The insecure `-k` flag is specified to
+ignore certificate validation. This second flag is not necessary if your cluster
+has properly signed certificates.
 
 The endpoint can accept an optional payload with the following format:
 
@@ -1430,7 +1707,28 @@ git:
     email: "<committer e-mail>"
   message: "<commit message>"
 ----
+
+<1> Similar to the xref:buildconfig-environment[`*BuildConfig*` environment]
+variables, the environment variables defined here are made available to your
+build. If these variables collide with the
+xref:buildconfig-environment[*BuildConfig* environment] variables, these
+variables take precedence. By default, environment variables passed via webhook
+are ignored. Set the `*allowEnv*` field to *true* on the webhook definition to enable
+this behavior.
 ====
+
+To pass this payload using `curl`, define it in a file named
+*_payload_file.yaml_* and run:
+
+----
+$ curl -H "Content-Type: application/yaml" --data-binary @payload_file.yaml -X POST -k https://<openshift_api_host:port>/oapi/v1/namespaces/<namespace>/buildconfigs/<name>/webhooks/<secret>/generic
+----
+
+The arguments are the same as the previous example with the addition of a header
+and a payload. The `-H` argument sets the *Content-Type* header to
+`*application/yaml*` or `*application/json*` depending on your payload format.
+The `--data-binary` argument is used to send a binary payload with newlines
+intact with the `*POST*` request.
 
 [[describe-buildconfig]]
 
@@ -1753,13 +2051,13 @@ This generates a JSON specification of the `*secret*` named *dockerhub* and
 creates the object.
 
 . Once the `*secret*` is created, add it to the builder service account. Each
-build is run with `serviceaccount/builder` role, so you need to give it access
-your secret with following command:
+build is run with the `builder` role, so you need to give it access
+your secret with the following command:
 
 +
 ====
 ----
-$ oc secrets add serviceaccount/builder secrets/dockerhub
+$ oc secrets link builder dockerhub
 ----
 ====
 
