@@ -1,0 +1,1239 @@
+[[dev-guide-deployments]]
+= Deployments
+{product-author}
+{product-version}
+:data-uri:
+:icons:
+:experimental:
+:toc: macro
+:toc-title:
+
+toc::[]
+
+== Overview
+
+{product-title} deployments provide fine-grained management over common
+user applications. They are described using three separate API objects:
+
+- A deployment configuration, which describes the desired state of a particular
+component of the application as a pod template.
+- One or more replication controllers, which contain a point-in-time record of the
+state of a deployment configuration as a pod template.
+- One or more pods, which represent an instance of a particular version of an
+application.
+
+[IMPORTANT]
+====
+Users do not need to manipulate replication controllers or pods owned
+by deployment configurations. The deployment system ensures changes to
+deployment configurations are propagated appropriately. If the existing
+deployment strategies are not suited for your use case and you have the
+need to run manual steps during the lifecycle of your deployment, then you
+should consider creating a xref:custom-strategy[custom strategy].
+====
+
+When you create a deployment configuration, a replication controller is created
+representing the deployment configuration's pod template. If the deployment
+configuration changes, a new replication controller is created with the latest
+pod template, and a deployment process runs to scale down the old replication
+controller and scale up the new replication controller.
+
+Instances of your application are automatically added and removed from both
+service load balancers and routers as they are created. As long as your
+application supports xref:graceful-termination[graceful shutdown] when it
+receives the *TERM* signal, you can ensure that running user connections are
+given a chance to complete normally.
+
+Features provided by the deployment system:
+
+- A xref:creating-a-deployment-configuration[deployment configuration], which is a
+template for running applications.
+- xref:triggers[Triggers] that drive automated deployments in response to events.
+- User-customizable xref:strategies[strategies] to transition from the previous
+version to the new version. A strategy runs inside a pod commonly referred as
+the deployment process.
+- A set of xref:lifecycle-hooks[hooks] for executing custom behavior in different
+points during the lifecycle of a deployment.
+- Versioning of your application in order to support
+xref:rolling-back-a-deployment[rollbacks] either manually or automatically in
+case of deployment failure.
+- Manual replication xref:scaling[scaling] and
+xref:../dev_guide/pod_autoscaling.adoc#dev-guide-pod-autoscaling[autoscaling].
+
+
+[[creating-a-deployment-configuration]]
+== Creating a Deployment Configuration
+
+Deployment configurations are `deploymentConfig` {product-title} API resources
+which can be managed with the `oc` command like any other resource. The
+following is an example of a `deploymentConfig` resource:
+
+====
+
+[source,yaml]
+----
+kind: "DeploymentConfig"
+apiVersion: "v1"
+metadata:
+  name: "frontend"
+spec:
+  template: <1>
+    metadata:
+      labels:
+        name: "frontend"
+    spec:
+      containers:
+        - name: "helloworld"
+          image: "openshift/origin-ruby-sample"
+          ports:
+            - containerPort: 8080
+              protocol: "TCP"
+  replicas: 5 <2>
+  triggers:
+    - type: "ConfigChange" <3>
+    - type: "ImageChange" <4>
+      imageChangeParams:
+        automatic: true
+        containerNames:
+          - "helloworld"
+        from:
+          kind: "ImageStreamTag"
+          name: "origin-ruby-sample:latest"
+  strategy: <5>
+    type: "Rolling"
+  paused: false <6>
+  revisionHistoryLimit: 2 <7>
+  minReadySeconds: 0 <8>
+
+----
+
+<1> The pod template of the `frontend` deployment configuration describes a simple Ruby application.
+<2> There will be 5 replicas of `frontend`.
+<3> A xref:config-change-trigger[configuration change trigger] causes a new replication controller to be created any time the pod template changes.
+<4> An xref:image-change-trigger[image change trigger] trigger causes a new replication controller to be
+created each time a new version of the `origin-ruby-sample:latest` image stream tag is available.
+<5> The xref:rolling-strategy[Rolling strategy] is the default way of deploying your pods. May be omitted.
+<6> Pause a deployment configuration. This disables the functionality of all triggers and allows for multiple changes on the pod template before actually rolling it out.
+<7> Revision history limit is the limit of old replication controllers you want to keep around for rolling back. May be omitted. If omitted, old replication controllers will not be cleaned up.
+<8> Minimum seconds to wait (after the readiness checks succeed) for a pod to be considered available. The default value is 0.
+====
+
+[[start-deployment]]
+== Starting a Deployment
+
+You can start a new deployment process manually using the web console, or from
+the CLI:
+
+----
+$ oc rollout latest dc/<name>
+----
+
+[NOTE]
+====
+If a deployment process is already in progress, the command will display a
+message and a new replication controller will not be deployed.
+====
+
+[[viewing-a-deployment]]
+
+== Viewing a Deployment
+
+To get basic information about all the available revisions of your application:
+
+----
+$ oc rollout history dc/<name>
+----
+
+This will show details about all recently created replication controllers for
+the provided deployment configuration, including any currently running deployment
+process.
+
+You can view details specific to a revision by using the `--revision` flag:
+
+----
+$ oc rollout history dc/<name> --revision=1
+----
+
+For more detailed information about a deployment configuration and its latest revision:
+
+----
+$ oc describe dc <name>
+----
+
+[NOTE]
+====
+The
+xref:../architecture/infrastructure_components/web_console.adoc#project-overviews[web
+console] shows deployments in the *Browse* tab.
+====
+
+[[canceling-a-deployment]]
+
+== Canceling a Deployment
+
+To cancel a running or stuck deployment process:
+
+----
+$ oc deploy --cancel dc/<name>
+----
+
+[WARNING]
+====
+The cancellation is a best-effort operation, and may take some time to complete.
+The replication controller may partially or totally complete its deployment
+before the cancellation is effective. When canceled, the deployment
+configuration will be automatically rolled back by scaling up the previous
+running replication controller.
+====
+
+[[retrying-a-deployment]]
+
+== Retrying a Deployment
+
+If the current revision of your deployment configuration failed to deploy, you can
+restart the deployment process with:
+
+----
+$ oc deploy --retry dc/<name>
+----
+
+If the latest revision of it was deployed successfully, the command will display a
+message and the deployment process will not be retried.
+
+[NOTE]
+====
+Retrying a deployment restarts the deployment process and does not create a new
+deployment revision. The restarted replication controller will have the same configuration
+it had when it failed.
+====
+
+[[rolling-back-a-deployment]]
+== Rolling Back a Deployment
+
+Rollbacks revert an application back to a previous revision and can be
+performed using the REST API, the CLI, or the web console.
+
+To rollback to the last successful deployed revision of your configuration:
+
+----
+$ oc rollout undo dc/<name>
+----
+
+The deployment configuration's template will be reverted to match the deployment
+revision specified in the undo command, and a new replication controller will be
+started. If no revision is specified with `--to-revision`, then the last
+successfully deployed revision will be used.
+
+Image change triggers on the deployment configuration are disabled as part of
+the rollback to prevent accidentally starting a new deployment process soon after
+the rollback is complete. To re-enable the image change triggers:
+
+----
+$ oc set triggers dc/<name> --auto
+----
+
+[NOTE]
+====
+Deployment configurations also support automatically rolling back to the
+last successful revision of the configuration in case the latest deployment
+process fails. In that case, the latest template that failed to deploy stays
+intact by the system and it is up to users to fix their configurations.
+====
+
+[[executing-commands-inside-a-container-deployments]]
+== Executing Commands Inside a Container
+
+You can add a command to a container, which modifies the container's startup
+behavior by overruling the image's `ENTRYPOINT`. This is different from a
+xref:pod-based-lifecycle-hook[lifecycle hook],
+which instead can be run once per deployment at a specified time.
+
+Add the `command` parameters to the `spec` field of the deployment
+configuration. You can also add an `args` field, which modifies the
+`command` (or the `ENTRYPOINT` if `command` does not exist).
+
+====
+----
+...
+spec:
+  containers:
+    -
+    name: <container_name>
+    image: 'image'
+    command:
+      - '<command>'
+    args:
+      - '<argument_1>'
+      - '<argument_2>'
+      - '<argument_3>'
+...
+----
+====
+
+For example, to execute the `java` command with the `-jar` and
+*_/opt/app-root/springboots2idemo.jar_* arguments:
+
+====
+----
+...
+spec:
+  containers:
+    -
+    name: example-spring-boot
+    image: 'image'
+    command:
+      - java
+    args:
+      - '-jar'
+      - /opt/app-root/springboots2idemo.jar
+...
+----
+====
+
+[[viewing-deployment-logs]]
+
+== Viewing Deployment Logs
+
+To stream the logs of the latest revision for a given deployment configuration:
+
+----
+$ oc logs -f dc/<name> --follow
+----
+
+If the latest revision is running or failed, `oc logs` will return the logs of
+the process that is responsible for deploying your pods. If it is successful,
+`oc logs` will return the logs from a pod of your application.
+
+You can also view logs from older failed deployment processes, if and only if
+these processes (old replication controllers and their deployer pods) exist and
+have not been pruned or deleted manually:
+
+----
+$ oc logs --version=1 dc/<name>
+----
+
+For more options on retrieving logs see:
+
+----
+$ oc logs --help
+----
+
+[[triggers]]
+== Triggers
+
+A deployment configuration can contain triggers, which drive the creation of
+new deployment processes in response to events inside the cluster.
+
+[WARNING]
+====
+If no triggers are defined on a deployment configuration, a `ConfigChange`
+trigger is added by default. If triggers are defined as an empty field, deployments
+must be xref:start-deployment[started manually].
+====
+
+[[config-change-trigger]]
+=== Configuration Change Trigger
+
+The `ConfigChange` trigger results in a new replication controller whenever
+changes are detected in the pod template of the deployment configuration.
+
+[NOTE]
+====
+If a `ConfigChange` trigger is defined on a deployment configuration,
+the first replication controller will be automatically created soon after
+the deployment configuration itself is created and it is not paused.
+====
+
+
+.A ConfigChange Trigger
+====
+
+[source,yaml]
+----
+triggers:
+  - type: "ConfigChange"
+----
+====
+
+[[image-change-trigger]]
+=== ImageChange Trigger
+
+The `ImageChange` trigger results in a new replication controller whenever the
+content of an image stream tag changes (when a new version of the image is
+pushed).
+
+.An ImageChange Trigger
+====
+[source,yaml]
+----
+triggers:
+  - type: "ImageChange"
+    imageChangeParams:
+      automatic: true <1>
+      from:
+        kind: "ImageStreamTag"
+        name: "origin-ruby-sample:latest"
+        namespace: "myproject"
+      containerNames:
+        - "helloworld"
+----
+<1> If the `imageChangeParams.automatic` field is set to `false`,
+the trigger is disabled.
+====
+
+With the above example, when the `latest` tag value of the *origin-ruby-sample*
+image stream changes and the new image value differs from the current image
+specified in the deployment configuration's *helloworld* container, a new
+replication controller is created using the new image for the *helloworld* container.
+
+[NOTE]
+====
+If an `ImageChange` trigger is defined on a deployment configuration (with a
+`ConfigChange` trigger and `automatic=false`, or with `automatic=true`) and the
+`ImageStreamTag` pointed by the `ImageChange` trigger does not exist yet, then
+the initial deployment process will automatically start as soon as an image is
+imported or pushed by a build to the `ImageStreamTag`.
+====
+
+[[deployment-triggers-using-the-command-line]]
+==== Using the Command Line
+
+The `oc set triggers` command can be used to set a deployment trigger for a
+deployment configuration. For the example above, you can set the
+`ImageChangeTrigger` by using the following command:
+
+----
+$ oc set triggers dc/frontend --from-image=myproject/origin-ruby-sample:latest -c helloworld
+----
+
+For more information, see:
+
+----
+$ oc set triggers --help
+----
+
+[[strategies]]
+== Strategies
+
+A deployment strategy determines the deployment process, and is defined by the
+deployment configuration. Each application has different requirements for
+availability (and other considerations) during deployments. {product-title}
+provides strategies to support a variety of deployment scenarios.
+
+A deployment strategy uses
+xref:../dev_guide/application_health.adoc#dev-guide-application-health[readiness
+checks] to determine if a new pod is ready for use. If a readiness check fails,
+the deployment configuration will retry to run the pod until it times out. The
+default timeout is `10m`, a value set in `TimeoutSeconds` in
+`dc.spec.strategy.*params`.
+
+The xref:rolling-strategy[Rolling strategy] is the default strategy used if
+no strategy is specified on a deployment configuration.
+
+[[rolling-strategy]]
+=== Rolling Strategy
+
+A rolling deployment slowly replaces instances of the previous version of an
+application with instances of the new version of the application. A rolling
+deployment typically waits for new pods to become *ready* via a *readiness
+check* before scaling down the old components. If a significant issue occurs,
+the rolling deployment can be aborted.
+
+[[canary-deployments]]
+=== Canary Deployments
+
+All rolling deployments in {product-title} are _canary_ deployments; a new
+version (the canary) is tested  before all of the old instances are replaced. If
+the readiness check never succeeds, the canary instance is removed and the
+deployment configuration will be automatically rolled back. The readiness check
+is part of the application code, and may be as sophisticated as necessary to
+ensure the new instance is ready to be used. If you need to implement more
+complex checks of the application (such as sending real user workloads to the
+new instance), consider implementing a custom deployment or using a blue-green
+deployment strategy.
+
+[[when-to-use-a-rolling-deployment]]
+=== When to Use a Rolling Deployment
+
+* When you want to take no downtime during an application update.
+* When your application supports having old code and new code running at the same time.
+
+A rolling deployment means you to have both old and new versions of your code
+running at the same time. This typically requires that your application handle
+xref:n1-compatibility[N-1 compatibility], that data stored by the new version
+can be read and handled (or gracefully ignored) by the old version of the code.
+This can take many forms -- data stored on disk, in a database, in a temporary
+cache, or that is part of a user's browser session. While most web applications
+can support rolling deployments, it is important to test and design your
+application to handle it.
+
+The following is an example of the Rolling strategy:
+
+====
+[source,yaml]
+----
+strategy:
+  type: Rolling
+  rollingParams:
+    timeoutSeconds: 120 <1>
+    maxSurge: "20%" <2>
+    maxUnavailable: "10%" <3>
+    pre: {} <4>
+    post: {}
+----
+<1> How long to wait for a scaling event before giving up. Optional; the default is 120.
+<2> `maxSurge` is optional and defaults to `25%` if not specified; see below.
+<3> `maxUnavailable` is optional and defaults to `25%` if not specified; see below.
+<4> `*pre*` and `*post*` are both xref:lifecycle-hooks[lifecycle hooks].
+====
+
+The Rolling strategy will:
+
+. Execute any `pre` lifecycle hook.
+. Scale up the new replication controller based on the surge count.
+. Scale down the old replication controller based on the max unavailable count.
+. Repeat this scaling until the new replication controller has reached the desired
+replica count and the old replication controller has been scaled to zero.
+. Execute any `post` lifecycle hook.
+
+[IMPORTANT]
+====
+When scaling down, the Rolling strategy waits for pods to become ready so it can
+decide whether further scaling would affect availability. If scaled up pods
+never become ready, the deployment process will eventually time out and result in a
+deployment failure.
+====
+
+The `maxUnavailable` parameter is the maximum number of pods that can be
+unavailable during the update. The `maxSurge` parameter is the maximum number
+of pods that can be scheduled above the original number of pods. Both parameters
+can be set to either a percentage (e.g., `10%`) or an absolute value (e.g.,
+`2`). The default value for both is `25%`.
+
+These parameters allow the deployment to be tuned for availability and speed. For
+example:
+
+- `*maxUnavailable*=0` and `*maxSurge*=20%` ensures full capacity is maintained
+during the update and rapid scale up.
+- `*maxUnavailable*=10%` and `*maxSurge*=0` performs an update using no extra
+capacity (an in-place update).
+- `*maxUnavailable*=10%` and `*maxSurge*=10%` scales up and down quickly with
+some potential for capacity loss.
+
+Generally, if you want fast rollouts, use `maxSurge`. If you need to take into
+account resource quota and can accept partial unavailability, use
+`maxUnavailable`.
+
+[[rolling-example]]
+=== Rolling Example
+
+Rolling deployments are the default in {product-title}. To see a rolling update,
+follow these steps:
+
+. Create an application based on the example deployment images found in
+link:https://hub.docker.com/r/openshift/deployment-example/[DockerHub]:
++
+----
+$ oc new-app openshift/deployment-example
+----
++
+If you have the router installed, make the application available via a route (or
+use the service IP directly)
++
+----
+$ oc expose svc/deployment-example
+----
++
+Browse to the application at `deployment-example.<project>.<router_domain>` to
+verify you see the *v1* image.
+
+. Scale the deployment configuration up to three replicas:
++
+----
+$ oc scale dc/deployment-example --replicas=3
+----
+
+. Trigger a new deployment automatically by tagging a new version of the example
+as the `latest` tag:
++
+----
+$ oc tag deployment-example:v2 deployment-example:latest
+----
+
+. In your browser, refresh the page until you see the *v2* image.
+
+. If you are using the CLI, the following command will show you how many pods are on version 1 and how many
+are on version 2. In the web console, you should see the pods slowly being added to v2 and removed from v1.
++
+----
+$ oc describe dc deployment-example
+----
+
+During the deployment process, the new replication controller is incrementally
+scaled up. Once the new pods are marked as *ready* (by passing their readiness
+check), the deployment process will continue. If the pods do not become ready,
+the process will abort, and the deployment configuration will be rolled back to
+its previous version.
+
+
+[[recreate-strategy]]
+=== Recreate Strategy
+
+The Recreate strategy has basic rollout behavior and supports
+xref:lifecycle-hooks[lifecycle hooks] for injecting code into the deployment
+process.
+
+The following is an example of the Recreate strategy:
+
+====
+
+[source,yaml]
+----
+strategy:
+  type: Recreate
+  recreateParams: <1>
+    pre: {} <2>
+    mid: {}
+    post: {}
+----
+
+<1> `recreateParams` are optional.
+<2> `pre`, `mid`, and `post` are xref:lifecycle-hooks[lifecycle hooks].
+====
+
+The Recreate strategy will:
+
+. Execute any `pre` lifecycle hook.
+. Scale down the previous deployment to zero.
+. Execute any `mid` lifecycle hook.
+. Scale up the new deployment.
+. Execute any `post` lifecycle hook.
+
+[IMPORTANT]
+====
+During scale up, if the replica count of the deployment is greater than one, the
+first replica of the deployment will be validated for readiness before fully
+scaling up the deployment. If the validation of the first replica fails, the
+deployment will be considered a failure.
+====
+
+[[when-to-use-a-recreate-deployment]]
+=== When to Use a Recreate Deployment
+
+* When you must run migrations or other data transformations before your new code starts.
+* When you do not support having new and old versions of your application code running at the same time.
+* When you want to use a RWO volume, which is not supported being shared between multiple replicas.
+
+A recreate deployment incurs downtime because, for a brief period, no instances
+of your application are running. However, your old code and new code do not run
+at the same time.
+
+[[custom-strategy]]
+=== Custom Strategy
+
+The Custom strategy allows you to provide your own deployment behavior.
+
+The following is an example of the Custom strategy:
+
+====
+
+[source,yaml]
+----
+strategy:
+  type: Custom
+  customParams:
+    image: organization/strategy
+    command: [ "command", "arg1" ]
+    environment:
+      - name: ENV_1
+        value: VALUE_1
+----
+====
+
+In the above example, the `organization/strategy` container image provides the
+deployment behavior. The optional `command` array overrides any `CMD` directive
+specified in the image's *_Dockerfile_*. The optional environment variables
+provided are added to the execution environment of the strategy process.
+
+Additionally, {product-title} provides the following environment variables to the
+deployment process:
+
+[cols="4,8",options="header"]
+|===
+|Environment Variable |Description
+
+.^|`OPENSHIFT_DEPLOYMENT_NAME`
+|The name of the new deployment (a replication controller).
+
+.^|`OPENSHIFT_DEPLOYMENT_NAMESPACE`
+|The name space of the new deployment.
+|===
+
+The replica count of the new deployment will initially be zero. The
+responsibility of the strategy is to make the new deployment active using the
+logic that best serves the needs of the user.
+
+Learn more about xref:advanced-deployment-strategies[advanced deployment
+strategies].
+
+[[lifecycle-hooks]]
+== Lifecycle Hooks
+
+The xref:recreate-strategy[Recreate] and xref:rolling-strategy[Rolling]
+strategies support lifecycle hooks, which allow behavior to be injected into
+the deployment process at predefined points within the strategy:
+
+The following is an example of a `pre` lifecycle hook:
+
+====
+
+[source,yaml]
+----
+pre:
+  failurePolicy: Abort
+  execNewPod: {} <1>
+----
+
+<1> `execNewPod` is xref:pod-based-lifecycle-hook[a pod-based lifecycle hook].
+====
+
+Every hook has a `failurePolicy`, which defines the action the strategy should
+take when a hook failure is encountered:
+
+[cols="2,8"]
+|===
+
+.^|`Abort`
+|The deployment process will be considered a failure if the hook fails.
+
+.^|`Retry`
+|The hook execution should be retried until it succeeds.
+
+.^|`Ignore`
+|Any hook failure should be ignored and the deployment should proceed.
+|===
+
+Hooks have a type-specific field that describes how to execute the hook.
+Currently, xref:pod-based-lifecycle-hook[pod-based hooks] are the only
+supported hook type, specified by the `execNewPod` field.
+
+[[pod-based-lifecycle-hook]]
+=== Pod-based Lifecycle Hook
+
+Pod-based lifecycle hooks execute hook code in a new pod derived from the
+template in a deployment configuration.
+
+The following simplified example deployment configuration uses the
+xref:rolling-strategy[Rolling strategy]. Triggers and some other minor details
+are omitted for brevity:
+
+====
+
+[source,yaml]
+----
+kind: DeploymentConfig
+apiVersion: v1
+metadata:
+  name: frontend
+spec:
+  template:
+    metadata:
+      labels:
+        name: frontend
+    spec:
+      containers:
+        - name: helloworld
+          image: openshift/origin-ruby-sample
+  replicas: 5
+  selector:
+    name: frontend
+  strategy:
+    type: Rolling
+    rollingParams:
+      pre:
+        failurePolicy: Abort
+        execNewPod:
+          containerName: helloworld <1>
+          command: [ "/usr/bin/command", "arg1", "arg2" ] <2>
+          env: <3>
+            - name: CUSTOM_VAR1
+              value: custom_value1
+          volumes:
+            - data <4>
+----
+<1> The `helloworld` name refers to `spec.template.spec.containers[0].name`.
+<2> This `command` overrides any `ENTRYPOINT` defined by the `openshift/origin-ruby-sample` image.
+<3> `env` is an optional set of environment variables for the hook container.
+<4> `volumes` is an optional set of volume references for the hook container.
+====
+
+In this example, the `pre` hook will be executed in a new pod using the
+*openshift/origin-ruby-sample* image from the *helloworld* container. The hook
+pod will have the following properties:
+
+* The hook command will be `/usr/bin/command arg1 arg2`.
+* The hook container will have the `CUSTOM_VAR1=custom_value1` environment variable.
+* The hook failure policy is `Abort`, meaning the deployment process will fail if the hook fails.
+* The hook pod will inherit the `data` volume from the deployment configuration pod.
+
+[[deployment-hooks-using-the-command-line]]
+==== Using the Command Line
+
+The `oc set deployment-hook` command can be used to set the deployment hook for
+a deployment configuration. For the example above, you can set the
+pre-deployment hook with the following command:
+
+----
+$ oc set deployment-hook dc/frontend --pre -c helloworld -e CUSTOM_VAR1=custom_value1 \
+  -v data --failure-policy=abort -- /usr/bin/command arg1 arg2
+----
+
+
+[[deployment-resources]]
+== Deployment Resources
+
+A deployment is completed by a pod that consumes resources (memory and CPU) on a
+node. By default, pods consume unbounded node resources. However, if a project
+specifies default container limits, then pods consume resources up to those
+limits.
+
+You can also limit resource use by specifying resource limits as part of the
+deployment strategy. Deployment resources can be used with the Recreate,
+Rolling, or Custom deployment strategies.
+
+In the following example, each of `resources`, `cpu`, and `memory` is
+optional:
+
+====
+[source,yaml]
+----
+type: "Recreate"
+resources:
+  limits:
+    cpu: "100m" <1>
+    memory: "256Mi" <2>
+----
+
+<1> `cpu` is in CPU units: `100m` represents 0.1 CPU units (100 * 1e-3).
+<2> `memory` is in bytes: `256Mi` represents 268435456 bytes (256 * 2 ^ 20).
+====
+
+However, if a quota has been defined for your project, one of the following two
+items is required:
+
+- A `resources` section set with an explicit `requests`:
++
+====
+[source,yaml]
+----
+  type: "Recreate"
+  resources:
+    requests: <1>
+      cpu: "100m"
+      memory: "256Mi"
+----
+<1> The `requests` object contains the list of resources that correspond to
+the list of resources in the quota.
+====
+
+ifdef::openshift-enterprise,openshift-dedicated,openshift-origin[]
+- A xref:../admin_guide/limits.adoc#admin-guide-limits[limit range] defined in your project, where the
+defaults from the `LimitRange` object apply to pods created during the
+deployment process.
+endif::[]
+ifdef::openshift-online[]
+- A limit range defined in your project, where the
+defaults from the `LimitRange` object apply to pods created during the
+deployment process.
+endif::[]
+
+Otherwise, deploy pod creation will fail, citing a failure to satisfy quota.
+
+[[scaling]]
+== Manual Scaling
+
+In addition to rollbacks, you can exercise fine-grained control over
+the number of replicas from the web console, or by using the `oc scale` command.
+For example, the following command sets the replicas in the deployment
+configuration `frontend` to 3.
+
+----
+$ oc scale dc frontend --replicas=3
+----
+
+The number of replicas eventually propagates to the desired and current
+state of the deployment configured by the deployment configuration `frontend`.
+
+[[assigning-pods-to-specific-nodes]]
+== Assigning Pods to Specific Nodes
+
+You can use node selectors in conjunction with labeled nodes to control pod
+placement.
+
+ifdef::openshift-enterprise,openshift-origin[]
+[NOTE]
+====
+{product-title} administrators can assign labels
+xref:../install_config/install/advanced_install.adoc#configuring-node-host-labels[during
+an advanced installation], or
+xref:../admin_guide/manage_nodes.adoc#updating-labels-on-nodes[added to a node
+after installation].
+====
+endif::[]
+
+Cluster administrators
+ifdef::openshift-enterprise,openshift-origin[]
+xref:../admin_guide/managing_projects.adoc#using-node-selectors[can set the
+default node selector]
+endif::[]
+ifdef::openshift-dedicated,openshift-online[]
+can set the default node selector
+endif::[]
+for your project in order to restrict pod placement to
+specific nodes. As an {product-title} developer, you can set a node selector on a pod
+configuration to restrict nodes even further.
+
+To add a node selector when creating a pod, edit the pod configuration, and add
+the `nodeSelector` value. This can be added to a single pod configuration, or in
+a pod template:
+
+====
+----
+apiVersion: v1
+kind: Pod
+spec:
+  nodeSelector:
+    disktype: ssd
+...
+----
+====
+
+Pods created when the node selector is in place are assigned to nodes with the
+specified labels.
+
+The labels specified here are used in conjunction with the labels
+ifdef::openshift-enterprise,openshift-origin[]
+xref:../admin_guide/managing_projects.adoc#using-node-selectors[added by a
+cluster administrator].
+endif::[]
+ifdef::openshift-dedicated,openshift-online[]
+added by a cluster administrator.
+endif::[]
+For example, if a project has the `type=user-node` and
+`region=east` labels added to a project by the cluster administrator, and you
+add the above `disktype: ssd` label to a pod, the pod will only ever be
+scheduled on nodes that have all three labels.
+
+[NOTE]
+====
+Labels can only be set to one value, so setting a node selector of `region=west`
+in a pod configuration that has `region=east` as the administrator-set default,
+results in a pod that will never be scheduled.
+====
+
+[[run-pod-with-different-service-account]]
+== Running a Pod with a Different Service Account
+
+You can run a pod with a service account other than the default:
+
+. Edit the deployment configuration:
++
+----
+$ oc edit dc/<deployment_config>
+----
+. Add the `serviceAccount` and `serviceAccountName` parameters to the `spec`
+field, and specify the service account you want to use:
++
+----
+spec:
+  securityContext: {}
+  serviceAccount: <service_account>
+  serviceAccountName: <service_account>
+----
+
+[[advanced-deployment-strategies]]
+== Advanced Deployment Strategies
+
+[[advanced-deployment-strategies-blue-green-deployments]]
+=== Blue-Green Deployment
+
+ifdef::openshift-origin[]
+link:http://martinfowler.com/bliki/BlueGreenDeployment.html[Blue-green
+deployments]
+endif::[]
+ifdef::openshift-enterprise,openshift-dedicated,openshift-online[]
+Blue-green deployments
+endif::[]
+involve running two versions of an application at the same time and
+moving production traffic from the old version to the new version. There are
+several ways to implement a blue-green deployment in {product-title}.
+
+[[advanced-deployment-strategies-when-to-use-blue-green-deployment]]
+=== When to Use a Blue-Green Deployment
+
+Use a blue-green deployment when you want to test a new version of your
+application in a production environment before moving traffic to it.
+
+Blue-green deployments make switching between two different versions of your
+application easy. However, since many applications depend on persistent data,
+you will need to have an application that supports xref:n1-compatibility[N-1
+compatibility] if you share a database, or implement a live data migration
+between your database, store, or disk if you choose to create two copies of your
+data layer.
+
+[[advanced-deployment-strategies-blue-green-deployments-example]]
+=== Blue-Green Deployment Example
+
+In order to maintain control over two distinct groups of instances (old and new
+versions of the code), the blue-green deployment is best represented with
+multiple deployment configurations.
+
+[[advanced-deployment-strategies-using-a-route-and-two-services]]
+=== Using a Route and Two Services
+
+A route points to a service, and can be changed to point to a different service
+at any time. As a developer, test the new version of your code by connecting to
+the new service before your production traffic is routed to it. Routes are
+intended for web (HTTP and HTTPS) traffic, so this technique is best suited
+for web applications.
+
+. Create two copies of the example application:
++
+----
+$ oc new-app openshift/deployment-example:v1 --name=example-green
+$ oc new-app openshift/deployment-example:v2 --name=example-blue
+----
++
+This will create two independent application components: one running the *v1*
+image under the `example-green` service, and one using the *v2* image under the
+`example-blue` service.
+
+. Create a route that points to the old service:
++
+----
+$ oc expose svc/example-green --name=bluegreen-example
+----
+
+. Browse to the application at `bluegreen-example.<project>.<router_domain>` to
+verify you see the *v1* image.
++
+ifdef::openshift-enterprise[]
+[NOTE]
+====
+On versions of {product-title} older than v3.0.1, this command will generate a
+route at `example-green.<project>.<router_domain>`, not the above location.
+====
+endif::[]
+ifdef::openshift-origin[]
+[NOTE]
+====
+On versions of {product-title} older than v1.0.3, this command will generate a
+route at `example-green.<project>.<router_domain>`, not the above location.
+====
+endif::[]
+
+. Edit the route and change the service name to `example-blue`:
++
+----
+$ oc patch route/bluegreen-example -p '{"spec":{"to":{"name":"example-blue"}}}'
+----
+
+. In your browser, refresh the page until you see the *v2* image.
+
+[[advanced-deployment-a-b-deployment]]
+=== A/B Deployment
+
+A/B deployments generally imply running two (or more) versions of the
+application code or application configuration at the same time for testing or
+experimentation purposes.
+
+The simplest form of an A/B deployment is to divide production traffic between
+two or more distinct *shards* -- a single group of instances with homogeneous
+configuration and code.
+
+More complicated A/B deployments may involve a specialized proxy or load
+balancer that assigns traffic to specific shards based on information about the
+user or application (all "test" users get sent to the B shard, but regular users
+get sent to the A shard).
+
+A/B deployments can be considered similar to A/B testing, although an A/B
+deployment implies multiple versions of code and configuration, where as A/B
+testing often uses one code base with application specific checks.
+
+[[advanced-deployment-when-to-use-a-b-deployment]]
+=== When to Use an A/B Deployment
+
+* When you want to test multiple versions of code or configuration, but are not
+planning to roll one out in preference to the other.
+* When you want to have different configuration in different regions.
+
+An A/B deployment groups different configuration and code -- multiple shards --
+together under a single logical endpoint. Generally, these deployments, if they
+access persistent data, should properly deal with N-1 compatibility (the more
+shards you have, the more possible versions you have running). Use this pattern
+when you need separate internal configuration and code, but end users should not
+be aware of the changes.
+
+[[advanced-deployment-a-b-deployment-example]]
+=== A/B Deployment Example
+
+All A/B deployments are composite deployment types consisting of multiple
+deployment configurations.
+
+[[advanced-deployment-one-service-multiple-deployment-configs]]
+=== One Service, Multiple Deployment Configurations
+
+{product-title}, through labels and deployment configurations, supports multiple
+simultaneous shards being exposed through the same service. To the consuming
+user, the shards are invisible. An example of the simplest possible sharding is
+described below:
+
+. Create the first shard of the application based on the example deployment images:
++
+----
+$ oc new-app openshift/deployment-example --name=ab-example-a --labels=ab-example=true SUBTITLE="shard A"
+----
+
+. Edit the newly created shard to set a label `ab-example=true` that will be
+common to all shards:
++
+----
+$ oc edit dc/ab-example-a
+----
++
+In the editor, add the line `ab-example: "true"` underneath `spec.selector` and
+`spec.template.metadata.labels` alongside the existing
+`deploymentconfig=ab-example-a` label. Save and exit the editor.
+
+. Trigger a re-deployment of the first shard to pick up the new labels:
++
+----
+$ oc rollout latest ab-example-a
+----
+
+. Create a service that uses the common label:
++
+----
+$ oc expose dc/ab-example-a --name=ab-example --selector=ab-example=true
+----
++
+If you have the router installed, make the application available via a route (or
+use the service IP directly):
++
+----
+$ oc expose svc/ab-example
+----
++
+Browse to the application at `ab-example.<project>.<router_domain>` to verify
+you see the *v1* image.
+
+. Create a second shard based on the same source image as the first shard but
+different tagged version, and set a unique value:
++
+----
+$ oc new-app openshift/deployment-example:v2 --name=ab-example-b --labels=ab-example=true SUBTITLE="shard B" COLOR="red"
+----
+
+. Edit the newly created shard to set a label `ab-example=true` that will be
+common to all shards:
++
+----
+$ oc edit dc/ab-example-b
+----
++
+In the editor, add the line `ab-example: "true"` underneath `spec.selector` and
+`spec.template.metadata.labels` alongside the existing
+`deploymentconfig=ab-example-b` label. Save and exit the editor.
+
+. Trigger a re-deployment of the second shard to pick up the new labels:
++
+----
+$ oc rollout latest ab-example-b
+----
+
+. At this point, both sets of pods are being served under the route. However,
+since both browsers (by leaving a connection open) and the router (by default,
+through a cookie) will attempt to preserve your connection to a back-end server,
+you may not see both shards being returned to you. To force your browser to one
+or the other shard, use the scale command:
++
+----
+$ oc scale dc/ab-example-a --replicas=0
+----
++
+Refreshing your browser should show *v2* and *shard B* (in red).
++
+----
+$ oc scale dc/ab-example-a --replicas=1; oc scale dc/ab-example-b --replicas=0
+----
++
+Refreshing your browser should show *v1* and *shard A* (in blue).
++
+If you trigger a deployment on either shard, only the pods in that shard will be
+affected. You can easily trigger a deployment by changing the `SUBTITLE`
+environment variable in either deployment config `oc edit dc/ab-example-a` or
+`oc edit dc/ab-example-b`. You can add additional shards by repeating steps 5-7.
++
+[NOTE]
+====
+These steps will be simplified in future versions of {product-title}.
+====
+
+[[proxy-shard-traffic-splitter]]
+=== Proxy Shard / Traffic Splitter
+
+In production environments, you can precisely control the distribution
+of traffic that lands on a particular shard. When dealing with large numbers of
+instances, you can use the relative scale of individual shards to implement
+percentage based traffic. That combines well with a *proxy shard*, which
+forwards or splits the traffic it receives to a separate service or application
+running elsewhere.
+
+In the simplest configuration, the proxy would forward requests unchanged. In
+more complex setups, you can duplicate the incoming requests and send to
+both a separate cluster as well as to a local instance of the application, and
+compare the result. Other patterns include keeping the caches of a DR
+installation warm, or sampling incoming traffic for analysis purposes.
+
+While an implementation is beyond the scope of this example, any TCP (or UDP)
+proxy could be run under the desired shard. Use the `oc scale` command to alter
+the relative number of instances serving requests under the proxy shard. For
+more complex traffic management, consider customizing the {product-title} router
+with proportional balancing capabilities.
+
+[[n1-compatibility]]
+=== N-1 Compatibility
+
+Applications that have new code and old code running at the same time must be
+careful to ensure that data written by the new code can be read by the old code.
+This is sometimes called _schema evolution_ and is a complex problem.
+
+For some applications, the period of time that old code and new code is running
+side by side is short, so bugs or some failed user transactions are
+acceptable. For others, the failure pattern may result in the entire application
+becoming non-functional.
+
+One way to validate N-1 compatibility is to use an A/B deployment. Run the old
+code and new code at the same time in a controlled way in a test environment,
+and verify that traffic that flows to the new deployment does not cause failures
+in the old deployment.
+
+[[graceful-termination]]
+=== Graceful Termination
+
+{product-title} and Kubernetes give application instances time to shut down
+before removing them from load balancing rotations. However, applications must
+ensure they cleanly terminate user connections as well before they exit.
+
+On shutdown, {product-title} will send a *TERM* signal to the processes in the
+container. Application code, on receiving *SIGTERM*, should stop accepting new
+connections. This will ensure that load balancers route traffic to other active
+instances. The application code should then wait until all open connections are
+closed (or gracefully terminate individual connections at the next opportunity)
+before exiting.
+
+After the graceful termination period expires, a process that has not exited
+will be sent the *KILL* signal, which immediately ends the process. The
+`terminationGracePeriodSeconds` attribute of a pod or pod template controls
+the graceful termination period (default 30 seconds) and may be customized per
+application as necessary.
