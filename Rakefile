@@ -2,7 +2,7 @@ require 'ascii_binder/tasks/tasks'
 
 task :import_api do
   base = ENV['ORIGIN_REPO'] || "../origin"
-  sh "pushd #{base} && hack/update-swagger-docs.sh" do |ok,res|
+  sh "pushd #{base} && hack/update-generated-swagger-docs.sh" do |ok,res|
     fail "Unable to generate docs" if !ok
   end
   sh "cp ../origin/_output/local/docs/swagger/api/v1/overview.adoc rest_api/kubernetes_v1.adoc" do |ok,res|
