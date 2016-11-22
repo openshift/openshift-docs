@@ -1,0 +1,388 @@
+[[dev-guide-deployment-strategies]]
+= Deployment Strategies
+{product-author}
+{product-version}
+:data-uri:
+:icons:
+:experimental:
+:toc: macro
+:toc-title:
+
+toc::[]
+
+[[strategies]]
+== What Are Deployment Strategies?
+
+A deployment strategy determines the deployment process, and is defined by the
+deployment configuration. Each application has different requirements for
+availability (and other considerations) during deployments. {product-title}
+provides strategies to support a variety of deployment scenarios.
+
+A deployment strategy uses
+xref:../../dev_guide/application_health.adoc#dev-guide-application-health[readiness
+checks] to determine if a new pod is ready for use. If a readiness check fails,
+the deployment configuration will retry to run the pod until it times out. The
+default timeout is `10m`, a value set in `TimeoutSeconds` in
+`dc.spec.strategy.*params`.
+
+The xref:rolling-strategy[Rolling strategy] is the default strategy used if
+no strategy is specified on a deployment configuration.
+
+[[rolling-strategy]]
+== Rolling Strategy
+
+A rolling deployment slowly replaces instances of the previous version of an
+application with instances of the new version of the application. A rolling
+deployment typically waits for new pods to become *ready* via a *readiness
+check* before scaling down the old components. If a significant issue occurs,
+the rolling deployment can be aborted.
+
+[[canary-deployments]]
+=== Canary Deployments
+
+All rolling deployments in {product-title} are _canary_ deployments; a new
+version (the canary) is tested  before all of the old instances are replaced. If
+the readiness check never succeeds, the canary instance is removed and the
+deployment configuration will be automatically rolled back. The readiness check
+is part of the application code, and may be as sophisticated as necessary to
+ensure the new instance is ready to be used. If you need to implement more
+complex checks of the application (such as sending real user workloads to the
+new instance), consider implementing a custom deployment or using a blue-green
+deployment strategy.
+
+[[when-to-use-a-rolling-deployment]]
+=== When to Use a Rolling Deployment
+
+* When you want to take no downtime during an application update.
+* When your application supports having old code and new code running at the same time.
+
+A rolling deployment means you to have both old and new versions of your code
+running at the same time. This typically requires that your application handle
+xref:advanced_deployment_strategies.adoc#n1-compatibility[N-1 compatibility], that data stored by the new version
+can be read and handled (or gracefully ignored) by the old version of the code.
+This can take many forms -- data stored on disk, in a database, in a temporary
+cache, or that is part of a user's browser session. While most web applications
+can support rolling deployments, it is important to test and design your
+application to handle it.
+
+The following is an example of the Rolling strategy:
+
+====
+[source,yaml]
+----
+strategy:
+  type: Rolling
+  rollingParams:
+    timeoutSeconds: 120 <1>
+    maxSurge: "20%" <2>
+    maxUnavailable: "10%" <3>
+    pre: {} <4>
+    post: {}
+----
+<1> How long to wait for a scaling event before giving up. Optional; the default is 120.
+<2> `maxSurge` is optional and defaults to `25%` if not specified; see below.
+<3> `maxUnavailable` is optional and defaults to `25%` if not specified; see below.
+<4> `*pre*` and `*post*` are both xref:lifecycle-hooks[lifecycle hooks].
+====
+
+The Rolling strategy will:
+
+. Execute any `pre` lifecycle hook.
+. Scale up the new replication controller based on the surge count.
+. Scale down the old replication controller based on the max unavailable count.
+. Repeat this scaling until the new replication controller has reached the desired
+replica count and the old replication controller has been scaled to zero.
+. Execute any `post` lifecycle hook.
+
+[IMPORTANT]
+====
+When scaling down, the Rolling strategy waits for pods to become ready so it can
+decide whether further scaling would affect availability. If scaled up pods
+never become ready, the deployment process will eventually time out and result in a
+deployment failure.
+====
+
+The `maxUnavailable` parameter is the maximum number of pods that can be
+unavailable during the update. The `maxSurge` parameter is the maximum number
+of pods that can be scheduled above the original number of pods. Both parameters
+can be set to either a percentage (e.g., `10%`) or an absolute value (e.g.,
+`2`). The default value for both is `25%`.
+
+These parameters allow the deployment to be tuned for availability and speed. For
+example:
+
+- `*maxUnavailable*=0` and `*maxSurge*=20%` ensures full capacity is maintained
+during the update and rapid scale up.
+- `*maxUnavailable*=10%` and `*maxSurge*=0` performs an update using no extra
+capacity (an in-place update).
+- `*maxUnavailable*=10%` and `*maxSurge*=10%` scales up and down quickly with
+some potential for capacity loss.
+
+Generally, if you want fast rollouts, use `maxSurge`. If you need to take into
+account resource quota and can accept partial unavailability, use
+`maxUnavailable`.
+
+[[rolling-example]]
+=== Rolling Example
+
+Rolling deployments are the default in {product-title}. To see a rolling update,
+follow these steps:
+
+. Create an application based on the example deployment images found in
+link:https://hub.docker.com/r/openshift/deployment-example/[DockerHub]:
++
+----
+$ oc new-app openshift/deployment-example
+----
++
+If you have the router installed, make the application available via a route (or
+use the service IP directly)
++
+----
+$ oc expose svc/deployment-example
+----
++
+Browse to the application at `deployment-example.<project>.<router_domain>` to
+verify you see the *v1* image.
+
+. Scale the deployment configuration up to three replicas:
++
+----
+$ oc scale dc/deployment-example --replicas=3
+----
+
+. Trigger a new deployment automatically by tagging a new version of the example
+as the `latest` tag:
++
+----
+$ oc tag deployment-example:v2 deployment-example:latest
+----
+
+. In your browser, refresh the page until you see the *v2* image.
+
+. If you are using the CLI, the following command will show you how many pods are on version 1 and how many
+are on version 2. In the web console, you should see the pods slowly being added to v2 and removed from v1.
++
+----
+$ oc describe dc deployment-example
+----
+
+During the deployment process, the new replication controller is incrementally
+scaled up. Once the new pods are marked as *ready* (by passing their readiness
+check), the deployment process will continue. If the pods do not become ready,
+the process will abort, and the deployment configuration will be rolled back to
+its previous version.
+
+
+[[recreate-strategy]]
+== Recreate Strategy
+
+The Recreate strategy has basic rollout behavior and supports
+xref:lifecycle-hooks[lifecycle hooks] for injecting code into the deployment
+process.
+
+The following is an example of the Recreate strategy:
+
+====
+
+[source,yaml]
+----
+strategy:
+  type: Recreate
+  recreateParams: <1>
+    pre: {} <2>
+    mid: {}
+    post: {}
+----
+
+<1> `recreateParams` are optional.
+<2> `pre`, `mid`, and `post` are xref:lifecycle-hooks[lifecycle hooks].
+====
+
+The Recreate strategy will:
+
+. Execute any `pre` lifecycle hook.
+. Scale down the previous deployment to zero.
+. Execute any `mid` lifecycle hook.
+. Scale up the new deployment.
+. Execute any `post` lifecycle hook.
+
+[IMPORTANT]
+====
+During scale up, if the replica count of the deployment is greater than one, the
+first replica of the deployment will be validated for readiness before fully
+scaling up the deployment. If the validation of the first replica fails, the
+deployment will be considered a failure.
+====
+
+[[when-to-use-a-recreate-deployment]]
+=== When to Use a Recreate Deployment
+
+* When you must run migrations or other data transformations before your new code starts.
+* When you do not support having new and old versions of your application code running at the same time.
+* When you want to use a RWO volume, which is not supported being shared between multiple replicas.
+
+A recreate deployment incurs downtime because, for a brief period, no instances
+of your application are running. However, your old code and new code do not run
+at the same time.
+
+[[custom-strategy]]
+== Custom Strategy
+
+The Custom strategy allows you to provide your own deployment behavior.
+
+The following is an example of the Custom strategy:
+
+====
+
+[source,yaml]
+----
+strategy:
+  type: Custom
+  customParams:
+    image: organization/strategy
+    command: [ "command", "arg1" ]
+    environment:
+      - name: ENV_1
+        value: VALUE_1
+----
+====
+
+In the above example, the `organization/strategy` container image provides the
+deployment behavior. The optional `command` array overrides any `CMD` directive
+specified in the image's *_Dockerfile_*. The optional environment variables
+provided are added to the execution environment of the strategy process.
+
+Additionally, {product-title} provides the following environment variables to the
+deployment process:
+
+[cols="4,8",options="header"]
+|===
+|Environment Variable |Description
+
+.^|`OPENSHIFT_DEPLOYMENT_NAME`
+|The name of the new deployment (a replication controller).
+
+.^|`OPENSHIFT_DEPLOYMENT_NAMESPACE`
+|The name space of the new deployment.
+|===
+
+The replica count of the new deployment will initially be zero. The
+responsibility of the strategy is to make the new deployment active using the
+logic that best serves the needs of the user.
+
+Learn more about
+xref:advanced-deployment-strategies.adoc#dev-guide-advanced-deployment-strategies[advanced deployment strategies].
+
+
+[[lifecycle-hooks]]
+== Lifecycle Hooks
+
+The xref:recreate-strategy[Recreate] and xref:rolling-strategy[Rolling]
+strategies support lifecycle hooks, which allow behavior to be injected into
+the deployment process at predefined points within the strategy:
+
+The following is an example of a `pre` lifecycle hook:
+
+====
+
+[source,yaml]
+----
+pre:
+  failurePolicy: Abort
+  execNewPod: {} <1>
+----
+
+<1> `execNewPod` is xref:pod-based-lifecycle-hook[a pod-based lifecycle hook].
+====
+
+Every hook has a `failurePolicy`, which defines the action the strategy should
+take when a hook failure is encountered:
+
+[cols="2,8"]
+|===
+
+.^|`Abort`
+|The deployment process will be considered a failure if the hook fails.
+
+.^|`Retry`
+|The hook execution should be retried until it succeeds.
+
+.^|`Ignore`
+|Any hook failure should be ignored and the deployment should proceed.
+|===
+
+Hooks have a type-specific field that describes how to execute the hook.
+Currently, xref:pod-based-lifecycle-hook[pod-based hooks] are the only
+supported hook type, specified by the `execNewPod` field.
+
+[[pod-based-lifecycle-hook]]
+=== Pod-based Lifecycle Hook
+
+Pod-based lifecycle hooks execute hook code in a new pod derived from the
+template in a deployment configuration.
+
+The following simplified example deployment configuration uses the
+xref:rolling-strategy[Rolling strategy]. Triggers and some other minor details
+are omitted for brevity:
+
+====
+
+[source,yaml]
+----
+kind: DeploymentConfig
+apiVersion: v1
+metadata:
+  name: frontend
+spec:
+  template:
+    metadata:
+      labels:
+        name: frontend
+    spec:
+      containers:
+        - name: helloworld
+          image: openshift/origin-ruby-sample
+  replicas: 5
+  selector:
+    name: frontend
+  strategy:
+    type: Rolling
+    rollingParams:
+      pre:
+        failurePolicy: Abort
+        execNewPod:
+          containerName: helloworld <1>
+          command: [ "/usr/bin/command", "arg1", "arg2" ] <2>
+          env: <3>
+            - name: CUSTOM_VAR1
+              value: custom_value1
+          volumes:
+            - data <4>
+----
+<1> The `helloworld` name refers to `spec.template.spec.containers[0].name`.
+<2> This `command` overrides any `ENTRYPOINT` defined by the `openshift/origin-ruby-sample` image.
+<3> `env` is an optional set of environment variables for the hook container.
+<4> `volumes` is an optional set of volume references for the hook container.
+====
+
+In this example, the `pre` hook will be executed in a new pod using the
+*openshift/origin-ruby-sample* image from the *helloworld* container. The hook
+pod will have the following properties:
+
+* The hook command will be `/usr/bin/command arg1 arg2`.
+* The hook container will have the `CUSTOM_VAR1=custom_value1` environment variable.
+* The hook failure policy is `Abort`, meaning the deployment process will fail if the hook fails.
+* The hook pod will inherit the `data` volume from the deployment configuration pod.
+
+[[deployment-hooks-using-the-command-line]]
+=== Using the Command Line
+
+The `oc set deployment-hook` command can be used to set the deployment hook for
+a deployment configuration. For the example above, you can set the
+pre-deployment hook with the following command:
+
+----
+$ oc set deployment-hook dc/frontend --pre -c helloworld -e CUSTOM_VAR1=custom_value1 \
+  -v data --failure-policy=abort -- /usr/bin/command arg1 arg2
+----
