@@ -1,0 +1,613 @@
+[[dev-guide-application-promotion]]
+= Application Promotion
+{product-author}
+{product-version}
+:data-uri:
+:icons:
+:toc: macro
+:toc-title:
+:prewrap!:
+
+toc::[]
+
+== Overview
+
+Application promotion means moving an application through various runtime environments,
+typically with an increasing level of maturity.  For example, an application might start out in
+a development environment, then be promoted to a stage environment for further testing,
+before finally being promoted into a production environment.  As changes are introduced in
+the application, again the changes will start in development and be promoted through stage
+and production.
+
+The "application" today is more than just the source code written in Java, Perl, Python, Ruby,
+NodeJS, etc.  It is more now than the static web content, the integration scripts, the associated
+configuration for the language specific runtimes for the application.  It is more than the application
+specific archives consumed by those language specific runtimes.  In the context of {product-title},
+and its combined foundation of Kubernetes and Docker, additional application artifacts include:
+
+* Docker Images with their rich set of metadata and associated tooling
+* Environment Variables, which are injected into Containers for application use
+* API Objects (or Resource definitions) of {product-title}, which
+** are injected into Containers for application use
+** dictate how {product-title} manages Containers and Pods
+
+In examining how to promote applications in {product-title}, this topic will:
+
+* Elaborate on these new artifacts introduced to the application definition
+* Describe how you can demarcate the different environments for your application promotion pipeline
+* Discuss methodologies and tools for managing these new artifacts
+* Provide examples that apply the various concepts, constructs, methodologies, and tools to application promotion
+
+== Application Components
+
+=== Resource API Objects
+
+With regard to {product-title}/Kubernetes Resource definitions (the items newly introduced to the
+application inventory), there are a couple of key design points for these API Objects that are
+relevant to revisit when considering the topic of application promotion.
+
+First, as is highlighted throughout {product-title} documentation, every API Object can be expressed
+via either JSON or YAML, making it easy to manage these resource definitions via traditional source
+control and scripting
+
+Also, the API Objects are designed such that there are portions of the object which specify the desired
+state of the system, and other portions which reflect the *status* or current state of the system.  Inputs
+and outputs in other words.  The input portions, when expressed in JSON/YAML, in particular are items
+that fit naturally as source control managed (`*SCM*`) artifacts.
+
+
+[NOTE]
+====
+Remember, the input or specification portions of the API Objects can be totally static or dynamic in the
+sense that xref:../templates.adoc#writing-parameters[variable substitution via template processing] is
+possible on instantiation.
+====
+
+
+The result of these points with respect to API Objects is that with their expression as JSON or YAML files,
+you can treat the configuration of the application  as code.
+
+Conceivably almost any of the API Objects may be considered an application artifact by your organization.
+Listed below are the objects most commonly associated with deploying and managing an application:
+
+
+* `*BuildConfigs*`:  this is a special case resource in the context of application promotion.  While a BuildConfig is
+certainly a part of the application, especially from a developer’s perspective, typically the BuildConfig is not
+promoted through the pipeline.  It produces the Image which will get promoted (along with other items) through
+the pipeline.
+* `*Templates*`: in terms of application promotion, `*Templates*` can serve as the starting point for setting up
+Resources in a given staging environment, especially with the parameterization capabilities.  Additional
+post-instantiation modifications are very conceivable though when applications move through a promotion pipeline.
+See the examples section below for more on this.
+* `*Routes*`:  the most typical Resource that differs stage to stage in the application promotion pipeline, as tests
+against different stages of an application access that application via `*Route*`.  Also remember that you have
+options with regard to manual specification or auto-generation of host names, as well as the HTTP level security
+of the `*Route*`.
+* `*Services*`: if reasons exist to avoid `*Routers*` and `*Routes*` at given application promotion stages (perhaps
+for simplicity’s sake for individual developers at early stages), an application can be accessed via the `*Cluster*`
+IP address and port.  If so, some management of the address and port between stages could be warranted.
+* `*Endpoints*`:  certain application level services (database instances in many enterprises come to mind) may
+not be managed by {product-title}.  If so, then creating those `*Endpoints*` yourself, along with the necessary
+modifications to the associated `*Service*` (omitting the selector field on the `*Service*` are activities that are
+either duplicated or shared between stages (based on how you delineate your environment).
+* `*Secrets*`: the sensitive information encapsulated by `*Secrets*` are shared between staging environments
+when the corresponding entity (either a `*Service*` managed by {product-title} or an external service managed
+outside of {product-title}) the information pertains to is shared.  If there are different versions of said entity in
+different stages of your application promotion pipeline, it may be necessary to maintain a distinct Secret in each
+stage of the pipeline or to make modifications to it as it traverses through the pipeline.  Also take care that if you
+are storing the `*Secret*` as JSON/YAML in an `*SCM*`, some form of encryption to protect the sensitive
+information may be warranted.
+* `*DeploymentConfigs*`: this API Object is the primary resource for defining and scoping the environment for a
+given application promotion pipeline stage; it controls how your application starts up; while there are aspects of
+it that will be common across all the different stage, undoubtedly there will be modifications to this object as it
+progresses through your application promotion pipeline to reflect differences in the environments for each stage,
+or changes in behavior of the system to facilitate testing of the different scenarios your application has to support.
+* `*ImageStreams*`, `*ImageStreamTags*`, and `*ImageStreamImage*`: detailed below in the next section, these
+API Objects are central to the {product-title} additions around managing Docker Images.
+* `*ServiceAccounts*` and `*RoleBindings*`:  management of permissions to other API Objects within {product-title},
+as well as the external services of your enterprise, are intrinsic to managing your application, and similar to
+`*Secrets*`, can vary in how they are shared between the different stages of your application promotion pipeline
+based on how your enterprise needs to share or isolate those different environments.
+* `*PersistentVolumeClaims*`: relevant to stateful services like databases, how much these are shared between
+you different application promotion stages directly correlates to the how your organization shares or isolates the
+copies of your application data.
+* `*ConfigMaps*`: a useful decoupling of `*Pod*` configuration from the `*Pod*` itself (think of environment
+variable type of configuration), these can either be shared by the various staging environments when consistent
+`*Pod*` behavior is desired, or they can be modified between stages to alter `*Pod*` behavior (usually as different
+aspects of the application are vetted at different stages).
+
+
+=== Images
+
+As noted earlier, Images are now artifacts of your application.  In fact, of the new applications artifacts, Images,
+and the management of Images, are the key pieces with respect to application promotion.  In some cases,
+an Image might encapsulate the entirety of your application and the application promotion flow consists solely
+of managing the image.
+
+Images are not typically managed in a `*SCM*` system (just as application binaries were not in previous systems).
+However, just as binary, installable artifacts and corresponding repositories (i.e. RPMs, RPM repo's, Nexus, etc.)
+arose with similar semantics to `*SCMs*`, similar constructs and terminology around image management that
+are similar to `*SCMs*`have arisen:
+
+* image registry == SCM server
+* image repository == SCM repository
+
+As images reside in registries, application promotion will be concerned with ensuring the appropriate image
+exists in a registry that can be accessed from the environment that needs to run the application represented
+by that image.
+
+Rather than reference Images directly, application definitions will typically abstract the reference into an
+ImageStream.  This means the ImageStream will be another API resource object that makes up the application
+components.  For more details on ImageStreams, see: xref:../../architecture/core_concepts/builds_and_image_streams.adoc#writing-parameters[this section].
+
+=== Summary
+
+So now that the application artifacts of note, Images and API Objects, have been detailed in the context of
+application promotion within {product-title}, the notion of *where* you run your application in the various
+stages of your promotion pipeline is next the point of discussion.
+
+== Deployment Environments
+
+A deployment environment, in this context, describes a distinct space for an application to run
+during a particular stage of a CI/CD pipeline.  Typical environments include “development”,
+“test”, “stage”, and “production”.  The boundaries of an environment can be defined in
+different ways, for example:
+
+* Via labels and unique naming within a single `*Project*`
+* Via distinct `*Projects*` within a `*Cluster*`
+* Via distinct `*Clusters*`
+
+And it is conceivable that your organization leverages all three.
+
+=== Considerations
+
+Typically, you’ll consider the following heuristics in how you structure the deployment environments:
+
+* How much resource sharing the various stages of your promotion flow allow
+* How much isolation the various stages of your promotion flow require
+* How centrally located (or geographically dispersed) the various stages of your promotion flow are
+
+Also, some important reminders on how {product-title} clusters and projects relate to Docker Image Registries:
+
+* multiple `*Projects*` in the same `*Cluster*` can access the same `*ImageStreams*`
+* multiple `*Clusters*` can access the same external Docker registries
+* unless the {product-title} Internal Image Registry is exposed via a `*Route*`, `*Clusters*` cannot share a registry
+
+=== Summary
+
+Once deployment environments are defined, promotion flows with delineation of stages within
+a pipeline can be implemented.  The methods and tools for constructing those promotion flow
+implementations are the next point of discussion.
+
+== Methods and Tools
+
+Fundamentally application promotion is a process of moving the aforementioned application
+components from one environment to another.  The following subsections will outline tools
+that can be used to move the various components by hand, before advancing to discuss
+holistic solutions for automating application promotion.
+
+
+[NOTE]
+====
+There are a number of insertion points available during both the `*Build*` and `*Deployment*`
+processes.  They are defined within `*BuildConfig*` and `*DeploymentConfig*` API Objects.
+These hooks allow for the invocation of custom scripts which can interact with deployed
+components such as databases, and with the {product-title} cluster itself.  It is therefore possible
+to use these hooks to perform component management operations that effectively move
+applications between environments, e.g. by performing an image tag operation from within a hook.
+However, the various hook points are best suited to managing an application’s lifecycle within a
+given environment (e.g. using them to perform database schema migrations when a new version
+of the application is deployed), rather than to move application components between environments.
+====
+
+
+=== Managing API Objects / Resources
+
+Resources, as defined in one environment, will be exported as JSON/YAML file content in
+preparation for importing it into a new environment.  Therefore the expression of API
+Objects as JSON or YAML will serve as the unit of work as you promote API Objects through
+your application pipeline.  The `oc` command line interface will be used to export and import
+this content.
+
+pro-tip: while not required for promotion flows with {product-title}, with the JSON/YAML stored
+in files, you can consider storing and retrieving the content from a `*SCM*` system.  This allows
+you to leverage the versioning related capabilities of the `*SCM*`, including the creation of
+branches, and the assignment of and query on various labels or tags associated to versions.
+
+==== Exporting API Object State
+
+API Object specifications should be captured with `oc export`. This operation removes environment
+specific data from the object definitions (e.g. current namespace/assigned IP addresses) allowing them
+to be recreated in different environments (unlike `oc get` operations which output an unfiltered state of the object).
+
+Use of `oc label`, which allows for adding, modifying, or removing labels on API objects, can prove useful as you
+organize the set of object collected for promotion flows, since labels allow for selection and management of
+groups of pods in a single operation.  This will make it easier to export the correct set of objects and since
+the labels will carry forward when the objects are created in a new environment, they will also make for
+easier management of the application components in each environment.
+
+[NOTE]
+====
+API Objects often contain references such as a `*DeploymentConfig*` that references a `*Secret*`.
+When moving an API Object from one environment to another, you must ensure that such references
+are also moved to the new environment.
+Similarly, API Objects such as a `*DeploymentConfig*` often contain references to `*ImageStreams*`
+that reference an external registry.  When moving an API Object from one environment to another,
+you must ensure such references are resolvable within the new environment, meaning that the
+reference must be resolvable and the `*imageStream*` must reference an accessible docker
+registry in the new environment.  See the section on moving images as well as the section on promotion
+caveats for more details.
+====
+
+==== Importing API Object State
+
+===== Initial Creation
+
+The first time an application is being introduced into a new environment, it is sufficient to  take the
+JSON/YAML expressing the specifications of your API Objects and run `oc create` to create them
+in the appropriate environment.  When you using `oc create`, keep the `--save-config` option in
+mind.  Saving configuration elements on the object in its annotation list facilitates the later use
+of `oc apply` to modify the object.
+
+===== Iterative Modification
+
+Once the various staging environments are initially established, as promotion cycles commence
+and the application moves from stage to stage, the updates to your application can include
+modification of the API Objects that are part of the application.  Changes in these API Objects
+are conceivable since they represent the configuration for the {product-title} system.  Motivations
+for such changes include:
+
+* To account for environmental differences between staging environments
+* To verify various scenarios your application supports
+
+Transfer of the API Objects to the next stage’s environment is accomplished via use of the `oc` CLI.
+While a rich set of `oc` commands which modify API Objects exist, this topic will focus on `oc apply`
+which computes and applies differences between objects.  Specifically one can view it as a three
+way merge that takes in files or stdin as the input along with an existing object definition and
+performs a “three way merge” between i) the input into the command, ii) the current version of
+the object, and iii) the most recent user specified object definition stored as an annotation in the
+current object.  The existing object is then updated with the result.
+
+If further customization of the API objects is necessary, as in the case when the objects are not expected
+to be identical between the source and target environments, `oc` commands such as `oc set` can be
+used to modify the object after applying the latest object definitions from the upstream environment.
+
+Some specific usages will be cited in the examples section below.
+
+=== Managing Images / ImageStreams
+
+`*Images*` in {product-title} are managed via series of API Objects as well.  However, managing `*Images*`
+are so central to application promotion that discussion of the tools and API Objects most directly tied to
+`*Images*` warrant separate discussion.  Both manual and automated forms exist to assist you in managing
+image promotion (the propagation of images through your pipeline).
+
+==== Moving Images
+
+[NOTE]
+====
+For all the detailed caveats around managing Images, refer to ref:../../managing_images.adoc[the Managing Images section].
+====
+
+===== When staging environments share a Registry
+
+First, analogous to `docker tag` and `git tag`, the `oc tag` command allows you to update an {product-title}
+`*ImageStream*` with a reference to a specific image.  It also allows you to copy references to specific versions
+of an Image from one `*ImageStream*` to another, even across different `*Projects*` in a `*Cluster*`.
+
+Second, the `oc import-image` serves as a bridge between external registries and `*ImageStreams*`.
+It imports the metadata for a given `*Image*` from the registry and stores it into the `*ImageStream*` as
+an `*ImageStreamTag*`.  Various `*BuildConfigs*` and `*DeploymentConfigs*` in your `*Project*` can
+reference those specific `*Images*`.
+
+These two operations then are the basic means of *moving* your `*Images*` between the stages of your
+application promotion pipeline.
+
+===== When staging environments use different Registries
+
+The more advanced usage occurs when your staging environments leverage different {product-title}
+Registries.  The ref:../../install_config/registry/accessing_registry.adoc#access[Accessing the Registry Directly]
+section of the documentation spells out the steps in detail, but in summary you’ll leverage the docker
+command in conjunction which obtaining the {product-title} access token to supply into your `docker login`
+command.  Once logged into the {product-title} Registry, you can leverage `docker pull`, `docker tag`
+and `docker push` to transfer the image.
+
+Once the image is available in the registry of the next environment of your pipeline, you can then use `oc tag`
+as needed to populate any `*ImageStreams*`.
+
+==== Deployment
+
+Whether changing the underlying application image or the API objects that configure the application, a
+deployment is typically necessary to pick up the promoted changes.  If the images for you application
+change (such as due to an `oc tag` operation or a `docker push` as part of promoting an image from
+an upstream environment), `*ImageChangeTriggers*` on your `*DeploymentConfig*` can trigger the new
+`*Deployment*`.  Similarly, if the `*DeploymentConfig*` API object itself is being changed, a `*ConfigChangeTrigger*`
+can initiate a deployment when the API object is updated by the promotion step (e.g. oc apply).  
+
+Otherwise, the `oc` commands that facilitate manual deployment include:
+* `oc deploy`: the original method to view, start, cancel, or retry `*Deployments`*
+* `oc rollout`: the new approach to manage `*Deployments*`; includes pause/resume semantics, and richer features around managing history
+* `oc rollback`: allows for reversion to a previous deployment; in the promotion scenario, if testing of a new version encounters issues, confirming it still works with the previous version could be warranted
+
+==== Automating Promotion Flows with Jenkins
+
+Once you understand the components of your application that need to be moved between environments when
+promoting it and the steps required to move the components, you can start to orchestrate and automate the
+workflow.  To that goal, {product-title} provides a Jenkins image and plugins to help with this process.  The
+{product-title} Jenkins Image is detailed xref:../../../using_images/other_images/jenkins.adoc[here], including the set
+of {product-title} centric plugins that facilitate the integration of Jenkins, and Jenkins Pipelines.  Also, the Pipeline
+build strategy which is detailed xref:../../builds.adoc#pipeline-strategy-options[here].  facilitates the integration between
+Jenkins Pipelines and {product-title}.  All of these focus on enabling various aspects of `*CI/CD*`, including application promotion.
+
+So when moving beyond manual execution of application promotion steps, the Jenkins related features provided by {product-title} should be kept in mind:
+
+* {product-title} provides a Jenkins image that is heavily customized to greatly ease deployment in an {product-title} cluster.
+* The Jenkins image contains the OpenShift Pipeline plugin, which provides building blocks for implementing promotion workflows.
+These building blocks include the triggering of Jenkins jobs as `*ImageStreams*` change, as well as the triggering of `*Builds*`
+and `*Deployments*` within those jobs.
+* `*BuildConfigs*` employing the {product-title} Jenkins Pipeline build strategy enable execution of Jenkinsfile based Jenkins
+pipeline jobs Pipeline jobs. Pipeline jobs are the strategic direction within Jenkins for complex promotion flows and can
+leverage the steps provided by the OpenShift Pipeline Plugin.
+
+==== Promotion Caveats
+
+===== API Object References
+
+API Objects can reference other objects.  A common use for this is to have a DeploymentConfig that
+references an ImageStream but other reference relationships may also exist.  When copying an API Object
+from one environment to another, it’s critical that all references can still be resolved in the target
+environment.  There are a few reference scenarios to consider:
+
+* The reference is “local” to the project.  In this case the referenced object resides in the same project as
+the object that references it.  Typically the correct thing to do is to ensure that you copy the referenced
+object into the target environment in the same project as the object referencing it.
+* The reference is to an object in another project.  This is typical when an ImageStream in a shared project
+is used by multiple application projects (ref:../managing_images.html#allowing-pods-to-reference-images-across-projects[detailed here]).
+In this case, when copying the referencing object to the new environment, you must update the reference
+as needed so it can be resolved in the target environment.  That may mean:
+** Changing the project the reference points to, if the shared project has a different name in the target environment.
+** Moving the referenced object from the shared project into the local project in the target environment and updating
+the reference to point to the local project when moving the primary object into the target environment.
+** Some other combination of copying the referenced object into the target environment and updating references to it.
+
+In general the guidance is to consider objects referenced by the objects being copied to a new environment
+and ensure the references will be resolvable in the target environment.  If not, take appropriate action to
+fix the references and make the referenced objects available in the target environment.
+
+===== Image Registry References
+
+ImageStreams point to Docker Image Registry repositories  to indicate the source of the image they represent.
+When an ImageStream is moved from one environment to another, it is important to consider whether
+the registry/repository reference should also change:
+
+* if different image registries are used to assert isolation between a test environment and a production environment.
+* if different image repositories are used to separate test and production ready images
+
+If either of these are the case, the ImageStream will need to be modified when it is copied from the
+source environment to the target environment so that it resolves to the correct Docker image.  This is
+in addition to performing the steps described below to copy the image from one registry/repository to another.
+
+=== Summary
+
+Having defined the:
+
+* New application artifacts that make up a deployed application
+* Correlation of application promotion activities to tools and concepts provided by {product-title}
+* Integration between {product-title} and the `*CI/CD*` pipeline engine Jenkins
+
+Putting together examples of application promotion flows within {product-title} is the final step for this topic.
+
+== Scenarios and Examples
+
+Having defined the new application artifact components introduced by the Docker,
+Kubernetes, and {product-title} ecosystems, this section will now cover how to
+promote those components between environments using the mechanisms and
+tools provided by {product-title}.  Of the components making up an application,
+the Image is the primary artifact of note.  Taking that premise and extending it
+to application promotion, the core, fundamental application promotion pattern
+is image promotion, where the unit of work is the Image.  The vast majority of
+application promotion scenarios will entail management and propagation of the
+Image through the promotion pipeline.  Simpler scenarios solely deal with managing
+and propagating the Image through the pipeline.  As the promotion scenarios
+broaden in scope, the other application artifacts, most notably the
+API Objects / Resource, are included in the inventory of items managed and
+propagated through the pipeline.
+
+This topic will lay out some specific examples around promoting Images as well as
+API Objects / Resources, using both manual and automated approaches.
+
+
+But first, some notes on setting up the environment(s) for your application promotion pipeline.
+
+=== Setting up for Promotion
+
+After you have completed development of the initial revision of your application, the
+next logical step is to package up the contents of the application so that you can
+transfer to the subsequent staging environments of your promotion pipeline.
+
+First, group all the API Objects you view as transferrable and apply a common `label` to them:
+
+[source,yaml]
+----
+labels:
+  promotion-group: myapplication-name
+----
+
+As previously described, the `oc label` command facilitates the management of
+labels with your various API Objects.
+
+
+Pro-tip: if you initially define your API Objects in a {product-title} `*Template*`,
+you can easily ensure all related objects have the common label you will use to
+query on when exporting in preparation for a promotion.
+
+
+You can then leverage that label on subsequent queries.  Here is an example set
+of `oc` command invocations that would then achieve the transfer of your application’s
+API Objects:
+
+----
+$ oc login source_environment
+$ oc project source_project
+$ oc export dc,is,svc,route,secret,sa -l promotion-group=myapplication-name  -o yaml > export.yaml
+$ oc login target_environment
+$ oc new-project target_project (or oc project target_project if it already exists)
+$ oc create -f export.yaml
+----
+
+
+[NOTE]
+====
+On the `oc export` command, whether or not you include the `is` type for `*ImageStreams*`
+will depend on how you choose to manage Images, `*ImageStreams*`, and Registries
+across the different environments in your pipeline.  The caveats around this are
+discussed below.  Also refer to ref:../../managing_images.adoc[the Managing Images section].
+====
+
+
+You’ll also want to get the tokens necessary to operate against each Registry used in the
+different staging environments in you promotion pipeline.  You can do that via:
+
+----
+$ oc login each_environment_with_a_unique_registry
+# get the access token
+$ oc whoami -t
+# copy/paste the token value for later use
+----
+
+=== (Repeatable) Promotion Process
+
+
+After the initial setup of the different staging environments for your pipeline, a set of
+repeatable steps to validate each iteration of your application through the
+promotion pipeline can commence.  These steps are taken each time the image
+or API objects in the source environment are changed:  move updated images,
+move updated API objects, apply environment specific customizations.
+
+The first step typically will be promoting any updates to the image(s) associated with your
+application to the next stage in the pipeline.  As was noted above, the key differentiator in
+promoting Images is whether the {product-title} Registry is shared or not between staging
+environments.
+
+
+If shared, simply leverage `oc tag`:
+
+----
+$ oc tag <project for stage N>/<image stream name for stage N>:<tag for stage N> <project for stage N+1>/<image stream name for stage N+1>:<tag for stage N+1>
+----
+
+If not shared, you are now ready to leverage the access tokens for each of your promotion
+pipeline registries as you log into both the source and destination registries, pulling, tagging,
+and pushing your application images accordingly:
+
+----
+$ docker login -u <username> -e <any_email_address> -p <token_value> <src_env_registry_ip>:<port>
+# pull your application’s image
+$ docker pull <src_env_registry_ip>:<port>/<namespace>/<image name>:<tag>
+# tag your application’s image to the destination registry’s location, updating namespace, name, and tag as needed to conform to the destination staging environment
+$ docker tag <src_env_registry_ip>:<port>/<namespace>/<image name>:<tag> <dest_env_registry_ip>:<port>/<namespace>/<image name>:<tag>
+# log into the destination staging environment registry
+$ docker login -u <username> -e <any_email_address> -p <token_value> <dest_env_registry_ip>:<port>
+# push image to destination
+$ docker push <dest_env_registry_ip>:<port>/<namespace>/<image name>:<tag>
+----
+
+Pro-tip:  to automatically import new versions of an Image from an external registry, the
+`oc tag` command has a `--scheduled` option.  If employed, the Docker image the
+`*ImageStreamTag*` references will be periodically pulled from the registry hosting
+the Image.
+
+
+Next, there are the cases where the evolution of your application necessitates
+fundamental changes to your API Objects or additions/deletions from the set of
+API objects that make up the application.  When such evolution in your application’s
+API Objects occurs, the {product-title} CLI provides a broad range of options to
+transfer to changes from one staging environment to the next.
+
+You’ll start in the same fashion as you did when you initially set up your promotion pipeline:
+----
+$ oc login source_environment
+$ oc project source_project
+$ oc export dc,is,svc,route,secret,sa -l template=myapplication-template  -o yaml > export.yaml
+$ oc login target_environment
+$ oc target_project
+----
+
+
+However, rather than simply creating the resources in the new environment, you’ll update them.
+
+The more conservative approach is to leverage `oc apply` and merge the new changes to each
+API Object in the target environment.  In doing so, you can `--dry-run=true` option and examine
+the resulting objects prior to actually changing the objects.
+
+----
+$ oc apply -f export.yaml --dry-run=true
+----
+
+If satisfied, run it for real.
+
+----
+$ oc apply -f export.yaml
+----
+
+The apply command optionally takes additional arguments that help with more complicated
+scenarios.  See the command line help for the `oc` command and documentation for the
+`oc` command for more details.
+
+The simpler but more aggressive approach is to leverage `oc replace` (which is also synonymous
+with `oc update`).
+
+There is no dry run with this update/replace.  So in the most basic form, you’ll execute:
+
+----
+$ oc replace -f export.yaml
+----
+
+As with apply, replace optionally takes additional arguments for more sophisticated behavior.
+See the command line help for details.
+
+The above steps will automatically handle new API objects that were introduced, but if API
+Objects were deleted from the source environment, they will need to be manually deleted
+from the target environment using `oc delete`.
+
+Tuning of the environment variables cited on any of the API Objects may be necessary as
+the desired values for those may differ between staging environments.  For this, leverage
+`oc set env`:
+
+----
+$  oc set env <api object type>/<api object ID> <env var name>=<env var value>
+----
+
+Finally, trigger a new deployment of the updated application using the `oc rollout`
+command or one of the other mechanisms discussed in the Deployments section above.
+
+=== (Repeatable) Promotion Process - pulling in Jenkins into the Process
+
+The link:https://github.com/openshift/jenkins/blob/master/2/contrib/openshift/configuration/jobs/OpenShift%20Sample/config.xml[“OpenShift Sample”] job
+defined in the link:https://github.com/openshift/jenkins[Jenkins Docker Image] for {product-title} is an
+example of image promotion within {product-title} within the constructs of Jenkins.  Setup for this sample is
+located link:https://github.com/openshift/origin/blob/master/examples/jenkins/README.md[here].
+
+
+This sample includes:
+
+* Use of Jenkins as the `*CI/CD*` engine
+* Use of the OpenShift Pipeline plugin for Jenkins:  This plugin provides a subset of the functionality
+provided by the `oc` CLI for {product-title} packaged as Jenkins Freestyle and DSL Job steps.  Note,
+the `oc` binary is also included in the Jenkins Docker Image for {product-title}, and can also be used
+to interact with {product-title} in Jenkins jobs.
+* The {product-title} provided templates for Jenkins:  There is a template for both [ephemeral]
+and [persistent] storage. 
+* A sample application: defined link:https://github.com/openshift/origin/blob/master/examples/jenkins/application-template.json[here],
+this application leverages `*ImageStreams*`, `*ImageChangeTriggers*`, `*ImageStreamTags*`, `*BuildConfigs*`, and separate
+`*DeploymentConfigs*` and `*Services*` corresponding to different stages in the promotion pipeline.
+
+Now let’s examine the various pieces of the “OpenShift Sample” job:
+
+* link:https://github.com/openshift/jenkins/blob/master/2/contrib/openshift/configuration/jobs/OpenShift%20Sample/config.xml#L15-L21[The first step] is the equivalent of an `oc scale dc frontend --replicas=0` call.  This step is intended to bring down any previous versions of the application image that may be running.
+* link:https://github.com/openshift/jenkins/blob/master/2/contrib/openshift/configuration/jobs/OpenShift%20Sample/config.xml#L23-L29[The second step] is the equivalent of an `oc start-build frontend` call.
+* link:https://github.com/openshift/jenkins/blob/master/2/contrib/openshift/configuration/jobs/OpenShift%20Sample/config.xml#L31-L39[The third step] is the equivlaent of an `oc deploy frontend --latest` or `oc rollout latest dc/frontend` call.
+* link:https://github.com/openshift/jenkins/blob/master/2/contrib/openshift/configuration/jobs/OpenShift%20Sample/config.xml#L41-47[The fourth step] is the “test” for this sample.  It insures that the associated service for this application is in fact accessible from a network perspective.  Under the covers, a socket
+connection is attempted against the IP address and port associated with the {product-title} `*Service*`.  Of course, additional tests can be added (if not via OpenShift Pipepline plugin steps, then via use of the Jenkins Shell step to leverage OS level commands and scripts to test your application).
+* link:https://github.com/openshift/jenkins/blob/master/2/contrib/openshift/configuration/jobs/OpenShift%20Sample/config.xml#L49-L61[The fifth step] commences under that assumption that the testing of your application passed and hence intends to mark the image as “ready”.  In this step, we create a new *prod*
+tag for the application image off of the *latest* image.  With the link:https://github.com/openshift/origin/blob/master/examples/jenkins/application-template.json#L75-L87[the “frontend” `*DeploymentConfig*` having an `*ImageChangeTrigger*` defined for that tag], the corresponding “production” deployment will be launched.
+* link:https://github.com/openshift/jenkins/blob/master/2/contrib/openshift/configuration/jobs/OpenShift%20Sample/config.xml#L63-L73[The sixth and last step] is a verification step, where the plugin confirms that {product-title} launched the desired number of replicas for the “production” `*Deployment*`.
