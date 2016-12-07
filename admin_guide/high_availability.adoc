@@ -11,37 +11,51 @@
 toc::[]
 
 == Overview
-This topic describes how to set up highly-available services on your OpenShift
-cluster.
+This topic describes setting up high availability for pods and services on your {product-title} cluster.
 
-The Kubernetes
-xref:../architecture/core_concepts/deployments.adoc#replication-controllers[replication
-controller] ensures that the deployment requirements, in particular the number
-of replicas, are satisfied when the appropriate resources are available. When
-run with two or more replicas, the
-xref:../architecture/core_concepts/routes.adoc#routers[router] can be resilient
-to failures, providing a highly-available service. Depending on how the router
-instances are discovered (via a service, DNS entry, or IP addresses), this could
-impose operational requirements to handle failure cases when one or more router
-instances are "unreachable".
+IP failover manages a pool of Virtual IP (VIP) addresses on a set of nodes. Every VIP in the set will be serviced by a node selected from the set. As long a single node is available, the VIPs will be served. There is no way to explicitly distribute the VIPs over the nodes. so there may be nodes with no VIPs and other nodes with many VIPs. If there is only one node, all VIPs will be on it.
 
-For some IP-based traffic services, virtual IP addresses (VIPs) should always be
-serviced for as long as a single instance is available. This simplifies the
-operational overhead and handles failure cases gracefully.
+[NOTE]
+====
+The VIPs must be routable from outside the cluster.
+====
 
-IMPORTANT: Even though
-a service is highly available, performance can still be affected.
+IP failover monitors a port on each VIP to determine whether the port is reachable on the node. If the port is not reachable, the VIP will not be assigned to the node. If the port is set to `0`, this check is suppressed.
+IP failover uses link:http://www.keepalived.org/[*Keepalived*] to host a set of externally accessible VIP addresses on a set of hosts. Each VIP is only serviced by a single host at a time. *Keepalived* uses the VRRP protocol to determine which host (from the set of hosts) will service which VIP. If a host becomes unavailable or if the service that *Keepalived* is watching does not respond, the VIP is switched to another host from the set. Thus, a VIP is always serviced as long as a host is available.
 
-Use cases for high-availability include:
+{product-title} supports creation of IP failover deployment configration, by running the `oadm ipfailover` command. The IP failover deployment configration specifies the set of VIP addresses, and the set of nodes on which to service them. A cluster can have multiple IP failover deployment configurations, with each managing its own set of unique VIP addresses. Each node in the IP failover configuration runs an ipfailover pod, and this pod runs *Keepalived*.
 
-* I want my cluster to be assigned a resource set and I want the cluster to automatically manage those resources.
-* I want my cluster to be assigned a set of VIPs that the cluster manages and migrates (with zero or minimal downtime) on failure conditions, and I should not be required to perform any manual interactions to update the upstream "discovery" sources (e.g., DNS). The cluster should service all the assigned VIPs when at least a single node is available, despite the current available resources not being sufficient to reach the desired state.
+When using VIPs to access a pod with host networking (e.g. a router), the application pod should be running on all nodes that are running the ipfailover pods. This enables any of the ipfailover nodes to become the master and service the VIPs when needed. If application pods are not running on all nodes with ipfailover, either some ipfailover nodes will never service the VIPs or some application pods will never receive any traffic. Use the same selector and replication count, for both ipfailover and the application pods, to avoid this mismatch.
 
+While using VIPs to access a service, any of the nodes can be in the ipfailover set of nodes, since the service is reachable on all nodes (no matter where the application pod is running). Any of the ipfailover nodes can become master at any time. The service can either use external IPs and a service port or it can use a nodePort.
+
+When using external IPs in the service definition the VIPs are set to the external IPs and the ipfailover monitoring port is set to the service port.  A nodePort is open on every node in the cluster and the service will load balance traffic from whatever node currently supports the VIP. In this case, the ipfailover monitoring port is set to the nodePort in the service definition.
+
+[IMPORTANT]
+====
+Setting up a nodePort is a privileged operation.
+====
+
+[IMPORTANT]
+====
+Even though a service VIP is highly available, performance can still be affected. *keepalived* makes sure that each of the VIPs is serviced by some node in the configuration, and several VIPs may end up on the same node even when other nodes have none. Strategies that externally load balance across a set of VIPs
+may be thawed when ipfailover puts multiple VIPs on the same node.
+====
+
+When you use ingressIP, you can set up ipfailover to have the same VIP range as the ingressIP range. You can also disable the
+monitoring port. In this case, all the VIPs will appear on same node in the cluster. Any user can set up a service with an ingressIP and have it highly available.
+
+[IMPORTANT]
+====
+There are a maximum of 255 VIPs in the cluster.
+====
+
+////
 You can configure a highly-available router or network setup by running multiple
 instances of the pod and fronting them with a balancing tier. This can be
 something as simple as DNS round robin, or as complex as multiple load-balancing
 layers.
-////
+
 === DNS Round Robin [[dns-round-robin]]
 
 As a simple example, you can create a zone file for a DNS server, such as BIND,
@@ -153,19 +167,34 @@ $ ping hello-openshift.shard1.v3.rhcloud.com
 [[configuring-ip-failover]]
 == Configuring IP Failover
 
-Using IP failover involves switching IP addresses to a redundant or stand-by
-set of nodes on failure conditions.
+Use the `oadm ipfailover` command with suitable xref:../admin_guide/high_availability.adoc#options-environment-variables[options], to create ipfailover deployment configuration.
 
-The `oadm ipfailover` command helps set up the VIP failover configuration. As
-an administrator, you can configure IP failover on an entire cluster, or on a
-subset of nodes, as defined by the labeled selector. If you are running in
-production, match the labeled selector with at least two nodes to ensure you
-have failover protection and provide a `--replicas=<n>` value that matches the
-number of nodes for the given labeled selector:
+[IMPORTANT]
+====
+Currently, ipfailover is not compatible with cloud
+infrastructures. For AWS, an Elastic Load Balancer (ELB) can be used to make {product-title} highly available,
+link:http://docs.aws.amazon.com/ElasticLoadBalancing/latest/DeveloperGuide/elb-getting-started.html[using
+the AWS console].
+====
+
+As an administrator, you can configure ipfailover on an entire cluster, or on a subset of nodes, as defined by the label selector. You can also configure multiple IP failover deployment configrations in your cluster,  where each one is independent of the others. The `oadm ipfailover` command creates a ipfailover deployment configration which ensures that a failover pod runs on each of the nodes matching the constraints or the label used. This pod runs link:http://www.keepalived.org/[*Keepalived*] which uses VRRP (Virtual Router Redundancy Protocol) among all the *Keepalived* daemons to ensure that the service on the watched port is available, and if it is not, *Keepalived* will automatically float the VIPs.
+
+For production use, make sure to use a `--selector=<label>` with at least two nodes to select
+the nodes. Also, set a `--replicas=<n>` value that matches the
+number of nodes for the given labeled selector.
+
+The `oadm ipfailover` command includes command line options that set environment
+variables that control *Keepalived*. The
+xref:../admin_guide/high_availability.adoc#options-environment-variables[environment variables]
+start with `OPENSHIFT_HA_*` and they can be changed as needed.
+
+For example, the command below will create an IP failover configuration on a selection of nodes labeled `router=us-west-ha` (on 4 nodes with 7 virtual IPs monitoring a service
+listening on port 80, such as the router process).
 
 ----
-$ oadm ipfailover [<Ip_failover_config_name>] <options> --replicas=<n>
+$ oadm ipfailover --selector="router=us-west-ha" --virtual-ips="1.2.3.4,10.1.1.100-104,5.6.7.8" --watch-port=80 --replicas=4 --create
 ----
+
 
 ////
 You can view what the configuration configuration that would look like
@@ -197,16 +226,12 @@ The list of command options described here are a subset that are relevant to thi
             <number> = a number ([0-9]*).
 ////
 
-The `oadm ipfailover` command ensures that a failover pod runs on each of
-the nodes matching the constraints or label used. This pod uses VRRP (Virtual
-Router Redundancy Protocol) with link:http://www.keepalived.org/[Keepalived] to ensure that the service on the
-watched port is available, and, if needed, Keepalived will automatically float
-the VIPs if the service is not available.
+[[virtual-ips]]
+=== Virtual IP Addresses
+*Keepalived* manages a set of virtual IP addresses. The administrator must make sure that all these addresses:
 
-[[configuring-a-highly-available-routing-service]]
-=== Configuring a Highly-available Routing Service
-The following steps describe how to set up a highly-available router environment
-with IP failover:
+* Are accessible on the configured hosts from outside the cluster.
+* Are not used for any other purpose within the cluster.
 
 *Keepalived* on each node determines whether the needed service is running. If it is, VIPs are supported and *Keepalived* participates in the negotiation to determine which node will serve the VIP. For a node to participate, the service must be listening on the watch port on a VIP or the check must be disabled.
 
@@ -215,80 +240,20 @@ with IP failover:
 Each VIP in the set may end up being served by a different node.
 ====
 
-[[check-notify]]
-=== Check and Notify Scripts
+[[kepalived-multicast]]
+=== Keepalived Multicast
+{product-title}'s ipfailover internally uses *keepalived*. 
 
-The *keepalived* port monitoring feature supports one or two scripts that are
-run on a configured interval to verify that the application is available. The
-default script uses a simple
-xref:../install_config/install/prerequisites.adoc#required-ports[TCP
-connection] to verify that the application is running. This test is suppressed
-when the monitoring port is set to `0`. The administrator can supply an
-additional script that does the needed verification. For example, the script can
-test a web server by issuing a request and verifying the response. The script
-must exit with `0` for *PASS* and `1` for *FAIL*.
-
-The administrator provides the additional script, via the
-`--check-script=<script>` option. By default, the check is done every two
-seconds, but can be changed using the `--check-interval=<seconds>` option.
-
-For each VIP, *keepalived* keeps the state of the node. The VIP on the node may
-be in *MASTER*, *BACKUP*, or *FAULT* state. All VIPs on the node that are not in
-the *FAULT* state participate in the negotiation to decide which will be
-*MASTER* for the VIP. All of the losers enter the *BACKUP* state. When the
-*check* script on the *MASTER* fails, the VIP enters the *FAULT* state and
-triggers a renegotiation. When the *BACKUP* fails, the VIP enters the *FAULT*
-state. When the *check* script passes again on a VIP in the *FAULT* state, it
-exits *FAULT* and negotiates for *MASTER*. The resulting state is either
-*MASTER* or *BACKUP*.
-
-The administrator can provide an optional *notify* script, which is called
-whenever the state changes. *Keepalived* passes the following three parameters
-to the script:
-
-* `$1` - "GROUP"|"INSTANCE"
-* `$2` - Name of the group or instance
-* `$3` - The new state ("MASTER"|"BACKUP"|"FAULT")
-
-These scripts run in the IP failover pod and use the pod's file system, not the
-host file system. The options require the full path to the script. The
-administrator must make the script available in the pod to extract the results
-from running the *notify* script. The recommended approach for providing the
-scripts is to use a
-xref:../dev_guide/configmaps.adoc#dev-guide-configmaps[ConfigMap].
-
-The full path names of the *check* and *notify* scripts are added to the
-*keepalived* configuration file, *_ /etc/keepalived/keepalived.conf_*, which is
-loaded every time *keepalived* starts. The scripts can be added to the pod with
-a ConfigMap as follows.
-
-. Create the desired script and create a ConfigMap to hold it. The script
-has no input arguments and must return `0` for *OK* and `1` for *FAIL*.
-+
-The check script, *_mycheckscript.sh_*:
-+
-The following example defines a label as router instances that are servicing
-traffic in the US west geography *ha-router=geo-us-west*:
-+
+[IMPORTANT]
 ====
-----
-$ oc set env dc/ipf-ha-router \
-    OPENSHIFT_HA_CHECK_SCRIPT=/etc/keepalive/mycheckscript.sh
-$ oc volume dc/ipf-ha-router --add --overwrite \
-    --name=config-volume \
-    --mount-path=/etc/keepalive \
-    --source='{"configMap": { "name": "mycustomcheck"}}'
-----
+Please ensure that multicast is enabled on the nodes labeled above and they can accept network traffic for 224.0.0.18 (the VRRP multicast IP address).
 ====
 
-Before starting the *keepalived* daemon, the startup script verifies the
-`iptables` rule that allows multicast traffic to flow.  If there is no such
-rule, the startup script creates a new rule and adds it to the IP tables
-configuration.  Where this new rule gets added to the IP tables configuration
-depends on the `--iptables-chain=` option. If there is an `--iptables-chain=`
-option specified, the rule gets added to the specified chain in the option.
-Otherwise, the rule is added to the `INPUT` chain.
-
+Before starting the *keepalived* daemon, the startup script verifies the `iptables` rule that allows multicast traffic to flow. 
+If there is no such rule, the startup script creates a new rule and adds it to the iptables configuration. 
+Where this new rule gets added to the iptables configuration, depends on the `--iptables-chain=` option. 
+If there is an `--iptables-chain=` option specified, the rule gets added to the specified chain in the option; 
+otherwise the rule is added to the `INPUT` chain.
 
 [IMPORTANT]
 ====
@@ -297,7 +262,7 @@ The `iptables` rule must be present whenever there is one or more *keepalived* d
 
 The `iptables` rule can be removed after the last *keepalived* daemon terminates. The rule is not automatically removed.
 
-You can manually manage the `iptables` rule on each of the nodes. It only gets created when none is present (as long as ipfailover is not created with the -`-iptable-chain=""` option).
+You can manually manage the `iptables` rule on each of the nodes. It only gets created when none is present (as long as ipfailover is not created with the -`-iptable-chain=""` option).  
 
 [IMPORTANT]
 ====
@@ -306,6 +271,7 @@ You must ensure that the manually added rules persist after a system restart.
 Be careful since every *keepalived* daemon uses the VRRP protocol over multicast 224.0.0.18 to negotiate with its peers.  There must be a different VRRP-id (in the range 0..255) for
 xref:../admin_guide/high_availability.adoc#ha-vrrp-id-offset[each VIP].
 ====
+
 ----
 $ for node in openshift-node-{5,6,7,8,9}; do   ssh $node <<EOF
 
@@ -316,23 +282,83 @@ ifconfig $interface | grep -i MULTICAST
 echo "Check multicast groups ... "
 netstat -g -n | grep 224.0.0 | grep $interface
 
-echo "Optionally, add accept rule and persist it ... "
-sudo /sbin/iptables -I INPUT -i $interface -d 224.0.0.18/32 -j ACCEPT
-
-echo "Please ensure the above rule is added on system restarts."
-
 EOF
 done;
 ----
+
+[[options-environment-variables]]
+=== Command Line Options and Environment Variables
+
+.Command Line Options and Environment Variables
+[cols="1a,3a,1a,4a",options="header"]
+|===
+
+| Option | Variable Name | Default | Notes
+
+|`--watch-port`
+|`*OPENSHIFT_HA_MONITOR_PORT*`
+|80
+|The ipfailover pod tries to open a TCP connection to this port on each VIP. If connection is established, the service is considered to be running. If this port is set to 0, the test always passes.
+
+|`--interface`
+|`*OPENSHIFT_HA_NETWORK_INTERFACE*`
+|
+|The interface name for the ip failover to use, to send VRRP traffic. By default, `eth0` is used.
+
+|`--replicas`
+|`*OPENSHIFT_HA_REPLICA_COUNT*`
+|2
+|Number of replicas to create. This must match `spec.replicas` value in ipfailover deployment configration.
+
+|`--virtual-ips`
+|`*OPENSHIFT_HA_VIRTUAL_IPS*`
+|
+|The list of IP address ranges to replicate. This must be provided. E.g., 1.2.3.4-6,1.2.3.9
+Please see xref:../admin_guide/high_availability.adoc#ha-vrrp-id-offset[this discussion] for more details.
+
+|`--vrrp-id-offset`
+|`*OPENSHIFT_HA_VRRP_ID_OFFSET*`
+|0
+|Please see xref:../admin_guide/high_availability.adoc#ha-vrrp-id-offset[VRRP Id Offset] discussion for more details.
+
+|`--iptables-chain`
+|`*OPENSHIFT_HA_IPTABLES_CHAIN*`
+|INPUT
+|The name of the iptables chain, to automatically add an `iptables` rule to allow the VRRP traffic on. If the value is not set, an `iptables` rule will not be added. If the chain does not exist, it is not created.
+
+|===
+
+[[ha-vrrp-id-offset]]
+=== VRRP Id Offset
+Each ipfailover pod managed by the ipfailover deployment configration (1 pod per node/replica) runs a *keepalived* daemon. As more ipfailover deployment configrations are configured, more pods are created and more daemons join into the common VRRP negotiation. This negotiation is done by all the *keepalived* daemons and it determines which nodes will service which VIPs.
+
+Internally, *keepalived* assigns a unique vrrp-id to each VIP. The negotiation uses this set of vrrp-ids, when a decision is made, the VIP corresponding to the winning vrrp-id is serviced on the winning node.
+
+Therefore, for every VIP defined in the ipfailover deployment configration, the ipfailover pod must assign a corresponding vrrp-id. This is done by starting at `--vrrp-id-offset` and sequentially assigning the vrrp-ids to
+the list of VIPs.  The vrrp-ids may have values in the range 1..255.
+
+When there are multiple ipfailover deployment configration care must be taken to specify `--vrrp-id-offset` so that there is room to increase the number of VIPS in the deployment configration and none of the vrrp-id ranges overlap.
+
+[[configuring-a-highly-available-service]]
+=== Configuring a Highly-available Service
+The following steps describe how to set up highly-available *router* and *geo-cache* network services with IP failover on a set of nodes.
+
+. Label the nodes that will be used for the services. This step can be optional if you run the services on all the nodes in your {product-title} cluster and will use VIPs that can
+float within all nodes in the cluster.
++
+The following example defines a label for nodes that are servicing
+traffic in the US west geography *ha-svc-nodes=geo-us-west*:
++
+====
+----
+$ oc label nodes openshift-node-{5,6,7,8,9} "ha-svc-nodes=geo-us-west"
+----
 ====
 
-. Depending on your environment policies, you can either reuse the *router*
-service account created previously or create a new *ipfailover* service account.
+. Create the service account. You can use ipfailover or when using
+a router (depending on your environment policies), you can either reuse the *router* service account created previously or a new ipfailover service account.
 +
-Ensure that either the *router* service account exists as described in
-xref:../install_config/router/index.adoc#install-config-router-overview[Deploying a Router] or create
-a new *ipfailover* service account. The example below creates a new service
-account with the name *ipfailover* in the *default* namespace:
+The example below creates a new service account with the name ipfailover in the *default* namespace:
 +
 ====
 ----
@@ -340,7 +366,7 @@ $ oc create serviceaccount ipfailover -n default
 ----
 ====
 
-. Add the *ipfailover* service account in the *default* namespace to the *privileged* SCC:
+. Add the ipfailover service account in the *default* namespace to the *privileged* SCC:
 +
 ====
 ----
@@ -348,9 +374,14 @@ $ oadm policy add-scc-to-user privileged system:serviceaccount:default:ipfailove
 ----
 ====
 
-. Start the router with at least two replicas on nodes matching the labels used
-in the first step. The following example runs three instances using the
-*ipfailover* service account:
+. Start the *router* and the *geo-cache* services.
++
+[IMPORTANT]
+====
+Since the ipfailover runs on all nodes from step 1, it is recommended to also run the router/service on all the step 1 nodes.
+====
++
+.. Start the router with the nodes matching the labels used in the first step. The following example runs five instances using the ipfailover service account:
 +
 ifdef::openshift-enterprise[]
 ====
@@ -358,166 +389,124 @@ ifdef::openshift-enterprise[]
 $ oadm router ha-router-us-west --replicas=5 \
     --selector="ha-svc-nodes=geo-us-west" \
     --labels="ha-svc-nodes=geo-us-west" \
-    --service-account=ipfailover
-----
-====
-endif::[]
-ifdef::openshift-origin[]
-====
-----
-$ oadm router ha-router-us-west --replicas=5 \
-    --selector="ha-svc-nodes=geo-us-west" \
-    --labels="ha-svc-nodes=geo-us-west" \
-    --service-account=ipfailover
-----
-====
-endif::[]
-+
-[NOTE]
-====
-The above command runs fewer router replicas than available nodes, so
-that, in the chance of node failures, Kubernetes can still ensure three
-available instances until the number of available nodes labeled
-*ha-router=geo-us-west* is below three. Additionally, the router uses the host
-network as well as ports 80 and 443, so fewer number of replicas are running to
-ensure a higher Service Level Availability (SLA). If there are no constraints on
-the service being setup for failover, it is possible to target the service to
-run on one or more, or even all, of the labeled nodes.
-====
-
-. Finally, configure the VIPs and failover for the nodes labeled with
-*ha-router=geo-us-west* in the first step. Ensure the number of replicas match
-the number of nodes and that they satisfy the label setup in the first step. The
-name of the *ipfailover* configuration (*ipf-ha-router-us-west* in the example
-below) should be different from the name of the router configuration
-(*ha-router-us-west*) as both the router and *ipfailover* create deployment
-configuration with those names. Specify the VIPs addresses and the port number
-that *ipfailover* should monitor on the desired instances:
-+
-ifdef::openshift-enterprise[]
-====
-----
-$ oadm ipfailover ipf-ha-router-us-west \
-    --replicas=5 --watch-port=80 \
-    --selector="ha-router=geo-us-west" \
-    --virtual-ips="10.245.2.101-105" \
-    --iptables-chain="INPUT" \
-    --service-account=ipfailover --create
-----
-====
-endif::[]
-ifdef::openshift-origin[]
-====
-----
-$ oadm ipfailover ipf-ha-router-us-west \
-    --replicas=5 --watch-port=80 \
-    --selector="ha-router=geo-us-west" \
-    --virtual-ips="10.245.2.101-105" \
-    --iptables-chain="INPUT" \
-    --service-account=ipfailover --create
-----
-====
-endif::[]
-
-For details on how to dynamically update the virtual IP addresses for high
-availability, see
-xref:dynamically-updating-vips-for-a-highly-available-service[Dynamically
-Updating Virtual IPs for a Highly-available Service].
-
-=== Configuring a Highly-available Network Service [[ip-failover]]
-
-The following steps describe how to set up a highly-available IP-based network
-service with IP failover:
-
-. Label the nodes for the service. This step can be optional if you run the
-service on any of the nodes in your Kubernetes cluster and use VIPs that can
-float within those nodes. This process may already exist within a complex
-cluster, in that the nodes may be filtered by any constraints or requirements
-specified (e.g., nodes with SSD drives, or higher CPU, memory, or disk
-requirements, etc.).
-+
-The following example labels a highly-available cache service that is listening
-on port 9736 as *ha-cache=geo*:
-+
-Below is the `oadm ipfailover` command for the *geo-cache* service that is
-listening on port 9736. Since there are two `ipfailover` deployment
-configurations, the `--vrrp-id-offset` must be set so that each VIP gets its own
-offset. In this case, setting a value of `10` means that the
-`ipf-ha-router-us-west` can have a maximum of 10 VIPs (0-9) since
-`ipf-ha-geo-cache` is starting at 10.
-+
-ifdef::openshift-enterprise[]
-====
-----
-$ oadm ipfailover ipf-ha-geo-cache \
-    --replicas=5 --watch-port=9736 \
-    --selector="ha-svc-nodes=geo-us-west" \
-    --virtual-ips=10.245.3.101-105 \
-    --vrrp-id-offset=10 \
-    --service-account=ipfailover --create
-----
-====
-endif::[]
-ifdef::openshift-origin[]
-====
-----
-$ oadm ipfailover ipf-ha-geo-cache \
-    --replicas=4 --selector="ha-cache=geo" \
-    --virtual-ips=10.245.2.101-104 --watch-port=9736 \
-    --replicas=5 --watch-port=9736 \
-    --selector="ha-svc-nodes=geo-us-west" \
-    --virtual-ips=10.245.3.101-105 \
-    --vrrp-id-offset=10 \
-    --service-account=ipfailover --create
-----
-====
-endif::[]
-////
-+
-In the commands above, there are *ipfailover*, *router*, and *geo-cache* pods on
-each node. The set of VIPs for each ipfailover configuration must not overlap
-and they must not be used elsewhere in the external or cloud environments. The
-five VIP addresses in each example, `10.245.{2,3}.101-105` are served by the two
-ipfailover deployment configurations. IP failover dynamically selects which
-address is served on which node.
-+
-The administrator sets up external DNS to point to the VIP addresses knowing
-that all the *router* VIPs point to the same *router*, and all the *geo-cache*
-VIPs point to the same *geo-cache* service. As long as one node remains running,
-all the VIP addresses are served.
-
-. Deploy the ipfailover router to monitor postgresql listening on node
-port 32439 and the external IP address, as defined in the *postgresql-ingress*
-service:
-+
-====
-----
-$ oadm ipfailover ipf-ha-postgresql \
-    --replicas=1 <1> --selector="app-type=postgresql" <2> \
-    --virtual-ips=10.9.54.100 <3> --watch-port=32439 <4>  \
     --credentials=/etc/origin/master/openshift-router.kubeconfig \
+    --service-account=ipfailover
+----
+====
+endif::[]
+
+ifdef::openshift-origin[]
+====
+----
+$ oadm router ha-router-us-west --replicas=5 \
+    --selector="ha-svc-nodes=geo-us-west" \
+    --labels="ha-svc-nodes=geo-us-west" \
+    --credentials="$KUBECONFIG" \
+    --service-account=ipfailover
+----
+====
+endif::[]
++
+.. Run the *geo-cache* service with a replica on each of the nodes. An example configuration for running a *geo-cache* service https://raw.githubusercontent.com/openshift/openshift-docs/master/admin_guide/examples/geo-cache.json[is
+provided here].
++
+[IMPORTANT]
+====
+Make sure that you replace the *myimages/geo-cache* Docker image referenced in the
+file with your intended image. Change the number of replicas to the
+number of nodes in the *geo-cache* label. Check that the label matches the one used in the first step.
+====
++
+----
+$ oc create -n <namespace> -f ./examples/geo-cache.json
+----
+
+. Configure ipfailover for the *router* and *geo-cache* services. Each has its own VIPs and both use the same nodes labeled with *ha-svc-nodes=geo-us-west* in the first step. Please ensure that the number of replicas match the number of nodes listed in the label setup, in the first step.
++
+[IMPORTANT]
+====
+The *router*, *geo-cache*, and ipfailover all create deployment configration and all must have different names.
+====
+
+. Specify the VIPs and the port number that ipfailover should monitor on the desired instances.
++
+Below is the ipfailover command for the *router*.
++
+ifdef::openshift-enterprise[]
+====
+----
+$ oadm ipfailover ipf-ha-router-us-west \
+    --replicas=5 --watch-port=80 \
+    --selector="ha-svc-nodes=geo-us-west" \
+    --virtual-ips="10.245.2.101-105" \
+    --credentials=/etc/origin/master/openshift-router.kubeconfig \
+    --iptables-chain="INPUT" \
     --service-account=ipfailover --create
 ----
-<1> Specifies the number of instances to deploy.
-<2> Restricts where the ipfailover is deployed.
-<3> Virtual IP address to monitor.
-<4> Port on which ipfailover will monitor on each node.
 ====
+endif::[]
+ifdef::openshift-origin[]
+====
+----
+$ oadm ipfailover ipf-ha-router-us-west \
+    --replicas=5 --watch-port=80 \
+    --selector="ha-svc-nodes=geo-us-west" \
+    --virtual-ips="10.245.2.101-105" \
+    --credentials="$KUBECONFIG" \
+    --iptables-chain="INPUT" \
+    --service-account=ipfailover --create
+----
+====
+endif::[]
+
++
+Below is ipfailover command for the *geo-cache* service that is listening on port 9736.  Since there are two ipfailover deployment configration the `--vrrp-id-offset` must be set, so that each VIP gets its own offset. In this case, setting a value of 10 means that the `ipf-ha-router-us-west` can have a maximum of 10 VIPs (0-9) since `ipf-ha-geo-cache`
+is starting at 10.
++
+ifdef::openshift-enterprise[]
+====
+----
+$ oadm ipfailover ipf-ha-geo-cache \
+    --replicas=5 --watch-port=9736 \
+    --selector="ha-svc-nodes=geo-us-west" \
+    --virtual-ips=10.245.3.101-105 \
+    --credentials=/etc/origin/master/openshift-router.kubeconfig \
+    --vrrp-id-offset=10 \
+    --service-account=ipfailover --create
+----
+====
+endif::[]
+ifdef::openshift-origin[]
+====
+----
+$ oadm ipfailover ipf-ha-geo-cache \
+    --replicas=5 --watch-port=9736 \
+    --selector="ha-svc-nodes=geo-us-west" \
+    --virtual-ips=10.245.3.101-105 \
+    --credentials="$KUBECONFIG" \
+    --vrrp-id-offset=10 \
+    --service-account=ipfailover --create
+----
+====
+endif::[]
+
++
+In the commands above, there are ipfailover, *router*, and *geo-cache* pods on each node. The set of VIPs for each ipfailover configuration must not overlap and they must not be used elsewhere in the external or cloud environments.
+The five VIP addresses in each example, 10.245.{2,3}.101-105, are served by the twoipfailover deployment configration.
+IP failover dynamically selects which address is served on which node.
++
+The admin sets up external DNS to point to the VIP addresses knowing that all the *router* VIPs point to the same *router*, and all the *geo-cache* VIPs point to the same *geo-cache* service. As long as one node
+remains running, all the VIP addresses are served.
 
 [[dynamically-updating-vips-for-a-highly-available-service]]
 === Dynamically Updating Virtual IPs for a Highly-available Service
 
-The default deployment strategy for the IP failover service is to recreate
-the deployment. In order to dynamically update the virtual IPs for a highly
-available routing service with minimal or no downtime, you must:
+The default deployment strategy for the IP failover service is to recreate the deployment. In order to dynamically update the VIPs for a highly available routing service with minimal or no downtime, you must:
 
-- update the IP failover service deployment configuration to use a rolling update
-strategy, and
-- update the `*OPENSHIFT_HA_VIRTUAL_IPS*` environment variable with the updated
-list or sets of virtual IP addresses.
+- Update the IP failover service deployment configuration to use a rolling update strategy, and
+- Update the `OPENSHIFT_HA_VIRTUAL_IPS` environment variable with the updated list or sets of virtual IP addresses.
 
-The following example shows how to dynamically update the deployment strategy
-and the virtual IP addresses:
+The following example shows how to dynamically update the deployment strategy and the virtual IP addresses:
 
 . Consider an IP failover configuration that was created using the following:
 +
@@ -526,7 +515,7 @@ ifdef::openshift-enterprise[]
 ----
 $ oadm ipfailover ipf-ha-router-us-west \
     --replicas=5 --watch-port=80 \
-    --selector="ha-router=geo-us-west" \
+    --selector="ha-svc-nodes=geo-us-west" \
     --virtual-ips="10.245.2.101-105" \
     --service-account=ipfailover --create
 ----
@@ -537,7 +526,7 @@ ifdef::openshift-origin[]
 ----
 $ oadm ipfailover ipf-ha-router-us-west \
     --replicas=5 --watch-port=80 \
-    --selector="ha-router=geo-us-west" \
+    --selector="ha-svc-nodes=geo-us-west" \
     --virtual-ips="10.245.2.101-105" \
     --service-account=ipfailover --create
 ----
@@ -559,7 +548,7 @@ $ oc edit dc/ipf-ha-router-us-west
 spec:
   replicas: 5
   selector:
-    ha-router: geo-us-west
+    ha-svc-nodes: geo-us-west
   strategy:
     recreateParams:
       timeoutSeconds: 600
@@ -579,3 +568,24 @@ additional virtual IP addresses:
 ----
 <1> `10.245.2.110,10.245.2.201-205` have been added to the list.
 ====
+
+. Update the external DNS to match the set of VIPs.
+
+[[cluster-ip-nodeport]]
+== Configuring Service ExternalIP and NodePort
+
+The user can assign VIPs as
+xref:../dev_guide/getting_traffic_into_cluster.adoc#using-externalIP[ExternalIPs]
+in a service. *Keepalived* makes sure that each VIP is served on some node in the ipfailover configuration. When a request arrives on the node, the service that is running on all nodes in the cluster, load balances the request among the service's endpoints.
+
+The xref:../dev_guide/getting_traffic_into_cluster.adoc#using-nodeport[NodePorts] can be set to the ipfailover watch port so that *keepalived* can check the application is running.  The NodePort is exposed on all nodes in the cluster, therefore it is available to *keepalived* on all ipfailover nodes.
+
+
+[[cluster-ha-ingressIP]]
+== High Availability For IngressIP
+
+In non-cloud clusters, ipfailover and xref:../architecture/core_concepts/pods_and_services.adoc#service-ingressip[ingressIP] to a service can be combined. The result is high availability services for users that create services using ingressIP.
+
+The approach is to specify an `ingressIPNetworkCIDR` range and then use the same range in creating the ipfailover configuration.
+
+Since, ipfailover can support up to a maximum of 255 VIPs for the entire cluster, the `ingressIPNetworkCIDR` needs to be `/24` or less.
