@@ -20,8 +20,9 @@ IP failover manages a pool of Virtual IP (VIP) addresses on a set of nodes. Ever
 The VIPs must be routable from outside the cluster.
 ====
 
-IP failover monitors a port on each VIP to determine whether the port is reachable on the node. If the port is not reachable, the VIP will not be assigned to the node. If the port is set to `0`, this check is suppressed.
-IP failover uses link:http://www.keepalived.org/[*Keepalived*] to host a set of externally accessible VIP addresses on a set of hosts. Each VIP is only serviced by a single host at a time. *Keepalived* uses the VRRP protocol to determine which host (from the set of hosts) will service which VIP. If a host becomes unavailable or if the service that *Keepalived* is watching does not respond, the VIP is switched to another host from the set. Thus, a VIP is always serviced as long as a host is available.
+IP failover monitors a port on each VIP to determine whether the port is reachable on the node. If the port is not reachable, the VIP will not be assigned to the node. If the port is set to `0`, this check is suppressed. xref:../admin_guide/high_availability.adoc#check-notify[check script] that can do whatever testing is needed.
+
+IP failover uses link:http://www.keepalived.org/[*Keepalived*] to host a set of externally accessible VIP addresses on a set of hosts. Each VIP is only serviced by a single host at a time. *Keepalived* uses the VRRP protocol to determine which host (from the set of hosts) will service which VIP. If a host becomes unavailable or if the service that *Keepalived* is watching does not respond, the VIP is switched to another host from the set. Thus, a VIP is always serviced as long as a host is available. The admin can provide a script, via the `--notify-script=` option, that is called whenver the state changes. Keepalived is in *MASTER* state when it is servicing the VIP, in *BACKUP* state when another node is servicing the VIP, or in *FAULT*` state when the check script fails. The xref:../admin_guide/high_availability.adoc#check-notify[notify script] is called with the new state whenever the state changes.
 
 {product-title} supports creation of IP failover deployment configration, by running the `oadm ipfailover` command. The IP failover deployment configration specifies the set of VIP addresses, and the set of nodes on which to service them. A cluster can have multiple IP failover deployment configurations, with each managing its own set of unique VIP addresses. Each node in the IP failover configuration runs an ipfailover pod, and this pod runs *Keepalived*.
 
@@ -240,6 +241,101 @@ The list of command options described here are a subset that are relevant to thi
 Each VIP in the set may end up being served by a different node.
 ====
 
+[[check-notify]]
+=== Check and Notify scripts
+
+The *keepalived* port monitoring feature supports one or two scripts that are run on a configured interval to verify that the application is available.
+The default script uses a simple tcp connect to verify that the application is running. This test is suppressed when the mointoring port is set to 0.
+The admin may supply an additional script that does whatever verification is needed, for example, the script can test a web server by issuing a request and verifying the response. The script must exit with 0 for PASS and 1 for FAIL.
+
+The admin provides the additional script, via the `--check-script=<script>` option.  By default the check is done every 2 seconds, this can be changed using the `--check-interval=<seconds>` option.
+
+For each VIP, *keepalived* keeps the state of the node. The VIP on the node may be in *MASTER*, *BACKUP*, or *FAULT* state.  All VIPs on the node that are not in the *FAULT* state participate in the negotiation to decide who will be *MASTER* for the VIP.  All of the losers enter the *BACKUP* state.  When the check script on the *MASTER* fails the VIP enters the *FAULT* state and triggers a renegotiation. When the *BACKUP* fails just enter the *FAULT* state.  When the check script once again passes on a VIP in *FAULT* state it exits *FAULT* and negotiates for *MASTER*. The resulting state is either *MASTER* or *BACKUP*.
+
+The admin can provide an (optional) notify script is called with the new state whenever the state changes.  *Keepalived* passes the following 3 parameters to the script:
+
+* $1 - "GROUP"|"INSTANCE"
+* $2 - name of group or instance
+* $3 - the new state ("MASTER"|"BACKUP"|"FAULT")
+
+These scripts run in the ipfailover pod and use the pod's filesystem, not the host filesystem. The options require the full path to the script.  It is up to the admin to make the script available in the pod and to extract the results from running the notify script.  The recommended approach for providing the scripts is to use a xref:../dev_guide/configmaps.adoc#dev-guide-configmaps[ConfigMap].
+
+The full path names of the check and notify scripts are added to the *keepalived* config file, /etc/keepalived/keepalived.conf, which is loaded every time *keepalived* starts. The scripts can be added to the pod with a ConfigMap as follows.
+ 
+First, create the desired script and create a ConfigMap to hold it. The script has no input arguments and must return 0 for OK and 1 for fail.
+
+The check script, mycheckscript.sh::
++
+[source,bash]
+====
+----
+#!/bin/bash
+    # Whatever tests are needed
+    # E.g., send request and verify response
+exit 0
+----
+====
+
+Create the ConfigMap::
+====
+----
+$ oc create configmap mycustomcheck --from-file=mycheckscript.sh
+----
+====
+
+There are two approaches to adding the script to the pod: use `oc` commands or edit the deployment config.
+
+Using `oc` commands::
++
+[source,bash]
+====
+----
+$ oc env dc/ipf-ha-router \
+    OPENSHIFT_HA_CHECK_SCRIPT=/etc/keepalive/mycheckscript.sh
+$ oc volume dc/ipf-ha-router --add --overwrite \
+    --name=config-volume \
+    --mount-path=/etc/keepalive \
+    --source='{"configMap": { "name": "mycustomcheck"}}'
+----
+====
++
+Editing the Ipf-HA-Router Deployment Configuration::
++
+Use `oc edit dc ipf-ha-router` to edit the router deployment configuration
+with a text editor.
++
+====
+[source,yaml]
+----
+...
+    spec:
+      containers:
+      - env:
+        - name: OPENSHIFT_HA_CHECK_SCRIPT  <1>
+          value: /etc/keepalive/mycheckscript.sh
+...
+        volumeMounts: <2>
+        - mountPath: /etc/keepalive
+          name: config-volume
+      dnsPolicy: ClusterFirst
+...
+      volumes: <3>
+      - configMap:
+          name: customrouter
+        name: config-volume
+...
+----
+<1> In the `*spec.container.env*` field, add the `OPENSHIFT_HA_CHECK_SCRIPT` environment
+variable to point to the mounted script file.
+<2> Add the `*spec.container.volumeMounts*` field to create the mount point.
+<3> Add a new `*spec.volumes*` field to mention the ConfigMap.
+====
++
+Save the changes and exit the editor. This restarts ipf-ha-router.
+
+
+
+
 [[kepalived-multicast]]
 === Keepalived Multicast
 {product-title}'s ipfailover internally uses *keepalived*.
@@ -328,6 +424,21 @@ Please see xref:../admin_guide/high_availability.adoc#ha-vrrp-id-offset[this dis
 |`*OPENSHIFT_HA_IPTABLES_CHAIN*`
 |INPUT
 |The name of the iptables chain, to automatically add an `iptables` rule to allow the VRRP traffic on. If the value is not set, an `iptables` rule will not be added. If the chain does not exist, it is not created.
+
+|`--check-script`
+|`*OPENSHIFT_HA_CHECK_SCRIPT*`
+|
+|Full path name in the pod filesystem of a script that will be periodically run to verify the application is operating.  Please see xref:../admin_guide/high_availability.adoc#check-notify[this discussion] for more details.
+
+|`--check-interval`
+|`*OPENSHIFT_HA_CHECK_INTERVAL*`
+|2
+|The period, in seconds that the check script is run.
+
+|`--notify-script`
+|`*OPENSHIFT_HA_NOTIFY_SCRIPT*`
+|
+|Full path name in the pod filesystem of a script that is run whenever the state changes.  Please see xref:../admin_guide/high_availability.adoc#check-notify[this discussion] for more details.
 
 |===
 
