@@ -49,45 +49,47 @@ node {
 
 try { // Use a try block to perform cleanup in a finally block when the build fails
 
-  stage ('Checkout') {
-    checkout scm
-    repoUrl = getRepoURL()
-  }
-
-  // When testing a PR, create a new project to perform the build 
-  // and deploy artifacts.
-  if (isPR) {
-    stage ('Create PR Project') {
-      setBuildStatus(repoUrl, "ci/app-preview", "Building application", "PENDING", "")
-      setBuildStatus(repoUrl, "ci/approve", "Aprove after testing", "PENDING", "") 
-      project = uniqueName("${appName}-")
-      sh "oc new-project ${project}"
-      projectCreated=true
-      sh "oc policy add-role-to-group view system:authenticated -n ${project}"
+  node {
+    stage ('Checkout') {
+      checkout scm
+      repoUrl = getRepoURL()
     }
-  }
 
-  stage ('Apply object configurations') {
-    sh "oc process -f _openshift/docs-template.yaml -n ${project} | oc apply -f - -n ${project}"
-  }
-
-  stage ('Build') {
-    sh "oc start-build ${appName} -n ${project} --from-repo=. --follow"
-  }
-    
-
-  if (isPR) {
-    stage ('Verify Service') {
-      openshiftVerifyService serviceName: appName, namespace: project
+    // When testing a PR, create a new project to perform the build 
+    // and deploy artifacts.
+    if (isPR) {
+      stage ('Create PR Project') {
+        setBuildStatus(repoUrl, "ci/app-preview", "Building application", "PENDING", "")
+        setBuildStatus(repoUrl, "ci/approve", "Aprove after testing", "PENDING", "") 
+        project = uniqueName("${appName}-")
+        sh "oc new-project ${project}"
+        projectCreated=true
+        sh "oc policy add-role-to-group view system:authenticated -n ${project}"
+      }
     }
-    def appHostName = getRouteHostname(appName, project)
-    setBuildStatus(repoUrl, "ci/app-preview", "The application is available", "SUCCESS", "http://${appHostName}")
-    setBuildStatus(repoUrl, "ci/approve", "Approve after testing", "PENDING", "${env.BUILD_URL}input/") 
-    stage ('Manual Test') {
-      input "Is everything OK?"
+
+    stage ('Apply object configurations') {
+      sh "oc process -f _openshift/docs-template.yaml -n ${project} | oc apply -f - -n ${project}"
     }
-    setBuildStatus(repoUrl, "ci/app-preview", "Application previewed", "SUCCESS", "")
-    setBuildStatus(repoUrl, "ci/approve", "Manually approved", "SUCCESS", "")
+
+    stage ('Build') {
+      sh "oc start-build ${appName} -n ${project} --from-repo=. --follow"
+    }
+      
+
+    if (isPR) {
+      stage ('Verify Service') {
+        openshiftVerifyService serviceName: appName, namespace: project
+      }
+      def appHostName = getRouteHostname(appName, project)
+      setBuildStatus(repoUrl, "ci/app-preview", "The application is available", "SUCCESS", "http://${appHostName}")
+      setBuildStatus(repoUrl, "ci/approve", "Approve after testing", "PENDING", "${env.BUILD_URL}input/") 
+      stage ('Manual Test') {
+        input "Is everything OK?"
+      }
+      setBuildStatus(repoUrl, "ci/app-preview", "Application previewed", "SUCCESS", "")
+      setBuildStatus(repoUrl, "ci/approve", "Manually approved", "SUCCESS", "")
+    }
   }
 } 
 finally {
