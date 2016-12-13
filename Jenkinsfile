@@ -40,16 +40,14 @@ def getRouteHostname = { String routeName, String projectName ->
   return readFile("apphost").trim()
 }
 
-// Initialize variables in default node context
-node {
-  isPR        = env.BRANCH_NAME ? env.BRANCH_NAME.startsWith("PR") : false
-  baseProject = env.PROJECT_NAME
-  project     = env.PROJECT_NAME
-}
-
 try { // Use a try block to perform cleanup in a finally block when the build fails
 
   node {
+    // Initialize variables in default node context
+    isPR        = env.BRANCH_NAME ? env.BRANCH_NAME.startsWith("PR") : false
+    baseProject = env.PROJECT_NAME
+    project     = env.PROJECT_NAME
+
     stage ('Checkout') {
       checkout scm
       repoUrl = getRepoURL()
