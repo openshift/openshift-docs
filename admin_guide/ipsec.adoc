@@ -1,0 +1,177 @@
+[[admin-guide-ipsec]]
+= Encrypting Hosts with IPsec
+{product-author}
+{product-version}
+:data-uri:
+:icons:
+:experimental:
+:toc: macro
+:toc-title:
+
+toc::[]
+
+== Overview
+
+IPsec protects traffic in an {product-title} cluster by encrypting the
+communication between all master and node hosts that communicate using the
+Internet Protocol (IP).
+
+This topic shows how to secure communication of an entire IP subnet from which
+the {product-title} hosts receive their IP addresses, including all cluster
+management and pod data traffic. 
+
+[NOTE]
+====
+Because {product-title} management traffic uses HTTPS, enabling IPsec encrypts
+management traffic a second time.
+====
+
+[IMPORTANT]
+====
+This procedure should be repeated on each master host, then node host, in your
+cluster. Hosts that does not have IPsec enabled will not be able to communicate
+with a host that does.
+====
+
+[[admin-guide-ipsec-encrypting-hosts]]
+== Encrypting Hosts
+
+[[admin-guide-ipsec-prerequisites]]
+=== Step 1: Prerequisites
+Ensure that the *libreswan* package, version 3.19 or later, is installed
+on cluster hosts. Only version 3.19 and later includes the necessary
+opportunistic group functionality that allows hosts to be configured without
+knowledge of every other host in the cluster.
+
+[[admin-guide-ipsec-certificates]]
+=== Step 2: Certificates
+By default, {product-title} secures cluster management communication with
+mutually authenticated HTTPS communication. This means that both the client (for
+example, an {product-title} node) and the server (for example, an
+{product-title} api-server) send each other their certificates, which are
+checked against a known certificate authority (CA). These certificates are
+generated at cluster set up time, and typically live on each host.
+
+These certificates can also be used to secure pod communications with IPsec. You
+need three files on each host:
+
+* Cluster CA file
+* Host client certificate file
+* Host private key file
+
+. Determine what the certificate's nickname will be after it has been
+imported into the *libreswan* certificate database. The nickname is taken
+directly from the certificate's subject's Common Name (CN):
++
+----
+# openssl x509 \
+  -in /path/to/client-certificate -subject -noout | \
+  sed -n 's/.*CN=\(.*\)/\1/p'
+----
+
+. Use *openssl* to combine the client certificate, CA certificate, and private
+key files into a *_PKCS#12_* file, which is a common file format for multiple
+certificates and keys:
++
+----
+openssl pkcs12 -export \
+  -in /path/to/client-certificate \
+  -inkey /path/to/private-key \
+  -certfile /path/to/certificate-authority \
+  -passout pass: \
+  -out certs.p12
+----
+
+. Import the *_PKCS#12_* file into the *libreswan* certificate database. The
+`-W` option is left empty, because no password is assigned to the *_PKCS#12_*
+file, as it is only temporary.
++
+----
+# ipsec initnss
+# pk12util -i certs.p12 -d sql:/etc/ipsec.d -W ""
+# rm certs.p12
+----
+
+[[admin-guide-ipsec-ipsec-policy]]
+=== Step 3: libreswan IPsec Policy
+Now that the necessary certificates are imported into the *libreswan*
+certificate database, create a policy that uses them to secure communication
+between hosts in your cluster.
+
+The following configuration creates two *libreswan* connections. The first
+encrypts traffic using the {product-title} certificates, while the second
+creates exceptions to the encryption for cluster-external traffic.
+
+. Place the following into the *_/etc/ipsec.d/openshift-cluster.conf_* file:
++
+----
+conn private
+	left=%defaultroute
+	leftid=%fromcert
+	# our certificate
+	leftcert="NSS Certificate DB:<cert_nickname>" <1>
+	right=%opportunisticgroup
+	rightid=%fromcert
+	# their certificate transmitted via IKE
+	rightca=%same
+	ikev2=insist
+	authby=rsasig
+	failureshunt=drop
+	negotiationshunt=hold
+	auto=ondemand
+
+conn clear
+	left=%defaultroute
+	right=%group
+	authby=never
+	type=passthrough
+	auto=route
+	priority=100
+----
+<1> Replace <cert_nickname> with the certificate nickname from step one.
+
+. Tell *libreswan*
+which IP subnets and hosts to apply each policy using policy
+files in *_/etc/ipsec.d/policies/_*, where each configured connection has a
+corresponding policy file. So, in the example above, the two connections,
+`private` and `clear`, each have a file in *_/etc/ipsec.d/policies/_*.
++
+*_/etc/ipsec.d/policies/private_* should contain the IP subnet of your cluster,
+which your hosts receive IP addresses from. By default, this causes all
+communication between hosts in the cluster subnet to be encrypted if the remote
+host's client certificate authenticates against the local host's Certificate
+Authority certificate. If the remote host's certificate does not authenticate,
+all traffic between the two hosts will be blocked.
++
+For example, if all hosts are configured to use addresses in the `172.16.0.0/16`
+address space, your `private` policy file would contain `172.16.0.0/16`. Any
+number of additional subnets to encrypt may be added to this file, which results
+in all traffic to those subnets using IPsec as well.
+
+. Unencrypt the encryption between all hosts and the subnet gateway to ensure
+that traffic can enter and exit the cluster. Add the gateway to the
+*_/etc/ipsec.d/policies/clear_* file:
++
+----
+172.16.0.1/32
+----
++
+Additional hosts and subnets may be added to this file, which will result in
+all traffic to these hosts and subnets being unencrypted.
+
+. Restart the *libreswan* service to load the new configuration and policies,
+and begin encrypting:
++
+----
+systemctl restart ipsec
+----
+
+[[admin-guide-ipsec-troubleshooting]]
+== Troubleshooting
+When authentication cannot be completed between two hosts, you will not be able
+to ping between them, because all IP traffic will be rejected. If the `clear`
+policy is not configured correctly, you will also not be able to SSH to the host
+from another host in the cluster. 
+
+You can use the `ipsec status` command to check that the `clear` and `private`
+policies have been loaded.
