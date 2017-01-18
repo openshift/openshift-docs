@@ -61,14 +61,41 @@ curl <certificate details> \
 
 |`*memory.available*`
 |`memory.available` = `node.status.capacity[memory]` - `node.stats.memory.workingSet`
+
+|`*nodefs.available*`
+|`nodefs.available` = `node.stats.fs.available`
+
+|`*nodefs.inodesFree*`
+|`nodefs.inodesFree` = `node.stats.fs.inodesFree`
+
+|`*imagefs.available*`
+|`imagefs.available` = `node.stats.runtime.imagefs.available`
+
+|`*imagefs.inodesFree*`
+|`imagefs.inodesFree` = `node.stats.runtime.imagefs.inodesFree`
 |===
+
+The node supports two file system partitions when detecting disk pressure.
+
+* The `nodefs` file system that the node uses for local disk volumes, daemon logs,
+and so on (for example, the file system that provides `/`).
+* The `imagefs` file system that the container runtime uses for storing images and
+individual container writable layers.
+
+The node auto-discovers these file systems using `cAdvisor`.
+
+If you store volumes and logs in a dedicated file system, the node will not
+monitor that file system at this time.
 
 [NOTE]
 ====
-In future releases, the node will support the ability to trigger eviction
-decisions based on disk pressure. Until then, use
+As of {product-title} 3.4, the node supports the ability to trigger eviction
+decisions based on disk pressure. Operators must opt in to enable disk-based
+evictions. Prior to evicting pods due to disk pressure, the node will also
+perform
 xref:../admin_guide/garbage_collection.adoc#admin-guide-garbage-collection[container
-and image garbage collection].
+and image garbage collection]. In future releases, garbage collection will be
+deprecated in favor of a pure disk eviction based configuration.
 ====
 
 [[out-of-resource-eviction-thresholds]]
@@ -91,14 +118,16 @@ Thresholds are configured in the following form:
 * Valid `operator` tokens are `<`.
 * Valid `quantity` tokens must match the link:https://github.com/kubernetes/kubernetes/blob/master/docs/design/resources.md#resource-quantities[quantity representation] used by
 Kubernetes.
+* an eviction threshold can be expressed as a percentage if it ends with the `%` token.
 
-For example, using the `memory.available` signal, in order to construct a
-threshold for when the memory available drops below 500Mi, the form would be:
+For example, if an operator has a node with 10Gi of memory, and that operator
+wants to induce eviction if available memory falls below 1Gi, an eviction
+threshold for memory can be specified as either of the following:
 
-----
-memory.available<500Mi
-----
-
+---
+memory.available<1Gi
+memory.available<10%
+---
 
 [[out-of-resource-soft-eviction-thresholds]]
 ==== Soft Eviction Thresholds
@@ -184,11 +213,50 @@ eviction signal.
 |`*MemoryPressure*`
 |`*memory.available*`
 |Available memory on the node has satisfied an eviction threshold.
+
+|`*DiskPressure*`
+|`*nodefs.available*`, `*nodefs.inodesFree*`, `*imagefs.available*`, or `*imagefs.inodesFree*`
+|Available disk space and inodes on either the node’s root file system or image file system has satisfied an eviction threshold.
 |===
 
 When the above is set the node continues to report node status updates at the
 frequency specified by the `node-status-update-frequency` argument, which
 defaults to *10s*.
+
+[[out-of-resource-reclaiming-node-level-resources]]
+=== Reclaiming Node-level Resources
+
+If an eviction criteria is satisfied, the node initiates the process of
+reclaiming the pressured resource until it observes that the signal has gone
+below its defined threshold. During this time, the node does not support
+scheduling any new pods.
+
+The node attempts to reclaim node-level resources prior to evicting end-user
+pods. If disk pressure is observed, the node reclaims node-level resources
+differently if the machine has a dedicated `imagefs` configured for the
+container runtime.
+
+[[reclaiming-with-imagefs]]
+==== With Imagefs
+
+If the `nodefs` file system meets eviction thresholds, the node frees up disk
+space in the following order:
+
+* Delete dead pods/containers
+
+If the `imagefs` file system meets eviction thresholds, the node frees up disk
+space in the following order:
+
+* Delete all unused images
+
+[[reclaiming-without-imagefs]]
+==== Without Imagefs
+
+If the `nodefs` file system meets eviction thresholds, the node frees up disk
+space in the following order:
+
+* Delete dead pods/containers
+* Delete all unused images
 
 [[out-of-resource-eviction-of-pods]]
 === Eviction of Pods
@@ -209,7 +277,7 @@ request for that resource are failed first. If no pod has exceeded its request,
 the strategy targets the largest consumer of the starved resource.
 * `Guaranteed`: pods that consume the most of the starved resource relative to
 their request are failed first. If no pod has exceeded its request, the strategy
-targets the largest consumer of the starved resource. 
+targets the largest consumer of the starved resource.
 
 A `Guaranteed` pod will never be evicted because of another pod's resource
 consumption unless a system daemon (node, *docker*, *journald*, etc) is
@@ -219,6 +287,28 @@ consuming more resources than were reserved via *system-reserved*, or
 If the latter, the node evicts a `Guaranteed` pod that least impacts node
 stability and limits the impact of the unexpected consumption to other
 `Guaranteed` pods.
+
+Local disk is a `BestEffort` resource. If necessary, the node will evict pods
+one at a time to reclaim disk when `DiskPressure` is encountered. The node ranks
+pods by quality of service. If the node is responding to inode starvation, it
+will reclaim inodes by evicting pods with the lowest quality of service first.
+If the node is responding to lack of available disk, it will rank pods within a
+quality of service that consumes the largest amount of local disk, and evict
+those pods first.
+
+[NOTE]
+====
+At this time, volumes that are backed by local disk are only deleted when a pod
+is deleted from the API server instead of when the pod is terminated.
+
+As a result, if a pod is evicted as a consequence of consuming too much disk in
+an `EmptyDir` volume, the pod will be evicted, but the local volume usage will
+not be reclaimed by the node. The node will keep evicting pods on the node to
+prevent total exhaustion of disk. Operators can reclaim the disk by manually
+deleting the evicted pods from the node once terminated.
+
+This will be remedied in a future release.
+====
 
 [[out-of-resource-scheduler]]
 === Scheduler
@@ -238,11 +328,11 @@ and available memory falls below 500Mi, the node reports a value in `Node.Status
 |Node Condition |Scheduler Behavior
 
 |`*MemoryPressure*`
-|`BestEffort` pods are not scheduled to the node.
-|===
+|If a node reports this condition, the scheduler will not place `BestEffort` pods on that node.
 
-This means that if the scheduler sees the node reporting `MemoryPressure` it
-will not place `BestEffort` pods on that node.
+|`*DiskPressure*`
+|If a node reports this condition, the scheduler will not place any additional pods on that node.
+|===
 
 [[out-of-resource-schedulable-resources-and-eviction-policies]]
 === Example Scenario
