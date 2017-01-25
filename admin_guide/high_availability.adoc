@@ -209,7 +209,6 @@ The list of command options described here are a subset that are relevant to thi
 
             <options> = One or more of:
                 --create
-                --credentials=<credentials>
                 -l,--selector=<selector>
                 --virtual-ips=<ip-range>
                 -i|--interface=<interface>
@@ -242,19 +241,132 @@ The list of command options described here are a subset that are relevant to thi
 Each VIP in the set may end up being served by a different node.
 ====
 
+[[check-notify]]
+=== Check and Notify Scripts
+
+The *keepalived* port monitoring feature supports one or two scripts that are
+run on a configured interval to verify that the application is available. The
+default script uses a simple
+xref:../install_config/install/prerequisites.adoc#required-ports[TCP
+connection] to verify that the application is running. This test is suppressed
+when the monitoring port is set to `0`. The administrator can supply an
+additional script that does the needed verification. For example, the script can
+test a web server by issuing a request and verifying the response. The script
+must exit with `0` for *PASS* and `1` for *FAIL*.
+
+The administrator provides the additional script, via the
+`--check-script=<script>` option. By default, the check is done every two
+seconds, but can be changed using the `--check-interval=<seconds>` option.
+
+For each VIP, *keepalived* keeps the state of the node. The VIP on the node may
+be in *MASTER*, *BACKUP*, or *FAULT* state. All VIPs on the node that are not in
+the *FAULT* state participate in the negotiation to decide which will be
+*MASTER* for the VIP. All of the losers enter the *BACKUP* state. When the
+*check* script on the *MASTER* fails, the VIP enters the *FAULT* state and
+triggers a renegotiation. When the *BACKUP* fails, the VIP enters the *FAULT*
+state. When the *check* script passes again on a VIP in the *FAULT* state, it
+exits *FAULT* and negotiates for *MASTER*. The resulting state is either
+*MASTER* or *BACKUP*.
+
+The administrator can provide an optional *notify* script, which is called
+whenever the state changes. *Keepalived* passes the following three parameters
+to the script:
+
+* `$1` - "GROUP"|"INSTANCE"
+* `$2` - Name of the group or instance
+* `$3` - The new state ("MASTER"|"BACKUP"|"FAULT")
+
+These scripts run in the IP failover pod and use the pod's file system, not the
+host file system. The options require the full path to the script. The
+administrator must make the script available in the pod to extract the results
+from running the *notify* script. The recommended approach for providing the
+scripts is to use a
+xref:../dev_guide/configmaps.adoc#dev-guide-configmaps[ConfigMap].
+
+The full path names of the *check* and *notify* scripts are added to the
+*keepalived* configuration file, *_ /etc/keepalived/keepalived.conf_*, which is
+loaded every time *keepalived* starts. The scripts can be added to the pod with
+a ConfigMap as follows.
+
+. Create the desired script and create a ConfigMap to hold it. The script
+has no input arguments and must return `0` for *OK* and `1` for *FAIL*.
++
+The check script, *_mycheckscript.sh_*:
++
+[source,bash]
+----
+#!/bin/bash
+    # Whatever tests are needed
+    # E.g., send request and verify response
+exit 0
+----
+
+. Create the ConfigMap:
++
+----
+$ oc create configmap mycustomcheck --from-file=mycheckscript.sh
+----
+
+. There are two approaches to adding the script to the pod: use `oc` commands or
+edit the deployment configuration.
+
+.. Using `oc` commands:
++
+[source,bash]
+----
+$ oc set env dc/ipf-ha-router \
+    OPENSHIFT_HA_CHECK_SCRIPT=/etc/keepalive/mycheckscript.sh
+$ oc volume dc/ipf-ha-router --add --overwrite \
+    --name=config-volume \
+    --mount-path=/etc/keepalive \
+    --source='{"configMap": { "name": "mycustomcheck"}}'
+----
++
+.. Editing the *ipf-ha-router* deployment configuration:
++
+... Use `oc edit dc ipf-ha-router` to edit the router deployment configuration
+with a text editor.
++
+[source,yaml]
+----
+...
+    spec:
+      containers:
+      - env:
+        - name: OPENSHIFT_HA_CHECK_SCRIPT  <1>
+          value: /etc/keepalive/mycheckscript.sh
+...
+        volumeMounts: <2>
+        - mountPath: /etc/keepalive
+          name: config-volume
+      dnsPolicy: ClusterFirst
+...
+      volumes: <3>
+      - configMap:
+          name: customrouter
+        name: config-volume
+...
+----
+<1> In the `spec.container.env` field, add the `OPENSHIFT_HA_CHECK_SCRIPT`
+environment variable to point to the mounted script file.
+<2> Add the `spec.container.volumeMounts` field to create the mount point.
+<3> Add a new `spec.volumes` field to mention the ConfigMap.
++
+... Save the changes and exit the editor. This restarts *ipf-ha-router*.
+
 [[kepalived-multicast]]
 === Keepalived Multicast
-{product-title}'s ipfailover internally uses *keepalived*. 
+{product-title}'s ipfailover internally uses *keepalived*.
 
 [IMPORTANT]
 ====
 Please ensure that multicast is enabled on the nodes labeled above and they can accept network traffic for 224.0.0.18 (the VRRP multicast IP address).
 ====
 
-Before starting the *keepalived* daemon, the startup script verifies the `iptables` rule that allows multicast traffic to flow. 
-If there is no such rule, the startup script creates a new rule and adds it to the iptables configuration. 
-Where this new rule gets added to the iptables configuration, depends on the `--iptables-chain=` option. 
-If there is an `--iptables-chain=` option specified, the rule gets added to the specified chain in the option; 
+Before starting the *keepalived* daemon, the startup script verifies the `iptables` rule that allows multicast traffic to flow.
+If there is no such rule, the startup script creates a new rule and adds it to the iptables configuration.
+Where this new rule gets added to the iptables configuration, depends on the `--iptables-chain=` option.
+If there is an `--iptables-chain=` option specified, the rule gets added to the specified chain in the option;
 otherwise the rule is added to the `INPUT` chain.
 
 [IMPORTANT]
@@ -264,7 +376,7 @@ The `iptables` rule must be present whenever there is one or more *keepalived* d
 
 The `iptables` rule can be removed after the last *keepalived* daemon terminates. The rule is not automatically removed.
 
-You can manually manage the `iptables` rule on each of the nodes. It only gets created when none is present (as long as ipfailover is not created with the -`-iptable-chain=""` option).  
+You can manually manage the `iptables` rule on each of the nodes. It only gets created when none is present (as long as ipfailover is not created with the -`-iptable-chain=""` option).
 
 [IMPORTANT]
 ====
@@ -391,7 +503,6 @@ ifdef::openshift-enterprise[]
 $ oadm router ha-router-us-west --replicas=5 \
     --selector="ha-svc-nodes=geo-us-west" \
     --labels="ha-svc-nodes=geo-us-west" \
-    --credentials=/etc/origin/master/openshift-router.kubeconfig \
     --service-account=ipfailover
 ----
 ====
@@ -403,7 +514,6 @@ ifdef::openshift-origin[]
 $ oadm router ha-router-us-west --replicas=5 \
     --selector="ha-svc-nodes=geo-us-west" \
     --labels="ha-svc-nodes=geo-us-west" \
-    --credentials="$KUBECONFIG" \
     --service-account=ipfailover
 ----
 ====
@@ -441,7 +551,6 @@ $ oadm ipfailover ipf-ha-router-us-west \
     --replicas=5 --watch-port=80 \
     --selector="ha-svc-nodes=geo-us-west" \
     --virtual-ips="10.245.2.101-105" \
-    --credentials=/etc/origin/master/openshift-router.kubeconfig \
     --iptables-chain="INPUT" \
     --service-account=ipfailover --create
 ----
@@ -454,7 +563,6 @@ $ oadm ipfailover ipf-ha-router-us-west \
     --replicas=5 --watch-port=80 \
     --selector="ha-svc-nodes=geo-us-west" \
     --virtual-ips="10.245.2.101-105" \
-    --credentials="$KUBECONFIG" \
     --iptables-chain="INPUT" \
     --service-account=ipfailover --create
 ----
@@ -472,7 +580,6 @@ $ oadm ipfailover ipf-ha-geo-cache \
     --replicas=5 --watch-port=9736 \
     --selector="ha-svc-nodes=geo-us-west" \
     --virtual-ips=10.245.3.101-105 \
-    --credentials=/etc/origin/master/openshift-router.kubeconfig \
     --vrrp-id-offset=10 \
     --service-account=ipfailover --create
 ----
@@ -485,7 +592,6 @@ $ oadm ipfailover ipf-ha-geo-cache \
     --replicas=5 --watch-port=9736 \
     --selector="ha-svc-nodes=geo-us-west" \
     --virtual-ips=10.245.3.101-105 \
-    --credentials="$KUBECONFIG" \
     --vrrp-id-offset=10 \
     --service-account=ipfailover --create
 ----
@@ -519,7 +625,6 @@ $ oadm ipfailover ipf-ha-router-us-west \
     --replicas=5 --watch-port=80 \
     --selector="ha-svc-nodes=geo-us-west" \
     --virtual-ips="10.245.2.101-105" \
-    --credentials=/etc/origin/master/openshift-router.kubeconfig \
     --service-account=ipfailover --create
 ----
 ====
@@ -531,7 +636,6 @@ $ oadm ipfailover ipf-ha-router-us-west \
     --replicas=5 --watch-port=80 \
     --selector="ha-svc-nodes=geo-us-west" \
     --virtual-ips="10.245.2.101-105" \
-    --credentials="$KUBECONFIG" \
     --service-account=ipfailover --create
 ----
 ====
@@ -593,4 +697,3 @@ In non-cloud clusters, ipfailover and xref:../architecture/core_concepts/pods_an
 The approach is to specify an `ingressIPNetworkCIDR` range and then use the same range in creating the ipfailover configuration.
 
 Since, ipfailover can support up to a maximum of 255 VIPs for the entire cluster, the `ingressIPNetworkCIDR` needs to be `/24` or less.
-
