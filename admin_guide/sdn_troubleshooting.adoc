@@ -351,23 +351,15 @@ different pods.
 
 === The Interfaces on a Node
 
-These are the interfaces that the {product-title} SDN creates:
+These are the interfaces that the OpenShift SDN creates:
 
 * `br0`: The OVS bridge device that containers will be attached to.
-{product-title} SDN also configures a set of non-subnet-specific flow rules
-on this bridge. (The `multitenant` plug-in does this immediately; the
-`ovssubnet` plug-in waits until the SDN master announces the creation
-of the new node subnet.)
-* `lbr0`: A Linux bridge device, which is configured as Docker's bridge and
-given the cluster subnet gateway address (eg, 10.128.x.1/23).
-* `tun0`: An OVS internal port (port 2 on `br0`). This *also* gets assigned the
+OpenShift SDN also configures a set of non-subnet-specific flow rules
+on this bridge.
+* `tun0`: An OVS internal port (port 2 on `br0`). This gets assigned the
 cluster subnet gateway address, and is used for external network
-access. {product-title} SDN configures `netfilter` and routing rules to enable access
+access. OpenShift SDN configures `netfilter` and routing rules to enable access
 from the cluster subnet to the external network via NAT.
-* `vlinuxbr` and `vovsbr`: Two Linux peer virtual Ethernet interfaces.
-`vlinuxbr` is added to `lbr0`, and `vovsbr` is added to `br0` (port 3), to
-provide connectivity for containers created directly with Docker outside of
-{product-title}.
 * `vxlan0`: The OVS VXLAN device (port 1 on `br0`), which provides access to
 containers on remote nodes.
 * `vethX` (in the main netns): A Linux virtual ethernet peer of `eth0` in the docker netns.  It will be attached to the OVS bridge on one of the other ports.
@@ -384,7 +376,6 @@ path will vary.  There are four different places the SDN connects
 * *Pod:* Traffic is going from one pod to another on the same machine (1 to a different 1)
 * *Remote Node (or Pod):* Traffic is going from a local pod to a remote node or pod in the same cluster (1 to 2)
 * *External Machine:* Traffic is going from a local pod outside the cluster (1 to 3)
-* *Local Docker:* Traffic is going from a local pod to a local container that is not managed by Kubernetes (1 to 4)
 
 Of course the opposite traffic flows are also possible.
 
@@ -436,60 +427,38 @@ OFPST_PORT_DESC reply (OF1.3) (xid=0x2):
      state:      0
      current:    10GB-FD COPPER
      speed: 10000 Mbps now, 0 Mbps max
- 9(vovsbr): addr:6e:dc:28:df:63:c3
-     config:     0
-     state:      0
-     current:    10GB-FD COPPER
-     speed: 10000 Mbps now, 0 Mbps max
  LOCAL(br0): addr:0a:7f:b4:33:c2:43
      config:     PORT_DOWN
      state:      LINK_DOWN
      speed: 0 Mbps now, 0 Mbps max
 ....
 
-Next list the flows that are configured on that bridge.  In output
-below I have removed the `cookie`, `duration`, `n_packets` and
-`n_bytes` columns; and I have lined up the various columns to make it
-easier to understand, and added in-line comments and blank lines:
+In particular, the `vethX` devices for all of the active pods should
+be listed as ports.
+
+Next list the flows that are configured on that bridge:
 ....
 # ovs-ofctl -O OpenFlow13 dump-flows br0
-OFPST_FLOW reply (OF1.3) (xid=0x2):
-
-# External access is the default if no higher priority matches
-table=0, priority=50                           actions=output:2
-
-# ARP and IP Traffic destined for the local subnet gateway goes out of the switch to
-# IP tables and the main route table
-table=0, priority=100,arp,arp_tpa=10.128.2.1     actions=output:2
-table=0, priority=100, ip, nw_dst=10.128.2.1     actions=output:2
-
-# All remote nodes should have two entries here, one for IP and one for ARP.
-# Here we see the entries for two remote nodes
-table=0, priority=100,arp,arp_tpa=10.128.4.0/23  actions=set_field:192.168.122.18->tun_dst,output:1
-table=0, priority=100, ip, nw_dst=10.128.4.0/23  actions=set_field:192.168.122.18->tun_dst,output:1
-
-table=0, priority=100,arp,arp_tpa=10.128.0.0/23  actions=set_field:192.168.122.202->tun_dst,output:1
-table=0, priority=100, ip, nw_dst=10.128.0.0/23  actions=set_field:192.168.122.202->tun_dst,output:1
-
-# Other traffic destined for a local pod IP that hasn't been handled by a higher priority rule
-# goes out port 9 to the virtual bridge for docker
-table=0, priority=75,  ip, nw_dst=10.128.2.0/23  actions=output:9
-table=0, priority=75, arp,arp_tpa=10.128.2.0/23  actions=output:9
-
-# Then ports 3-8 or 10+ are for local pods, here there are two local pods
-table=0, priority=100, ip, nw_dst=10.128.2.7     actions=output:8
-table=0, priority=100,arp,arp_tpa=10.128.2.7     actions=output:8
-
-table=0, priority=100, ip, nw_dst=10.128.2.10    actions=output:12
-table=0, priority=100,arp,arp_tpa=10.128.2.10    actions=output:12
 ....
 
-The SDN networking plug-in configures two entries (one for arp and one
-for ip) with `output=1` per peer endpoint (i.e. if there are five
-nodes, then there should be 4 * 2 rules; In the example above we have
-3 nodes total, so there are four entries above).  It also sets up the
-other entries on ports 2 and 9 that are shown above.  If there are
-flows missing, please look in the <<reading-the-logs>> section.
+The exact details of the flows have changed over time, and vary
+slightly depending on whether you are using the *ovs-subnet* or
+*ovs-multitenant* plugin, but there are certain general things you can
+look for:
+
+. For every remote node, there should be a flow matching
+`tun_src=<node IP address>` (for incoming VXLAN traffic from that
+node) and another flow including the action `set_field:<node IP
+address>\->tun_dst` (for outgoing VXLAN traffic to that node).
+
+. For every local pod, there should be flows matching `arp_spa=<pod IP
+address>` and `arp_tpa=<pod IP address>` (for incoming and outgoing
+ARP traffic for that pod), and flows matching `nw_src=<pod IP
+address>` and `nw_dst=<pod IP address>` (for incoming and outgoing IP
+traffic for that pod).
+
+If there are flows missing, please look in the <<reading-the-logs>>
+section.
 
 ==== Is the `iptables` configuration correct?
 
