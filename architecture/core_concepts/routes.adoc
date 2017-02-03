@@ -294,7 +294,8 @@ template router; it is a technical limitation of passthrough encryption, not a
 technical limitation of {product-title}.
 ====
 
-*Routing Traffic to Pods Through the SDN*
+[[routing-traffic-to-pods-through-the-sdn]]
+==== Routing Traffic to Pods Through the SDN
 
 Because *F5 BIG-IP®* is external to the
 xref:../additional_concepts/sdn.adoc#architecture-additional-concepts-sdn[OpenShift SDN], a
@@ -317,7 +318,8 @@ the {product-title} *ipfailover* feature for redundancy; the *F5 BIG-IP®* host 
 then need to be configured to use the *ipfailover* VIP for its tunnel's remote
 endpoint.
 
-*F5 Integration Details*
+[[f5-integration-details]]
+==== F5 Integration Details
 
 The operation of the F5 router is similar to that of the {product-title}
 *routing-daemon* used in earlier versions. Both use REST API calls to:
@@ -354,6 +356,132 @@ and deleted, the router adds and removes corresponding pool members.
 
 - When a user deletes the route and all endpoints associated with a particular
 pool, the router deletes that pool.
+
+[[architecture-f5-native-integration]]
+==== F5 Native Integration
+
+With
+xref:../../install_config/router/f5_router.adoc#setting-up-f5-native-integration-with-openshift[native
+integration of F5 with {product-title}], you do not need to configure a ramp
+node for F5 to be able to reach the pods on the overlay network as created by
+OpenShift SDN.
+
+*Connection*
+
+The F5 appliance can connect to the {product-title} cluster via an L3
+connection. An L2 switch connectivity is not required between {product-title}
+nodes. On the appliance, you can use multiple interfaces to manage the
+integration:
+
+* Management interface - Reaches the web console of the F5 appliance.
+* External interface - Configures the virtual servers for inbound web traffic.
+* Internal interface - Programs the appliance and reaches out to the pods.
+
+image::F5-OpenShift-Connection-Diagram.png[F5 and OpenShift Connection Diagram]
+
+An F5 controller pod has `admin` access to the appliance. The F5 image is
+launched within the {product-title} cluster (scheduled on any node) that uses
+iControl REST APIs to program the virtual servers with policies, and configure
+the VxLAN device.
+
+*Data Flow: Packets to Pods*
+
+[NOTE]
+====
+This section explains how the packets reach the pods, and vice versa. These
+actions are performed by the F5 controller pod and the F5 appliance, not the
+user.
+====
+
+When natively integrated, The F5 appliance reaches out to the pods directly
+using VxLAN encapsulation. This integration works only when {product-title} is
+using *openshift-sdn* as the network plug-in. The *openshift-sdn*  plug-in
+employs VxLAN encapsulation for the overlay network that it creates.
+
+To make a successful data path between a pod and the F5 appliance:
+
+. F5 needs to encapsulate the VxLAN packet meant for the pods. This requires the
+*sdn-services* license add-on. A VxLAN device needs to be created and the pod
+overlay network needs to be routed through this device.
+
+. F5 needs to know the VTEP IP address of the pod, which is the IP address of the
+node where the pod is located.
+
+. F5 needs to know which `source-ip` to use for the overlay network when
+encapsulating the packets meant for the pods. This is known as the _gateway address_.
+
+. {product-title} nodes need to know where the F5 gateway address is (the VTEP
+address for the return traffic). This needs to be the internal interface’s
+address. All nodes of the cluster must learn this automatically.
+
+. Since the overlay network is multi-tenant aware, F5 must use a VxLAN ID that is
+representative of an `admin` domain, ensuring that all tenants are reachable by
+the F5. Ensure that F5 encapsulates all packets with a `vnid` of `0` (the
+default `vnid` for the `admin` name space in {product-title}).
+
+A ghost `hostsubnet` is manually created as part of the setup, which fulfills
+the third and forth listed requirements. When the F5 controller pod is launched,
+this new ghost `hostsubnet` is provided so that the F5 appliance can be
+programmed suitably.
+
+[NOTE]
+====
+The term _ghost_ `hostsubnet` is used because it suggests that a subnet has been
+given to a node of the cluster. However, in reality, it is not a real node of
+the cluster. It is hijacked by an external appliance.
+====
+
+The first requirement is fulfilled by the F5 controller pod once it is launched.
+The second requirement is also fulfilled by the F5 controller pod, but it is an
+ongoing process. For each new node that is added to the cluster, the controller
+pod creates an entry in the VxLAN device’s VTEP FDB.
+
+*Data Flow from the F5 Host*
+
+[NOTE]
+====
+These actions are performed by the F5 controller pod and the F5 appliance, not
+the user.
+====
+
+. The destination pod is identified by the F5 virtual server for a packet.
+
+. VxLAN dynamic FDB is looked up with pod’s IP address. If a MAC address is found, go to step 5.
+
+. Flood all entries in the VTEP FDB with ARP requests seeking the pod’s MAC address.
+
+. One of the nodes (VTEP) will respond, confirming that it is the one where the
+pod is located. An entry is made into the VxLAN dynamic FDB with the pod’s MAC
+address and the VTEP to be used as the value.
+
+. Encap an IP packet with VxLAN headers, where the MAC of the pod and the VTEP of
+the node is given as values from the VxLAN dynamic FDB.
+
+. Calculate the VTEP's MAC address by sending out an ARP or checking the host’s
+neighbor cache.
+
+. Deliver the packet through the F5 host’s internal address.
+
+*Data Flow: Return Traffic to the F5 Host*
+
+[NOTE]
+====
+These actions are performed by the F5 controller pod and the F5 appliance, not
+the user.
+====
+
+. The pod sends back a packet with the destination as the F5 host’s VxLAN gateway address.
+
+. The `openvswitch` at the node determines that the VTEP for this packet is the
+ F5 host’s internal interface address. This is learned from the ghost `hostsubnet`
+ creation.
+
+. A VxLAN packet is sent out to the internal interface of the F5 host.
+
+[NOTE]
+====
+During the entire data flow, the VNID is pre-fixed to be `0` to bypass multi-tenancy.
+====
 
 [[route-hostnames]]
 
