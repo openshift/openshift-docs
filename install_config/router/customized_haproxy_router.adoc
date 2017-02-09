@@ -13,29 +13,65 @@ toc::[]
 
 == Overview
 
-The HAProxy router is based on a
-link:http://golang.org/pkg/text/template/[*golang* template] that
-generates the HAProxy configuration file from a list of routes. If you
-want a customized template router to meet your needs, you can customize
-the template file, build a new container image, and run a customized router.
-Alternatively you can use a xref:../../dev_guide/configmaps.adoc#dev-guide-configmaps[ConfigMap].
+The default HAProxy router is intended to satisfy the needs of most users.
+However, it does not expose all of the capability of HAProxy so users
+may need to modify the router for their own needs.
 
-One common case for this might be implementing new features within the
-application back ends. For example, it might be desirable in a highly-available
-setup to xref:using-stick-tables[use stick-tables] that synchronizes between
-peers. The router plug-in provides all the facilities necessary to make this
-customization.
+You may need to implement new features within the application back-ends, or
+modify the current operation.  The router plug-in provides all the facilities
+necessary to make this customization.
+
+The router pod uses a template file to create the needed HAProxy configuration file.
+The template file is a
+link:http://golang.org/pkg/text/template/[golang template].
+When processing the template, the router has access to {product-title}
+information including the router's deployment configuration,
+the set of admitted routes, and some helper functions.
+
+When the router pod starts, and every time it reloads, it creates an HAProxy
+configuration file and then it starts HAProxy.  The
+link:https://cbonte.github.io/haproxy-dconv/configuration-1.5.html[Haproxy configuration manual]
+describes all of the features of HAProxy and how to construct a valid
+configuration file.
+
+A xref:using-configmap-replace-template[*configMap*] can be used to add the
+new template to the router pod. With this approach, the router deployment
+configuration is modified to mount the *configMap* as a volume in the router
+pod.  The `TEMPLATE_FILE` environment variable is set to the full path name
+of the template file in the router pod.
+
+An alternative approach is to build a custom router image and use it when
+deploying some or all of your routers. There is no need for all routers to
+run the same image.  To do this, modify the *_haproxy-template.config_* file,
+and xref:rebuilding-your-router[rebuild] the router image.  The new image is
+pushed to the the cluster's Docker repository, and the router's deployment
+configuration *image:* field is updated with the new name. When the cluster is
+updated, the image needs to be rebuilt and pushed.
+
+In either case, the router pod starts with the template file.
 
 [[obtaining-router-configuration-template]]
 == Obtaining the Router Configuration Template
 
-You can obtain a new *_haproxy-config.template_* file from the latest router
-image by running:
+The HAProxy template file is fairly large and complex. For some changes, it may
+be easier to modify the existing template rather than writing a complete
+replacement.  You can obtain a *_haproxy-config.template_* file from a running
+router by running this on master, referencing the router pod:
+
+----
+# oc get po
+NAME                       READY     STATUS    RESTARTS   AGE
+router-2-40fc3             1/1       Running   0          11d
+# oc rsh router-2-40fc3 cat haproxy-config.template > haproxy-config.template
+# oc rsh router-2-40fc3 cat haproxy.config > haproxy.config
+----
+
+or by logging onto the node that is running the router:
 
 ----
 ifdef::openshift-enterprise[]
 # docker run --rm --interactive=true --tty --entrypoint=cat \
-    registry.access.redhat.com/openshift3/ose-haproxy-router:v3.0.2.0 haproxy-config.template
+    registry.access.redhat.com/openshift3/ose-haproxy-router:$version haproxy-config.template
 endif::[]
 ifdef::openshift-origin[]
 # docker run --rm --interactive=true --tty --entrypoint=cat \
@@ -43,18 +79,424 @@ ifdef::openshift-origin[]
 endif::[]
 ----
 
+Where the image name is from "docker images".
+
 Save this content to a file for use as the basis of your customized template.
+The saved haproxy.config shows what is actually running.
+
+
+[[router-configuration-template]]
+== Modifying the Router Configuration Template
+
+[[router-template-background]]
+
+=== Background
+
+The template is based on the
+link:https://golang.org/pkg/text/template/[golang template]. It can reference any
+of the environment variables in the router's deployment configuration, any
+configuration information that is described below, and router provided helper
+functions.
+
+The structure of the template file mirrors the resulting HAProxy configuration file.
+As the template is processed, anything not surrounded by "{{" something "}}"
+is directly copied to the configuration file. Passages that are surrounded by "{{"
+something "}}" are evaluated, and the resulting text, if any, is copied to the
+configuration file.
+
+[[go-template-actions]]
+=== Go Template Actions
+
+
+The *define* action names the file that will contain the processed template.
+----
+{{define "/var/lib/haproxy/conf/haproxy.config"}}pipeline{{end}}
+----
+
+
+.Template Router Functions
+[cols="2*", options="header"]
+|===
+|Function | Meaning
+|`*endpointsForAlias(alias ServiceAliasConfig, svc ServiceUnit) []Endpoint*` | Returns the list of valid endpoints.
+|`*env(variable, default string) string*` | Tries to get the named environment variable from the pod. Returns the second
+argument if the vairable cannot be read or is empty.
+|`*matchPattern(pattern, s string) bool*` | The first argument is a string that contains the regular
+expression, the second argument is the variable to test. Returns a Boolean value indicating whether the regular
+expression provided as the first argument matches the string provided as the second argument.
+|`*isInteger(s string) bool*` | Determines if a given variable is an integer.
+|`*matchValues(s string, allowedValues ...string) bool*` | Compares a given string to a list of allowed strings.
+|`*genSubdomainWildcardRegexp(hostname, path string, exactPath bool) string*` | Generates a regular expression matching the
+subdomain for hosts (and paths) with a wildcard policy.
+|`*generateRouteRegexp(hostname, path string, wildcard bool) string*` | Generates a regular expression matching the route
+hosts (and paths). The first argument is the host name, the second is the path,
+and the third is a wildcard Boolean.
+|`*genCertificateHostName(hostname string, wildcard bool) string*` | Generates host name to use for serving/matching
+certificates.  First argument is the host name and the second is the wildcard Boolean.
+|===
+These functions are provided by the HAProxy template router plug-in.
+
+[[router-info-for-templates]]
+=== Router Provided Information
+
+Here is the {product-title} information that the router makes available to the
+template.  The router configuration parameters is the set of data that the
+HAProxy router plug-in is given. The fields are accessed by (dot) .Fieldname.
+
+The tables below the Router Configuration Parameters expand on the definitions
+of the various fields. In particular, *.State* has the set of admitted routes.
+
+.Router Configuration Parameters
+[cols="3*", options="header"]
+|===
+|Field | Type | Description
+|`*WorkingDir*` | string  | The directory that files will be written to,
+defaults to /var/lib/containers/router
+|`*State*` | map[string](ServiceAliasConfig) | The routes.
+|`*ServiceUnits*` | map[string]ServiceUnit | The service lookup.
+|`*DefaultCertificate*` | string | Full path name to the default
+certificate in pem format.
+|`*PeerEndpoints*` | []Endpoint | Peers.
+|`*StatsUser*` | string | Username to expose stats with (if the template.
+supports it).
+|`*StatsPassword*` | string | Password to expose stats with (if the template.
+supports it).
+|`*StatsPort*` | int | Port to expose stats with (if the template supports it).
+|`*BindPorts*` | bool | Whether the router should bind the default ports.
+|===
+
+.Router ServiceAliasConfig (A Route)
+[cols="3*", options="header"]
+|===
+|Field | Type | Description
+|`*Name*` | string | The user-specified name of the route.
+|`*Namespace*`| string | The namespace of the route.
+|`*Host*` | string | The host name. For example, www.example.com.
+|`*Path*` | string | Optional path. For example, www.example.com/myservice
+where "myservice" is the path.
+|`*TLSTermination*` | routeapi.TLSTerminationType | The termination policy for
+this backend and drives the mapping files and router configuration.
+|`*Certificates*` | map[string]Certificate | Certificates used for securing
+this backend.  Keyed by the cert id.
+|`*Status*` | ServiceAliasConfigStatus | Indicates the status of configuration
+that needs to be persisted.
+|`*PreferPort*` | string | Indicates the port the user wishes to expose. If
+empty, a port will be selected for the service.
+|`*InsecureEdgeTerminationPolicy*` | routeapi.InsecureEdgeTerminationPolicyType |
+Indicates desired behavior for insecure
+connections to an edge-terminated route: none (or disable), allow, or redirect.
+|`*RoutingKeyName*` | string | Hash of the route+namespace name - used to
+obscure cookieId.
+|`*IsWildcard*` | bool | Indicates this service unit needs
+wildcarding support.
+|`*Annotations*` | map[string]string | Annotations attached to this route.
+|`*ServiceUnitNames*` | map[string]int32 | Collection of services that support
+this route, keyed by service name and valued on the weight attached to it with
+respect to other entries in the map.
+|`*ActiveServiceUnits*` | int | Count of the ServiceUnitNames with a non-zero weight.
+|===
+
+The ServiceAliasConfig is a route for a service.  Uniquely identified by
+host + path. The default template iterates over routes using {{range $cfgIdx, $cfg := .State }}.
+Within such a {{range}} block, the template can refer to any field of the
+current ServiceAliasConfig using $cfg.Field.
+
+
+.Router ServiceUnit
+[cols="3*", options="header"]
+|===
+|Field | Type | Description
+|`*Name*` | string | Name corresponds to a service name + namespace.
+Uniquely identifies the ServiceUnit.
+|`*EndpointTable*` | []Endpoint | EndpointTable are endpoints that back
+the service. This translates into a final backend implementation for routers.
+|===
+ServiceUnit is an encapsulation of a service, the endpoints that back
+that service, and the routes that point to the service.  This is the
+data that drives the creation of the router configuration files
+
+
+.Router Endpoint
+[cols="2*", options="header"]
+|===
+|Field | Type
+|`*ID*` | string
+|`*IP*` | string
+|`*Port*` | string
+|`*TargetName*` | string
+|`*PortName*` | string
+|`*IdHash*` | string
+|`*NoHealthCheck*` | bool
+|===
+Endpoint is an internal representation of a Kubernetes endpoint.
+
+.Router Certificate, ServiceAliasConfigStatus
+[cols="3*", options="header"]
+|===
+|Field | Type | Description
+|`*Certificate*` | string | Represents a pub/private key pair.  It is
+identified by ID which will become the file name. A CA certificate will
+not have a PrivateKey set.
+|`*ServiceAliasConfigStatus*` | string | Indicates that the necessary
+files for this configuration have been persisted to disk. Valid values "saved", "".
+|===
+
+.Router Certificate Type
+[cols="3*", options="header"]
+|===
+|Field | Type | Description
+|ID | string|
+|Contents| string| The certificate.
+|PrivateKey|string| The private key.
+|===
+
+.Router TLSTerminationType
+[cols="3*", options="header"]
+|===
+|Field | Type | Description
+|`*TLSTerminationType*` | string | Dictates where the secure communication will stop.
+|`*InsecureEdgeTerminationPolicyType*` | string | Indicates the desired behavior for insecure connections to a route. While
+each router may make its own decisions on which ports to expose, this is
+normally port 80.
+|===
+
+TLSTerminationType and InsecureEdgeTerminationPolicyType dictate where
+the secure communication will stop.
+
+
+.Router TLSTerminationType Values
+[cols="3*", options="header"]
+|===
+|Constant | Value | Meaning
+|TLSTerminationEdge | `*edge*` | Terminate encryption at the edge router.
+|TLSTerminationPassthrough | `*passthrough*` | Terminate encryption at
+the destination, the destination is responsible for decrypting traffic.
+|TLSTerminationReencrypt | `*reencrypt*` | Terminate encryption at the edge
+router and re-encrypt it with a new certificate supplied by the destination.
+|===
+
+.Router InsecureEdgeTerminationPolicyType Values
+[cols="2*", options="header"]
+|===
+|Type | Meaning
+|`*Allow*` | Traffic is sent to the server on the insecure port (default)
+|`*Disable*` | No traffic is allowed on the insecure port.
+|`*Redirect*` | Clients are redirected to the secure port.
+|===
+None ("") is the same as `*Disable*`.
+
+[[using-annotations]]
+=== Annotations
+
+Each route can have annotations attached. Each annotation is just a name
+and a value.
+
+[source,yaml]
+----
+apiVersion: v1
+kind: Route
+metadata:
+  annotations:
+    haproxy.router.openshift.io/timeout: 5500ms
+[...]
+----
+
+The name can be anything that doesn't conflict with existing
+Annotations.  The value is any string. The string can have multiple tokens
+separated by a space. For example, "aa bb cc".  The template uses {{index}} to
+extract the value of an annotation. For example:
+
+----
+{{$balanceAlgo := index $cfg.Annotations "haproxy.router.openshift.io/balance"}}
+----
+
+Here is an example of how this could be used for mutual client authorization.
+
+Template snippet:
+
+----
+{{ with $cnList := index $cfg.Annotations "whiteListCertCommonName" }}
+  {{   if ne $cnList "" }}
+    acl test ssl_c_s_dn(CN) -m str {{ $cnList }}
+    http-request deny if !test
+  {{   end }}
+{{ end }}
+----
+
+You can then handle the whitelisted CNs with this command.
+
+----
+oc annotate route <route-name> --overwrite whiteListCertCommonName="CN1 CN2 CN3"
+----
+
+See xref:../../architecture/core_concepts/routes.adoc#route-specific-annotations[Route-specific Annotations]
+for more information.
+
+
+[[using-env-var]]
+=== Environment Variables
+
+The template can use any environment variables that exist in the router pod.
+The environment variables can be set in the deployment configuration. 
+New environment variables ones can be added.
+
+They are referenced by the env function:
+
+----
+{{env "ROUTER_MAX_CONNECTIONS" "20000"}}
+----
+
+Where the first string is the variable, and the second string is the default
+when the variable is missing or *nil*. When `ROUTER_MAX_CONNECTIONS` is not
+set or is *nil*, 20000 is used. Environment variables are a map where the key
+is the environment variable name and the content is the value of the variable.
+
+See xref:../../architecture/core_concepts/routes.adoc#env-variables[Route-specific Environment variables]
+for more information.
+
+
+[[example]]
+
+=== Pulling It All Together, An Example
+
+Here is a simple template based on the HAProxy template file.
+
+Start with a comment:
+
+----
+{{/*
+  Here is a small example of how to work with templates
+  taken from the haproxy template file
+*/}}
+----
+
+The template can create any number of output files. Use a define construct
+to create an output file. The file name is specified as an argument to define,
+and everything inside the define block up to the matching end is written as
+the contents of that file.
+
+----
+{{ define "/var/lib/haproxy/conf/haproxy.config" }}
+global
+{{ end }}
+----
+
+The above will copy *global* to the */var/lib/haproxy/conf/haproxy.config* file
+and then close the file.
+
+Set up logging based on environment variables.
+
+----
+{{ with (env "ROUTER_SYSLOG_ADDRESS" "") }}
+  log {{.}} {{env "ROUTER_LOG_FACILITY" "local1"}} {{env "ROUTER_LOG_LEVEL" "warning"}}
+{{ end }}
+----
+
+The *env* function extracts the value for the environment variable.  If the
+environment variable is not defined or *nil*, the second argument is returned.
+
+The with construct sets the value of "." (dot) within the with block to
+whatever value is provided as an argument to with.
+The *with* action tests Dot for *nil*. If not *nil* the clause
+is processed up to the *end*. In the above assume `ROUTER_SYSLOG_ADDRESS`
+contains "/var/log/msg", `ROUTER_LOG_FACILITY` is not defined and
+`ROUTER_LOG_LEVEL` contains "info". The following will be copied to the
+output file:
+
+----
+  log /var/log/msg local1 info
+----
+
+Each admitted route ends up generating lines in the configuration file.
+Use *range* go through the admitted routes:
+
+----
+{{ range $cfgIdx, $cfg := .State }}
+  backend be_http_{{$cfgIdx}}
+{{end}}
+----
+
+*.State* is a map of *ServiceAliasConfig* where the key is the route name.
+*range* steps through the map and for each pass, it sets $cfgIdx with the *key*,
+and sets $cfg to point to the *ServiceAliasConfig* that describes the route. If
+there are two routes named *myroute* and *hisroute*, the above will copy
+
+----
+  backend be_http_myroute
+  backend be_http_hisroute
+----
+
+to the output file.
+
+Route Annotations, *$cfg.Annotations*, is also a map with the annotation
+name as the key and the content string as the value.  The route can have
+as many annotations as desired and the use is defined by the template author.
+The user codes the annotation into the route and the template author customized
+the HAProxy template to handle the annotation.
+
+The common usage is to index the annotation to get the value.
+
+----
+{{$balanceAlgo := index $cfg.Annotations "haproxy.router.openshift.io/balance"}}
+----
+The index extracts the value for the given annotation, if any.
+So $balanceAlgo will contain the string associated with the annotation or *nil*.
+As above, you can test for a non *nil* string and act on it with the *with*
+construct.
+
+----
+{{ with $balanceAlgo }}
+  balance $balanceAlgo
+{{ end }}
+----
+Here when $balanceAlgo is not *nil*, "balance $balanceAlgo" is copied to the
+output file.
+
+In a second example, we want to set a server timeout based on a timeout value
+set in an annotation.
+
+----
+$value := index $cfg.Annotations "haproxy.router.openshift.io/timeout"
+----
+The $value can now be evaluated to make sure it contains a properly constructed
+string.  The *matchPattern* function accepts a regular expression and returns
+`true` if the argument satisfies the expression.
+
+----
+matchPattern "[1-9][0-9]*(us\|ms\|s\|m\|h\|d)?" $value
+----
+This would accept "5000ms" but not "7y". The results can be used in a test.
+
+----
+{{if (matchPattern "[1-9][0-9]*(us\|ms\|s\|m\|h\|d)?" $value) }}
+  timeout server  {{$value}}
+{{ end }}
+----
+
+It can also be used to match tokens:
+
+----
+matchPattern "roundrobin|leastconn|source" $balanceAlgo
+----
+
+Alternatively *matchValues* can be used to match tokens:
+
+----
+matchValues $balanceAlgo "roundrobin" "leastconn" "source"
+----
+
 
 [[using-configmap-replace-template]]
 == Using a ConfigMap to Replace the Router Configuration Template
 
-You can use xref:../../dev_guide/configmaps.adoc#dev-guide-configmaps[ConfigMap]
+You can use a xref:../../dev_guide/configmaps.adoc#dev-guide-configmaps[ConfigMap]
 to customize the router instance without rebuilding the router image. The
 *_haproxy-config.template_*, *_reload-haproxy_*, and other scripts can be
 modified as well as creating and modifying router environment variables.
 
 . Copy the *_haproxy-config.template_* that you want to modify as
-xref:obtaining-router-configuration-template[described above]. Modify it as desired.
+xref:obtaining-router-configuration-template[described above]. Modify it as
+desired.
 
 . Create a ConfigMap:
 +
@@ -199,16 +641,43 @@ After this modification, you can xref:rebuilding-your-router[rebuild your router
 [[rebuilding-your-router]]
 == Rebuilding Your Router
 
-After you have made any desired modifications to the template, such as the
-example xref:using-stick-tables[stick tables] customization, you must rebuild
-your router for your changes to go in effect:
+In order to rebuild the router, you need copies of several files that are present
+on a running router. Make a work directory and copy the files from the router:
 
-. https://access.redhat.com/articles/881893#createimage[Rebuild the container
-image to include your customized template.]
-. xref:../registry/accessing_registry.adoc#access[Push the resulting image to your repository].
-. Create the router specifying your new image, either:
-.. in the pod's object definition directly, or
-.. by adding the `--images=<repo>/<image>:<tag>` flag to the `oadm router`
-command when
-xref:../../admin_guide/high_availability.adoc#configuring-a-highly-available-routing-service[creating
-a highly-available routing service].
+
+----
+# mkdir - myrouter/conf
+# cd myrouter
+# oc get po
+NAME                       READY     STATUS    RESTARTS   AGE
+router-2-40fc3             1/1       Running   0          11d
+# oc rsh router-2-40fc3 cat haproxy-config.template > conf/haproxy-config.template
+# oc rsh router-2-40fc3 cat error-page-503.http > conf/error-page-503.http
+# oc rsh router-2-40fc3 cat default_pub_keys.pem > conf/default_pub_keys.pem
+# oc rsh router-2-40fc3 cat ../Dockerfile > Dockerfile
+# oc rsh router-2-40fc3 cat ../reload-haproxy > reload-haproxy
+----
+
+You can edit or replace any of these files. However, conf/haproxy-config.template
+and reload-haproxy are the most likely to be modified.
+
+After updating the files:
+
+----
+# docker build -t openshift/origin-haproxy-router-myversion .
+# docker tag openshift/origin-haproxy-router-myversion 172.30.243.98:5000/openshift/haproxy-router-myversion <1>
+# docker push 172.30.243.98:5000/openshift/origin-haproxy-router-pc:latest <2>
+----
+<1> Tag the version with the repository. In this case the repository is
+172.30.243.98:5000
+<2> Push the tagged version to the repository. It may be necessary to docker
+login to the repository first.
+
+To use the new router, edit the router deployment configuration either by
+changing the *image:* string or by adding the `--images=<repo>/<image>:<tag>`
+flag to the `oadm router` command.
+
+When debugging the changes, it is helpful to set "imagePullPolicy: Always"
+in the deployment configuration to force an image pull on each pod creation. When
+debugging is complete, you can change it back to "imagePullPolicy: IfNotPresent"
+to avoid the pull on each pod start.
