@@ -80,13 +80,13 @@ following sections), which depends on how *etcd* is deployed.
 | Deployment Type| Data Directory
 
 |all-in-one cluster
-|*_/var/lib/openshift/openshift.local.etcd_*
+|*_/var/lib/origin/openshift.local.etcd_*
 
 |external etcd (not on master)
 |*_/var/lib/etcd_*
 
 |embedded etcd (on master)
-|*_/var/lib/origin/etcd_*
+|*_/var/lib/etcd_*
 |===
 
 
@@ -97,18 +97,7 @@ following sections), which depends on how *etcd* is deployed.
 +
 ----
 # cd /etc/origin/master
-# tar cf /tmp/certs-and-keys-$(hostname).tar \
-    master.proxy-client.crt \
-    master.proxy-client.key \
-    proxyca.crt \
-    proxyca.key \
-    master.server.crt \
-    master.server.key \
-    ca.crt \
-    ca.key \
-    master.etcd-client.crt \
-    master.etcd-client.key \
-    master.etcd-ca.crt
+# tar cf /tmp/certs-and-keys-$(hostname).tar *.key *.crt
 ----
 
 . If *etcd* is running on more than one host, stop it on each host:
@@ -141,23 +130,22 @@ For a container-based installation, you must use `docker exec` to run *etcdctl*
 inside the container.
 ====
 
-[[cluster-restore]]
-== Cluster Restore
+. Copy the *_db_* file over to the backup you created:
++
+----
+$ cp "$ETCD_DATA_DIR"/member/snap/db "$HOTDIR"/member/snap/db'
+----
 
-[NOTE]
-====
-This restore operation only works for single-member *etcd* clusters. For
-multiple-member *etcd* clusters, see
-xref:../install_config/downgrade.adoc#downgrading-restoring-etcd[Restoring *etcd*].
-====
+[[cluster-restore-single-member-etcd-clusters]]
+== Cluster Restore for Single-member etcd Clusters
 
 To restore the cluster:
 
 . Reinstall {product-title}.
 +
 This should be done in the
-xref:../install_config/index.adoc#install-config-index[same way]
-that {product-title} was previously installed.
+xref:../install_config/install/planning.adoc#installation-methods[same way] that
+{product-title} was previously installed.
 
 . Run all necessary post-installation steps.
 +
@@ -176,6 +164,294 @@ that {product-title} was previously installed.
 # chcon -R --reference $ETCD_DATA_DIR.orig $ETCD_DATA_DIR
 # chown -R etcd:etcd $ETCD_DATA_DIR
 ----
+
+. Create the new single node cluster using etcd's `--force-new-cluster` option.
+You can do this using the values from *_/etc/etcd/etcd.conf_*, or you can
+temporarily modify the *systemd* unit file and start the service normally.
++
+To do so, edit the *_/usr/lib/systemd/system/etcd.service_* file, and add
+`--force-new-cluster`:
++
+----
+# sed -i '/ExecStart/s/"$/  --force-new-cluster"/' /usr/lib/systemd/system/etcd.service
+# cat /usr/lib/systemd/system/etcd.service  | grep ExecStart
+
+ExecStart=/bin/bash -c "GOMAXPROCS=$(nproc) /usr/bin/etcd --force-new-cluster"
+----
++
+Then, restart the *etcd* service:
++
+----
+# systemctl daemon-reload
+# systemctl start etcd
+----
+
+. Verify the *etcd* service started correctly, then re-edit the
+*_/usr/lib/systemd/system/etcd.service_* file and remove the
+`--force-new-cluster` option:
++
+----
+# sed -i '/ExecStart/s/ --force-new-cluster//' /usr/lib/systemd/system/etcd.service
+# cat /usr/lib/systemd/system/etcd.service  | grep ExecStart
+
+ExecStart=/bin/bash -c "GOMAXPROCS=$(nproc) /usr/bin/etcd"
+----
+
+. Restart the *etcd* service, then verify the etcd cluster is running correctly
+and displays {product-title}'s configuration:
++
+----
+# systemctl daemon-reload
+# systemctl restart etcd
+----
+
+[[cluster-restore-multiple-member-etcd-clusters]]
+== Cluster Restore for Multiple-member etcd Clusters
+
+When using an external etcd host, you must first restore the etcd backup
+by creating a new, single node etcd cluster. If using external etcd with
+multiple members, you must then also add any additional etcd members to the
+cluster one by one.
+
+However, the details of the restoration process differ between
+xref:restoring-embedded-etcd[embedded] and
+xref:restoring-external-etcd[external] etcd. See the following
+section and follow the relevant steps
+before
+xref:bringing-openshift-services-back-online[Bringing OpenShift
+Services Back Online].
+
+[[restoring-embedded-etcd]]
+=== Embedded etcd
+
+Restore your etcd backup and configuration:
+
+. Run the following on the master with the embedded etcd:
++
+----
+# ETCD_DIR=/var/lib/origin/openshift.local.etcd
+# mv $ETCD_DIR /var/lib/etcd.orig
+# cp -Rp /var/lib/origin/etcd-backup-<timestamp>/ $ETCD_DIR
+# chcon -R --reference /var/lib/etcd.orig/ $ETCD_DIR
+# chown -R etcd:etcd $ETCD_DIR
+----
++
+[WARNING]
+====
+The `$ETCD_DIR` location differs between external and embedded etcd.
+====
+
+. Create the new, single node etcd cluster:
++
+----
+# etcd -data-dir=/var/lib/origin/openshift.local.etcd \
+    -force-new-cluster
+----
++
+Verify etcd has started successfully by checking the output from the above
+command, which should look similar to the following near the end:
++
+----
+[...]
+2016-06-24 12:14:45.644073 I | etcdserver: starting server... [version: 2.2.5, cluster version: 2.2]
+[...]
+2016-06-24 12:14:46.834394 I | etcdserver: published {Name:default ClientURLs:[http://localhost:2379 http://localhost:4001]} to cluster 5580663a6e0002
+----
+
+. Shut down the process by running the following from a separate terminal:
++
+----
+# pkill etcd
+----
+
+. Continue to xref:bringing-openshift-services-back-online[Bringing
+{product-title} Services Back Online].
+
+[[restoring-external-etcd]]
+=== External etcd
+
+Choose a system to be the initial etcd member, and restore its etcd backup and
+configuration:
+
+. Run the following on the etcd host:
++
+----
+# ETCD_DIR=/var/lib/etcd/
+# mv $ETCD_DIR /var/lib/etcd.orig
+# cp -Rp /var/lib/origin/etcd-backup-<timestamp>/ $ETCD_DIR
+# chcon -R --reference /var/lib/etcd.orig/ $ETCD_DIR
+# chown -R etcd:etcd $ETCD_DIR
+----
++
+[WARNING]
+====
+The `$ETCD_DIR` location differs between external and embedded etcd.
+====
+
+. Restore your *_/etc/etcd/etcd.conf_* file from backup or *_.rpmsave_*.
+
+. Create the new single node cluster using etcd's `--force-new-cluster`
+option. You can do this with a long complex command using the values from
+*_/etc/etcd/etcd.conf_*, or you can temporarily modify the *systemd* unit file
+and start the service normally.
++
+To do so, edit the *_/usr/lib/systemd/system/etcd.service_* file, and add
+`--force-new-cluster`:
++
+----
+# sed -i '/ExecStart/s/"$/  --force-new-cluster"/' /usr/lib/systemd/system/etcd.service
+# cat /usr/lib/systemd/system/etcd.service  | grep ExecStart
+
+ExecStart=/bin/bash -c "GOMAXPROCS=$(nproc) /usr/bin/etcd --force-new-cluster"
+----
++
+Then restart the *etcd* service:
++
+----
+# systemctl daemon-reload
+# systemctl start etcd
+----
+
+. Verify the *etcd* service started correctly, then re-edit the
+*_/usr/lib/systemd/system/etcd.service_* file and remove the
+`--force-new-cluster` option:
++
+----
+# sed -i '/ExecStart/s/ --force-new-cluster//' /usr/lib/systemd/system/etcd.service
+# cat /usr/lib/systemd/system/etcd.service  | grep ExecStart
+
+ExecStart=/bin/bash -c "GOMAXPROCS=$(nproc) /usr/bin/etcd"
+----
+
+. Restart the *etcd* service, then verify the etcd cluster is running correctly
+and displays {product-title}'s configuration:
++
+----
+# systemctl daemon-reload
+# systemctl restart etcd
+# etcdctl --cert-file=/etc/etcd/peer.crt \
+    --key-file=/etc/etcd/peer.key \
+    --ca-file=/etc/etcd/ca.crt \
+    --peers="https://172.16.4.18:2379,https://172.16.4.27:2379" \
+    ls /
+----
+
+. If you have additional etcd members to add to your cluster, continue to
+xref:adding-addtl-etcd-members[Adding Additional etcd Members].
+Otherwise, if you only want a single node external etcd, continue to
+xref:bringing-openshift-services-back-online[Bringing {product-title}
+Services Back Online].
+
+[[adding-addtl-etcd-members]]
+==== Adding Additional etcd Members
+
+To add additional etcd members to the cluster, you must first adjust the default
+*localhost* peer in the `*peerURLs*` value for the first member:
+
+. Get the member ID for the first member using the `member list` command:
++
+----
+# etcdctl --cert-file=/etc/etcd/peer.crt \
+    --key-file=/etc/etcd/peer.key \
+    --ca-file=/etc/etcd/ca.crt \
+    --peers="https://172.18.1.18:2379,https://172.18.9.202:2379,https://172.18.0.75:2379" \
+    member list
+----
+
+. Update the value of `*peerURLs*` using the `etcdctl member update` command by
+passing the member ID obtained from the previous step:
++
+----
+# etcdctl --cert-file=/etc/etcd/peer.crt \
+    --key-file=/etc/etcd/peer.key \
+    --ca-file=/etc/etcd/ca.crt \
+    --peers="https://172.18.1.18:2379,https://172.18.9.202:2379,https://172.18.0.75:2379" \
+    member update 511b7fb6cc0001 https://172.18.1.18:2380
+----
++
+Alternatively, you can use `curl`:
++
+----
+# curl --cacert /etc/etcd/ca.crt \
+    --cert /etc/etcd/peer.crt \
+    --key /etc/etcd/peer.key \
+    https://172.18.1.18:2379/v2/members/511b7fb6cc0001 \
+    -XPUT -H "Content-Type: application/json" \
+    -d '{"peerURLs":["https://172.18.1.18:2380"]}'
+----
+
+. Re-run the `member list` command and ensure the peer URLs no longer include
+*localhost*.
+
+. Now, add each additional member to the cluster one at a time.
++
+[WARNING]
+====
+Each member must be fully added and brought online one at a time. When adding
+each additional member to the cluster, the `*peerURLs*` list must be correct for
+that point in time, so it will grow by one for each member added. The `etcdctl
+member add` command will output the values that need to be set in the
+*_etcd.conf_* file as you add each member, as described in the following
+instructions.
+====
+
+.. For each member, add it to the cluster using the values that can be found in
+that system's *_etcd.conf_* file:
++
+----
+# etcdctl --cert-file=/etc/etcd/peer.crt \
+    --key-file=/etc/etcd/peer.key \
+    --ca-file=/etc/etcd/ca.crt \
+    --peers="https://172.16.4.18:2379,https://172.16.4.27:2379" \
+    member add 10.3.9.222 https://172.16.4.27:2380
+
+Added member named 10.3.9.222 with ID 4e1db163a21d7651 to cluster
+
+ETCD_NAME="10.3.9.222"
+ETCD_INITIAL_CLUSTER="10.3.9.221=https://172.16.4.18:2380,10.3.9.222=https://172.16.4.27:2380"
+ETCD_INITIAL_CLUSTER_STATE="existing"
+----
+
+.. Using the environment variables provided in the output of the above `etcdctl
+member add` command, edit the *_/etc/etcd/etcd.conf_* file on the member system
+itself and ensure these settings match.
+
+.. Now start etcd on the new member:
++
+----
+# rm -rf /var/lib/etcd/member
+# systemctl enable etcd
+# systemctl start etcd
+----
+
+.. Ensure the service starts correctly and the etcd cluster is now healthy:
++
+----
+# etcdctl --cert-file=/etc/etcd/peer.crt \
+    --key-file=/etc/etcd/peer.key \
+    --ca-file=/etc/etcd/ca.crt \
+    --peers="https://172.16.4.18:2379,https://172.16.4.27:2379" \
+    member list
+
+51251b34b80001: name=10.3.9.221 peerURLs=https://172.16.4.18:2380 clientURLs=https://172.16.4.18:2379
+d266df286a41a8a4: name=10.3.9.222 peerURLs=https://172.16.4.27:2380 clientURLs=https://172.16.4.27:2379
+
+# etcdctl --cert-file=/etc/etcd/peer.crt \
+    --key-file=/etc/etcd/peer.key \
+    --ca-file=/etc/etcd/ca.crt \
+    --peers="https://172.16.4.18:2379,https://172.16.4.27:2379" \
+    cluster-health
+
+cluster is healthy
+member 51251b34b80001 is healthy
+member d266df286a41a8a4 is healthy
+----
+
+.. Now repeat this process for the next member to add to the cluster.
+
+. After all additional etcd members have been added, continue to
+xref:bringing-openshift-services-back-online[Bringing {product-title}
+Services Back Online].
 
 [[backup-restore-adding-etcd-hosts]]
 == Adding New etcd Hosts
@@ -242,6 +518,12 @@ same version is installed on each host.
 # export PREFIX="./generated_certs/etcd-$CN/"
 ----
 
+.. Create the $PREFIX directory:
++
+----
+$ mkdir $PREFIX
+----
+
 .. Create the *_server.csr_* and *_server.crt_* certificates:
 +
 ----
@@ -272,10 +554,9 @@ same version is installed on each host.
   -extensions etcd_v3_ca_peer -batch
 ----
 
-.. Copy the *_ca.crt_* and *_etcd.conf_* files, and archive the contents of the directory:
+.. Copy the *_etcd.conf_* file, and archive the contents of the directory:
 +
 ----
-# cp ca.crt ${PREFIX}
 # cp etcd.conf ${PREFIX}
 # tar -czvf ${PREFIX}${CN}.tgz -C ${PREFIX} .
 ----
@@ -314,10 +595,16 @@ Skip this step if version is lower than `etcd-2.3.7-4` or if etcd database size
 is smaller than 700 MB.
 
 If the etcd backup is larger than 700 MB,
-xref:../adming_guide/pruning_resources.adoc#admin-guide-pruning-resources[prune
-the resource], or clear transistor to transistor logic (TTL) data, such as
-events. If the backup is still larger than 700 MB, stop the other hosts before
-performing this step.
+xref:../admin_guide/pruning_resources.adoc#admin-guide-pruning-resources[prune
+the resource], or clear time to live (TTL) data, such as events. If the backup
+is still larger than 700 MB, stop the other hosts before performing this step.
+====
++
+[WARNING]
+====
+If you must skip this step, do not use a backup of *_/var/lib/etcd_*. Also, if
+you reuse a node, *_/var/lib/etcd_* must first be purged of old data. Otherwise,
+etcd will also indicate that the `cluster-id` does not match.
 ====
 +
 ----
@@ -327,17 +614,19 @@ performing this step.
 # tar -cvf $NEW_ETCD-backup.tar.gz -C /var/lib/etcd/$NEW_ETCD-backup/ .
 # scp $NEW_ETCD-backup.tar.gz $NEW_ETCD:/var/lib/etcd/
 ----
-
-. On the new host, extract the backup data and set the permissions:
++
+On the new host, extract the backup data and set the permissions:
 +
 ----
 # tar -xf /etc/etcd/<NEW_ETCD_HOSTNAME> -C /etc/etcd/ --overwrite
 # chown etcd:etcd /etc/etcd/*
 
 # rm -rf /var/lib/etcd/member
-# tar -xf /var/lib/etcd/<NEW_ETCD_HOSTNAME> -C /var/lib/etcd/
+# tar -xf /var/lib/etcd/<NEW_ETCD_HOSTNAME>-backup.tar.gz -C /var/lib/etcd/
 # chown -R etcd:etcd /var/lib/etcd/
 ----
++
+Ensure that you save the *_db_* file.
 
 . On the new etcd host's *_etcd.conf_* file:
 .. Replace the following with the values generated in the previous step:
@@ -370,6 +659,49 @@ etcdctl -C https://${ETCD_CA_HOST}:2379 --ca-file=/etc/etcd/ca.crt \
   --key-file=/etc/etcd/peer.key cluster-health
 ----
 
+[[bringing-openshift-services-back-online]]
+== Bringing {product-title} Services Back Online
+
+On each {product-title} master, restore your master and node configuration from
+backup and enable and restart all relevant services.
+
+On the master in a single master cluster:
+
+----
+# cp /etc/sysconfig/atomic-openshift-master.rpmsave /etc/sysconfig/atomic-openshift-master
+# cp /etc/origin/master/master-config.yaml.<timestamp> /etc/origin/master/master-config.yaml
+# cp /etc/origin/node/node-config.yaml.<timestamp> /etc/origin/node/node-config.yaml
+# systemctl enable atomic-openshift-master
+# systemctl enable atomic-openshift-node
+# systemctl start atomic-openshift-master
+# systemctl start atomic-openshift-node
+----
+
+On each master in a multi-master cluster:
+
+----
+# cp /etc/sysconfig/atomic-openshift-master-api.rpmsave /etc/sysconfig/atomic-openshift-master-api
+# cp /etc/sysconfig/atomic-openshift-master-controllers.rpmsave /etc/sysconfig/atomic-openshift-master-controllers
+# cp /etc/origin/master/master-config.yaml.<timestamp> /etc/origin/master/master-config.yaml
+# cp /etc/origin/node/node-config.yaml.<timestamp> /etc/origin/node/node-config.yaml
+# systemctl enable atomic-openshift-master-api
+# systemctl enable atomic-openshift-master-controllers
+# systemctl enable atomic-openshift-node
+# systemctl start atomic-openshift-master-api
+# systemctl start atomic-openshift-master-controllers
+# systemctl start atomic-openshift-node
+----
+
+On each {product-title} node, restore your *_node-config.yaml_* file from backup
+and enable and restart the *atomic-openshift-node* service:
+
+----
+# cp /etc/origin/node/node-config.yaml.<timestamp> /etc/origin/node/node-config.yaml
+# systemctl enable atomic-openshift-node
+# systemctl start atomic-openshift-node
+----
+
+Your {product-title} cluster should now be back online.
 
 [[project-backup]]
 == Project Backup
