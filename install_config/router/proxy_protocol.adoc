@@ -1,0 +1,258 @@
+[[install-config-router-proxy-protocol]]
+= Configuring the HAProxy Router to Use the PROXY Protocol
+:data-uri:
+:icons:
+:experimental:
+:toc: macro
+:toc-title:
+:prewrap!:
+
+toc::[]
+
+== Overview
+
+By default, the HAProxy router expects incoming connections to unsecure, edge,
+and re-encrypt routes to use HTTP. However, you can configure the router to
+expect incoming requests by using
+link:http://www.haproxy.org/download/1.8/doc/proxy-protocol.txt[the PROXY
+protocol] instead. This topic describes how to configure the HAProxy router and
+an external load balancer to use the PROXY protocol.
+
+[[why-use-the-proxy-protocol]]
+== Why Use the PROXY Protocol?
+
+When an intermediary service such as a proxy server or load balancer forwards an
+HTTP request, it appends the source address of the connection to the request's
+"Forwarded" header in order to provide this information to subsequent
+intermediaries and to the back-end service to which the request is ultimately
+forwarded. However, if the connection is encrypted, intermediaries cannot modify
+the "Forwarded" header. In this case, the HTTP header will not accurately
+communicate the original source address when the request is forwarded.
+
+To solve this problem, some load balancers encapsulate HTTP requests using the
+PROXY protocol as an alternative to simply forwarding HTTP. Encapsulation
+enables the load balancer to add information to the request without modifying
+the forwarded request itself. In particular, this means that the load balancer
+can communicate the source address even when forwarding an encrypted connection.
+
+The HAProxy router can be configured to accept the PROXY protocol and
+decapsulate the HTTP request. Because the router terminates encryption for edge
+and re-encrypt routes, the router can then update the "Forwarded" HTTP header
+(and related HTTP headers) in the request, appending any source address that is
+communicated using the PROXY protocol.
+
+[WARNING]
+====
+The PROXY protocol and HTTP are incompatible and cannot be mixed.  If you use
+a load balancer in front of the router, both must use either the PROXY protocol
+or HTTP. Configuring one to use one protocol and the other to use the other
+protocol will cause routing to fail.
+====
+
+[[using-the-proxy-protocol]]
+== Using the PROXY Protocol
+
+By default, the HAProxy router does not use the PROXY protocol. The router can
+be configured using the `ROUTER_USE_PROXY_PROTOCOL` environment variable to
+expect the PROXY protocol for incoming connections:
+
+.Enable the PROXY Protocol
+----
+$ oc env dc/router ROUTER_USE_PROXY_PROTOCOL=true
+----
+
+Set the variable to any value other than `true` or `TRUE` to disable the PROXY
+protocol:
+
+.Disable the PROXY Protocol
+----
+$ oc env dc/router ROUTER_USE_PROXY_PROTOCOL=false
+----
+
+If you enable the PROXY protocol in the router, you must configure your load
+balancer in front of the router to use the PROXY protocol as well. Following is
+an example of configuring Amazon's Elastic Load Balancer (ELB) service to use
+the PROXY protocol. This example assumes that ELB is forwarding ports 80 (HTTP),
+443 (HTTPS), and 5000 (for the image registry) to the router running on one or
+more EC2 instances.
+
+.Configure Amazon ELB to Use the PROXY Protocol
+
+. To simplify subsequent steps, first set some shell variables:
++
+----
+$ lb='infra-lb' <1>
+$ instances=( 'i-079b4096c654f563c' ) <2>
+$ secgroups=( 'sg-e1760186' ) <3>
+$ subnets=( 'subnet-cf57c596' ) <4>
+----
+<1> The name of your ELB.
+<2> The instance or instances on which the router is running.
+<3> The security group or groups for this ELB.
+<4> The subnet or subnets for this ELB.
++
+. Next, create the ELB with the appropriate listeners, security groups, and
+subnets.
++
+[NOTE]
+====
+You must configure all listeners to use the TCP protocol, not the HTTP protocol.
+====
++
+----
+$ aws elb create-load-balancer --load-balancer-name "$lb" \
+   --listeners \
+    'Protocol=TCP,LoadBalancerPort=80,InstanceProtocol=TCP,InstancePort=80' \
+    'Protocol=TCP,LoadBalancerPort=443,InstanceProtocol=TCP,InstancePort=443' \
+    'Protocol=TCP,LoadBalancerPort=5000,InstanceProtocol=TCP,InstancePort=5000' \
+   --security-groups $secgroups \
+   --subnets $subnets
+{
+    "DNSName": "infra-lb-2006263232.us-east-1.elb.amazonaws.com"
+}
+----
+
+. Register your router instance or instances with the ELB:
++
+----
+$ aws elb register-instances-with-load-balancer --load-balancer-name "$lb" \
+   --instances $instances
+{
+    "Instances": [
+        {
+            "InstanceId": "i-079b4096c654f563c"
+        }
+    ]
+}
+----
+
+. Configure the ELB's health check:
++
+----
+$ aws elb configure-health-check --load-balancer-name "$lb" \
+   --health-check 'Target=HTTP:1936/healthz,Interval=30,UnhealthyThreshold=2,HealthyThreshold=2,Timeout=5'
+{
+    "HealthCheck": {
+        "HealthyThreshold": 2,
+        "Interval": 30,
+        "Target": "HTTP:1936/healthz",
+        "Timeout": 5,
+        "UnhealthyThreshold": 2
+    }
+}
+----
+
+. Finally, create a load-balancer policy with the `ProxyProtocol` attribute
+enabled, and configure it on the ELB's TCP ports 80 and 443:
++
+----
+$ aws elb create-load-balancer-policy --load-balancer-name "$lb" \
+   --policy-name "${lb}-ProxyProtocol-policy" \
+   --policy-type-name 'ProxyProtocolPolicyType' \
+   --policy-attributes 'AttributeName=ProxyProtocol,AttributeValue=true'
+$ for port in 80 443
+  do
+    aws elb set-load-balancer-policies-for-backend-server \
+     --load-balancer-name "$lb" \
+     --instance-port "$port" \
+     --policy-names "${lb}-ProxyProtocol-policy"
+  done
+----
+
+.Verify the Configuration
+You can examine the load balancer as follows to verify that the configuration is
+correct:
+
+----
+$ aws elb describe-load-balancers --load-balancer-name "$lb" |
+    jq '.LoadBalancerDescriptions| [.[]|.ListenerDescriptions]'
+[
+  [
+    {
+      "Listener": {
+        "InstancePort": 80,
+        "LoadBalancerPort": 80,
+        "Protocol": "TCP",
+        "InstanceProtocol": "TCP"
+      },
+      "PolicyNames": ["infra-lb-ProxyProtocol-policy"] <1>
+    },
+    {
+      "Listener": {
+        "InstancePort": 443,
+        "LoadBalancerPort": 443,
+        "Protocol": "TCP",
+        "InstanceProtocol": "TCP"
+      },
+      "PolicyNames": ["infra-lb-ProxyProtocol-policy"] <2>
+    },
+    {
+      "Listener": {
+        "InstancePort": 5000,
+        "LoadBalancerPort": 5000,
+        "Protocol": "TCP",
+        "InstanceProtocol": "TCP"
+      },
+      "PolicyNames": [] <3>
+    }
+  ]
+]
+----
+<1> The listener for TCP port 80 should have the policy for using the PROXY protocol.
+<2> The listener for TCP port 443 should have the same policy.
+<3> The listener for TCP port 5000 should *not* have the policy.
+
+Alternatively, if you already have an ELB configured, but it is not configured
+to use the PROXY protocol, you will need to change the existing listener for TCP
+port 80 to use the TCP protocol instead of HTTP (TCP port 443 should already be
+using the TCP protocol):
+
+----
+$ aws elb delete-load-balancer-listeners --load-balancer-name "$lb" \
+   --load-balancer-ports 80
+$ aws elb create-load-balancer-listeners --load-balancer-name "$lb" \
+   --listeners 'Protocol=TCP,LoadBalancerPort=80,InstanceProtocol=TCP,InstancePort=80'
+----
+
+.Verify the Protocol Updates
+Verify that the protocol has been updated as follows:
+
+----
+$ aws elb describe-load-balancers --load-balancer-name "$lb" |
+   jq '[.LoadBalancerDescriptions[]|.ListenerDescriptions]'
+[
+  [
+    {
+      "Listener": {
+        "InstancePort": 443,
+        "LoadBalancerPort": 443,
+        "Protocol": "TCP",
+        "InstanceProtocol": "TCP"
+      },
+      "PolicyNames": []
+    },
+    {
+      "Listener": {
+        "InstancePort": 5000,
+        "LoadBalancerPort": 5000,
+        "Protocol": "TCP",
+        "InstanceProtocol": "TCP"
+      },
+      "PolicyNames": []
+    },
+    {
+      "Listener": {
+        "InstancePort": 80,
+        "LoadBalancerPort": 80,
+        "Protocol": "TCP", <1>
+        "InstanceProtocol": "TCP"
+      },
+      "PolicyNames": []
+    }
+  ]
+]
+----
+<1> All listeners, including the listener for TCP port 80, should be using the TCP protocol.
+
+Then, create a load-balancer policy and add it to the ELB as described in Step 5
+above.
