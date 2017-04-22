@@ -65,15 +65,13 @@ try { // Use a try block to perform cleanup in a finally block when the build fa
 
     // When testing a PR, create a new project to perform the build
     // and deploy artifacts.
-    if (isPR) {
-      stage ('Create PR Project') {
-        setPreviewStatus(repoUrl, "Building application", "PENDING", "", false)
-        setBuildStatus(repoUrl, "ci/approve", "Aprove after testing", "PENDING", "")
-        project = uniqueName("${appName}-")
-        sh "oc new-project ${project}"
-        projectCreated=true
-        sh "oc policy add-role-to-group view system:authenticated -n ${project}"
-      }
+    stage ('Create PR Project') {
+      setPreviewStatus(repoUrl, "Building application", "PENDING", "", false)
+      setBuildStatus(repoUrl, "ci/approve", "Aprove after testing", "PENDING", "")
+      project = uniqueName("${appName}-")
+      sh "oc new-project ${project}"
+      projectCreated=true
+      sh "oc policy add-role-to-group view system:authenticated -n ${project}"
     }
 
     stage ('Apply object configurations') {
@@ -85,22 +83,20 @@ try { // Use a try block to perform cleanup in a finally block when the build fa
     }
 
 
-    if (isPR) {
-      stage ('Verify Service') {
-        openshiftVerifyService serviceName: appName, namespace: project
-      }
-      def appHostName = getRouteHostname(appName, project)
-      setPreviewStatus(repoUrl, "The application is available", "SUCCESS", "${appHostName}", true)
-      setBuildStatus(repoUrl, "ci/approve", "Approve after testing", "PENDING", "${env.BUILD_URL}input/")
-      stage ('Manual Test') {
-        timeout(time:2, unit:'DAYS') {
-          input "Is everything OK?"
-        }
-      }
-      approved = true
-      setPreviewStatus(repoUrl, "Application previewed", "SUCCESS", "", false)
-      setBuildStatus(repoUrl, "ci/approve", "Manually approved", "SUCCESS", "")
+    stage ('Verify Service') {
+      openshiftVerifyService serviceName: appName, namespace: project
     }
+    def appHostName = getRouteHostname(appName, project)
+    setPreviewStatus(repoUrl, "The application is available", "SUCCESS", "${appHostName}", true)
+    setBuildStatus(repoUrl, "ci/approve", "Approve after testing", "PENDING", "${env.BUILD_URL}input/")
+    stage ('Manual Test') {
+      timeout(time:2, unit:'DAYS') {
+        input "Is everything OK?"
+      }
+    }
+    approved = true
+    setPreviewStatus(repoUrl, "Application previewed", "SUCCESS", "", false)
+    setBuildStatus(repoUrl, "ci/approve", "Manually approved", "SUCCESS", "")
   }
 }
 finally {
