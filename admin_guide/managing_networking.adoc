@@ -97,7 +97,7 @@ talk to.
 
 xref:admin-guide-limit-pod-access-egress-router[Router]::
 Using an egress router allows you to create identifiable services to send
-traffic to a specific destination, ensuring an external destination treats
+traffic to certain destinations, ensuring those external destinations treat
 traffic as though it were coming from a known source. This helps with security,
 because it allows you to secure an external database so that only specific pods
 in a namespace can talk to a service (the egress router), which proxies the
@@ -270,12 +270,29 @@ Virtual Switch Ports] and
 link:http://pubs.vmware.com/vsphere-4-esxi-installable-vcenter/index.jsp?topic=/com.vmware.vsphere.esxi_server_config.doc_40_u1/esx_server_config/securing_an_esx_configuration/c_forged_transmissions.html[Forged
 Transmissions] guidance.
 
-[[admin-guide-deploying-an-egress-router-pod]]
-==== Deploying an Egress Router Pod
+[[admin-guide-egress-router-modes]]
+==== Egress Router Modes
 
-. Create a pod configuration using the following:
+The egress router can run in two different modes:
+
+1. A "redirect" mode, where the egress router sets up iptables rules
+to redirect traffic from its own IP address to one or more destination
+IP addresses. Client pods that want to make use of the reserved source
+IP address will need to be modified to connect to the egress router
+rather than connecting directly to the destination IP.
+
+2. An HTTP proxy mode, where the egress router runs as an HTTP proxy.
+This only works for clients talking to HTTP/HTTPS-based services, but
+usually requires fewer changes to the client pods to get them to work.
+(Many programs can be told to use an HTTP proxy just by setting an
+environment variable.)
+
+[[admin-guide-deploying-an-egress-router-pod]]
+==== Deploying a Redirecting Egress Router Pod
+
+. Create a pod configuration such as the following:
 +
-.Example Pod Definition for an Egress Router
+.Example Pod Definition for a simple redirecting Egress Router
 ====
 ----
 apiVersion: v1
@@ -287,7 +304,7 @@ metadata:
   annotations:
     pod.network.openshift.io/assign-macvlan: "true" <1>
 spec:
-  containers:
+  initContainers:
   - name: egress-router
 ifdef::openshift-enterprise[]
     image: registry.access.redhat.com/openshift3/ose-egress-router
@@ -304,8 +321,18 @@ endif::openshift-origin[]
       value: 192.168.12.1
     - name: EGRESS_DESTINATION <4>
       value: 203.0.113.25
+    - name: EGRESS_ROUTER_MODE <5>
+      value: init
+  containers:
+  - name: egress-router-wait
+ifdef::openshift-enterprise[]
+    image: registry.access.redhat.com/openshift3/ose-pod
+endif::openshift-enterprise[]
+ifdef::openshift-origin[]
+    image: openshift/origin-pod
+endif::openshift-origin[]
   nodeSelector:
-    site: springfield-1 <5>
+    site: springfield-1 <6>
 ----
 <1> The `pod.network.openshift.io/assign-macvlan annotation` creates a Macvlan
 network interface on the primary network interface, and then moves it into the
@@ -314,10 +341,14 @@ the the quotation marks around `"true"`. Omitting them will result in errors.
 <2> An IP address from the physical network that the node itself is on and is
 reserved by the cluster administrator for use by this pod.
 <3> Same value as the default gateway used by the node itself.
-<4> The external server that to direct traffic to. Using this example,
+<4> The external server to direct traffic to. Using this example,
 connections to the pod are redirected to 203.0.113.25, with a source IP address
 of 192.168.12.99.
-<5> The pod will only be deployed to nodes with the label `site=springfield-1`.
+<5> This tells the egress router image that it is being deployed as an
+"init container"; older versions of {product-title} (and the egress
+router image) did not support this mode and had to be run as an
+ordinary container.
+<6> The pod will only be deployed to nodes with the label `site=springfield-1`.
 ====
 
 . Create the pod using the above definition:
@@ -356,7 +387,8 @@ Your pods can now connect to this service. Their connections are redirected to
 the corresponding ports on the external server, using the reserved egress IP
 address.
 
-The pod contains a single container, using the
+The work of setting up the egress router is done as an "init
+container" by the
 ifdef::openshift-enterprise[]
 *openshift3/ose-egress-router*
 endif::openshift-enterprise[]
@@ -364,7 +396,15 @@ ifdef::openshift-origin[]
 *openshift/origin-egress-router*
 endif::openshift-origin[]
 image, and that container is run privileged so that it can configure the Macvlan
-interface and set up `iptables` rules.
+interface and set up `iptables` rules. After it finishes setting up
+the `iptables` rules, it exits and the
+ifdef::openshift-enterprise[]
+*openshift3/ose-pod*
+endif::openshift-enterprise[]
+ifdef::openshift-origin[]
+*openshift/origin-pod*
+endif::openshift-origin[]
+container will run (doing nothing) until the pod is killed.
 
 The environment variables tell the *egress-router* image what addresses to use; it
 will configure the Macvlan interface to use `EGRESS_SOURCE` as its IP address,
@@ -377,6 +417,227 @@ pod's cluster IP address are redirected to the same port on
 If only some of the nodes in your cluster are capable of claiming the specified
 source IP address and using the specified gateway, you can specify a
 `nodeName` or `nodeSelector` indicating which nodes are acceptable.
+
+[[admin-guide-manage-pods-egress-router-multi-destination]]
+==== Redirecting to Multiple Destinations
+
+In the example above, connections to the egress pod (or its
+corresponding service) on any port will be redirected to a single
+destination IP. It is also possible to configure different destination
+IPs depending on the port:
+
+.Example Pod Definition for a redirecting Egress Router with multiple destinations
+====
+----
+apiVersion: v1
+kind: Pod
+metadata:
+  name: egress-multi
+  labels:
+    name: egress-multi
+  annotations:
+    pod.network.openshift.io/assign-macvlan: "true"
+spec:
+  initContainers:
+  - name: egress-router
+ifdef::openshift-enterprise[]
+    image: registry.access.redhat.com/openshift3/ose-egress-router
+endif::openshift-enterprise[]
+ifdef::openshift-origin[]
+    image: openshift/origin-egress-router
+endif::openshift-origin[]
+    securityContext:
+      privileged: true
+    env:
+    - name: EGRESS_SOURCE
+      value: 192.168.12.99
+    - name: EGRESS_GATEWAY
+      value: 192.168.12.1
+    - name: EGRESS_DESTINATION
+      value: | <1>
+        80   tcp 203.0.113.25
+        8080 tcp 203.0.113.26 80
+        8443 tcp 203.0.113.26 443
+        203.0.113.27
+    - name: EGRESS_ROUTER_MODE
+      value: init
+  containers:
+  - name: egress-router-wait
+ifdef::openshift-enterprise[]
+    image: registry.access.redhat.com/openshift3/ose-pod
+endif::openshift-enterprise[]
+ifdef::openshift-origin[]
+    image: openshift/origin-pod
+endif::openshift-origin[]
+----
+<1> This uses the YAML syntax for a multi-line string; see below for
+details.
+====
+
+Each line of `EGRESS_DESTINATION` can be one of three types:
+
+- `<port> <protocol> <IP address>` - This says that incoming
+connections to the given `<port>` should be redirected to the same
+port on the given `<IP address>`. `<protocol>` is either `tcp` or
+`udp`. In the example above, the first line redirects traffic from
+local port 80 to port 80 on 203.0.113.25.
+- `<port> <protocol> <IP address> <remote port>` - As above, except
+that the connection is redirected to a different `<remote port>` on
+`<IP address>`. In the example above, the second and third lines
+redirect local ports 8080 and 8443 to remote ports 80 and 443 on
+203.0.113.26.
+- `<fallback IP address>` - If the last line of `EGRESS_DESTINATION`
+is a single IP address, then any connections on any other port will be
+redirected to the corresponding port on that IP address (eg,
+203.0.113.27 in the example above). If there is no fallback IP address
+then connections on other ports would simply be rejected.)
+
+[[admin-guide-manage-pods-egress-router-configmap]]
+==== Using a ConfigMap to specify EGRESS_DESTINATION
+
+In the case of a large or frequently-changing set of destination
+mappings, it may be useful to maintain the list externally in a
+ConfigMap, and have the egress router pod read it from there. This
+also has the advantage that project administrators would be able to
+edit the ConfigMap (whereas they may not be able to edit the Pod
+definition directly, since it contains a privileged container).
+
+To do this:
+
+. Create a file containing the `EGRESS_DESTINATION` data:
++
+----
+$ cat my-egress-destination.txt
+# Egress routes for Project "Test", version 3
+
+80   tcp 203.0.113.25
+
+8080 tcp 203.0.113.26 80
+8443 tcp 203.0.113.26 443
+
+# Fallback
+203.0.113.27
+----
++
+Note that you can put blank lines and comments into this file
+
+. Create a ConfigMap object from the file:
++
+----
+$ oc delete configmap egress-routes --ignore-not-found
+$ oc create configmap egress-routes --from-file=destination=my-egress-destination.txt
+----
++
+Here `egress-routes` is the name of the ConfigMap object being
+created and `my-egress-destination.txt` is the name of the file the
+data is being read from.
+
+. Create a egress router pod definition as above, but specifying the
+ConfigMap for `EGRESS_DESTINATION` in the environment section:
++
+----
+    ...
+    env:
+    - name: EGRESS_SOURCE
+      value: 192.168.12.99
+    - name: EGRESS_GATEWAY
+      value: 192.168.12.1
+    - name: EGRESS_DESTINATION
+      valueFrom:
+        configMapKeyRef:
+          name: egress-routes
+          key: destination
+    - name: EGRESS_ROUTER_MODE
+      value: init
+    ...
+----
+
+Note that the egress router will not automatically update when the
+ConfigMap changes; you will need to restart the pod to get updates.
+
+[[admin-guide-deploying-an-egress-router-http-proxy-pod]]
+==== Deploying an Egress Router HTTP Proxy Pod
+
+Creating an egress router in HTTP proxy mode is similar to creating a
+redirecting egress router, as described above, but with a slightly
+different specification:
+
+.Example Pod Definition for an Egress Router HTTP Proxy
+====
+----
+apiVersion: v1
+kind: Pod
+metadata:
+  name: egress-http-proxy
+  labels:
+    name: egress-http-proxy
+  annotations:
+    pod.network.openshift.io/assign-macvlan: "true" <1>
+spec:
+  initContainers:
+  - name: egress-router-setup
+ifdef::openshift-enterprise[]
+    image: registry.access.redhat.com/openshift3/ose-egress-router
+endif::openshift-enterprise[]
+ifdef::openshift-origin[]
+    image: openshift/origin-egress-router
+endif::openshift-origin[]
+    securityContext:
+      privileged: true
+    env:
+    - name: EGRESS_SOURCE <2>
+      value: 192.168.12.99
+    - name: EGRESS_GATEWAY <3>
+      value: 192.168.12.1
+    - name: EGRESS_ROUTER_MODE <4>
+      value: http-proxy
+  containers:
+  - name: egress-router-proxy
+ifdef::openshift-enterprise[]
+    image: registry.access.redhat.com/openshift3/ose-egress-router-http-proxy
+endif::openshift-enterprise[]
+ifdef::openshift-origin[]
+    image: openshift/origin-egress-router-http-proxy
+endif::openshift-origin[]
+    env:
+    - name: EGRESS_HTTP_PROXY_DESTINATION <5>
+      value: |
+        !*.example.com
+        !192.168.1.0/24
+        *
+----
+<1> The `pod.network.openshift.io/assign-macvlan annotation` creates a Macvlan
+network interface on the primary network interface, and then moves it into the
+pod's network name space before starting the *egress-router* container. Preserve
+the the quotation marks around `"true"`. Omitting them will result in errors.
+<2> An IP address from the physical network that the node itself is on and is
+reserved by the cluster administrator for use by this pod.
+<3> Same value as the default gateway used by the node itself.
+<4> This tells the egress router image that it is being deployed as
+part of an HTTP proxy, and so it should not set up iptables
+redirecting rules.
+<5> A string or YAML multi-line string specifying how to configure the
+proxy. Note that this is specified as an environment variable in the
+HTTP proxy container, not with the other environment variables in the
+init container.
+====
+
+You can specify a variety of things for
+`EGRESS_HTTP_PROXY_DESTINATION`. The simplest is to just specify `*`,
+meaning "allow connections to all remote destinations". Other than
+that, each line specifies one group of connections to allow or deny:
+
+- An IP address (eg, `192.168.1.1`) will allow connections to that IP address.
+- A CIDR range (eg, `192.168.1.0/24`) will allow connections to that CIDR range.
+- A hostname (eg, `www.example.com`) will allow proxying to that host.
+- A domain name preceded by `\*.` (eg, `*.example.com`) will allow proxying to that domain and all of its subdomains.
+- A `!` followed by any of the above will deny connections rather than allowing them
+- If the last line is `*`, then anything that hasn't been denied will be allowed. Otherwise, anything that hasn't been allowed will be denied.
+
+You can also specify the `EGRESS_HTTP_PROXY_DESTINATION` using a
+ConfigMap, similarly to
+<<admin-guide-manage-pods-egress-router-configmap,the example with a
+redirecting egress router above>>.
 
 [[admin-guide-manage-pods-egress-router-failover]]
 ==== Enabling Failover for Egress Router Pods
@@ -403,9 +664,14 @@ spec:
       annotations:
         pod.network.openshift.io/assign-macvlan: "true"
     spec:
-      containers:
-      - name: egress-demo-container
+      initContainers:
+      - name: egress-demo-init
+ifdef::openshift-enterprise[]
+        image: registry.access.redhat.com/openshift3/ose-egress-router
+endif::openshift-enterprise[]
+ifdef::openshift-origin[]
         image: openshift/origin-egress-router
+endif::openshift-origin[]
         env:
         - name: EGRESS_SOURCE
           value: 192.168.12.99
@@ -413,8 +679,18 @@ spec:
           value: 192.168.12.1
         - name: EGRESS_DESTINATION
           value: 203.0.113.25
+        - name: EGRESS_ROUTER_MODE
+          value: init
         securityContext:
           privileged: true
+      containers:
+      - name: egress-demo-wait
+ifdef::openshift-enterprise[]
+        image: registry.access.redhat.com/openshift3/ose-pod
+endif::openshift-enterprise[]
+ifdef::openshift-origin[]
+        image: openshift/origin-pod
+endif::openshift-origin[]
       nodeSelector:
         site: springfield-1
 ----
