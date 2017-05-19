@@ -1,0 +1,313 @@
+[[install-config-storage-examples-ceph-rbd-dynamic-example]]
+= Complete Example Using Ceph RBD for Dynamic Provisioning
+{product-author}
+{product-version}
+:data-uri:
+:icons:
+:experimental:
+:toc: macro
+:toc-title:
+:prewrap!:
+
+toc::[]
+
+== Overview
+
+This topic provides an end-to-end example of using an existing Ceph cluster as
+an {product-title} dynamic persistent store. It is assumed that a working Ceph
+cluster is already set up. If not, consult the
+link:https://access.redhat.com/products/red-hat-ceph-storage[Overview of Red Hat
+Ceph Storage].
+
+xref:../persistent_storage/persistent_storage_ceph_rbd.adoc#install-config-persistent-storage-persistent-storage-ceph-rbd[Persistent
+Storage Using Ceph Rados Block Device] provides an explanation of persistent
+volumes (PVs), persistent volume claims (PVCs), and how to use Ceph Rados
+Block Device (RBD) as persistent storage.
+
+[NOTE]
+====
+All `oc ...` commands are executed on the {product-title} master host.
+====
+
+[[ceph-rbd-dynamic-example-installing-the-ceph-common-package]]
+== Installing the ceph-common Package
+
+The *ceph-common* library must be installed on *all schedulable* {product-title}
+nodes:
+
+[NOTE]
+====
+The {product-title} all-in-one host is not often used to run pod workloads and,
+thus, is not included as a schedulable node.
+====
+
+----
+# yum install -y ceph-common
+----
+
+[[ceph-rbd-dynamic-example-create-pool-for-dynamic-volumes]]
+== Create Pool for Dynamic Volumes
+
+It is recommended that you create a pool for your dynamic volumes to live in.
+
+[NOTE]
+====
+Using the default pool of RBD is an option, but not recommended.
+====
+
+From a Ceph administrator or *MON* node, create a new pool for dynamic volumes:
+
+----
+$ ceph osd pool create kube 1024
+$ ceph auth get-or-create client.kube mon 'allow r' osd 'allow class-read object_prefix rbd_children, allow rwx pool=kube' -o ceph.client.kube.keyring
+----
+
+[[ceph-rbd-dynamic-example-creating-the-ceph-secret]]
+== Creating the Ceph Secret
+
+. Run the `ceph auth get-key` command on a Ceph *MON* node to display the key
+value for the `client.admin` user:
++
+.Ceph Secret Definition
+[source,yaml]
+----
+apiVersion: v1
+kind: Secret
+metadata:
+  name: ceph-secret
+  namespace: kube-system
+data:
+  key: QVFBOFF2SlZheUJQRVJBQWgvS2cwT1laQUhPQno3akZwekxxdGc9PQ== <1>
+type:
+  kubernetes.io/rbd <2>
+----
+<1> This base64 key is generated on one of the Ceph *MON* nodes using the `ceph auth
+get-key client.admin | base64` command, then copying the output and pasting it
+as the secret key's value.
+<2> This is required for Ceph RBD to work with dynamic provisioning.
+
+. Save the secret definition to a file, for example *_ceph-secret.yaml_*,
+then create the secret:
++
+----
+$ oc create -f ceph-secret.yaml
+secret "ceph-secret" created
+----
+
+. Verify that the secret was created:
++
+----
+# oc get secret ceph-secret
+NAME          TYPE                DATA      AGE
+ceph-secret   kubernetes.io/rbd   1         5d
+----
+
+[[ceph-rbd-dynamic-example-creating-the-ceph-user-secret]]
+== Creating the Ceph User Secret
+
+. Run the `ceph auth get-key` command on a Ceph *MON* node to display the key
+value for the *client.kube* user:
++
+.Ceph Secret Definition
+[source,yaml]
+----
+apiVersion: v1
+kind: Secret
+metadata:
+  name: ceph-user-secret
+  namespace: default
+data:
+  key: QVFCbEV4OVpmaGJtQ0JBQW55d2Z0NHZtcS96cE42SW1JVUQvekE9PQ== <1>
+type:
+  kubernetes.io/rbd <2>
+----
+<1> This base64 key is generated on one of the Ceph *MON* nodes using the `ceph auth
+get-key client.kube | base64` command, then copying the output and pasting it as
+the secret key's value.
+<2> This is required for Ceph RBD to work with dynamic provisioning.
+
+. Save the secret definition to a file, for example *_ceph-user-secret.yaml_*,
+then create the secret:
++
+----
+$ oc create -f ceph-user-secret.yaml
+secret "ceph-user-secret" created
+----
+
+. Verify that the secret was created:
++
+----
+# oc get secret ceph-user-secret
+NAME               TYPE                DATA      AGE
+ceph-user-secret   kubernetes.io/rbd   1         5d
+----
+
+[[ceph-rbd-dynamic-example-create-storage-class]]
+=== Ceph RBD Dynamic Storage Class
+
+. Create a storage class to for your dynamic volumes.
++
+.ceph-storageclass.yaml
+[source,yaml]
+----
+apiVersion: storage.k8s.io/v1beta1
+kind: StorageClass
+metadata:
+  name: dynamic
+  annotations:
+     storageclass.beta.kubernetes.io/is-default-class: "true"
+provisioner: kubernetes.io/rbd
+parameters:
+  monitors: 192.168.1.11:6789,192.168.1.12:6789,192.168.1.13:6789  <1>
+  adminId: admin  <2>
+  adminSecretName: ceph-secret  <3>
+  adminSecretNamespace: kube-system  <4>
+  pool: kube  <5>
+  userId: kube  <6>
+  userSecretName: ceph-secret-user  <7>
+----
+<1> Ceph monitors, comma delimited. It is required.
+<2> Ceph client ID that is capable of creating images in the pool. Default is `admin`.
+<3> Secret Name for `adminId`. It is required. The provided secret must have type `kubernetes.io/rbd`.
+<4> The namespace for `adminSecret`. Default is `default`.
+<5> Ceph RBD pool. Default is `rbd`, but that value is not recommended.
+<6> Ceph client ID that is used to map the Ceph RBD image. Default is the same as `adminId`.
+<7> The name of Ceph Secret for `userId` to map Ceph RBD image. It must exist in the
+same namespace as PVCs. It is required unless its set as the default in new
+projects.
+
+[[ceph-rbd-dynamic-example-creating-the-persistent-volume-claim]]
+== Creating the Persistent Volume Claim
+
+A persistent volume claim (PVC) specifies the desired access mode and storage
+capacity. Currently, based on only these two attributes, a PVC is bound to a
+single PV. Once a PV is bound to a PVC, that PV is essentially tied to the PVC's
+project and cannot be bound to by another PVC. There is a one-to-one mapping of
+PVs and PVCs. However, multiple pods in the same project can use the same PVC.
+
+.PVC Object Definition
+[source,yaml]
+----
+kind: PersistentVolumeClaim
+apiVersion: v1
+metadata:
+  name: ceph-claim
+spec:
+  accessModes:     <1>
+    - ReadWriteOnce
+  resources:
+    requests:
+      storage: 2Gi <2>
+----
+<1> As mentioned above for PVs, the `accessModes` do not enforce access right, but
+rather act as labels to match a PV to a PVC.
+<2> This claim will look for PVs offering `2Gi` or greater capacity.
+
+. Save the PVC definition to a file, for example *_ceph-claim.yaml_*,
+and create the PVC:
++
+----
+# oc create -f ceph-claim.yaml
+persistentvolumeclaim "ceph-claim" created
+
+#and verify the PVC was created and bound to the expected PV:
+# oc get pvc
+NAME         STATUS    VOLUME                                     CAPACITY   ACCESSMODES   AGE
+ceph-claim   Bound     pvc-f548d663-3cac-11e7-9937-0024e8650c7a   2Gi        RWO           1m
+                                 <1>
+----
+<1> the claim dynamically created a Ceph RBD PV.
+
+[[ceph-rbd-dynamic-example-creating-the-pod]]
+== Creating the Pod
+
+A pod definition file or a template file can be used to define a pod. Below is a
+pod specification that creates a single container and mounts the Ceph RBD volume
+for read-write access:
+
+.Pod Object Definition
+[source,yaml]
+----
+apiVersion: v1
+kind: Pod
+metadata:
+  name: ceph-pod1           <1>
+spec:
+  containers:
+  - name: ceph-busybox
+    image: busybox          <2>
+    command: ["sleep", "60000"]
+    volumeMounts:
+    - name: ceph-vol1       <3>
+      mountPath: /usr/share/busybox <4>
+      readOnly: false
+  volumes:
+  - name: ceph-vol1         <3>
+    persistentVolumeClaim:
+      claimName: ceph-claim <5>
+----
+<1> The name of this pod as displayed by `oc get pod`.
+<2> The image run by this pod. In this case, we are telling `busybox` to sleep.
+<3> The name of the volume. This name must be the same in both the `containers` and
+`volumes` sections.
+<4> The mount path as seen in the container.
+<5> The PVC that is bound to the Ceph RBD cluster.
+
+. Save the pod definition to a file, for example *_ceph-pod1.yaml_*,
+and create the pod:
++
+----
+# oc create -f ceph-pod1.yaml
+pod "ceph-pod1" created
+
+#verify pod was created
+# oc get pod
+NAME        READY     STATUS    RESTARTS   AGE
+ceph-pod1   1/1       Running   0          2m
+                      <1>
+----
+<1> After approximately a minute, the pod will be in the `Running` state.
+
+[[ceph-rbd-dynamic-example-setting-default-secret]]
+== Setting ceph-user-secret as Default for Projects
+
+If you want to make the persistent storage available to every project, you must
+modify the default project template. Read more on
+xref:../../admin_guide/managing_projects.adoc#selfprovisioning-projects[modifying
+the default project template]. Adding this to your default project template
+allows every user who has access to create a project access to the Ceph cluster.
+
+.Default Project Example
+[source,yaml]
+----
+...
+apiVersion: v1
+kind: Template
+metadata:
+  creationTimestamp: null
+  name: project-request
+objects:
+- apiVersion: v1
+  kind: Project
+  metadata:
+    annotations:
+      openshift.io/description: ${PROJECT_DESCRIPTION}
+      openshift.io/display-name: ${PROJECT_DISPLAYNAME}
+      openshift.io/requester: ${PROJECT_REQUESTING_USER}
+    creationTimestamp: null
+    name: ${PROJECT_NAME}
+  spec: {}
+  status: {}
+- apiVersion: v1
+  kind: Secret
+  metadata:
+    name: ceph-user-secret
+  data:
+    key: QVFCbEV4OVpmaGJtQ0JBQW55d2Z0NHZtcS96cE42SW1JVUQvekE9PQ== <1>
+  type:
+    kubernetes.io/rbd
+...
+----
+<1> Place the key from `ceph-user-secret` here in base64 format. See
+ xref:../../install_config/storage_examples/ceph_example.adoc#using-ceph-rbd-creating-the-ceph-secret[Creating
+ the Ceph Secret].
