@@ -162,17 +162,18 @@ that {product-title} was previously installed.
 [[backup-restore-adding-etcd-hosts]]
 == Adding New etcd Hosts
 
-In cases where etcd hosts have failed, but you have at least one host still
-running, you can use the one surviving host to recover etcd hosts without
-downtime.
+In cases where etcd members have failed and you still have a quorum of etcd
+cluster members running, you can use the surviving members to
+add additional etcd members without downtime.
 
 *Suggested Cluster Size*
 
 Having a cluster with an odd number of etcd hosts can account for fault
 tolerance. Having an odd number of etcd hosts does not change the number needed
-for majority, but increases the tolerance for failure. For example, a cluster
-size of seven hosts has a majority of four, leaving a failure tolerance of
-three. This ensures that four hosts will be guaranteed to operate.
+for a quorum, but increases the tolerance for failure. For example, a cluster
+size of three members, quorum is two leaving a failure tolerance of
+one. This ensures the cluster will continue to operate if two of the members are
+healthy.
 
 Having an in-production cluster of seven etcd hosts is recommended.
 
@@ -196,6 +197,27 @@ host.
 Ensure version `etcd-2.3.7-4.el7.x86_64` or greater is installed, and that the
 same version is installed on each host.
 
+. xref:cluster-backup[Backup the etcd data store] on surviving hosts before making any cluster configuration changes.
++
+. If replacing a failed etcd member, remove the failed member _before_ adding the new member.
++
+----
+# etcdctl -C https://<surviving host IP>:2379 \
+  --ca-file=/etc/etcd/ca.crt     \
+  --cert-file=/etc/etcd/peer.crt     \
+  --key-file=/etc/etcd/peer.key cluster-health
+
+# etcdctl -C https://<surviving host IP>:2379 \
+  --ca-file=/etc/etcd/ca.crt     \
+  --cert-file=/etc/etcd/peer.crt     \
+  --key-file=/etc/etcd/peer.key member remove <failed member identifier>
+----
++
+Stop the etcd service on the failed etcd member:
++
+----
+# systemctl stop etcd
+----
 . On the new host, add the appropriate iptables rules:
 +
 ----
@@ -366,4 +388,163 @@ namespaces and projects):
 
 ----
 $ oc export all -o yaml > project.yaml
+----
+
+[[backup-rolebindings]]
+=== Role Bindings
+
+Sometimes custom policy
+xref:../admin_guide/manage_authorization_policy.adoc#managing-role-bindings[role
+bindings] are used in a project. For example, a project administrator can give
+another user a certain role in the project and grant that user project access.
+
+These role bindings can be exported:
+
+----
+$ oc get rolebindings -o yaml --export=true > rolebindings.yaml
+----
+
+[[backup-serviceaccounts]]
+=== Service Accounts
+
+If custom service accounts are created in a project, these need to be exported:
+
+----
+$ oc get serviceaccount -o yaml --export=true > serviceaccount.yaml
+----
+
+[[backup-secrets]]
+=== Secrets
+
+Custom secrets like source control management secrets (SSH Public Keys,
+Username/Password) should be exported if they are used:
+
+----
+$ oc get secret -o yaml --export=true > secret.yaml
+----
+
+[[backup-pvc]]
+=== Persistent Volume Claims
+
+If the an application within a project uses a persistent volume through a
+persistent volume claim (PVC), these should be backed up:
+
+----
+$ oc get pvc -o yaml --export=true > pvc.yaml
+----
+
+
+[[project-restore]]
+== Project Restore
+
+To restore a project, recreate the project and recreate all all of the objects
+that were exported during the backup:
+
+----
+$ oc new-project myproject
+$ oc create -f project.yaml
+$ oc create -f secret.yaml
+$ oc create -f serviceaccount.yaml
+$ oc create -f pvc.yaml
+$ oc create -f rolebindings.yaml
+----
+
+[NOTE]
+====
+Some resources can fail to be created (for example, pods and default service
+accounts).
+====
+
+[[backup-application-data]]
+== Application Data Backup
+In many cases, application data can be backed up using the `oc rsync` command,
+assuming `rsync` is installed within the container image. The Red Hat *rhel7*
+base image does contain `rsync`. Therefore, all images that are based on *rhel7*
+contain it as well. See xref:../cli_reference/basic_cli_operations.adoc#cli-operations-rsync[Troubleshooting and Debugging CLI Operations - rsync].
+
+[WARNING]
+====
+This is a _generic_ backup of application data and does not take into account
+application-specific backup procedures, for example special export/import
+procedures for database systems.
+====
+
+Other means of backup may exist depending on the type of the persistent volume
+(for example, Cinder, NFS, Gluster, or others).
+
+The paths to back up are also _application specific_. You can determine
+what path to back up by looking at the `*mountPath*` for volumes in the
+`*deploymentconfig*`.
+
+.Example of Backing up a Jenkins Deployment's Application Data
+
+. Get the application data `*mountPath*` from the `*deploymentconfig*`:
++
+----
+$ oc get dc/jenkins -o jsonpath='{ .spec.template.spec.containers[?(@.name=="jenkins")].volumeMounts[?(@.name=="jenkins-data")].mountPath }'
+/var/lib/jenkins
+----
+
+. Get the name of the pod that is currently running:
++
+----
+$ oc get pod --selector=deploymentconfig=jenkins -o jsonpath='{ .metadata.name }'
+jenkins-1-37nux
+----
+
+. Use the `oc rsync` command to copy application data:
++
+----
+$ oc rsync jenkins-1-37nux:/var/lib/jenkins /tmp/
+----
+
+[NOTE]
+====
+This type of application data backup can only be performed while an application
+pod is currently running.
+====
+
+
+[[restore-application-data]]
+== Application Data Restore
+
+The process for restoring application data is similar to the
+xref:backup-application-data[application backup procedure] using the `oc rsync`
+tool. The same restrictions apply and the process of restoring application data
+requires a persistent volume.
+
+.Example of Restoring a Jenkins Deployment's Application Data
+
+. Verify the backup:
++
+----
+$ ls -la /tmp/jenkins-backup/
+total 8
+drwxrwxr-x.  3 user     user   20 Sep  6 11:14 .
+drwxrwxrwt. 17 root     root 4096 Sep  6 11:16 ..
+drwxrwsrwx. 12 user     user 4096 Sep  6 11:14 jenkins
+----
+
+. Use the `oc rsync` tool to copy the data into the running pod:
++
+----
+$ oc rsync /tmp/jenkins-backup/jenkins jenkins-1-37nux:/var/lib
+----
++
+[NOTE]
+====
+Depending on the application, you may be required to restart the application.
+====
+
+. Restart the application with new data (_optional_):
++
+----
+$ oc delete pod jenkins-1-37nux
+----
++
+Alternatively, you can scale down the deployment to 0, and then up again:
++
+----
+$ oc scale --replicas=0 dc/jenkins
+$ oc scale --replicas=1 dc/jenkins
 ----
