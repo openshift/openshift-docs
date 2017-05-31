@@ -1,0 +1,199 @@
+[[admin-guide-cluster-capacity]]
+= Cluster Capacity Analysis
+{product-author}
+{product-version}
+:data-uri:
+:icons:
+:experimental:
+:toc: macro
+:toc-title:
+
+toc::[]
+
+== Overview
+
+Monitoring available resources in the cluster is very important as operators can increase
+the current resources in time before all of them get exhausted, or can carry different
+steps that lead to increase of available resources. Cluster capacity consists of capacities
+of individual cluster nodes. Capacity covers CPU, memory, disk space and other resources.
+
+Overall remaining allocatable capacity is a rough estimation since it does not assume all
+resources being distributed among nodes. Goal is to analyze remaining allocatable resources
+and estimate available capacity that is still consumable in terms of a number of instances
+of a pod with given requirements that can be scheduled in a cluster.
+
+== Running cluster capacity analysis
+
+Cluster capacity analysis tool can be run either as a stand-alone utility from command line,
+or in a pod inside a openshift cluster.
+
+[admin-guide-cluster-capacity-command-line]
+### Running cluster capacity from command line
+
+To run the tool on command line:
+
+```shell
+$ cluster-capacity --kubeconfig <path-to-kubeconfig> --podspec <path-to-pod-spec>
+```
+
+`--kubeconfig` is path to kubeconfig file to cluster and `--podspec` is path to sample pod spec
+that is used by the tool for estimation. The `podspec` specifies its resource requirements as
+`limits` or `requests`. The cluster capacity tool takes the pod's resource requirements into account
+for its estimation analysis. An example of input pod spec (`pod.yaml`) is given below:
+
+```
+apiVersion: v1
+kind: Pod
+metadata:
+  name: small-pod
+  labels:
+    app: guestbook
+    tier: frontend
+spec:
+  containers:
+  - name: php-redis
+    image: gcr.io/google-samples/gb-frontend:v4
+    imagePullPolicy: Always
+    resources:
+      limits:
+        cpu: 150m
+        memory: 100Mi
+      requests:
+        cpu: 150m
+        memory: 100Mi
+```
+
+
+The output of the cluster capacity command is a number of estimated pods that can be scheduled on the cluster.
+`--verbose` flag can also be provided as part of the above command to output detailed description
+about how many pods can be scheduled on each node in the cluster. An example of verbose output on
+a 2-node cluster is as follows:
+
+```shell
+small-pod pod requirements:
+	- CPU: 150m
+	- Memory: 100Mi
+
+The cluster can schedule 52 instance(s) of the pod small-pod.
+
+Termination reason: Unschedulable: No nodes are available that match all of the following predicates:: Insufficient cpu (2).
+
+Pod distribution among nodes:
+small-pod
+	- 192.168.124.214: 26 instance(s)
+	- 192.168.124.120: 26 instance(s)
+```
+
+[admin-guide-cluster-capacity-job]
+### Running cluster capacity as a Job
+
+Below is an example of a Job spec (`cluster-capacity-job.yaml`) that runs cluster capacity image as a job in a pod.
+Note that input pod spec (`pod.yaml`) to cluster capacity analysis is mounted in a volume using a `ConfigMap`.
+
+```yaml
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: cluster-capacity-job
+spec:
+  parallelism: 1
+  completions: 1
+  template:
+    metadata:
+      name: cluster-capacity-pod
+    spec:
+        containers:
+        - name: cluster-capacity
+          image: openshift/origin-cluster-capacity
+          imagePullPolicy: "Never"
+          volumeMounts:
+          - mountPath: /test-pod
+            name: test-volume
+          env:
+          - name: CC_INCLUSTER
+            value: "true"
+          command:
+          - "/bin/sh"
+          - "-ec"
+          - |
+            /bin/cluster-capacity --podspec=/test-pod/pod.yaml --verbose
+        restartPolicy: "Never"
+        serviceAccountName: cluster-capacity-sa
+        volumes:
+        - name: test-volume
+          configMap:
+            name: cluster-capacity-configmap
+```
+
+Also note that the above pod spec specifies the following environment variable which is required to
+let the cluster capacity command know that it is running inside a cluster as a pod.
+
+```yaml
+env:
+- name: CC_INCLUSTER
+  value: "true"
+```
+
+By default, this pod would be created in the `default` namespace by using `default` service account. However, the above
+pod spec refers to a different service account (`cluster-capacity-sa`) in the `default` namespace created as below:
+
+```
+$ oc create sa cluster-capacity-sa
+```
+
+This service account `cluster-capacity-sa` is assigned a new cluster scope role `cluster-capacity-role` to be able to access
+resources required to run cluster capacity command inside a pod. The role `cluster-capacity-role` is created as:
+
+```shell
+$ cat << EOF| oc create -f -
+kind: ClusterRole
+apiVersion: v1
+metadata:
+  name: cluster-capacity-role
+rules:
+- apiGroups: [""]
+  resources: ["pods", "nodes", "persistentvolumeclaims", "persistentvolumes", "services"]
+  verbs: ["get", "watch", "list"
+EOF
+```
+
+The next step binds the service account `cluster-capacity-sa` to the new cluster role `cluster-capacity-role`:
+
+```shell
+$ oadm policy add-cluster-role-to-user cluster-capacity-role system:serviceaccount:default:cluster-capacity-sa
+```
+
+Please note that in the above Job spec, we used a `ConfigMap` `cluster-capacity-configmap` to mount input
+pod spec file `pod.yaml` into a volume `test-volume` at the path `/test-pod`. The ConfigMap can be created as:
+
+```shell
+$ oc create configmap cluster-capacity-configmap --from-file=pod.yaml=pod.yaml
+```
+
+Please note that the key `pod.yaml` of the ConfigMap is same as pod spec file name, though it is not required.
+By doing this, the input pod spec file can be accessed inside the pod as `/test-pod/pod.yaml`.
+
+Now let's run the above job in an openshift cluster:
+
+```shell
+$ oc create -f cluster-capacity-job.yaml
+job "cluster-capacity-job" created
+```
+
+The logs from the above job can be checked as follows and show the number of pods that can be scheduled in the cluster.
+
+```shell
+$ oc logs jobs/cluster-capacity-job
+small-pod pod requirements:
+        - CPU: 150m
+        - Memory: 100Mi
+
+The cluster can schedule 52 instance(s) of the pod small-pod.
+
+Termination reason: Unschedulable: No nodes are available that match all of the following predicates:: Insufficient cpu (2).
+
+Pod distribution among nodes:
+small-pod
+        - 192.168.124.214: 26 instance(s)
+        - 192.168.124.120: 26 instance(s)
+```
