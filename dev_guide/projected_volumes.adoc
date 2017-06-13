@@ -1,0 +1,361 @@
+[[dev-guide-projected-volumes]]
+= Projected Volumes
+{product-author}
+{product-version}
+:data-uri:
+:icons:
+:experimental:
+:toc: macro
+:toc-title:
+
+toc::[]
+
+== Overview
+
+A _projected volume_ maps several existing xref:../dev_guide/volumes.adoc#dev-guide-volumes[volume sources] into the same directory.
+
+Currently, the following types of volume sources can be projected:
+
+* xref:secrets.adoc#dev-guide-secrets[Secrets]
+* xref:configmaps.adoc#dev-guide-configmaps[Config Maps]
+* xref:downward_api.adoc#dev-guide-downward-api[Downward API]
+
+[NOTE]
+====
+All sources are required to be in the same namespace as the pod.
+====
+
+Projected volumes can map any combination of these volume sources into a single directory, allowing the user to:
+
+* automatically populate a single volume with the keys from multiple secrets, configmaps, and with downward API information,
+so that I can synthesize a single directory with various sources of information;
+* populate a single volume with the keys from multiple secrets, configmaps, and with downward API information,
+explicitly specifying paths for each item, so that I can have full control over the contents of that volume.
+
+
+== Example Scenarios
+// https://github.com/kubernetes/community/blob/master/contributors/design-proposals/all-in-one-volume.md
+
+The following general scenarios show how you can use projected volumes.
+
+* *ConfigMap, Secrets, Downward API.* Projected volumes allow you to to deploy containers with configuration data that includes passwords.
+An application using these resources could be deploying OpenStack on Kubernetes. The configuration data may need to be assembled differently depending on if the services are going to be used for production or for testing. If a pod is labeled with production or testing, the downward API selector `metadata.labels` can be used to produce the correct OpenStack configs.
+
+* *ConfigMap + Secrets.* Projected volumes allow you to deploy containers involving configuration data and passwords.
+For example, you might execute an Ansible playbook stored as a configmap, with some sensitive encrypted tasks that are decrypted using a vault password file.
+
+* *ConfigMap + Downward API.* Projected volumes allow you to generate a config including the pod name (available via the `metadata.name` selector). This application can then pass the pod name along with requests in order to easily determine the source without using IP tracking.
+
+* *Secrets + Downward API.* Projected volumes allow you to use a secret as a public key to encrypt the namespace of the pod (available via the `metadata.namespace` selector).
+This example allows the operator to use the application to deliver the namespace information securely without using an encrypted transport.
+
+== Example Pod Specifications
+
+The following are examples of pod specifications for creating projected volumes.
+
+[[dev-guide-projected-volumes-example]]
+.Pod with a secret, a downward API, and a configmap
+====
+
+----
+apiVersion: v1
+kind: Pod
+metadata:
+  name: volume-test
+spec:
+  containers:
+  - name: container-test
+    image: busybox
+    volumeMounts: <1>
+    - name: all-in-one
+      mountPath: "/projected-volume"<2>
+      readOnly: true <3>
+  volumes: <4>
+  - name: all-in-one <5>
+    projected:
+      defaultMode: 0400 <6>
+      sources:
+      - secret:
+          name: mysecret <7>
+          items:
+            - key: username
+              path: my-group/my-username <8>
+      - downwardAPI: <9>
+          items:
+            - path: "labels"
+              fieldRef:
+                fieldPath: metadata.labels
+            - path: "cpu_limit"
+              resourceFieldRef:
+                containerName: container-test
+                resource: limits.cpu
+      - configMap: <10>
+          name: myconfigmap
+          items:
+            - key: config
+              path: my-group/my-config
+              mode: 0777 <11>
+----
+
+<1> Add a `volumeMounts` section for each container that needs the secret.
+<2> Specify a path to an unused directory where the secret will appear.
+<3> Set `readOnly` to `true`.
+<4> Add a `volumes` block to list each projected volume source.
+<5> Specify any name for the volume.
+<6> Set the execute permission on the files.
+<7> Add a secret. Enter the name of the secret object. Each secret you want to use must be listed.
+<8> Specify the path to the secrets file under the `mountPath`. Here, the secrets file is in *_/projected-volume/my-group/my-config_*.
+<9> Add a Downward API source.
+<10> Add a ConfigMap source.
+<11> Set the mode for the specific projection
+====
+
+[NOTE]
+====
+If there are multiple containers in the pod, each container needs a `volumeMounts` section, but only one `volumes` section is needed.
+====
+
+
+.Pod with multiple secrets with a non-default permission mode set
+====
+
+----
+apiVersion: v1
+kind: Pod
+metadata:
+  name: volume-test
+spec:
+  containers:
+  - name: container-test
+    image: busybox
+    volumeMounts:
+    - name: all-in-one
+      mountPath: "/projected-volume"
+      readOnly: true
+  volumes:
+  - name: all-in-one
+    projected:
+      defaultMode: 0755
+      sources:
+      - secret:
+          name: mysecret
+          items:
+            - key: username
+              path: my-group/my-username
+      - secret:
+          name: mysecret2
+          items:
+            - key: password
+              path: my-group/my-password
+              mode: 511
+----
+
+====
+
+[NOTE]
+====
+The `defaultMode` can only be specified at the projected level and not for each
+volume source. However, as illustrated above, you can explicitly set the `mode`
+for each individual projection.
+====
+
+== Pathing Considerations
+
+When creating projected volumes, consider the following situations related to the volume file paths.
+
+*Collisions Between Keys when Configured Paths are Identical*:: If you configure any keys with the same path, the pod spec will not be accepted as valid.
+In the following example, the specified path for `mysecret` and `myconfigmap` are the same:
++
+----
+apiVersion: v1
+kind: Pod
+metadata:
+  name: volume-test
+spec:
+  containers:
+  - name: container-test
+    image: busybox
+    volumeMounts:
+    - name: all-in-one
+      mountPath: "/projected-volume"
+      readOnly: true
+  volumes:
+  - name: all-in-one
+    projected:
+      sources:
+      - secret:
+          name: mysecret
+          items:
+            - key: username
+              path: my-group/data
+      - configMap:
+          name: myconfigmap
+          items:
+            - key: config
+              path: my-group/data
+----
+
+*Collisions Between Keys without Configured Paths*:: The only run-time validation that can occur is when all the paths are known at pod creation, similar to the above scenario. Otherwise, when a conflict occurs the most recent specified resource will overwrite anything preceding it
+(this is true for resources that are updated after pod creation as well).
+
+*Collisions when One Path is Explicit and the Other is Automatically Projected*:: In the event that there is a collision due to a user specified path matching data that is automatically projected,
+the latter resource will overwrite anything preceding it as before
+
+== Configuring a Projected Volume for a Pod
+
+The following example shows how to use a projected volume to mount an existing Secret volume source.
+
+The steps can be used to create a user name and password xref:../dev_guide/secrets.adoc#dev-guide-secret[Secrets] from local files. You then create a pod that runs one container, using a projected volume to mount the Secrets into the same shared directory.
+
+. Create files containing the secrets:
++
+For example:
++
+----
+$ nano secret.yaml
+----
++
+Enter the following, replacing the password and user information as appropriate:
++
+----
+apiVersion: v1
+kind: Secret
+metadata:
+  name: mysecret
+type: Opaque
+data:
+  pass: MWYyZDFlMmU2N2Rm
+  user: YWRtaW4=
+----
++
+The `user` and `pass` values can be any valid string that is *base64* encoded.
+The examples used here are base64 encoded values `user: admin`, `pass:1f2d1e2e67df`.
++
+----
+$ echo -n "admin" | base64
+YWRtaW4=
+$ echo -n "1f2d1e2e67df" | base64
+MWYyZDFlMmU2N2Rm
+----
+
+. Use the following command to create the secrets:
++
+----
+$ oc create -f <secrets-filename>
+----
++
+For example:
++
+----
+$ oc create -f secret.yaml
+secret "mysecret" created
+----
+
+. You can check that the secret was created using the following commands:
++
+----
+$ oc get secret <secret-name>
+$ oc get secret <secret-name> -o yaml
+----
++
+For example:
++
+----
+$ oc get secret mysecret
+NAME       TYPE      DATA      AGE
+mysecret   Opaque    2         17h
+----
++
+----
+oc get secret mysecret -o yaml
+apiVersion: v1
+data:
+  pass: MWYyZDFlMmU2N2Rm
+  user: YWRtaW4=
+kind: Secret
+metadata:
+  creationTimestamp: 2017-05-30T20:21:38Z
+  name: mysecret
+  namespace: default
+  resourceVersion: "2107"
+  selfLink: /api/v1/namespaces/default/secrets/mysecret
+  uid: 959e0424-4575-11e7-9f97-fa163e4bd54c
+type: Opaque
+----
+
+. Create a pod configuration file similar to the following that xref:dev-guide-projected-volumes-example[includes a `volumes` section]:
++
+----
+apiVersion: v1
+kind: Pod
+metadata:
+  name: test-projected-volume
+spec:
+  containers:
+  - name: test-projected-volume
+    image: busybox
+    args:
+    - sleep
+    - "86400"
+    volumeMounts:
+    - name: all-in-one
+      mountPath: "/projected-volume"
+      readOnly: true
+  volumes:
+  - name: all-in-one
+    projected:
+      sources:
+      - secret:
+          name: user
+      - secret:
+          name: pass
+----
+
+. Create the pod from the configuration file:
++
+----
+$ oc create -f <your_yaml_file>.yaml
+----
++
+For example:
++
+----
+$ oc create -f secret-pod.yaml
+pod "test-projected-volume" created
+----
+
+. Verify that the pod container is running, and then watch for changes to
+the Pod:
++
+----
+$ oc get pod <name>
+----
++
+The output should appear similar to the following:
++
+----
+$ oc get pod test-projected-volume
+NAME                    READY     STATUS    RESTARTS   AGE
+test-projected-volume   1/1       Running   0          14s
+----
+
+. In another terminal, use the xref:../cli_reference/basic_cli_operations.html#exec[`oc exec` command] to open a shell to the running container:
++
+----
+$ oc exec -it <pod> <command>
+----
++
+For example:
++
+----
+$ oc exec -it test-projected-volume -- /bin/sh
+----
+
+. In your shell, verify that the `projected-volumes` directory contains your projected sources:
++
+----
+/ # ls
+bin               home              root              tmp
+dev               proc              run               usr
+etc               projected-volume  sys               var
+----
