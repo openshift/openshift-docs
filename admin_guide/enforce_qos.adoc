@@ -1,0 +1,399 @@
+[[admin-guide-enforce-qos]]
+= Enabling QoS and Pod level cgroups
+{product-author}
+{product-version}
+:data-uri:
+:icons:
+:experimental:
+:toc: macro
+:toc-title:
+:prewrap!:
+
+toc::[]
+
+
+== Overview
+
+{product-title} can uses Linux cgroup (control group) hierarchy that has top level cgroups for the three Quality of Service(QoS) classes: Guaranteed, Burstable and Best Effort, xref:admin-guide-enforce-cgroups-qos[described futher below]. Pods belonging to a QoS class will be grouped under these top level QoS cgroups with their containers nested belows in the hierarchy. Using pod-level cgroups allows for better resource management. 
+
+You can use a Linux cgroup (also called a _sandbox_) to limit, account for, and isolate the resource usage (CPU, memory, disk I/O, network, etc.) for a collection of processes. Cgroups make sure that containers on the same host are not impacted by containers in other cgroups. 
+
+== Understanding the cgroup Hierarchy
+
+The cgroup hierarchy:
+
+* enforces QoS classes on the node, which prioritizes access to compressible resources, as follows: 
++
+** system and/or kubernetes daemons over end-user pods;
+** Guaranteed workloads over my Burstable workloads;
+** Burstable workloads over my BestEffort workloads.
+
+* simplifies resource accounting at the pod level;
+* allows containers in a pod to share slack resources within its pod cgroup.
++
+For example, a Burstable pod has two containers, where one container makes a
+CPU request and the other container does not.  The latter container can get CPU time not used by the former container.
+
+* can charge per-container overhead to the pod instead of the node.
++
+This overhead is container runtime specific. 
+
+* can charge any memory usage of memory-backed volumes to the pod when an individual container exits instead of the node.
+
+[NOTE]
+====
+We recommend enforcing xref:../admin_guide/out_of_resource_handling.html#out-of-resource-schedulable-resources-and-eviction-policies[node allocatable] using the xref:../admin_guide/out_of_resource_handling.html#out-of-resource-eviction-of-pods[`system-reserved` and `kube-reserved` paramters] in the the node configuration file (`node-config.yaml`).  
+====
+
+
+The following identifies a sample hierarchy based on the described design. Note that Containers 1, 2, and 3 are at the Guranteed QOS level; Containers 4 and 5 are at the Burstable QOS level; and Containers 6 and 7 are at the Best Effort QOS level.  In a cgroup hierarchy processes can be controlled at a parent level; here resources allocated to Pod1 can be allocated to Container1 and Container2, and so forth. 
+
+.Example cgroup hierarchy
+----
+$ROOT
+  |
+  +- Pod1
+  |   |
+  |   +- Container1
+  |   +- Container2
+  |   ...
+  +- Pod2
+  |   +- Container3
+  |   ...
+  +- ...
+  |
+  +- burstable
+  |   |
+  |   +- Pod3
+  |   |   |
+  |   |   +- Container4
+  |   |   ...
+  |   +- Pod4
+  |   |   +- Container5
+  |   |   ...
+  |   +- ...
+  |
+  +- besteffort
+  |   |
+  |   +- Pod5
+  |   |   |
+  |   |   +- Container6
+  |   |   +- Container7
+  |   |   ...
+  |   +- ...
+----
+
+[[admin-guide-enforce-cgroups-qos]]
+=== Cgroups and QoS levels 
+
+Each pod has an associated xref:../admin_guide/overcommit.html#qos-classes[Quality of Service (QoS)] class based on the resources requirement of a pod and its containers. When compute resources are scarce, {product-title} can xref:../admin_guide/out_of_resource_handling.html#out-of-resource-eviction-policy[evict pods] based on QOS class in order to maintain stability of the node.
+
+With the cgroup hierarchy, each QOS class is configured differently:
+
+*Guaranteed*:: The cgroup for a pod in this QoS class is configured as follows:
++
+----
+pod<UID>/cpu.shares = sum(pod.spec.containers.resources.requests[cpu])
+pod<UID>/cpu.cfs_quota_us = sum(pod.spec.containers.resources.limits[cpu])
+pod<UID>/memory.limit_in_bytes = sum(pod.spec.containers.resources.limits[memory])
+----
+
+*Burstable*:: The cgroup for a pod in this QoS class is configured as follows:
++
+----
+pod<UID>/cpu.shares = sum(pod.spec.containers.resources.requests[cpu])
+----
++
+If all containers in the pod specify a CPU limit, the cgroup is configued as follows:
++
+----
+pod<UID>/cpu.cfs_quota_us = sum(pod.spec.containers.resources.limits[cpu])
+----
++
+If all containers in the pod specify a memory limit, the cgroup is configued as follows:
++
+----
+pod<UID>/memory.limit_in_bytes = sum(pod.spec.containers.resources.limits[memory])
+----
+
+*BestEffort*:: The cgroup for a pod in this QoS class is configured as follows:
++
+----
+pod<UID>/cpu.shares = 2
+----
++
+This ensures that allocation of CPU time to pods in this QoS class is given the lowest priority.
+
+
+[[admin-guide-enforce-memory-allocation]]
+=== QoS level memory allocation
+
+The following heuristic is applied for each QoS level sandbox:
+----
+ROOT/burstable/memory.limit_in_bytes = 
+    Node.Allocatable - {(summation of memory requests of `Guaranteed` pods)*(reservePercent / 100)}
+ROOT/besteffort/memory.limit_in_bytes = 
+    Node.Allocatable - {(summation of memory requests of all `Guaranteed` and `Burstable` pods)*(reservePercent / 100)}
+----
+
+It is possible that a cgroup might not be able to reduce memory usage below the value specified in the heuristic during pod admission and pod termination.
+
+As a result, {product-title} runs a periodic task that attempts to converge to this desired state.  If unreclaimable memory usage has exceeded the desired limit for the cgroup, {product-title} will attempt to set the effective limit near the current usage to put pressure on the cgroup and prevent further consumption.
+
+{product-title} will create the new pod and attempts to cap the existing usage of the cgroups in lower QOS tiers. This does mean that the new pod could induce an OOM event at the `ROOT` cgroup, but the QOS tools should prevent this from happening.  Once the cgroups are in a steady state, future pods in a lower QoS class should not impact the pods at a higher QoS class.
+
+=== Cgroup Naming 
+
+When the cgroup hierarchy is enabled, {product-title} creates a cgroup for each pod, using the `pod<pod.UID>` naming convention.  
+
+Internally, {product-title} maintains both an abstract and a concrete name for its associated cgroups.  
+
+* The abstract name follows the traditional cgroupfs-style syntax.  
+
+* The concrete name is the name for how the cgroup actually appears on the host filesystem after any conversions performed based on the cgroup driver.
+
+If the systemd driver is used, the {product-title} converts the cgroupfs-style syntax into systemd conventions for path encoding.
+
+For example, {product-title} creates a pod-level *_cgroupParent_* path and passes this value to container runtimes. The cgroup name `/Burstable/pod_123-456` is translated to the name `Burstable-pod_123_456.slice`.  Given how systemd manages the cgroup filesystem, the concrete name for the cgroup becomes `/Burstable.slice/Burstable-pod_123_456.slice`.
+
+=== Cgroups and Resource Utilitzation
+
+{product-title} prioritizes resource utilization and allows BestEffort and Burstable pods to potentially consume as many resources that are presently available on the node.
+
+CPU, like other compressible resources, is proportioned dynamically. When there is contention {product-title} uses Kernel CFS shares to make sure minimum requests are satisfied.
+
+Prior to starting a new pod, {product-title} attempts to update the QoS cgroup associated with the lower QoS tier(s) in order to prevent consumption of the requested resource by the new pod. 
+
+{product-title} will allocate resources to the QoS level cgroup dynamically in response to the following events:
+
+* {product-title} startup/recovery
+* prior to creation of the pod level cgroup
+* after deletion of the pod level cgroup
+* at periodic intervals to reach `experimental-qos-reserved` heurisitc that converge to a desired state.
+
+[[admin-guide-enforce-qos-conversion]]
+=== Conversion of CPU millicores to cgroup configuration
+
+{product-title} measures CPU requests and limits in millicores.
+
+The following formula is used to convert CPU in millicores to cgroup values:
+
+* cpu.shares = (cpu in millicores * 1024) / 1000
+* cpu.cfs_period_us = 100000 (i.e. 100ms)
+* cpu.cfs_quota_us = quota = (cpu in millicores * 100000) / 1000
+
+[[admin-guide-enforce-memory-volumes]]
+=== Memory backed volumes
+
+The pod level cgroup hierarchy makes sure that any writes to a memory-backed volume are correctly charged to the pod cgroup even when a container process
+in the pod restarts.
+
+All memory-backed volumes are removed when a pod reaches a terminal state.
+
+{product-title} verifies that a pod cgroup is deleted from the host before deleting a pod from the API server as part of the graceful deletion process.
+
+[[admin-guide-enforce-logs]]
+=== Log basic cgroup management
+
+{product-title} will log and collect metrics associated with cgroup creation, modification, and deletion.
+
+
+[[admin-guide-enforce-qos-enable]]
+== Enabling the cgroup Hierarchy
+
+To enable the cgroup hierarchy, edit the node configuration file and set the following values:
+
+*Configure a cgroup root directory*:: The `cgroup-root` parameter sets the cgroup root directory, which {product-title} uses to organize all pod cgroups. The root directory is a parent to all pod that are in the Guaranteed QoS class.  By definition, pods in this class have CPU and memory limits specified that are equivalent to their requests so the pod level cgroup confines resource consumption without the need of an additional cgroup for the tier.
++
+{product-title} will ensure a `Burstable` cgroup and a `BestEffort` cgroup exist as children of `ROOT`.  These cgroups will parent pod level cgroups in those associated QoS classes.
++
+[NOTE]
+====
+We recommend that you keep the default value for `cgroup-root` as `/` in order to avoid deep cgroup hierarchies.  
+====
+
+*Configuring a cgroup Driver*:: The `cgroup-driver` parameter specifies the cgroup driver to use. 
++
+The supported values are the following:
++
+* `cgroupfs` - the default driver that performs direct manipulation of the cgroup filesystem on the host in order to manage cgroups.
+* `systemd` - an alternative driver that manages cgroups using transient slices for resources that are supported by that init system.
++
+Depending on the configuration of the associated container runtime, operators may have to choose a particular cgroup driver to ensure proper system behavior.  For example, if operators use the `systemd` cgroup driver provided by the Docker runtime, {product-title} must be configured to use the `systemd` cgroup driver.
+
+*Configuring Reserve Resources*:: The `experimental-qos-reserved` parameter specifies a percentage of memory that should be reserved for QOS levels.  {product-title} attempts to reserve requested resources to exclude pods from lower OoS classes from using resources requested by higher QoS classes. Specify a value from 0-100%, where a value of `0%` instructs {product-title} to not reserve resources and a value of `100%` reserves the sum of requested resource across all pods on the node. The default value is `0%`. If no valueis specified, resources will not be reserved.
++
+By default, no memory limits are applied to the BestEffort and Burstable QoS level cgroups unless a `--qos-reserve-requests` value is specified for memory.
++
+A value of `experimental-qos-reserved=memory=100%` will cause {product-title} to adjust the Burstable and BestEffort cgroups from consuming memory that was requested by a higher QoS class. This increases the risk of inducing OOM on BestEffort and Burstable workloads in favor of increasing memory resource guarantees for Guaranteed and Burstable workloads.  A value of `experimental-qos-reserved=memory=0%` will allow a Burstable
+and BestEffort QoS sandbox to consume up to the full node allocatable amount if available, but increases the risk that a Guaranteed workload will not have access to requested memory.
+
+*Configuring CPU Shares:: Failure to set `cpu.shares` at the QoS level cgroup would result in `500m` of cpu for a Guaranteed pod to have different meaning than `500m` of cpu for a Burstable pod in the current hierarchy.  This
+is because the default `cpu.shares` value if unspecified is `1024` and `cpu.shares` are evaluated relative to sibling nodes in the cgroup hierarchy.  As a consequence, all of the Burstable pods under contention would have a relative priority of 1 cpu unless updated dynamically to capture the sum of requests.  For this reason, we will always set `cpu.shares` for the QoS level sandboxes by default as part of roll-out for this feature.
+
+For example:
++
+.Example cgroup hierarchy parameters in the node configuration
+----
+cat node-config.yaml
+
+kubeletArguments:
+  cgroups-per-qos: <1>
+  - true
+  cgroup-driver: <2>
+  - 'systemd'
+  cgroup-root: <3>
+  - '/'
+  experimental-qos-reserved:<4>
+  - 'memory=50%'
+----
+====
+<1> Enables the cgroup hierarchy if set to `true`. This is `true` by default.
+<2> Specifies the driver to manage cgroups. Set to `systemd`.
+<3> Specifies the root folder for the cgroup sandbox. All cgroups are created below this folder.
+<4> Specifies how pod resource requests are reserved at the QoS level.
+====
+
+
+== Examples
+
+The following describes the cgroup representation of a node with pods
+across multiple QoS classes.
+
+
+=== Guaranteed Pods
+
+The following examples are a pod specification for two pods at the Guaranteed QOS level.
+
+.Example pod with Guaranteed QOS
+----
+[source, yaml]
+kind: Pod
+metadata:
+    name: Pod1
+spec:
+    containers:
+        name: foo
+            resources:
+                limits:
+                    cpu: 10m
+                    memory: 1Gi
+        name: bar
+            resources:
+                limits:
+                    cpu: 100m
+                    memory: 2Gi
+----
+
+.Example pod with Guaranteed QOS
+----
+[source, yaml]
+kind: Pod
+metadata:
+    name: Pod2
+spec:
+    containers:
+        name: foo
+            resources:
+                limits:
+                    cpu: 20m
+                    memory: 2Gii
+----
+
+In the hierarcy, the pods are nested directly under the `ROOT` cgroup.
+
+----
+/ROOT/Pod1/cpu.quota = 110m  
+/ROOT/Pod1/cpu.shares = 110m  
+/ROOT/Pod1/memory.limit_in_bytes = 3Gi  
+/ROOT/Pod2/cpu.quota = 20m  
+/ROOT/Pod2/cpu.shares = 20m  
+/ROOT/Pod2/memory.limit_in_bytes = 2Gi
+----
+
+=== Burstable Pods
+
+The following examples are a pod specification for two pods at the Burtable QOS level.
+
+.Example pod with Burstable QOS
+----
+[source, yaml]
+kind: Pod
+metadata:
+    name: Pod3
+spec:
+    containers:
+        name: foo
+            resources:
+                limits:
+                    cpu: 50m
+                    memory: 2Gi
+                requests:
+                    cpu: 20m
+                    memory: 1Gi
+        name: bar
+            resources:
+                limits:
+                    cpu: 100m
+                    memory: 1Gi
+----
+
+.Example pod with Burstable QOS
+----
+[source, yaml]
+kind: Pod
+metadata:
+    name: Pod4
+spec:
+    containers:
+        name: foo
+            resources:
+                limits:
+                    cpu: 20m
+                    memory: 2Gi
+                requests:
+                    cpu: 10m
+                    memory: 1Gi  
+----
+
+In the hierarcy, the pods are nested directly under the `burstable` cgroup.
+
+----
+/ROOT/burstable/cpu.shares = 30m
+/ROOT/burstable/memory.limit_in_bytes = Allocatable - 5Gi
+/ROOT/burstable/Pod3/cpu.quota = 150m
+/ROOT/burstable/Pod3/cpu.shares = 20m
+/ROOT/burstable/Pod3/memory.limit_in_bytes = 3Gi
+/ROOT/burstable/Pod4/cpu.quota = 20m
+/ROOT/burstable/Pod4/cpu.shares = 10m
+/ROOT/burstable/Pod4/memory.limit_in_bytes = 2Gi
+----
+
+#### Best Effort pods
+
+The following example is a pod specification for a pod at the Best Effort QOS level.
+
+.Example pod with Best Effort QOS
+----
+[source, yaml]
+kind: Pod
+metadata:
+    name: Pod5
+spec:
+    containers:
+        name: foo
+            resources:
+        name: bar
+            resources:
+----
+
+In the hierarcy, the pod is nested directly under the `besteffort` cgroup.
+
+----
+/ROOT/besteffort/cpu.shares = 2
+/ROOT/besteffort/cpu.quota= not set
+/ROOT/besteffort/memory.limit_in_bytes = Allocatable - 7Gi
+/ROOT/besteffort/Pod5/memory.limit_in_bytes = no limit
+----
+
+
