@@ -1,0 +1,249 @@
+[[admin-guide-cluster-capacity]]
+= Analyzing Cluster Capacity
+{product-author}
+{product-version}
+:data-uri:
+:icons:
+:experimental:
+:toc: macro
+:toc-title:
+
+toc::[]
+
+== Overview
+
+As a cluster administrator, you can use the cluster capacity tool to view the
+number of pods that can be scheduled to increase the current resources before
+they become exhausted, and to ensure any future pods can be scheduled. This
+capacity comes from an individual node host in a cluster, and includes CPU,
+memory, disk space, and others.
+
+The cluster capacity tool simulates a sequence of scheduling decisions to
+determine how many instances of an input pod can be scheduled on the cluster
+before it is exhausted of resources to provide a more accurate estimation.
+
+[NOTE]
+====
+The remaining allocatable capacity is a rough estimation, because it does not
+count all of the resources being distributed among nodes. It analyzes only the
+remaining resources and estimates the available capacity that is still
+consumable in terms of a number of instances of a pod with given requirements
+that can be scheduled in a cluster.
+
+Also, pods might only have scheduling support on particular sets of nodes based
+on its selection and affinity criteria. As a result, the estimation of which
+remaining pods a cluster can schedule can be difficult.
+====
+
+You can run the cluster capacity analysis tool as a stand-alone utility from the command line, or xref:admin-guide-running-cluster-capacity-inside-pod[as a job] in a pod inside an {product-title} cluster. Running it as job inside of a pod enables you to run it multiple times without intervention.
+
+[[cluster-capacity-running-analysis]]
+== Running Cluster Capacity Analysis on the Command Line
+
+To run the tool on the command line:
+
+----
+$ cluster-capacity --kubeconfig <path-to-kubeconfig> \
+    --podspec <path-to-pod-spec>
+----
+
+The `--kubeconfig` option indicates your Kubernetes configuration file, and the
+`--podspec` option indicates a sample pod specification file, which the tool
+uses for estimating resource usage. The `podspec` specifies its resource
+requirements as `limits` or `requests`. The cluster capacity tool takes the
+pod's resource requirements into account for its estimation analysis.
+
+An example of the pod specification input is:
+
+[source,yaml]
+----
+apiVersion: v1
+kind: Pod
+metadata:
+  name: small-pod
+  labels:
+    app: guestbook
+    tier: frontend
+spec:
+  containers:
+  - name: php-redis
+    image: gcr.io/google-samples/gb-frontend:v4
+    imagePullPolicy: Always
+    resources:
+      limits:
+        cpu: 150m
+        memory: 100Mi
+      requests:
+        cpu: 150m
+        memory: 100Mi
+----
+
+You can also add the `--verbose` option to output a detailed description of how
+many pods can be scheduled on each node in the cluster:
+
+----
+$ cluster-capacity --kubeconfig <path-to-kubeconfig> \
+    --podspec <path-to-pod-spec> --verbose
+----
+
+The output will look similar to the following:
+
+----
+small-pod pod requirements:
+	- CPU: 150m
+	- Memory: 100Mi
+
+The cluster can schedule 52 instance(s) of the pod small-pod.
+
+Termination reason: Unschedulable: No nodes are available that match all of the
+following predicates:: Insufficient cpu (2).
+
+Pod distribution among nodes:
+small-pod
+	- 192.168.124.214: 26 instance(s)
+	- 192.168.124.120: 26 instance(s)
+----
+
+In the above example, the number of estimated pods that can be scheduled onto
+the cluster is 52.
+
+[[admin-guide-running-cluster-capacity-inside-pod]]
+== Running Cluster Capacity as a Job Inside of a Pod
+
+Running the cluster capacity tool as a job inside of a pod has the advantage of
+being able to be run multiple times without needing user intervention. Running
+the cluster capacity tool as a job involves using a `ConfigMap`.
+
+. Create the cluster role:
++
+----
+$ cat << EOF| oc create -f -
+kind: ClusterRole
+apiVersion: v1
+metadata:
+  name: cluster-capacity-role
+rules:
+- apiGroups: [""]
+  resources: ["pods", "nodes", "persistentvolumeclaims", "persistentvolumes", "services"]
+  verbs: ["get", "watch", "list"]
+EOF
+----
+
+. Create the service account:
++
+----
+$ oc create sa cluster-capacity-sa
+----
+
+. Add the role to the service account:
++
+----
+$ oadm policy add-cluster-role-to-user cluster-capacity-role \
+    system:serviceaccount:default:cluster-capacity-sa
+----
+
+. Define and create the pod specification:
++
+[source,yaml]
+----
+apiVersion: v1
+kind: Pod
+metadata:
+  name: small-pod
+  labels:
+    app: guestbook
+    tier: frontend
+spec:
+  containers:
+  - name: php-redis
+    image: gcr.io/google-samples/gb-frontend:v4
+    imagePullPolicy: Always
+    resources:
+      limits:
+        cpu: 150m
+        memory: 100Mi
+      requests:
+        cpu: 150m
+        memory: 100Mi
+----
+
+. The cluster capacity analysis is mounted in a volume using a
+`ConfigMap` named `cluster-capacity-configmap` to mount input pod spec file
+`pod.yaml` into a volume `test-volume` at the path `/test-pod`.
++
+If you haven't created a `ConfigMap`, create one before creating the job:
++
+----
+$ oc create configmap cluster-capacity-configmap \
+    --from-file=pod.yaml=pod.yaml
+----
+
+. Create the job using the below example of a job specification file:
++
+[source,yaml]
+----
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: cluster-capacity-job
+spec:
+  parallelism: 1
+  completions: 1
+  template:
+    metadata:
+      name: cluster-capacity-pod
+    spec:
+        containers:
+        - name: cluster-capacity
+          image: openshift/origin-cluster-capacity
+          imagePullPolicy: "Always"
+          volumeMounts:
+          - mountPath: /test-pod
+            name: test-volume
+          env:
+          - name: CC_INCLUSTER <1>
+            value: "true"
+          command:
+          - "/bin/sh"
+          - "-ec"
+          - |
+            /bin/cluster-capacity --podspec=/test-pod/pod.yaml --verbose
+        restartPolicy: "Never"
+        serviceAccountName: cluster-capacity-sa
+        volumes:
+        - name: test-volume
+          configMap:
+            name: cluster-capacity-configmap
+----
+<1> A required environment variable letting the cluster capacity tool
+ know that it is running inside a cluster as a pod.
+ +
+The `pod.yaml` key of the `ConfigMap` is the same as the pod specification file
+name, though it is not required. By doing this, the input pod spec file can be
+accessed inside the pod as `/test-pod/pod.yaml`.
+
+. Run the cluster capacity image as a job in a pod:
++
+----
+$ oc create -f cluster-capacity-job.yaml
+----
+
+. Check the job logs to find the number of pods that can be scheduled in the
+ cluster:
++
+----
+$ oc logs jobs/cluster-capacity-job
+small-pod pod requirements:
+        - CPU: 150m
+        - Memory: 100Mi
+
+The cluster can schedule 52 instance(s) of the pod small-pod.
+
+Termination reason: Unschedulable: No nodes are available that match all of the
+following predicates:: Insufficient cpu (2).
+
+Pod distribution among nodes:
+small-pod
+        - 192.168.124.214: 26 instance(s)
+        - 192.168.124.120: 26 instance(s)
+----
