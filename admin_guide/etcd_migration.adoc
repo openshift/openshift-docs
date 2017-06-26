@@ -1,0 +1,138 @@
+[[admin-guide-etcd-migration]]
+= Etcd migration from v2 to v3 data
+{product-author}
+{product-version}
+:data-uri:
+:icons:
+:experimental:
+:toc: macro
+:toc-title:
+:prewrap!:
+
+toc::[]
+
+== Overview
+
+Before the migration can start, all etcd members must be in read-only mode.
+The current implementation is performing an offline migration which means all etcd members
+and master services are stopped until the migration is finished.
+Thus, the entire cluster is not operational during the process.
+
+== Prerequisities
+
+Before the migration can proceed the etcd cluster must be healthy
+and raft indices of all etcd members must differ by one unit at most.
+At the same time all etcd members and master daemons must be stopped.
+
+To check the etcd cluster is healthy you can run:
+
+----
+# etcdctl <certificate details> <endpoint> cluster-health
+member 2a3d833935d9d076 is healthy: got healthy result from https://etcd-test-1:2379
+member a83a3258059fee18 is healthy: got healthy result from https://etcd-test-2:2379
+member 22a9f2ddf18fee5f is healthy: got healthy result from https://etcd-test-3:2379
+cluster is healthy
+----
+
+To check a difference of raft indices you can run:
+
+----
+# ETCDCTL_API=3 etcdctl <certificate details> <endpoint> -w table endpoint status
++------------------+------------------+---------+---------+-----------+-----------+------------+
+|     ENDPOINT     |        ID        | VERSION | DB SIZE | IS LEADER | RAFT TERM | RAFT INDEX |
++------------------+------------------+---------+---------+-----------+-----------+------------+
+| etcd-test-1:2379 | 2a3d833935d9d076 | 3.1.9   | 25 kB   | false     |       415 |        995 |
+| etcd-test-2:2379 | a83a3258059fee18 | 3.1.9   | 25 kB   | true      |       415 |        995 |
+| etcd-test-3:2379 | 22a9f2ddf18fee5f | 3.1.9   | 25 kB   | false     |       415 |        995 |
++------------------+------------------+---------+---------+-----------+-----------+------------+
+----
+
+If minimum and maximum of raft indexes over all etcd members differ for more than 1,
+the migration process must wait until all members converge.
+
+Additionally, the migration should not be run repeatedly, as new v2 data can overwrite already migrated v3 data.
+
+== Migration
+
+The migration itself is performed by running the following command (with etcd daemon stopped) for each etcd member:
+
+----
+ETCDCTL_API=3 etcdctl migrate --data-dir=/var/lib/etcd
+----
+
+The `--data-dir` can point to different location depending on the deployment.
+For example, embedded etcd operates over `/var/lib/origin/openshift.local.etcd` directory,
+etcd run as a system container operates over `/var/lib/etcd/etcd.etcd` directory.
+
+Once done the migration responds with success:
+
+----
+finished transforming keys
+----
+
+In case there are no v2 data with:
+
+----
+no v2 keys to migrate
+----
+
+Or with a failure.
+
+If `--no-ttl` option of the `etcdctl migrate` command is not specified, TLL keys are migrated as well.
+Given the TTL keys in v2 data are replaced with leases in v3 data,
+one needs to attach leases to all migrated TTL keys by running (with etcd daemon running):
+
+----
+oadm migrate etcd-ttl <certificate details> <endpoint> --ttl-keys-prefix '/kubernetes.io/events' --lease-duration 1h
+----
+
+Additionally, for HA deployments the command needs to be run one more time with `--ttl-keys-prefix` set to `/kubernetes.io/masterleases`.
+
+The command (available since `atomic-openshift-3.6.111-1`) needs to be run only once on any of currently available masters.
+
+Once the migration and the lease attachment is done, it is recommended to validate the v3 data.
+Given the v3 key space has no concept of directories,
+it is enough to check that all v2 non-directory keys are available in v3 database and
+all their values are equal.
+
+== Master re-configuration
+
+Once the migration is done,
+the xref:../install_config/master_node_configuration.adoc#master-configuration-files[master configuration file] (the *_/etc/origin/master/master-config.yaml_* file by default)
+needs to be updated so the master daemons can use the new storage backend:
+
+====
+[source,yaml]
+----
+kubernetesMasterConfig:
+  apiServerArguments:
+    storage-backend:
+    - etcd3
+    storage-media-type:
+    - application/vnd.kubernetes.protobuf
+----
+====
+
+== Migration steps
+
+1. run pre-migration checks (etcd cluster is healthy, raft indices are converged, no v3 data available)
+1. backup etcd v2 data
+1. stop master daemons and etcd members
+1. migrate v2 data to v3
+1. start etcd members
+1. attach leases (and validate migrated data)
+1. re-configure masters to use the etcd3 storage backend
+1. start master daemons
+
+It is highly recommended to perform all the steps automatically.
+If any of the etcd members is started too late, the member will not get accepted by the cluster.
+
+== Deployments
+
+The etcd migration is supported over the following deployments:
+
+* rpm based deployment
+* container based deployment
+
+Embedded etcd deployment is not currently supported as the latest 3.6 OCP master is built with etcd-3.2.
+However, currently available etcdctl binary is of 3.1.9.
