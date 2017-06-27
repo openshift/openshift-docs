@@ -1,0 +1,319 @@
+[[install-config-persistent-storage-persistent-storage-flex-volume]]
+= Persistent Storage Using Flex Volume Plug-ins
+{product-author}
+{product-version}
+:data-uri:
+:icons:
+:experimental:
+:toc: macro
+:toc-title:
+:prewrap!:
+
+toc::[]
+
+== Overview
+
+While {product-title} has many built-in
+xref:../install_config/persistent_storage/index.adoc#install-config-persistent-storage-index[volume plug-ins]
+to use various storage technologies, sometimes it is necessary to consume
+storage from a back-end that does not have a plug-in in {product-title}.
+{product-title} can be extended via Flex Volume drivers to access such storage
+back-end and provide
+xref:../../architecture/additional_concepts/storage.adoc#architecture-additional-concepts-storage[persistent storage]
+to applications.
+
+A Flex Volume driver is an executable, typically a shell script, deployed to all
+machines in the cluster (both masters and nodes) as part of the installation
+process.
+
+[NOTE]
+====
+Flex Volume is an alpha feature and may change in a future release of {product-title}.
+====
+
+[[flex-volume-installation]]
+=== Installation
+
+A Flex Volume driver must be installed as an executable file
+*_/usr/libexec/kubernetes/kubelet-plug-ins/volume/exec/<vendor>~<driver>/<driver>_*
+For example, OpenShift's driver for `foo` would be installed as an
+executable file named
+*_/usr/libexec/kubernetes/kubelet-plug-ins/volume/exec/openshift.com~foo/foo_*
+
+This file must be present on all masters and nodes in the cluster.
+
+[[flex-volume-usage]]
+=== Usage
+
+Once the driver is installed, the storage it provides can be referenced from
+{product-title} using a `PersistentVolume`. Each `PersistentVolume` object
+in {product-title} represents one storage asset, typically a volume, in the
+storage back-end.
+
+.Persistent Volume Object Definition Using Flex Volume
+====
+
+[source,yaml]
+----
+apiVersion: v1
+kind: PersistentVolume
+metadata:
+  name: pv0001 <1>
+spec:
+  capacity:
+    storage: 1Gi <2>
+  accessModes:
+    - ReadWriteOnce
+  flexVolume:
+    driver: openshift.com/foo <3>
+    fsType: "ext4" <4>
+    secretRef: foo-secret <5>
+    readOnly: true <6>
+    options: <7>
+      fooServer: 192.168.0.1:1234
+      fooVolumeName: bar
+----
+<1> The name of the volume. This is how it is identified via
+xref:../../architecture/additional_concepts/storage.adoc#architecture-additional-concepts-storage[persistent volume
+claims] or from pods. This name may be different than the name of the volume
+on back-end storage.
+<2> The amount of storage allocated to this volume.
+<3> Name of the driver. This field is mandatory.
+<4> Optional file system that is present on the volume.
+<5> Optional reference to a secret. Keys and values from this secret will be
+provided to the Flex Volume driver on invocation.
+<6> Optional read-only flag.
+<7> Additional options for the Flex Volume driver. This is a free-form
+dictionary of parameters provided to the Flex Volume driver. Typically, it
+includes details like the name of the volume that this `PersistentVolume`
+represents and addresses of the storage server(s).
+====
+
+[[flex-volume-drivers]]
+=== Flex Volume drivers
+
+As noted above, a Flex Volume driver is an executable, typically a shell script,
+that resides in a well-defined directory on all machines in the cluster, both
+masters and nodes. {product-title} calls it whenever it needs to attach, detach,
+mount, or unmount a volume represented by a `PersistentVolume` with `flexVolume`
+as source.
+
+The first command-line argument of the driver is always an operation name.
+Other parameters are specific to each operation. Most of the operations expect
+JSON string as a parameter. This parameter is literally a JSON string,
+not name of a file with JSON!
+
+It contains:
+
+* All `flexVolume.options`.
+* Some options from `flexVolume` prefixed by `kubernetes.io/`, such as `fsType`
+  and `readwrite`.
+* Content of the referenced secret (if specified) prefixed by `kubernetes.io/secret/`.
+
+.Flex Driver JSON input
+====
+[source,json]
+----
+{
+	"fooServer": "192.168.0.1:1234", <1>
+        "fooVolumeName": "bar",
+	"kubernetes.io/fsType": "ext4", <2>
+	"kubernetes.io/readwrite": "ro", <3>
+	"kubernetes.io/secret/<key name>": "<key value>", <4>
+	"kubernetes.io/secret/<another key name>": "<another key value>",
+}
+----
+<1> All options from `flexVolume.options`.
+<2> Value of `flexVolume.fsType`.
+<3> `ro`/`rw` based on `flexVolume.readOnly`.
+<4> All keys and their values from the secret referenced by `flexVolume.secretRef`.
+====
+
+{product-title} expects a JSON on standard output of the driver. When not specified,
+the output describes the result of the operation.
+
+.Flex Driver Default Output
+====
+[source,json]
+----
+{
+	"status": "<Success/Failure/Not supported>",
+	"message": "<Reason for success/failure>"
+}
+----
+====
+
+Exit code of the driver should be `0` for success and `1` for error.
+
+Operations should be idempotent. The attachment of an already attached volume
+or the mounting of an already mounted volume should result in a successful
+operation.
+
+The Flex Volume driver can work in two modes, with the attach/detach operation or
+without it. The attach/detach operation is used by {product-title} master
+to attach a volume to a node and to detach it from a node. This
+is useful when a node becomes unresponsive from any reason. Then, the master can
+kill all pods on the node, detach all volumes from it, and attach the volumes to
+other nodes to resume the applications while the original node is still not
+reachable.
+
+[IMPORTANT]
+====
+Not every storage back-end supports master-initiated detachment of a volume from
+another machine. Carefully consider what kind of Flex Volume driver you are
+going to write.
+====
+
+[[flex-volume-drivers-with-master-initiated-attach-detach]]
+==== Flex Volume drivers with master-initiated attach/detach
+
+A Flex Volume driver that supports master-controlled attach/detach must implement
+these operations:
+
+`init`::
+* Initializes the driver. It is called during initialization of masters and nodes.
+* Arguments: none
+* Executed on: master, node
+* Expected output: default JSON
+
+`getvolumename`::
+* Returns the unique name of the volume. This name must be consistent among all
+masters and nodes and will be used in subsequent `detach` call as
+`<volume-name>`. Any `'/'` character in the `<volume-name>` are automatically
+replaced by `'~'`.
+* Arguments: `<json>`
+* Executed on: master, node
+* Expected output: default JSON + `volumeName`:
++
+[source,json]
+----
+{
+	"status": "Success",
+	"message": "",
+	"volumeName": "foo-volume-bar" <1>
+}
+----
+<1> The unique name of the volume on storage back-end `foo`.
+
+`attach`::
+* Attaches a volume represented by the JSON to a given node. This operation
+should return the name of the device on the node if it is known at this time
+(i.e. it has been assigned by the storage back-end at this point).
+If the device is not known at this time, the device must be found on the
+node by the subsequent `waitforattach` operation.
+* Arguments: `<json>` `<node-name>`
+* Executed on: master
+* Expected output: default JSON + `device` (if known):
++
+[source,json]
+----
+{
+	"status": "Success",
+	"message": "",
+	"device": "/dev/xvda" <1>
+}
+----
+<1> Name of the device on the node (if known).
+
+`waitforattach`::
+* Waits until a volume is fully attached to a node and its device emerges.
+If the previous `attach` operation has returned `<device-name>`, it is provided
+as an input parameter. Otherwise, `<device-name>` is empty and the operation
+must find the device on the node.
+* Arguments: `<device-name>` `<json>`
+* Executed on: node
+* Expected output: default JSON + `device`
++
+[source,json]
+----
+{
+	"status": "Success",
+	"message": "",
+	"device": "/dev/xvda" <1>
+}
+----
+<1> Name of the device on the node.
+
+`detach`::
+* Detaches the given volume from a node. `<volume-name>` is name of the device as
+returned by the `getvolumename` operation. Note that `<volume-name>` has all
+`'/'` characters replaced with `'~'`!
+* Arguments: `<volume-name>` `<node-name>`
+* Executed on: master
+* Expected output: default JSON
+
+
+`isattached`::
+* Checks that a volume is attached to a node.
+* Arguments: `<json>` `<node-name>`
+* Executed on: master
+* Expected output: default JSON + `attached`
++
+[source,json]
+----
+{
+	"status": "Success",
+	"message": "",
+	"attached": true <1>
+}
+----
+<1> Status of the attachment of the volume to the node.
+
+`mountdevice`::
+* Mounts a volume's device to a directory. `<device-name>` is name of the
+device as returned by the previous `waitforattach` operation.
+* Arguments: `<mount-dir>` `<device-name>` `<json>`
+* Executed on: node
+* Expected output: default JSON
+
+`unmountdevice`::
+* Unmounts a volume's device from a directory.
+* Arguments: `<mount-dir>`
+* Executed on: node
+
+All other operations should return JSON with `{"status": "Not supported"}`
+and exit code `1`.
+
+[NOTE]
+====
+Master-initiated attach/detach operations are enabled by default in
+{product-title} 3.6. They may work in older versions, but must be explicitly
+enabled. See
+xref:../../install_config/persistent_storage/enabling_controller_attach_detach.adoc#enabling-controller-attach-detach[Enabling Controller-managed Attachment and Detachment].
+When not enabled, the attach/detach operations are initiated by a node where
+the volume should be attached to/detached from. Syntax and all parameters of
+Flex Volume driver invocations are the same in both cases.
+====
+
+[[flex-volume-drivers-without-master-initiated-attach-detach]]
+==== Flex Volume drivers without master-initiated attach/detach
+
+Flex Volume drivers that do not support master-controlled attach/detach are
+executed only on the node and must implement these operations:
+
+`init`::
+* Initializes the driver. It is called during initialization of all nodes.
+* Arguments: none
+* Executed on: node
+* Expected output: default JSON
+
+`mount`::
+* Mounts a volume to directory. This can include anything that is necessary
+to mount the volume, including attaching the volume to the node, finding
+its device, and finally mounting the device.
+* Arguments: `<mount-dir>` `<json>`
+* Executed on: node
+* Expected output: default JSON
+
+`unmount`::
+* Unmounts a volume from a directory. This can include anything that is
+necessary to clean up the volume after unmounting, like detaching the volume
+from the node.
+* Arguments: `<mount-dir>`
+* Executed on: node
+* Expected output: default JSON
+
+All other operations should return JSON with `{"status": "Not supported"}`
+and exit code `1`.
+
+
