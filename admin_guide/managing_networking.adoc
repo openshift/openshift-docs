@@ -1,0 +1,905 @@
+[[admin-guide-manage-networking]]
+= Managing Networking
+{product-author}
+{product-version}
+:data-uri:
+:icons:
+:experimental:
+:toc: macro
+:toc-title:
+:prewrap!:
+
+toc::[]
+
+== Overview
+
+This topic describes the management of the overall xref:../architecture/additional_concepts/networking.adoc#[cluster network],
+including project isolation and outbound traffic control.
+
+Pod-level networking features, such as per-pod bandwidth limits, are discussed
+in xref:../admin_guide/managing_pods.adoc#admin-guide-manage-pods[Managing
+Pods].
+
+[[admin-guide-pod-network]]
+== Managing Pod Networks
+
+ifdef::openshift-dedicated[]
+include::admin_guide/osd_request.adoc[]
+endif::[]
+
+When your cluster is configured to use
+xref:../architecture/additional_concepts/sdn.adoc#architecture-additional-concepts-sdn[the *ovs-multitenant* SDN
+plug-in], you can manage the separate pod overlay networks for projects using
+the administrator CLI.
+ifdef::openshift-enterprise,openshift-origin[]
+See the xref:../install_config/configuring_sdn.adoc#install-config-configuring-sdn[Configuring the SDN] section
+for plug-in configuration steps, if necessary.
+endif::openshift-enterprise,openshift-origin[]
+
+[[joining-project-networks]]
+=== Joining Project Networks
+
+To join projects to an existing project network:
+
+----
+$ oadm pod-network join-projects --to=<project1> <project2> <project3>
+----
+
+In the above example, all the pods and services in `<project2>` and `<project3>`
+can now access any pods and services in `<project1>` and vice versa. Services
+can be accessed either by IP or fully-qualified DNS name
+(`<service>.<pod_namespace>.svc.cluster.local`). For example, to access a
+service named `db` in a project `myproject`, use `db.myproject.svc.cluster.local`.
+
+Alternatively, instead of specifying specific project names, you can use the
+`--selector=<project_selector>` option.
+
+[[isolating-project-networks]]
+== Isolating Project Networks
+
+To isolate the project network in the cluster and vice versa, run:
+
+----
+$ oadm pod-network isolate-projects <project1> <project2>
+----
+
+In the above example, all of the pods and services in `<project1>` and
+`<project2>` can _not_ access any pods and services from other non-global
+projects in the cluster and vice versa.
+
+Alternatively, instead of specifying specific project names, you can use the
+`--selector=<project_selector>` option.
+
+[[making-project-networks-global]]
+=== Making Project Networks Global
+
+To allow projects to access all pods and services in the cluster and vice versa:
+
+----
+$ oadm pod-network make-projects-global <project1> <project2>
+----
+
+In the above example, all the pods and services in `<project1>` and `<project2>`
+can now access any pods and services in the cluster and vice versa.
+
+Alternatively, instead of specifying specific project names, you can use the
+`--selector=<project_selector>` option.
+
+[[admin-guide-disabling-hostname-collision]]
+== Disabling Host Name Collision Prevention For Ingress Objects
+
+In {product-title}, host name collision prevention for routes and ingress
+objects is enabled by default. This means that the host name in a route or
+ingress object can only be set on creation and not edited afterwards. Disabling
+host name collision prevention lets you edit a host name for ingress objects after creation.
+However, because {product-title} uses the object creation timestamp to determine
+the oldest route or ingress object for a given host name, the route or ingress
+object can hijack a host name with a newer route. This can happen if an older
+route changes its host name, or if an ingress object is introduced.
+
+This is relevant to {product-title} installations that depend upon Kubernetes
+behavior, including allowing the host names in ingress objects be edited.
+
+. Add the following to the `master.yaml` file:
++
+[source, yaml]
+----
+admissionConfig:
+  pluginConfig:
+    openshift.io/IngressAdmission:
+      configuration:
+        apiVersion: v1
+        allowHostnameChanges: true
+        kind: IngressAdmissionConfig
+      location: ""
+----
+
+. Restart the master service for the changes to take effect:
++
+----
+# systemctl restart atomic-openshift-master
+----
+
+[[admin-guide-controlling-egress-traffic]]
+== Controlling Egress Traffic
+
+As a cluster administrator you can allocate a number of static IP addresses to a
+specific node at the host level. If an application developer needs a dedicated
+IP address for their application service, they can request one during the
+process they use to ask for firewall access. They can then deploy an egress
+router from the developer's project, using a `*nodeSelector*` in the deployment
+configuration to ensure that the pod lands on the host with the pre-allocated
+static IP address.
+
+The egress pod's deployment declares one of the source IPs, the destination IP
+of the protected service, and a gateway IP to reach the destination. After the
+pod is deployed, you can
+xref:../dev_guide/integrating_external_services.adoc#dev-guide-integrating-external-services[create
+a service] to access the egress router pod, then add that source IP to the
+corporate firewall. The developer then has access information to the egress
+router service that was created in their project, for example,
+`service.project.cluster.domainname.com`.
+
+When the developer needs to access the external, firewalled service, they can
+call out to the egress router pod's service
+(`service.project.cluster.domainname.com`) in their application (for example,
+the JDBC connection information) rather than the actual protected service URL.
+
+As an {product-title} cluster administrator, you can control egress traffic in three ways:
+
+xref:admin-guide-limit-pod-access-egress[Firewall]::
+Using an egress firewall allows you to enforce the acceptable outbound traffic
+policies, so that specific endpoints or IP ranges (subnets) are the only
+acceptable targets for the dynamic endpoints (pods within {product-title}) to
+talk to.
+
+xref:admin-guide-limit-pod-access-egress-router[Router]::
+Using an egress router allows you to create identifiable services to send
+traffic to certain destinations, ensuring those external destinations treat
+traffic as though it were coming from a known source. This helps with security,
+because it allows you to secure an external database so that only specific pods
+in a namespace can talk to a service (the egress router), which proxies the
+traffic to your database.
+
+xref:admin-guide-limit-pod-access-iptables[iptables]::
+In addition to the above {product-title}-internal solutions, it is also
+possible to create iptables rules that will be applied to outgoing
+traffic. These rules allow for more possibilities than the egress
+firewall, but cannot be limited to particular projects.
+
+[[admin-guide-limit-pod-access-egress]]
+=== Using an Egress Firewall to Limit Access to External Resources
+
+As an {product-title} cluster administrator, you can use egress firewall policy
+to limit the external addresses that some or all pods can access from within the
+cluster, so that:
+
+- A pod can only talk to internal hosts, and cannot initiate connections to the
+public Internet.
++
+Or,
+- A pod can only talk to the public Internet, and cannot initiate connections to
+internal hosts (outside the cluster).
++
+Or,
+- A pod cannot reach specified internal subnets/hosts that it should have no
+reason to contact.
+
+You can configure projects to have different egress policies. For example,
+allowing `<project A>` access to a specified IP range, but denying the same
+access to `<project B>`. Or restrict application developers from updating from
+(Python) pip mirrors, and forcing updates to only come from desired sources.
+
+[CAUTION]
+====
+You must have the
+xref:../install_config/configuring_sdn.adoc#install-config-configuring-sdn[*ovs-multitenant* plug-in] enabled in order to limit pod access via egress policy.
+====
+
+Project administrators can neither create `EgressNetworkPolicy` objects, nor
+edit the ones you create in their project. There are also several other
+restrictions on where `EgressNetworkPolicy` can be created:
+
+* The `default` project (and any other project that has been made global via
+`oadm pod-network make-projects-global`) cannot have egress policy.
+
+* If you merge two projects together (via `oadm pod-network join-projects`),
+then you cannot use egress policy in _any_ of the joined projects.
+
+* No project may have more than one egress policy object.
+
+Violating any of these restrictions results in broken egress policy for the
+project, and may cause all external network traffic to be dropped.
+
+Use the `oc` command or the REST API to configure egress policy. You can use
+`oc [create|replace|delete]` to manipulate `EgressNetworkPolicy` objects. The
+*_api/swagger-spec/oapi-v1.json_* file has API-level details on how the objects
+actually work.
+
+To configure egress policy:
+
+. Navigate to the project you want to affect.
+
+. Create a JSON file with the desired policy details. For example:
++
+----
+{
+    "kind": "EgressNetworkPolicy",
+    "apiVersion": "v1",
+    "metadata": {
+        "name": "default"
+    },
+    "spec": {
+        "egress": [
+            {
+                "type": "Allow",
+                "to": {
+                    "cidrSelector": "1.2.3.0/24"
+                }
+            },
+            {
+                "type": "Allow",
+                "to": {
+                    "dnsName": "www.foo.com"
+                }
+            },
+            {
+                "type": "Deny",
+                "to": {
+                    "cidrSelector": "0.0.0.0/0"
+                }
+            }
+        ]
+    }
+}
+----
++
+When the example above is added to a project, it allows traffic to IP range
+`1.2.3.0/24` and domain name `www.foo.com`, but denies access to all other
+external IP addresses. Traffic to other pods is not affected because the policy
+only applies to _external_ traffic.
++
+The rules in an `EgressNetworkPolicy` are checked in order, and the first one
+that matches takes effect. If the three rules in the above example were
+reversed, then traffic would not be allowed to `1.2.3.0/24` and `www.foo.com`
+because the `0.0.0.0/0` rule would be checked first, and it would match and deny
+all traffic.
++
+Domain name updates are polled based on the TTL (time to live) value of the
+domain of the local non-authoritative server, or 30 minutes if the TTL is unable
+to be fetched. The pod should also resolve the domain from the same local
+non-authoritative server when necessary, otherwise the IP addresses for the
+domain perceived by the egress network policy controller and the pod will be
+different, and the egress network policy may not be enforced as expected. In the
+above example, suppose `www.foo.com` resolved to `10.11.12.13` and has a DNS TTL
+of one minute, but was later changed to `20.21.22.23`. {product-title} will then
+take up to one minute to adapt to these changes.
+
+. Use the JSON file to create an EgressNetworkPolicy object:
++
+----
+# oc create -f <policy>.json
+----
+
+[CAUTION]
+====
+Exposing services by creating
+xref:../dev_guide/routes.adoc#creating-routes[routes] will ignore
+`EgressNetworkPolicy`. Egress network policy service endpoint filtering is done
+at the node `kubeproxy`. When the router is involved, `kubeproxy` is bypassed
+and egress network policy enforcement is not applied. Administrators can prevent
+this bypass by limiting access to create routes.
+====
+
+[[admin-guide-limit-pod-access-egress-router]]
+=== Using an Egress Router to Allow External Resources to Recognize Pod Traffic
+
+The {product-title} egress router runs a service that redirects traffic to a
+specified remote server, using a private source IP address that is not used for
+anything else. The service allows pods to talk to servers that are set up
+to only allow access from whitelisted IP addresses.
+
+[IMPORTANT]
+====
+The egress router is not intended for every outgoing connection. Creating large
+numbers of egress routers can push the limits of your network hardware. For
+example, creating an egress router for every project or application could exceed
+the number of local MAC addresses that the network interface can handle before
+falling back to filtering MAC addresses in software.
+====
+
+[[admin-guide-limit-pod-access-important-deployment-considerations]]
+==== Important Deployment Considerations
+
+The Egress router adds a second IP address and MAC address to the node's primary
+network interface. If you are not running {product-title} on bare metal, you may
+need to configure your hypervisor or cloud provider to allow the additional
+address.
+
+*Red Hat OpenStack Platform*
+
+If you are deploying {product-title} on Red Hat OpenStack Platform, you need to
+whitelist the IP and MAC addresses on your Openstack environment, otherwise
+link:https://access.redhat.com/solutions/2803331[communication will fail]:
+
+----
+neutron port-update $neutron_port_uuid \
+  --allowed_address_pairs list=true \
+  type=dict mac_address=<mac_address>,ip_address=<ip_address>
+----
+
+*Red Hat Enterprise Virtualization*
+
+If you are using
+link:https://access.redhat.com/documentation/en-US/Red_Hat_Enterprise_Virtualization/3.2/html/Administration_Guide/Red_Hat_Enterprise_Virtualization_Manager_configuration_options_explanations_limitations_and_best_practices.html[Red
+Hat Enterprise Virtualization], you should set
+`EnableMACAntiSpoofingFilterRules` to `false`.
+
+*VMware vSphere*
+
+If you are using VMware vSphere, follow VMware's
+link:http://pubs.vmware.com/vsphere-4-esxi-installable-vcenter/index.jsp?topic=/com.vmware.vsphere.esxi_server_config.doc_40_u1/esx_server_config/securing_an_esx_configuration/c_securing_virtual_switch_ports.html[Securing
+Virtual Switch Ports] and
+link:http://pubs.vmware.com/vsphere-4-esxi-installable-vcenter/index.jsp?topic=/com.vmware.vsphere.esxi_server_config.doc_40_u1/esx_server_config/securing_an_esx_configuration/c_forged_transmissions.html[Forged
+Transmissions] guidance.
+
+[[admin-guide-egress-router-modes]]
+==== Egress Router Modes
+
+The egress router can run in two different modes:
+
+1. A "redirect" mode, where the egress router sets up iptables rules
+to redirect traffic from its own IP address to one or more destination
+IP addresses. Client pods that want to make use of the reserved source
+IP address will need to be modified to connect to the egress router
+rather than connecting directly to the destination IP.
+
+2. An HTTP proxy mode, where the egress router runs as an HTTP proxy.
+This only works for clients talking to HTTP/HTTPS-based services, but
+usually requires fewer changes to the client pods to get them to work.
+(Many programs can be told to use an HTTP proxy just by setting an
+environment variable.)
+
+[[admin-guide-deploying-an-egress-router-pod]]
+==== Deploying a Redirecting Egress Router Pod
+
+. Create a pod configuration such as the following:
++
+.Example Pod Definition for a simple redirecting Egress Router
+====
+----
+apiVersion: v1
+kind: Pod
+metadata:
+  name: egress-1
+  labels:
+    name: egress-1
+  annotations:
+    pod.network.openshift.io/assign-macvlan: "true" <1>
+spec:
+  initContainers:
+  - name: egress-router
+ifdef::openshift-enterprise[]
+    image: registry.access.redhat.com/openshift3/ose-egress-router
+endif::openshift-enterprise[]
+ifdef::openshift-origin[]
+    image: openshift/origin-egress-router
+endif::openshift-origin[]
+    securityContext:
+      privileged: true
+    env:
+    - name: EGRESS_SOURCE <2>
+      value: 192.168.12.99
+    - name: EGRESS_GATEWAY <3>
+      value: 192.168.12.1
+    - name: EGRESS_DESTINATION <4>
+      value: 203.0.113.25
+    - name: EGRESS_ROUTER_MODE <5>
+      value: init
+  containers:
+  - name: egress-router-wait
+ifdef::openshift-enterprise[]
+    image: registry.access.redhat.com/openshift3/ose-pod
+endif::openshift-enterprise[]
+ifdef::openshift-origin[]
+    image: openshift/origin-pod
+endif::openshift-origin[]
+  nodeSelector:
+    site: springfield-1 <6>
+----
+<1> The `pod.network.openshift.io/assign-macvlan annotation` creates a Macvlan
+network interface on the primary network interface, and then moves it into the
+pod's network name space before starting the *egress-router* container. Preserve
+the the quotation marks around `"true"`. Omitting them will result in errors.
+<2> An IP address from the physical network that the node itself is on and is
+reserved by the cluster administrator for use by this pod.
+<3> Same value as the default gateway used by the node itself.
+<4> The external server to direct traffic to. Using this example,
+connections to the pod are redirected to 203.0.113.25, with a source IP address
+of 192.168.12.99.
+<5> This tells the egress router image that it is being deployed as an
+"init container"; older versions of {product-title} (and the egress
+router image) did not support this mode and had to be run as an
+ordinary container.
+<6> The pod will only be deployed to nodes with the label `site=springfield-1`.
+====
+
+. Create the pod using the above definition:
++
+----
+$ oc create -f <pod_name>.json
+----
++
+To check to see if the pod has been created:
++
+----
+oc get pod <pod_name>
+----
+
+. Ensure other pods can find the pod's IP address by creating a service to point to the egress router:
++
+====
+----
+apiVersion: v1
+kind: Service
+metadata:
+  name: egress-1
+spec:
+  ports:
+  - name: http
+    port: 80
+  - name: https
+    port: 443
+  type: ClusterIP
+  selector:
+    name: egress-1
+----
+====
++
+Your pods can now connect to this service. Their connections are redirected to
+the corresponding ports on the external server, using the reserved egress IP
+address.
+
+The work of setting up the egress router is done as an "init
+container" by the
+ifdef::openshift-enterprise[]
+*openshift3/ose-egress-router*
+endif::openshift-enterprise[]
+ifdef::openshift-origin[]
+*openshift/origin-egress-router*
+endif::openshift-origin[]
+image, and that container is run privileged so that it can configure the Macvlan
+interface and set up `iptables` rules. After it finishes setting up
+the `iptables` rules, it exits and the
+ifdef::openshift-enterprise[]
+*openshift3/ose-pod*
+endif::openshift-enterprise[]
+ifdef::openshift-origin[]
+*openshift/origin-pod*
+endif::openshift-origin[]
+container will run (doing nothing) until the pod is killed.
+
+The environment variables tell the *egress-router* image what addresses to use; it
+will configure the Macvlan interface to use `EGRESS_SOURCE` as its IP address,
+with `EGRESS_GATEWAY` as its gateway.
+
+NAT rules are set up so that connections to any TCP or UDP port on the
+pod's cluster IP address are redirected to the same port on
+`EGRESS_DESTINATION`.
+
+If only some of the nodes in your cluster are capable of claiming the specified
+source IP address and using the specified gateway, you can specify a
+`nodeName` or `nodeSelector` indicating which nodes are acceptable.
+
+[[admin-guide-manage-pods-egress-router-multi-destination]]
+==== Redirecting to Multiple Destinations
+
+In the example above, connections to the egress pod (or its
+corresponding service) on any port will be redirected to a single
+destination IP. It is also possible to configure different destination
+IPs depending on the port:
+
+.Example Pod Definition for a redirecting Egress Router with multiple destinations
+====
+----
+apiVersion: v1
+kind: Pod
+metadata:
+  name: egress-multi
+  labels:
+    name: egress-multi
+  annotations:
+    pod.network.openshift.io/assign-macvlan: "true"
+spec:
+  initContainers:
+  - name: egress-router
+ifdef::openshift-enterprise[]
+    image: registry.access.redhat.com/openshift3/ose-egress-router
+endif::openshift-enterprise[]
+ifdef::openshift-origin[]
+    image: openshift/origin-egress-router
+endif::openshift-origin[]
+    securityContext:
+      privileged: true
+    env:
+    - name: EGRESS_SOURCE
+      value: 192.168.12.99
+    - name: EGRESS_GATEWAY
+      value: 192.168.12.1
+    - name: EGRESS_DESTINATION
+      value: | <1>
+        80   tcp 203.0.113.25
+        8080 tcp 203.0.113.26 80
+        8443 tcp 203.0.113.26 443
+        203.0.113.27
+    - name: EGRESS_ROUTER_MODE
+      value: init
+  containers:
+  - name: egress-router-wait
+ifdef::openshift-enterprise[]
+    image: registry.access.redhat.com/openshift3/ose-pod
+endif::openshift-enterprise[]
+ifdef::openshift-origin[]
+    image: openshift/origin-pod
+endif::openshift-origin[]
+----
+<1> This uses the YAML syntax for a multi-line string; see below for
+details.
+====
+
+Each line of `EGRESS_DESTINATION` can be one of three types:
+
+- `<port> <protocol> <IP address>` - This says that incoming
+connections to the given `<port>` should be redirected to the same
+port on the given `<IP address>`. `<protocol>` is either `tcp` or
+`udp`. In the example above, the first line redirects traffic from
+local port 80 to port 80 on 203.0.113.25.
+- `<port> <protocol> <IP address> <remote port>` - As above, except
+that the connection is redirected to a different `<remote port>` on
+`<IP address>`. In the example above, the second and third lines
+redirect local ports 8080 and 8443 to remote ports 80 and 443 on
+203.0.113.26.
+- `<fallback IP address>` - If the last line of `EGRESS_DESTINATION`
+is a single IP address, then any connections on any other port will be
+redirected to the corresponding port on that IP address (eg,
+203.0.113.27 in the example above). If there is no fallback IP address
+then connections on other ports would simply be rejected.)
+
+[[admin-guide-manage-pods-egress-router-configmap]]
+==== Using a ConfigMap to specify EGRESS_DESTINATION
+
+In the case of a large or frequently-changing set of destination
+mappings, it may be useful to maintain the list externally in a
+ConfigMap, and have the egress router pod read it from there. This
+also has the advantage that project administrators would be able to
+edit the ConfigMap (whereas they may not be able to edit the Pod
+definition directly, since it contains a privileged container).
+
+To do this:
+
+. Create a file containing the `EGRESS_DESTINATION` data:
++
+----
+$ cat my-egress-destination.txt
+# Egress routes for Project "Test", version 3
+
+80   tcp 203.0.113.25
+
+8080 tcp 203.0.113.26 80
+8443 tcp 203.0.113.26 443
+
+# Fallback
+203.0.113.27
+----
++
+Note that you can put blank lines and comments into this file
+
+. Create a ConfigMap object from the file:
++
+----
+$ oc delete configmap egress-routes --ignore-not-found
+$ oc create configmap egress-routes --from-file=destination=my-egress-destination.txt
+----
++
+Here `egress-routes` is the name of the ConfigMap object being
+created and `my-egress-destination.txt` is the name of the file the
+data is being read from.
+
+. Create a egress router pod definition as above, but specifying the
+ConfigMap for `EGRESS_DESTINATION` in the environment section:
++
+----
+    ...
+    env:
+    - name: EGRESS_SOURCE
+      value: 192.168.12.99
+    - name: EGRESS_GATEWAY
+      value: 192.168.12.1
+    - name: EGRESS_DESTINATION
+      valueFrom:
+        configMapKeyRef:
+          name: egress-routes
+          key: destination
+    - name: EGRESS_ROUTER_MODE
+      value: init
+    ...
+----
+
+Note that the egress router will not automatically update when the
+ConfigMap changes; you will need to restart the pod to get updates.
+
+[[admin-guide-deploying-an-egress-router-http-proxy-pod]]
+==== Deploying an Egress Router HTTP Proxy Pod
+
+Creating an egress router in HTTP proxy mode is similar to creating a
+redirecting egress router, as described above, but with a slightly
+different specification:
+
+.Example Pod Definition for an Egress Router HTTP Proxy
+====
+----
+apiVersion: v1
+kind: Pod
+metadata:
+  name: egress-http-proxy
+  labels:
+    name: egress-http-proxy
+  annotations:
+    pod.network.openshift.io/assign-macvlan: "true" <1>
+spec:
+  initContainers:
+  - name: egress-router-setup
+ifdef::openshift-enterprise[]
+    image: registry.access.redhat.com/openshift3/ose-egress-router
+endif::openshift-enterprise[]
+ifdef::openshift-origin[]
+    image: openshift/origin-egress-router
+endif::openshift-origin[]
+    securityContext:
+      privileged: true
+    env:
+    - name: EGRESS_SOURCE <2>
+      value: 192.168.12.99
+    - name: EGRESS_GATEWAY <3>
+      value: 192.168.12.1
+    - name: EGRESS_ROUTER_MODE <4>
+      value: http-proxy
+  containers:
+  - name: egress-router-proxy
+ifdef::openshift-enterprise[]
+    image: registry.access.redhat.com/openshift3/ose-egress-router-http-proxy
+endif::openshift-enterprise[]
+ifdef::openshift-origin[]
+    image: openshift/origin-egress-router-http-proxy
+endif::openshift-origin[]
+    env:
+    - name: EGRESS_HTTP_PROXY_DESTINATION <5>
+      value: |
+        !*.example.com
+        !192.168.1.0/24
+        *
+----
+<1> The `pod.network.openshift.io/assign-macvlan annotation` creates a Macvlan
+network interface on the primary network interface, and then moves it into the
+pod's network name space before starting the *egress-router* container. Preserve
+the the quotation marks around `"true"`. Omitting them will result in errors.
+<2> An IP address from the physical network that the node itself is on and is
+reserved by the cluster administrator for use by this pod.
+<3> Same value as the default gateway used by the node itself.
+<4> This tells the egress router image that it is being deployed as
+part of an HTTP proxy, and so it should not set up iptables
+redirecting rules.
+<5> A string or YAML multi-line string specifying how to configure the
+proxy. Note that this is specified as an environment variable in the
+HTTP proxy container, not with the other environment variables in the
+init container.
+====
+
+You can specify a variety of things for
+`EGRESS_HTTP_PROXY_DESTINATION`. The simplest is to just specify `*`,
+meaning "allow connections to all remote destinations". Other than
+that, each line specifies one group of connections to allow or deny:
+
+- An IP address (eg, `192.168.1.1`) will allow connections to that IP address.
+- A CIDR range (eg, `192.168.1.0/24`) will allow connections to that CIDR range.
+- A hostname (eg, `www.example.com`) will allow proxying to that host.
+- A domain name preceded by `\*.` (eg, `*.example.com`) will allow proxying to that domain and all of its subdomains.
+- A `!` followed by any of the above will deny connections rather than allowing them
+- If the last line is `*`, then anything that hasn't been denied will be allowed. Otherwise, anything that hasn't been allowed will be denied.
+
+You can also specify the `EGRESS_HTTP_PROXY_DESTINATION` using a
+ConfigMap, similarly to
+<<admin-guide-manage-pods-egress-router-configmap,the example with a
+redirecting egress router above>>.
+
+[[admin-guide-manage-pods-egress-router-failover]]
+==== Enabling Failover for Egress Router Pods
+
+Using a replication controller, you can ensure that there is always one copy of the egress router pod in order to prevent downtime.
+
+. Create a replication controller configuration file using the following:
++
+====
+----
+apiVersion: v1
+kind: ReplicationController
+metadata:
+  name: egress-demo-controller
+spec:
+  replicas: 1 <1>
+  selector:
+    name: egress-demo
+  template:
+    metadata:
+      name: egress-demo
+      labels:
+        name: egress-demo
+      annotations:
+        pod.network.openshift.io/assign-macvlan: "true"
+    spec:
+      initContainers:
+      - name: egress-demo-init
+ifdef::openshift-enterprise[]
+        image: registry.access.redhat.com/openshift3/ose-egress-router
+endif::openshift-enterprise[]
+ifdef::openshift-origin[]
+        image: openshift/origin-egress-router
+endif::openshift-origin[]
+        env:
+        - name: EGRESS_SOURCE
+          value: 192.168.12.99
+        - name: EGRESS_GATEWAY
+          value: 192.168.12.1
+        - name: EGRESS_DESTINATION
+          value: 203.0.113.25
+        - name: EGRESS_ROUTER_MODE
+          value: init
+        securityContext:
+          privileged: true
+      containers:
+      - name: egress-demo-wait
+ifdef::openshift-enterprise[]
+        image: registry.access.redhat.com/openshift3/ose-pod
+endif::openshift-enterprise[]
+ifdef::openshift-origin[]
+        image: openshift/origin-pod
+endif::openshift-origin[]
+      nodeSelector:
+        site: springfield-1
+----
+<1> Ensure `replicas` is set to `1`, because only one pod can be using a given
+`EGRESS_SOURCE` value at any time. This means that only a single copy of the
+router will be running, on a node with the label `site=springfield-1`.
+====
+
+. Create the pod using the definition:
++
+----
+$ oc create -f <replication_controller>.json
+----
+
+. To verify, check to see if the replication controller pod has been created:
++
+----
+oc describe rc <replication_controller>
+----
+
+[[admin-guide-limit-pod-access-iptables]]
+=== Using iptables Rules to Limit Access to External Resources
+
+Some cluster administrators may want to perform actions on outgoing
+traffic that do not fit within the model of `EgressNetworkPolicy` or the
+egress router. In some cases, this can be done by creating iptables
+rules directly.
+
+For example, you could create rules that log traffic to particular
+destinations, or to prevent more than a certain number of outgoing
+connections per second.
+
+{product-title} does not provide a way to add custom iptables rules
+automatically, but it does provide a place where such rules can be
+added manually by the administrator. Each node, on startup, will
+create an empty chain called `OPENSHIFT-ADMIN-OUTPUT-RULES` in the
+`filter` table (assuming that the chain does not already exist). Any
+rules added to that chain by an administrator will be applied to all
+traffic going from a pod to a destination outside the cluster (and not
+to any other traffic).
+
+There are a few things to watch out for when using this functionality:
+
+. It is up to you to ensure that rules get created on each node;
+{product-title} does not provide any way to make that happen
+automatically.
+
+. The rules are not applied to traffic that exits the cluster via an
+egress router, and they run after `EgressNetworkPolicy` rules are applied
+(and so will not see traffic that is denied by an
+`EgressNetworkPolicy`).
+
+. The handling of connections from pods to nodes or pods to the master
+is complicated, because nodes have both "external" IP addresses and
+"internal" SDN IP addresses. Thus, some pod-to-node/master traffic may
+pass through this chain, but other pod-to-node/master traffic may
+bypass it.
+
+[[admin-guide-networking-multicast]]
+== Enabling Multicast
+
+[IMPORTANT]
+====
+Enabling multicast networking is a Technology Preview feature only.
+ifdef::openshift-enterprise[]
+Technology Preview features are not supported with Red Hat production service
+level agreements (SLAs), might not be functionally complete, and Red Hat does
+not recommend to use them for production. These features provide early access to
+upcoming product features, enabling customers to test functionality and provide
+feedback during the development process.
+
+For more information on Red Hat Technology Preview features support scope, see
+https://access.redhat.com/support/offerings/techpreview/.
+endif::[]
+====
+
+Multicast traffic between {product-title} pods is disabled by default. You can
+enable Multicast on a per-project basis by setting an annotation on the
+project's corresponding `netnamespace` object:
+
+----
+# oc annotate netnamespace <namespace> \
+    netnamespace.network.openshift.io/multicast-enabled=true
+----
+
+Disable multicast by removing the annotation:
+
+----
+# oc annotate netnamespace <namespace> \
+    netnamespace.network.openshift.io/multicast-enabled-
+----
+
+If you have
+xref:../admin_guide/managing_networking.adoc#joining-project-networks[joined
+networks together], you will need to enable Multicast in each projects'
+`netnamespace` in order for it to take effect in any of the projects. To enable
+Multicast in the `default` project, you must also enable it in all other
+projects that have been
+xref:../admin_guide/managing_networking.adoc#making-project-networks-global[made
+global].
+
+[NOTE]
+====
+Multicast global projects are not "global", but instead communicate with only
+other global projects via Multicast, not with all projects in the cluster, as is
+the case with unicast.
+====
+
+[[admin-guide-networking-networkpolicy]]
+== Enabling NetworkPolicy
+
+[IMPORTANT]
+====
+Enabling the Kubernetes `NetworkPolicy` is a Technology Preview feature only.
+ifdef::openshift-enterprise[]
+Technology Preview features are not supported with Red Hat production service
+level agreements (SLAs), might not be functionally complete, and Red Hat does
+not recommend to use them for production. These features provide early access to
+upcoming product features, enabling customers to test functionality and provide
+feedback during the development process.
+
+For more information on Red Hat Technology Preview features support scope, see
+https://access.redhat.com/support/offerings/techpreview/.
+endif::[]
+====
+
+Kubernetes `NetworkPolicy` is not currently fully supported by {product-title},
+and the *ovs-subnet* and *ovs-multitenant* plug-ins ignore `NetworkPolicy`
+objects. However, a Technology Preview of `NetworkPolicy` support is available by
+using the *ovs-networkpolicy* plug-in.
+
+In a cluster
+xref:../install_config/configuring_sdn.adoc#install-config-configuring-sdn[configured
+to use the *ovs-networkpolicy* plug-in], network isolation is controlled
+entirely by `NetworkPolicy` objects and the link:https://github.com/kubernetes/community/blob/master/contributors/design-proposals/network-policy.md[associated Namespace annotation]. In particular, by default, all projects are able to access pods
+in all other projects. The project to be isolated must first be configured to
+opt in to isolation by setting the proper annotation on its Namespace object,
+and then creating `NetworkPolicy` objects indicating the incoming connections to
+be allowed.
