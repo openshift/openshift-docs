@@ -25,22 +25,23 @@ on RHEL systems, see the
 link:https://access.redhat.com/articles/2750891#architecture[Container Image Signing Integration Guide].
 
 The OpenShift Container Registry allows the ability to store signatures via REST
-API. The `oc` CLI can be used to verify image signatures, with their validiated
+API. The `oc` CLI can be used to verify image signatures, with their validated
 displayed in the web console or CLI.
 
 ifdef::openshift-enterprise[]
 [NOTE]
 ====
 Initial support for storing image signatures was added in {product-title} 3.3.
+Initial support for verifying image signatures was added in {product-title} 3.6.
 ====
 endif::[]
 ifdef::openshift-origin[]
 [NOTE]
 ====
 Initial support for storing image signatures was added in {product-title} 1.3.
+Initial support for verifying image signatures was added in {product-title} 1.6.
 ====
 endif::[]
-
 
 [[signing-images-using-atomic-cli]]
 == Signing Images Using Atomic CLI
@@ -53,26 +54,112 @@ The `atomic` command line interface (CLI), version 1.12.5 or greater, provides
 commands for signing container images, which can be pushed to an OpenShift
 Container Registry. The `atomic` CLI is available on Red Hat-based
 distributions: RHEL, Centos, and Fedora.
+ifdef::openshift-enterprise[]
+It is pre-installed on Red Hat Atomic Host. For installing the
+**atomic** package on a Red Hat Enterprise Linux host see
+link:https://access.redhat.com/documentation/en-us/red_hat_enterprise_linux_atomic_host/7/html/cli_reference/prerequisites[Atomic CLI documentation].
+endif::[]
 
-You can sign an image at push time:
+[IMPORTANT]
+====
+The `atomic` CLI uses the authenticated credentials from `oc login`. Be sure to
+use the same user on the same host for both `atomic` and `oc` commands. For example,
+if you execute `atomic` CLI as `sudo`, be sure to login to {product-title}
+using `sudo oc login`.
+====
+
+In order to attach the signature to the image, the user must have the
+`image-signer` cluster role.
+ifdef::openshift-origin,openshift-enterprise[]
+Cluster administrators can add this using:
 
 ----
-$ atomic push [--sign-by ...] <image>
+$ oc adm policy add-cluster-role-to-user system:image-signer <user_name>
+----
+endif::[]
+
+Images may be signed at push time:
+
+----
+$ atomic push [--sign-by <gpg_key_id>] --type atomic <image>
 ----
 
-Or you can sign an image that has already been pushed to the registry:
-
-----
-$ atomic sign [--sign-by ...] <image>
-----
+Signatures are stored in {product-title} when the **atomic** transport type
+argument is specified. See xref:../security/deployment.adoc#security-deployment-signature-transports[signature transports]
+for more information.
 
 For full details on how to set up and perform image signing using the `atomic`
 CLI, see the
-link:https://access.redhat.com/documentation/en-us/red_hat_enterprise_linux_atomic_host/7/html/managing_containers/signing_container_images[RHEL Atomic Host Managing Containers: Signing Container Images] documentation.
+link:https://access.redhat.com/documentation/en-us/red_hat_enterprise_linux_atomic_host/7/html/managing_containers/signing_container_images[RHEL Atomic Host Managing Containers: Signing Container Images] documentation
+or the `atomic push --help` output for argument details.
 
 A specific example workflow of working with the `atomic` CLI and an OpenShift
 Container Registry is documented in the
 link:https://access.redhat.com/articles/2750891#working-with-openshift-and-atomic-registry[Container Image Signing Integration Guide].
+
+[[verifying-image-signatures-using-openshift-cli]]
+== Verifying Image Signatures Using OpenShift CLI
+
+You can verify the signatures of an image imported to an OpenShift Container
+Registry using the `oc adm verify-image-signature` command. This command
+verifies if the image identity contained in the image signature can be trusted
+by using the public GPG key to verify the signature itself then match the
+provided expected identity with the identity (the pull spec) of the given image.
+
+By default, this command uses the public GPG keyring located in
+*_$GNUPGHOME/pubring.gpg_*, typically in path *_~/.gnupg_*. By default, this
+command does not save the result of the verification back to the image object.
+To do so, you must specify the `--save` flag.
+
+[NOTE]
+====
+In order to verify the signature of an image, the user must have the
+`image-auditor` cluster role.
+ifdef::openshift-origin,openshift-enterprise[]
+Cluster administrators can add this using:
+
+----
+$ oc adm policy add-cluster-role-to-user system:image-auditor <user_name>
+----
+endif::[]
+====
+
+Using the `--save` flag on already verified image together with invalid GPG key
+or invalid expected identity causes the saved verification status to be removed,
+and the image will become unverified.
+
+To verify an image signature use the following format:
+
+----
+$ oc adm verify-image-signature <image> --expected-identity=<pull_spec> [--save] [options]
+----
+
+The `<pull_spec`> can be found by describing the image stream.
+The `<image>` may be found by describing the image stream tag.
+See the following example command output.
+
+.Example Image Signature Verification
+====
+----
+$ oc describe is nodejs -n openshift
+Name:             nodejs
+Namespace:        openshift
+Created:          2 weeks ago
+Labels:           <none>
+Annotations:      openshift.io/display-name=Node.js
+                  openshift.io/image.dockerRepositoryCheck=2017-07-05T18:24:01Z
+Docker Pull Spec: 172.30.1.1:5000/openshift/nodejs
+...
+$ oc describe istag nodejs:latest -n openshift
+Image Name:	sha256:2bba968aedb7dd2aafe5fa8c7453f5ac36a0b9639f1bf5b03f95de325238b288
+...
+$ oc adm verify-image-signature \
+    sha256:2bba968aedb7dd2aafe5fa8c7453f5ac36a0b9639f1bf5b03f95de325238b288 \
+    --expected-identity 172.30.1.1:5000/openshift/nodejs:latest \
+    --public-key /etc/pki/rpm-gpg/RPM-GPG-KEY-redhat-release \
+    --save
+----
+====
 
 [[accessing-image-signatures-using-registry-api]]
 == Accessing Image Signatures Using Registry API
@@ -89,7 +176,7 @@ documentation] for general information about the Docker Registry API.
 ====
 
 [[writing-image-signatures-using-registry-api]]
-=== Writing Image Signatures
+=== Writing Image Signatures via API
 
 In order to add a new signature to the image, you can use the HTTP `PUT` method
 to send a JSON payload to the `extensions` endpoint:
@@ -120,21 +207,8 @@ characters long. The `<cryptographic_signature>` must follow the specification
 documented in the
 link:https://github.com/containers/image/blob/master/docs/atomic-signature.md#the-cryptographic-signature[containers/image] library.
 
-[NOTE]
-====
-In order to attach the signature to the image, the user must have the
-`system:image-signer` cluster role.
-ifdef::openshift-origin,openshift-enterprise[]
-Cluster administrators can add this using:
-
-----
-$ oc adm policy add-cluster-role-to-user system:image-signer <user_name>
-----
-endif::[]
-====
-
 [[reading-image-signatures-via-registry-api]]
-=== Reading Image Signatures
+=== Reading Image Signatures via API
 
 Assuming a signed image has already been pushed into the OpenShift Container
 Registry, you can read the signatures using the following command:
@@ -173,34 +247,3 @@ the `<name>` is the name of the signature. The signature name must be 32
 characters long. The `<cryptographic_signature>` must follow the specification
 documented in the
 link:https://github.com/containers/image/blob/master/docs/atomic-signature.md#the-cryptographic-signature[containers/image] library.
-
-[[verifying-image-signatures-using-openshift-cli]]
-== Verifying Image Signatures Using OpenShift CLI
-
-You can verify the signatures of an image imported to an OpenShift Container
-Registry using the `oc adm verify-image-signature` command. This command
-verifies if the image identity contained in the image signature can be trusted
-by using the public GPG key to verify the signature itself then match the
-provided expected identity with the identity (the pull spec) of the given image.
-
-By default, this command uses the public GPG keyring located in
-*_$GNUPGHOME/pubring.gpg_*, typically in path *_~/.gnupg_*. By default, this
-command does not save the result of the verification back to the image object.
-To do so, you must specify the `--save` flag.
-
-[NOTE]
-====
-To modify the image signature verification status, your account must have to
-have permissions to edit image objects, for example using the `image-auditor`
-role.
-====
-
-Using the `--save` flag on already verified image together with invalid GPG key
-or invalid expected identity causes the saved verification status to be removed,
-and the image will become unverified.
-
-To verify an image signature:
-
-----
-$ oc adm verify-image-signature <image> --expected-identity=<pull_spec> [--save] [options]
-----
