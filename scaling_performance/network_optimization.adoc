@@ -1,0 +1,248 @@
+[[scaling-performance-routing-network-optimization]]
+= Routing and Network Optimization
+{product-author}
+{product-version}
+:data-uri:
+:icons:
+:experimental:
+:toc: macro
+:toc-title:
+:prewrap!:
+
+toc::[]
+
+[[scaling-performance-scaling-router-haproxy]]
+== Scaling {product-title} HAProxy Router
+
+[[scaling-performance-baseline-router-haproxy]]
+=== Baseline Performance
+
+The {product-title}
+xref:../install_config/router/index.adoc#install-config-router-overview[router]
+is the ingress point for all external traffic destined for {product-title}
+services.
+
+On an public cloud instance of size 4 vCPU/16GB RAM, a single HAProxy router is able to handle
+between 7000-32000 HTTP keep-alive requests depending on encryption, page size,
+and the number of connections used. For example, when using TLS
+xref:../architecture/networking/routes.adoc#edge-termination[edge] or
+xref:../architecture/networking/routes.adoc#re-encryption-termination[re-encryption]
+terminations with large page sizes and a high numbers of connections, expect to
+see results in the lower range. With HTTP keep-alive, a single HAProxy router is
+capable of saturating 1 Gbit NIC at page sizes as small as 8 kB.
+
+The table below shows HTTP keep-alive performance on such a public cloud
+instance with a single HAProxy and 100 routes:
+
+[cols="2,3,3",options="header"]
+|===
+|*Encryption* |*Page size* |*HTTP(s) requests per second*
+|none |1kB |15435
+|none |4kB |11947
+|edge |1kB |7467
+|edge |4kB |7678
+|passthrough |1kB |25789
+|passthrough |4kB |17876
+|re-encrypt |1kB |7611
+|re-encrypt |4kB |7395
+
+|===
+
+When running on bare metal with modern processors, you can expect roughly
+twice the performance of the public cloud instance above. This
+overhead is introduced by the virtualization layer in place on public clouds and
+holds mostly true for private cloud-based virtualization as well. The following
+table is a guide on how many applications to use behind the router:
+
+[cols="2,4",options="header"]
+|===
+|*Number of applications* |*Application type*
+|5-10 |static file/web server or caching proxy
+|100-1000 |applications generating dynamic content
+
+|===
+
+In general, HAProxy can saturate about 5-1000 applications, depending on the
+technology in use. The number will typically be lower for applications serving
+only static content.
+
+xref:../architecture/networking/routes.adoc#router-sharding[Router sharding]
+should be used to serve more routes towards applications and help horizontally
+scale the routing tier.
+
+[[scaling-performance-optimizing-router-haproxy]]
+=== Performance Optimizations
+
+[[scaling-performance-optimizing-router-haproxy-maxconn]]
+==== Setting the Maximum Number of Connections
+
+One of the most important tunable parameters for HAProxy scalability is the
+`maxconn` parameter, which sets the maximum per-process number of concurrent
+connections to a given number. Adjust this parameter by editing the
+xref:../install_config/router/default_haproxy_router.adoc#concurrent-connections[`ROUTER_MAX_CONNECTIONS`]
+environment variable in the {product-title} HAProxy router's deployment
+configuration file.
+
+[[scaling-performance-optimizing-router-haproxy-cpu-affinity]]
+==== CPU and Interrupt Affinity
+
+In {product-title}, the HAProxy router runs as a single process. The
+{product-title} HAProxy router typically performs better on a system with fewer
+but high frequency cores, rather than on an symmetric multiprocessing (SMP)
+system with a high number of lower frequency cores.
+
+Pinning the HAProxy process to one CPU core and the network interrupts to
+another CPU core tends to increase network performance. Having processes and
+interrupts on the same non-uniform memory access (NUMA) node helps avoid memory
+accesses by ensuring a shared L3 cache. However, this level of control is
+generally not possible on a public cloud environment. On bare metal hosts,
+`irqbalance` automatically handles peripheral component interconnect (PCI)
+locality and NUMA affinity for interrupt request lines (IRQs). On a cloud
+environment, this level of information is generally not provided to the
+operating system.
+
+CPU pinning is performed either by `taskset` or by using HAProxy's `cpu-map`
+parameter. This directive takes two arguments: the process ID and the CPU core
+ID. For example, to pin HAProxy process `1` onto CPU core `0`, add the following
+line to the global section of HAProxy's configuration file:
+
+----
+    cpu-map 1 0
+----
+
+To modify the HAProxy configuration file, refer to
+xref:../install_config/router/customized_haproxy_router.adoc#install-config-router-customized-haproxy[Deploying
+a Customized HAProxy Router].
+
+[[scaling-performance-optimizing-router-haproxy-bufsize]]
+==== Impacts of Buffer Increases
+
+The {product-title} HAProxy router request buffer configuration limits the size
+of headers in incoming requests and responses from applications. The HAProxy
+parameter `tune.bufsize` can be increased to allow processing of larger headers
+and to allow applications with very large cookies to work, such as those
+accepted by load balancers provided by many public cloud providers. However,
+this affects the total memory use, especially when large numbers of connections
+are open. With very large numbers of open connections, the memory usage will be
+nearly proportionate to the increase of this tunable parameter.
+
+[[scaling-performance-network-performance]]
+== Optimizing Network Performance
+
+The xref:../architecture/networking/network_plugins.adoc#openshift-sdn[OpenShift SDN]
+uses OpenvSwitch, virtual extensible LAN (VXLAN) tunnels, OpenFlow rules, and
+iptables. This network can be tuned by using jumbo frames, network interface
+cards (NIC) offloads, multi-queue, and ethtool settings.
+
+VXLAN provides benefits over VLANs, such as an increase in networks from 4096 to
+over 16 million, and layer 2 connectivity across physical networks. This allows
+for all pods behind a service to communicate with each other, even if they are
+running on different systems.
+
+VXLAN encapsulates all tunneled traffic in user datagram protocol (UDP) packets.
+However, this leads to increased CPU utilization. Both these outer- and
+inner-packets are subject to normal checksumming rules to guarantee data has not
+been corrupted during transit. Depending on CPU performance, this additional
+processing overhead can cause a reduction in throughput and increased latency
+when compared to traditional, non-overlay networks.
+
+Cloud, VM, and bare metal CPU performance can be capable of handling much more
+than one Gbps network throughput. When using higher bandwidth links such as 10
+or 40 Gbps, reduced performance can occur. This is a known issue in VXLAN-based
+environments and is not specific to containers or {product-title}. Any network
+that relies on VXLAN tunnels will perform similarly because of the VXLAN
+implementation.
+
+If you are looking to push beyond one Gbps, you can:
+
+* Use
+xref:../install_config/configuring_native_container_routing.adoc#install-config-configuring-native-container-routing[Native Container Routing]. This option has important operational caveats that do not
+exist when using OpenShift SDN, such as updating routing tables on a router.
+* Evaluate network plug-ins that implement different routing techniques, such as
+border gateway protocol (BGP).
+* Use VXLAN-offload capable network adapters. VXLAN-offload moves the packet
+checksum calculation and associated CPU overhead off of the system CPU and onto
+dedicated hardware on the network adapter. This frees up CPU cycles for use by
+pods and applications, and allows users to utilize the full bandwidth of their
+network infrastructure.
+
+VXLAN-offload does not reduce latency. However, CPU utilization is reduced even
+in latency tests.
+
+[[scaling-performance-optimizing-mtu]]
+=== Optimizing the MTU for Your Network
+
+There are two MTUs (maximum transmission units) that matter: the network
+interface card (NIC) MTU, and the SDN overlay's MTU.
+
+The NIC MTU must be less than or equal to the maximum supported value of the NIC
+of your network. If you are optimizing for throughput, pick the largest possible
+value. If you are optimizing for lowest latency, pick a lower value.
+
+The SDN overlay's MTU must be less than the NIC MTU by 50 bytes at a
+minimum. This accounts for the SDN overlay header. So, on a normal ethernet
+network, set this to 1450. On a jumbo frame ethernet network, set this to 8950.
+
+[NOTE]
+====
+This 50 byte overlay header is relevant to the OpenShift SDN. Other SDN
+solutions might require the value to be more or less.
+====
+
+To configure the MTU, edit the node configuration file at *_/etc/origin/node/node-config.yaml_*, and edit the following:
+
+[source,yaml]
+----
+networkConfig:
+  mtu: 1450 <1>
+  networkPluginName: "redhat/openshift-ovs-subnet" <2>
+----
+<1> Maximum transmission unit (MTU) for the pod overlay network.
+<2> Set to `redhat/openshift-ovs-subnet` for the *ovs-subnet* plug-in,
+`redhat/openshift-ovs-multitenant` for the *ovs-multitenant* plug-in, or
+`redhat/openshift-ovs-networkpolicy` for the *ovs-networkpolicy* plug-in. This
+can also be set to any other CNI-compatible plug-in as well.
+
+
+[[scaling-performance-network-subnetting]]
+== Configuring Network Subnets
+
+{product-title} provides IP address management for both pods and services. The
+default values allow for:
+
+- Maximum cluster size of 1024 nodes
+- Each of the 1024 nodes has a /23 allocated to it (510 usable IPs for pods)
+- Provides 65,536 IP addresses for services.
+
+Under most circumstances, these networks cannot be changed after deployment.  Thus it is important to plan ahead for growth.
+
+Restrictions for resizing networks are document here:
+xref:../install_config/configuring_sdn.adoc#configuring-the-pod-network-on-masters[Configuring
+SDN documentation].
+
+If you would like to plan for a larger environment, here are some example values to consider adding to the `[OSE3:vars]` section in your
+Ansible inventory file:
+
+----
+[OSE3:vars]
+osm_cluster_network_cidr=10.128.0.0/10
+----
+
+This will allow for 8192 nodes, each with 510 usable IPs.
+
+See the supportability limits in the {product-title} documentation for node/pod limits for the version of software you are installing.
+
+[[scaling-performance-optimizing-ipsec]]
+== Optimizing IPSec
+
+Because encrypting and decrypting node hosts uses CPU power, performance is
+affected both in throughput and CPU usage on the nodes when encryption is
+enabled, regardless of the IP security system being used.
+
+IPSec encrypts traffic at the IP level, before it hits the NIC, protecting
+fields that would otherwise be used for NIC offloading. This means that some NIC
+acceleration features may not be usable when IPSec is enabled and will lead to increased throughput and CPU usage.
+
+
+
+
