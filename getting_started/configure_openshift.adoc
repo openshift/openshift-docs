@@ -1,0 +1,239 @@
+[[getting-started-configure-openshift]]
+= Configure {product-title}
+:data-uri:
+:experimental:
+:toc: macro
+:toc-title:
+:prewrap!:
+
+toc::[]
+
+[[configure-overview]]
+== Overview
+
+This guide introduces you to the basic concepts of {product-title}, and helps
+you configure a basic application. This guide provides the configuration steps
+following
+xref:../getting_started/install_openshift.adoc#getting-started-install-openshift[the
+installation of a basic {product-title} environment], and is not suitable for
+deploying or installing a production environment of OpenShift.
+
+[[change-log-in-identity-provider]]
+== Change Log In Identity Provider
+
+The default behavior of a freshly installed {product-title} instance is to deny
+any user from logging in. To change the authentication method to HTPasswd:
+
+. Open the *_/etc/origin/master/master-config.yaml_* file in edit mode.
+. Find the `identityProviders` section.
+. Change
+`DenyAllPasswordIdentityProvider` to `HTPasswdPasswordIdentityProvider`
+provider.
+. Change the value of the name label to `htpasswd_auth` and add a
+new line `file: /etc/origin/openshift-passwd` in the provider section.
++
+An example `identityProviders` section with `HTPasswdPasswordIdentityProvider`
+would look like the following.
++
+----
+identityProviders: - challenge: true login: true
+name: htpasswd_auth provider: apiVersion: v1 file: /etc/origin/openshift-passwd
+kind: HTPasswdPasswordIdentityProvider
+----
+
+. Save the file.
+
+[[create-user-accounts]]
+== Create User Accounts
+
+Now that you are using the `HTPasswdPasswordIdentityProvider` provider, you
+need to generate these user accounts.
+
+. You can use the *httpd-tools* package to obtain the *htpasswd* binary that can
+generate these accounts.
++
+----
+yum -y install httpd-tools
+----
+
+. Create a user account.
++
+----
+touch /etc/origin/openshift-passwd htpasswd -b
+/etc/origin/openshift-passwd admin redhat
+----
++
+You have created a user, `admin`, with the password, `redhat`.
+
+. Restart OpenShift before going forward.
++
+----
+systemctl restart atomic-openshift-master
+----
+
+. Give this user account `cluster-admin` privileges, which allows it to do
+everything.
++
+----
+oadm policy add-cluster-role-to-user cluster-admin admin
+----
+
+. You can use this username/password combination to log in via the web
+console or the command line. To test this, run the following command.
++
+----
+oc login -u admin
+----
+
+Before going forward, change to the `default` project.
+
+----
+oc project default
+----
+
+For more details, see
+xref:../admin_guide/manage_authorization_policy.adoc#admin-guide-manage-authorization-policy[roles]
+and
+xref:../install_config/configuring_authentication.adoc#install-config-configuring-authentication[authentication].
+
+[[deploy-router]]
+== Deploy the OpenShift Router
+
+The OpenShift router is the entry point for external network traffic destined
+for OpenShift services. It supports HTTP, HTTPS, and any TLS-enabled traffic
+that uses SNI, which enables the router to send traffic to the correct service.
+
+Without the router, OpenShift services and pods are unable to communicate with
+any resource outside of the OpenShift instance.
+
+The installer creates a default router.
+
+. Delete the default router using the following command.
++
+----
+oc delete all -l router=router
+----
+
+. Create a new default router.
++
+----
+$ oadm router --replicas=1 --service-account=router
+----
+
+The OpenShift documentation contains detailed information on
+xref:../install_config/router/index.adoc#install-config-router-overview[Router Overview].
+
+[[deploy-internal-registry]]
+== Deploy an Internal Registry
+
+Openshift provides an internal, xref:../architecture/infrastructure_components/image_registry.adoc#integrated-openshift-registry[integrated Docker registry] that can be deployed
+to locally manage images. OpenShift uses the *docker-registry* to store,
+retrieve, and build Docker images, as well as deploy and manage them throughout
+their lifecycle.
+
+The installer creates a default registry.
+
+. Delete the default registry using the following command.
++
+----
+oc delete all -l docker-registry=default
+----
+
+. Create the *docker-registry* service in the *default* project using the
+*registry* service account.
++
+----
+$ oadm registry
+----
+
+[[create-persistent-storage-for-registry]]
+== Create Persistent Storage for the Registry
+
+The registry that you created in the previous step stores images and metadata,
+and uses an ephemeral volume for any pod deployment if persistent storage is not
+configured. This ephemeral volume is destroyed when the pod exits, losing all
+data, including any images built or pushed into the registry.
+
+To configure persistent storage for the registry:
+
+* Provision a volume that points to a storage server on your network (we will just
+create it on the master).
+* Create a volume claim.
+* Manually add the claim to the registry service.
+
+NOTE: The following steps to configure persistent storage for the registry apply
+to storage for any image that requires persistent data and not just for the
+registry. The registry is just another image in the OpenShift environment.
+
+[[provision-persistent-volume]]
+=== Provision the Persistent Volume
+
+. Create a registry volume file on your master, as shown here, and call it
+*_registry-volume.yaml_*.
++
+[subs="verbatim,macros"]
+----
+apiVersion: v1
+kind: PersistentVolume
+metadata:
+  name: pass:quotes[_registry-volume_]
+spec:
+  capacity:
+    storage: pass:quotes[_3Gi_]
+  accessModes:
+  - ReadWriteMany
+  nfs:
+    path: /root/storage
+    server: master.openshift.example.com
+----
++
+The folder *_/root/storage_* must exist. Make sure to change the server entry to
+point to your master.
+
+. Create the registry persistent volume in OpenShift.
++
+----
+$ oc create -f registry-volume.yaml
+----
+
+[[create-persistent-volume-claim]]
+=== Create the Persistent Volume Claim
+
+Create a claim to bind the persistent volume created earlier. This claim is what
+ties the registry service to the persistent volume.
+
+. Create another file called *_registry-volume-claim.yaml_*.
++
+[subs="verbatim,macros"]
+----
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: pass:quotes[_registry-volume-claim_]
+spec:
+  accessModes:
+    - ReadWriteMany
+  resources:
+    requests:
+      storage: 3Gi
+----
+
+. Create the claim.
++
+----
+$ oc create -f registry-volume-claim.yaml
+----
+
+You have now created the Persistent Volume and the Persistent Volume Claim, and
+now need to add this claim to the registry.
+
+[[add-claim-to-registry]]
+=== Add the Persistent Volume Claim to the Registry
+
+[subs="verbatim,macros"]
+----
+$ oc volume dc/docker-registry --add --overwrite -t persistentVolumeClaim --claim-name=pass:quotes[_registry-volume-claim_] --name=registry-storage
+----
+
+The *docker-registry* will now use the 3 GB persistent volume created for
+storing image and metadata.
