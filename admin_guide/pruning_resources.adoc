@@ -222,8 +222,9 @@ nor `--keep-younger-than`.
 {product-title} uses the following logic to determine which images and layers to
 prune:
 
+[discrete]
 [[image-prune-conditions]]
-*Image Prune Conditions*
+===== Image Prune Conditions
 
 * Remove any image "managed by {product-title}" (images with the annotation
 `*openshift.io/image.managed*`) that was created at least
@@ -345,3 +346,168 @@ Such tags tend to have just one image in its history, which effectively prevents
 them from ever being pruned.
 xref:../dev_guide/managing_images.adoc#tag-naming[Learn more about _istag_
 naming.]
+
+ifdef::openshift-origin,openshift-enterprise[]
+[[hard-pruning-registry]]
+== Hard Pruning the Registry
+
+The OpenShift Container Registry can accumulate blobs that are not referenced by
+the {product-title} cluster's etcd. The basic xref:pruning-images[Pruning
+Images] procedure, therefore, is unable to operate on them. These are called
+_orphaned blobs_.
+
+Orphaned blobs can occur from the following scenarios:
+
+- Manually deleting an image with `oc delete image <sha256:image-id>` command,
+which only removes the image from etcd, but not from the registry's storage.
+
+- Pushing to the registry initiated by *docker* daemon failures, which causes some
+blobs to get uploaded, but the image manifest (which is uploaded as the very
+last component) does not. All unique image blobs become orphans.
+
+- {product-title} refusing an image because of quota restrictions.
+
+- The standard image pruner deleting an image manifest, but is interrupted before
+it deletes the related blobs.
+
+- A bug in the registry pruner, which fails to remove the intended blobs, causing
+the image objects referencing them to be removed and the blobs becoming orphans.
+// Find this BZ
+
+_Hard pruning_ the registry, a separate procedure from basic image pruning,
+allows you to remove orphaned blobs. You should hard prune if you are running
+out of storage space in your OpenShift Container Registry and believe you have
+orphaned blobs.
+
+This should be an infrequent operation and is necessary only when you have
+evidence that significant numbers of new orphans have been created. Otherwise,
+you can perform standard image pruning at regular intervals, for example, once a
+day (depending on the number of images being created).
+
+To hard prune orphaned blobs from the registry:
+
+. +++<b>Log in:</b>+++ Log in using xref:../cli_reference/get_started_cli.adoc#basic-setup-and-login[the CLI] as a user with an
+xref:../architecture/additional_concepts/authentication.adoc#oauth[access token].
+
+. +++<b>Run a basic image prune:</b>+++ Basic image pruning removes additional
+images that are no longer needed. The hard prune does not remove images on its
+own. It only removes blobs stored in the registry storage. Therefore, you should
+run this just before the hard prune.
++
+See xref:pruning-images[Pruning Images] for steps.
+
+. +++<b>Switch the registry to read-only mode:</b>+++ If the registry is not
+running in read-only mode, any pushes happening at the same time as the prune
+will either:
++
+--
+- fail and cause new orphans, or
+- succeed although the images will not be pullable (because some of the
+referenced blobs were deleted).
+--
++
+Pushes will not succeed until the registry is switched back to read-write mode.
+Therefore, the hard prune must be carefully scheduled.
++
+To switch the registry to read-only mode:
+
+.. Set the following envirornment variable:
++
+----
+$ oc env -n default \
+    dc/docker-registry \
+    'REGISTRY_STORAGE_MAINTENANCE_READONLY={"enabled":true}'
+----
+
+.. By default, the registry should automatically redeploy when the previous step
+completes; wait for the redeployment to complete before continuing. However, if
+you have disabled these triggers, you must manually redeploy the registry so
+that the new environment variables are picked up:
++
+----
+$ oc rollout -n default \
+    latest dc/docker-registry
+----
+
+. +++<b>Add the system:image-pruner role:</b>+++ The service account used to run
+the registry instances requires additional permissions in order to list some
+resources.
+
+.. Get the service account name:
++
+----
+$ service_account=$(oc get -n default \
+    -o jsonpath=$'system:serviceaccount:{.metadata.namespace}:{.spec.template.spec.serviceAccountName}\n' dc/docker-registry)
+----
+
+.. Add the *system:image-pruner* cluster role to the service account:
++
+----
+$ oadm policy add-cluster-role-to-user \
+    system:image-pruner \
+    ${service_account)
+----
+
+. +++<b>(Optional) Run the pruner in dry-run mode:</b>+++ To see how many blobs
+would be removed, run the hard pruner in dry-run mode. No changes are actually
+made:
++
+----
+$ oc -n default \
+    exec -i -t "$(oc -n default get pods -l deploymentconfig=docker-registry -o jsonpath=$'{.items[0].metadata.name}\n')" \
+    -- /usr/bin/dockerregistry -prune=check
+----
++
+Alternatively, to get the exact paths for the prune candidates, increase the
+logging level:
++
+----
+$ oc -n default \
+    exec "$(oc -n default get pods -l deploymentconfig=docker-registry -o jsonpath=$'{.items[0].metadata.name}\n')" \
+    -- /bin/sh \
+    -c ‘REGISTRY_LOG_LEVEL=info /usr/bin/dockerregistry -prune=check’
+----
++
+.Sample Output (Truncated)
+----
+$ oc exec docker-registry-3-vhndw \
+    -- /bin/sh -c 'REGISTRY_LOG_LEVEL=info /usr/bin/dockerregistry -prune=check'
+
+time="2017-06-22T11:50:25.066156047Z" level=info msg="start prune (dry-run mode)" distribution_version="v2.4.1+unknown" kubernetes_version=v1.6.1+$Format:%h$ openshift_version=unknown
+time="2017-06-22T11:50:25.092257421Z" level=info msg="Would delete blob: sha256:00043a2a5e384f6b59ab17e2c3d3a3d0a7de01b2cabeb606243e468acc663fa5" go.version=go1.7.5 instance.id=b097121c-a864-4e0c-ad6c-cc25f8fdf5a6
+time="2017-06-22T11:50:25.092395621Z" level=info msg="Would delete blob: sha256:0022d49612807cb348cabc562c072ef34d756adfe0100a61952cbcb87ee6578a" go.version=go1.7.5 instance.id=b097121c-a864-4e0c-ad6c-cc25f8fdf5a6
+time="2017-06-22T11:50:25.092492183Z" level=info msg="Would delete blob: sha256:0029dd4228961086707e53b881e25eba0564fa80033fbbb2e27847a28d16a37c" go.version=go1.7.5 instance.id=b097121c-a864-4e0c-ad6c-cc25f8fdf5a6
+time="2017-06-22T11:50:26.673946639Z" level=info msg="Would delete blob: sha256:ff7664dfc213d6cc60fd5c5f5bb00a7bf4a687e18e1df12d349a1d07b2cf7663" go.version=go1.7.5 instance.id=b097121c-a864-4e0c-ad6c-cc25f8fdf5a6
+time="2017-06-22T11:50:26.674024531Z" level=info msg="Would delete blob: sha256:ff7a933178ccd931f4b5f40f9f19a65be5eeeec207e4fad2a5bafd28afbef57e" go.version=go1.7.5 instance.id=b097121c-a864-4e0c-ad6c-cc25f8fdf5a6
+time="2017-06-22T11:50:26.674675469Z" level=info msg="Would delete blob: sha256:ff9b8956794b426cc80bb49a604a0b24a1553aae96b930c6919a6675db3d5e06" go.version=go1.7.5 instance.id=b097121c-a864-4e0c-ad6c-cc25f8fdf5a6
+...
+Would delete 13374 blobs
+Would free up 2.835 GiB of disk space
+Use -prune=delete to actually delete the data
+----
+
+. +++<b>Run the hard prune:</b>+++ Execute the following command inside one
+running instance of *docker-registry* pod to run the hard prune:
++
+----
+$ oc -n default \
+    exec -i -t "$(oc -n default get pods -l deploymentconfig=docker-registry -o jsonpath=$'{.items[0].metadata.name}\n')" \
+    -- /usr/bin/dockerregistry -prune=delete
+----
++
+.Sample Output
+----
+$ oc exec docker-registry-3-vhndw \
+    -- /usr/bin/dockerregistry -prune=delete
+
+Deleted 13374 blobs
+Freed up 2.835 GiB of disk space
+----
+
+. +++<b>Switch the registry back to read-write mode:</b>+++ After the prune is
+finished, the registry can be switched back to read-write mode by executing:
++
+----
+$ oc env -n default dc/docker-registry REGISTRY_STORAGE_MAINTENANCE_READONLY-
+----
+endif::[]
