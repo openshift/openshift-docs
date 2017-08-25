@@ -13,25 +13,58 @@ toc::[]
 
 == Overview
 
-Before the migration can start, all etcd members must be in read-only mode.
-The current implementation is performing an offline migration which means all etcd members
-and master services are stopped until the migration is finished.
-Thus, the entire cluster is not operational during the process.
+The etcd v2 to v3 migration is performed as an offline migration which means
+all etcd members and master services are stopped during the migration. Large
+clusters with up to 600MiB of etcd data can expect a 10-15 minute outage of API,
+console, and controllers.
 
-The etcd can be automatically migrated by running
-https://github.com/openshift/openshift-ansible/blob/master/playbooks/byo/openshift-etcd/migrate.yml[etcd migration playbook] available in
-https://github.com/openshift/openshift-ansible[openshift-ansible repository].
-With an inventory `inventory.ini` describing all etcd and master host, you can run:
+The migration process must be completed only after upgrading to 3.6 as previous
+versions are not compatible with etcd v3 storage. Additionally the upgrade to
+3.6 reconfigures cluster dns services to run on every node rather than on the
+masters which ensures that even when master services are taken down existing
+pods continue to function as expected.
+
+The migration process is currently only supported on clusters that have etcd hosts
+defined and it cannot be used for clusters which utilize the embedded etcd which
+runs as part of the master process. Support for migrating embededded installs
+will be added in the near future.
+
+.Briefly, the process is to:
+ * stop master API and controller services
+ * perform an etcd backup on all etcd members
+ * perform a migration on the first etcd host
+ * Remove etcd data from remaining etcd hosts
+ * perform an etcd scaleup operation adding additional etcd hosts one by one
+ * re-introduce TTL information on specific keys
+ * reconfigure masters for etcd v3 storage
+ * start master API and controller services
+
+== Automated migration
+
+We have provided a migration playbook that automates all aspects of the process
+and is the preferred method for performing the migration. You must have access
+to your existing inventory with both masters and etcd hosts defined. First make
+sure you have the latest version of openshift-ansible 3.6 packages installed.
+
+`yum upgrade openshift-ansible\*`
 
 ----
-# cd github.com/openshift/openshift-ansible
-$ ansible-playbook -i inventory.ini playbooks/byo/openshift-etcd/migrate.yml
+# ansible-playbook [-i /path/to/file] \
+    /usr/share/ansible/openshift-ansible/playbooks/byo/openshift-etcd/migrate.yml
 ----
 
+
+== Detailed manual process
 The following sections describe steps needed to successfully migrate the
 cluster (implemented as part of the Ansible etcd migration playbook).
 
-== Prerequisities
+=== Stop masters and wait for etcd convergence
+
+First stop all master services:
+
+----
+# systemctl stop atomic-openshift-master atomic-openshift-master-api atomic-openshift-master-controllers
+----
 
 Before the migration can proceed the etcd cluster must be healthy
 and raft indices of all etcd members must differ by one unit at most.
@@ -60,22 +93,31 @@ To check a difference of raft indices you can run:
 +------------------+------------------+---------+---------+-----------+-----------+------------+
 ----
 
-If minimum and maximum of raft indexes over all etcd members differ for more than 1,
-the migration process must wait until all members converge.
+If minimum and maximum of raft indexes over all etcd members differ for more than 1
+please wait a minute and try again.
 
-Additionally, the migration should not be run repeatedly, as new v2 data can overwrite already migrated v3 data.
+Additionally, the migration should not be run repeatedly, as new v2 data can
+overwrite already migrated v3 data.
 
-== Migration
+=== Migration and scale up
 
-The migration itself is performed by running the following command (with etcd daemon stopped) for each etcd member:
+Stop etcd on all etcd hosts:
+
+----
+# systemctl stop etcd
+----
+
+The migration itself is performed by running the following command (with etcd
+daemon stopped) on your first etcd host :
 
 ----
 ETCDCTL_API=3 etcdctl migrate --data-dir=/var/lib/etcd
 ----
 
 The `--data-dir` can point to different location depending on the deployment.
-For example, embedded etcd operates over `/var/lib/origin/openshift.local.etcd` directory,
-etcd run as a system container operates over `/var/lib/etcd/etcd.etcd` directory.
+For example, embedded etcd operates over `/var/lib/origin/openshift.local.etcd`
+directory, etcd run as a system container operates over
+`/var/lib/etcd/etcd.etcd` directory.
 
 Once done the migration responds with success:
 
@@ -91,24 +133,33 @@ no v2 keys to migrate
 
 Or with a failure.
 
-If `--no-ttl` option of the `etcdctl migrate` command is not specified, TLL keys are migrated as well.
-Given the TTL keys in v2 data are replaced with leases in v3 data,
-one needs to attach leases to all migrated TTL keys by running (with etcd daemon running):
+If `--no-ttl` option of the `etcdctl migrate` command is not specified, TLL keys
+are migrated as well. Given the TTL keys in v2 data are replaced with leases in
+v3 data, one needs to attach leases to all migrated TTL keys by running (with
+etcd daemon running):
+
+Create a new cluster on the first host:
+
+----
+# echo "ETCD_FORCE_NEW_CLUSTER=true" >> /etc/etcd/etcd.conf
+# systemctl start etcd
+# sed -i '/ETCD_FORCE_NEW_CLUSTER=true/d' /etc/etcd/etcd.conf
+# systemctl restart etcd
+----
+
+Scale up additional etcd hosts by following
+xref:/backup_restore.adoc#adding-addtl-etcd-members[Adding Additional etcd Members] documentation.
+
+After your etcd cluster is back online with all members re-introduced TTL
+information by running the following on the first master:
 
 ----
 oadm migrate etcd-ttl <certificate details> <endpoint> --ttl-keys-prefix '/kubernetes.io/events' --lease-duration 1h
+oadm migrate etcd-ttl <certificate details> <endpoint> --ttl-keys-prefix '/openshift.io/oauth/accesstokens' --lease-duration 86400s
+oadm migrate etcd-ttl <certificate details> <endpoint> --ttl-keys-prefix '/openshift.io/oauth/authorizetokens' --lease-duration 500s
 ----
 
-Additionally, for HA deployments the command needs to be run one more time with `--ttl-keys-prefix` set to `/kubernetes.io/masterleases`.
-
-The command (available since `atomic-openshift-3.6.111-1`) needs to be run only once on any of currently available masters.
-
-Once the migration and the lease attachment is done, it is recommended to validate the v3 data.
-Given the v3 key space has no concept of directories,
-it is enough to check that all v2 non-directory keys are available in v3 database and
-all their values are equal.
-
-== Master re-configuration
+=== Master re-configuration
 
 Once the migration is done,
 the xref:../install_config/master_node_configuration.adoc#master-configuration-files[master configuration file] (the *_/etc/origin/master/master-config.yaml_* file by default)
@@ -126,27 +177,53 @@ kubernetesMasterConfig:
 ----
 ====
 
-== Migration steps
+Restart your services, on a single master run:
 
-1. run pre-migration checks (etcd cluster is healthy, raft indices are converged, no v3 data available)
-1. backup etcd v2 data
-1. stop master daemons and etcd members
-1. migrate v2 data to v3
-1. start etcd members
-1. attach leases (and validate migrated data)
-1. re-configure masters to use the etcd3 storage backend
-1. start master daemons
+----
+# systemctl start atomic-openshift-master
+----
 
-It is highly recommended to perform all the steps automatically.
-If any of the etcd members is started too late, the member will not get accepted by the cluster.
+For HA environments run the following on all masters:
 
-== Deployments
+----
+# systemctl start atomic-openshift-master-api atomic-openshift-master-controllers
+----
 
-The etcd migration is supported over the following deployments:
 
-* rpm based deployment
-* container based deployment
-* AH based deployment
+== Recovery procedure
+If you discover problems after the migration has complete you may wish to restore
+from backup. First stop master services:
 
-Embedded etcd deployment is not currently supported as the latest 3.6 OCP master is built with etcd-3.2.
-However, currently available etcdctl binary is of 3.1.9.
+----
+# systemctl stop atomic-openshift-master atomic-openshift-master-api atomic-openshift-master-controllers
+----
+
+Then remove the `storage-backend` and `storage-media-type` keys from from kubernetesMasterConfig
+apiServerArguments  in /etc/origin/master/master-config.yaml on each master.
+
+====
+[source,yaml]
+----
+kubernetesMasterConfig:
+  apiServerArguments:
+   ...
+----
+====
+
+Finally restore from backups that were taken prior to the migration located in
+a timestamped directory under `/var/lib/etcd` like `/var/lib/etcd/openshift-backup-pre-migration20170825135732`
+using the xref:backup_restore.adoc#cluster-restore-multiple-member-etcd-clusters[Cluster Restore for Multiple-member etcd Clusters]
+or xref:backup_restore.adoc#cluster-restore-single-member-etcd-clusters[Cluster Restore for Single-member etcd Clusters]
+documentation.
+
+Restart master services, on a single master:
+
+----
+# systemctl start atomic-openshift-master
+----
+
+For HA masters:
+
+----
+# systemctl start atomic-openshift-master-api atomic-openshift-master-controllers
+----
