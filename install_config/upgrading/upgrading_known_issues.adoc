@@ -1,0 +1,228 @@
+[[install-config-upgrading-known-issues]]
+= Known Issues
+{product-author}
+{product-version}
+:data-uri:
+:icons:
+:experimental:
+:toc: macro
+:toc-title:
+:prewrap!:
+
+toc::[]
+
+== Overview
+
+When upgrading your {product-title} cluster, there are two primary data
+migrations that take place. The first occurs while still running the current
+version of {product-title}, and the second happens after the upgrade completes.
+
+If the pre-upgrade migration fails, the upgrade will be halted and the cluster
+administrator must resolve any data consistency problems before attempting the
+upgrade again. If the post-upgrade migration fails, the upgrade will complete
+and the cluster administrator should investigate the data migration issues as
+soon as possible. This document catalogs known data consistency problems and how
+to resolve them.
+
+[[upgrading-known-issue-BZ1435132]]
+== Orphaned RoleBindingRestriction Objects
+
+Orphaned `RoleBindingRestriction` objects can occur during the upgrade due to a
+bug in the namespace cleanup logic that fails to delete them when the namespace
+is deleted. (link:https://bugzilla.redhat.com/show_bug.cgi?id=1435132[*BZ#1435132*])
+
+.Error Output
+----
+TASK [Upgrade all storage] *********************************************************************************************
+task path: /usr/share/ansible/openshift-ansible/playbooks/common/openshift-cluster/upgrades/upgrade_control_plane.yml:11
+Using module file /usr/lib/python2.7/site-packages/ansible/modules/commands/command.py
+
+fatal: [test.linux.lan]: FAILED! => {
+    "changed": true,
+    "cmd": [
+        "oc",
+        "adm",
+        "--config=/etc/origin/master/admin.kubeconfig",
+        "migrate",
+        "storage",
+        "--include=*",
+        "--confirm"
+    ],
+    "delta": "0:00:56.843544",
+    "end": "2017-08-17 12:46:36.417413",
+    "failed": true,
+    "failed_when_result": true,
+    "invocation": {
+        "module_args": {
+            "_raw_params": "oc adm --config=/etc/origin/master/admin.kubeconfig migrate storage --include=* --confirm",
+            "_uses_shell": false,
+            "chdir": null,
+            "creates": null,
+            "executable": null,
+            "removes": null,
+            "warn": true
+        }
+    },
+    "rc": 1,
+    "start": "2017-08-17 12:45:39.573869"
+}
+
+STDOUT:
+
+error:     rolebindingrestrictions/restriction1 -n namespace1: namespaces "namespace1" not found
+summary: total=1001 errors=1 ignored=0 unchanged=1000 migrated=0
+info: to rerun only failing resources, add --include=rolebindingrestrictions
+error: 1 resources failed to migrate
+----
+
+For this error, a script is provided to automate the following:
+
+- Get all `rolebindingrestriction` objects across all namespaces.
+- Check if the associated namespace exists.
+- If the namespace does not exist, temporarily create it.
+- Delete the `rolebindingrestriction` object if the namespace did not exist.
+- Delete the temporary namespace.
+
+To resolve this issue:
+
+. Save the following script to a file, for example *_rolebindingrestrictions.sh_*:
++
+[source,shell]
+----
+IFS=$'\n'
+for rbline in $(oc get rolebindingrestrictions --all-namespaces | tail -n +2); do
+	ns=$(echo "$rbline" | awk '{ printf $1; }')
+	name=$(echo "$rbline" | awk '{ printf $2; }')
+	if ! oc get namespace "$ns"; then
+		echo "Bad namespace: $ns"
+		(oc create ns "$ns"; sleep 10; oc delete rolebindingrestrictions "$name" -n "$ns"; sleep 10; oc delete namespace "$ns") &
+	fi
+done
+unset IFS
+----
+
+. Run the script while logged in to the CLI as a cluster administrator:
++
+----
+$ bash rolebindingrestrictions.sh
+----
+
+[[upgrading-known-issue-BZ1482978]]
+== Orphaned OAuthClientAuthorization Objects
+
+Orphaned `OAuthClientAuthorization` objects can occur during the upgrade due to
+the deletion of the associated OAuth client.
+(link:https://bugzilla.redhat.com/show_bug.cgi?id=1482978[*BZ#1482978*])
+
+.Error Output
+----
+TASK [Upgrade all storage] *********************************************************************************************
+task path: /usr/share/ansible/openshift-ansible/playbooks/common/openshift-cluster/upgrades/upgrade_control_plane.yml:11
+Using module file /usr/lib/python2.7/site-packages/ansible/modules/commands/command.py
+
+fatal: [test.linux.lan]: FAILED! => {
+    "changed": true,
+    "cmd": [
+        "oc",
+        "adm",
+        "--config=/etc/origin/master/admin.kubeconfig",
+        "migrate",
+        "storage",
+        "--include=*",
+        "--confirm"
+    ],
+    "delta": "0:00:56.843544",
+    "end": "2017-08-17 12:46:36.417413",
+    "failed": true,
+    "failed_when_result": true,
+    "invocation": {
+        "module_args": {
+            "_raw_params": "oc adm --config=/etc/origin/master/admin.kubeconfig migrate storage --include=* --confirm",
+            "_uses_shell": false,
+            "chdir": null,
+            "creates": null,
+            "executable": null,
+            "removes": null,
+            "warn": true
+        }
+    },
+    "rc": 1,
+    "start": "2017-08-17 12:45:39.573869"
+}
+
+STDOUT:
+
+
+error: <1>
+oauthclientauthorizations/user1:system:serviceaccount:namespace1:jenkins : OAuthClientAuthorization "user1:system:serviceaccount:namespace1:jenkins" is invalid: clientName: Internal error: system:serviceaccount:namespace1:jenkins has no redirectURIs; set serviceaccounts.openshift.io/oauth-redirecturi.<some-value>=<redirect> or create a dynamic URI using serviceaccounts.openshift.io/oauth-redirectreference.<some-value>=<reference>
+
+error: <2>
+oauthclientauthorizations/user2:system:serviceaccount:namespace2:jenkins : OAuthClientAuthorization "user2:system:serviceaccount:namespace2:jenkins" is invalid: clientName: Internal error: serviceaccounts "jenkins" not found
+summary: total=1002 errors=2 ignored=0 unchanged=1000 migrated=0
+info: to rerun only failing resources, add --include=oauthclientauthorizations
+error: 2 resources failed to migrate
+----
+<1> This error occurs when the service account based OAuth client has no valid redirect URIs.
+<2> This error occurs when the OAuth client has been deleted.
+
+The first error can be solved in one of two ways:
+
+- Annotate the service account with a valid redirect URI; see xref:../../architecture/additional_concepts/authentication.adoc#redirect-uris-for-service-accounts[Redirect URIs for Service Accounts as OAuth Clients].
+
+Or:
+
+- Delete the service account in the offending namespace if it is not being used
+anymore:
++
+----
+$ oc delete serviceaccount <service_account> -n <namespace>
+----
+
+For the second error, a script is provided to automate the following:
+
+- Get all `oauthclientauthorization` objects.
+- Check if the associated OAuth client exists; it can be either an OAuth client or
+a service account.
+- Delete the `oauthclientauthorization` object if the associated OAuth client does
+not exist.
+
+To resolve this issue:
+
+. Save the following script to a file, for example
+*_oauthclientauthorization.sh_*:
++
+[source,shell]
+----
+for oa in $(oc get -o name oauthclientauthorization); do
+	if [[ "$oa" != *":system:serviceaccount:"* ]]; then
+		client=$(echo "$oa" | cut -d : -f 2)
+		query="$(oc get oauthclient $client 2>&1)"
+		echo "$query" | grep NotFound
+		if [ "$?" == "0" ]; then
+			echo "Not found: $query"
+			oc delete $oa
+		fi
+	fi
+done
+
+for oa in $(oc get -o name oauthclientauthorization); do
+	if [[ "$oa" == *":system:serviceaccount:"* ]]; then
+		ns=$(echo "$oa" | cut -d : -f 4)
+		sa=$(echo "$oa" | cut -d : -f 5)
+		# echo "Found: $oa -> ns:$ns  sa: $sa"
+		query="$(oc get sa $sa -n $ns 2>&1)"
+		echo "$query" | grep "NotFound"
+		if [ "$?" == "0" ]; then
+			echo "Missing sa: $sa"
+			oc delete "$oa"
+			echo "    Delete operation: $?"
+		fi
+	fi
+done
+----
+
+. Run the script while logged in to the CLI as a cluster administrator:
++
+----
+$ bash oauthclientauthorization.sh
+----
