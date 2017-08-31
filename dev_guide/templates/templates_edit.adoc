@@ -1,0 +1,352 @@
+[[dev-guide-templates-editing]]
+= Modifying Templates
+{product-author}
+{product-version}
+:data-uri:
+:icons:
+:experimental:
+:toc: macro
+:toc-title:
+:prewrap!:
+
+toc::[]
+{nbsp} +
+
+You can edit a template that has already been uploaded to your project by using
+the following command:
+
+----
+$ oc edit template <template>
+----
+
+How to update the default
+Where the defaults templates live
+Best practices for modifying the existing ones (bad idea? backup? cp to a new file and change the app name?)
+
+
+[[dev-guide-templates-edit-project-containers]]
+== Limiting the Resource Quotas 
+
+//tag::template-limit-replicas[]
+You can set a number of quotas in a project with specific template by adding a `ResourceQuota` object to the template.
+
+include::admin_guide/quota.adoc[tag=admin_quota_compute_resources]
+
+For more information on requsource quotas, see xref:../../admin_guide/quota.adoc#admin-guide-quota[Setting Quotas].
+//end::template-limit-replicas[]
+
+
+[[dev-guide-templates-edit-project-size]]
+== Limiting the Size of Containers
+
+//tag::template-limit-size[]
+You can control the size of the containers created with a specific template by adding a `LimitRange` object to the template. 
+
+include::admin_guide/limits.adoc[tag=admin_limits_sample_definitions]
+
+For more information on limit ranges, see xref:../../admin_guide/limits.adoc#admin-guide-limits[Setting Limit Ranges].
+//end::template-limit-size[]
+
+== Configure Resources Manually for Each Node
+
+A resource can be manually configured for each node.  
+
+. xref:../../admin_guide/scheduling/node_affinity.html#admin-guide-sched-affinity-config-req[Label nodes] depending on the resources they have. 
++
+----
+$ oc label node <node> <label>
+----
++
+For example, nodes 1 and 3 are designed for intensive CPU usage. Label the nodes to identify this. 
++
+----
+# oc label node node{1,3}.example.com resource=highcpu 
+----
+
+. Configure the scheduler to include the xref:../../admin_guide/scheduling/scheduler.adoc#static-predicates[`MatchNodeSelector` predicate]. 
+
+//remove link for 3.5?
+. Add a node selector to the pod configuration of the application or to the namespace. 
++
+** Add a xref:../../admin_guide/scheduling/node_selector.adoc#admin-guide-sched-selector-config[`nodeselector`] to the pod: 
++
+----
+# oc edit pod <pod> 
+
+apiVersion: v1 
+kind: Pod 
+metadata: 
+  name: nginx 
+  labels: 
+    env: test 
+spec: 
+  containers: 
+  - name: nginx 
+    image: nginx 
+    imagePullPolicy: IfNotPresent 
+  nodeSelector: 
+    resource: highcpu <1>
+---- 
++
+<1> Specify the label you added to the node specification. 
++
+** Add the following to the the project: 
++
+----
+# oc edit namespace <project> 
+
+openshift.io/node-selector: resource=highcpu <1>
+----
++
+<1> Specify the label you added to the node specification. 
+
+[[dev-guide-templates-components-object-fields]]
+== Exposing Object Fields
+
+Template authors can indicate that fields of particular objects in a template
+should be exposed. The template service broker recognizes exposed fields on
+ConfigMap, Secret, Service and Route objects, and returns the values of the
+exposed fields when a user binds a service backed by the broker.
+
+To expose one or more fields of an object, add annotations prefixed by
+`template.openshift.io/expose-` or `template.openshift.io/base64-expose-` to  
+the object in the template.
+
+Each annotation key, with its prefix removed, is passed through to become a key
+in a `bind` response.
+
+Each annotation value is a
+link:https://kubernetes.io/docs/user-guide/jsonpath/[Kubernetes
+JSONPath expression], which is resolved at bind time to indicate the object
+field whose value should be returned in the `bind` response.
+
+[NOTE]
+====
+`Bind` response key/value pairs can be used in other parts of the system as
+environment variables. Therefore, it is recommended that every annotation key
+with its prefix removed should be a valid environment variable name --
+beginning with a character `A-Z`, `a-z`, or `_`, and being followed by zero or
+more characters `A-Z`, `a-z`, `0-9`, or `_`.
+====
+
+Use the `template.openshift.io/expose-` annotation to return the field value as
+a string. This is convenient, although it does not handle arbitrary binary data.
+If you want to return binary data, use the
+`template.openshift.io/base64-expose-` annotation instead to base64 encode the
+data before it is returned.
+
+[NOTE]
+====
+Unless escaped with a backslash, Kubernetes' JSONPath implementation interprets
+characters such as `.`, `@`, and others as metacharacters, regardless of their
+position in the expression. Therefore, for example, to refer to a `ConfigMap`
+datum named `my.key`, the required JSONPath expression would be
+`{.data['my\.key']}`.
+====
+
+The following is an example of different objects' fields being exposed:
+
+[source,yaml]
+----
+kind: Template
+apiVersion: v1
+metadata:
+  name: my-template
+objects:
+- kind: ConfigMap
+  apiVersion: v1
+  metadata:
+    annotations:
+      template.openshift.io/expose-username: "{.data['my.username']}"
+  data:
+    my.username: foo
+- kind: Secret
+  apiVersion: v1
+  metadata:
+    annotations:
+      template.openshift.io/base64-expose-password: "{.data['password']}"
+  stringData:
+    password: bar
+- kind: Service
+  apiVersion: v1
+  metadata:
+    annotations:
+      template.openshift.io/expose-service_ip_port: "{.spec.clusterIP}:{.spec.ports[?(.name==\"web\")].port}"
+  spec:
+    ports:
+    - name: "web"
+      port: 8080
+- kind: Route
+  apiVersion: v1
+  metadata:
+    annotations:
+      template.openshift.io/expose-uri: "http://{.spec.host}{.spec.path}"
+  spec:
+    path: mypath
+----
+
+An example response to a `bind` operation given the above partial template
+follows:
+
+
+[source,json]
+----
+{
+  "credentials": {
+    "username": "foo",
+    "password": "YmFy",
+    "service_ip_port": "172.30.12.34:8080",
+    "uri": "http://route-test.router.default.svc.cluster.local/mypath"
+  }
+}
+----
+
+[[dev-guide-templates-components-readiness]]
+== Waiting for Template Readiness
+
+Template authors can indicate that certain objects within a template
+should be waited for before a template instantiation by the Service Catalog,
+Template Service Broker, or TemplateInstance API is considered complete.
+
+[NOTE]
+====
+Template Completion Detection is a Technology Preview feature only.
+ifdef::openshift-enterprise[]
+Technology Preview features are not
+supported with Red Hat production service level agreements (SLAs), might not be
+functionally complete, and Red Hat does not recommend to use them for
+production. These features provide early access to upcoming product features,
+enabling customers to test functionality and provide feedback during the
+development process.
+
+For more information on Red Hat Technology Preview features support scope, see
+https://access.redhat.com/support/offerings/techpreview/.
+endif::[]
+====
+
+To use this feature, mark one or more objects of kind
+`Build`, `BuildConfig`, `Deployment`, `DeploymentConfig`, `Job`, or `StatefulSet`
+in a template with the following annotation:
+
+----
+"template.alpha.openshift.io/wait-for-ready": "true"
+----
+
+Template instantiation will not complete until all objects marked with the
+annotation report ready. Similarly, if any of the annotated objects report
+failed, or if the template fails to become ready within a fixed timeout of one
+hour, the template instantiation will fail.
+
+For the purposes of instantiation, readiness and failure of each object kind are
+defined as follows:
+
+[cols="1a,2a,2a", options="header"]
+|===
+
+| Kind
+| Readiness
+| Failure
+
+| `Build`
+| Object reports phase Complete
+| Object reports phase Canceled, Error, or Failed
+
+| `BuildConfig`
+| Latest associated Build object reports phase Complete
+| Latest associated Build object reports phase Canceled, Error, or Failed
+
+| `Deployment`
+| Object reports new ReplicaSet and deployment available (this honors readiness
+probes defined on the object)
+| Object reports Progressing condition as false
+
+|`DeploymentConfig`
+| Object reports new ReplicationController and deployment available (this
+honors readiness probes defined on the object)
+| Object reports Progressing condition as false
+
+| `Job`
+| Object reports completion
+| Object reports that one or more failures have occurred
+
+| `StatefulSet`
+| Object reports all replicas ready (this honors readiness probes defined on
+the object)
+| Not applicable
+|===
+
+The following is an example template extract, which uses the `wait-for-ready`
+annotation. Further examples can be found in the OpenShift quickstart templates.
+
+[source,yaml]
+----
+kind: Template
+apiVersion: v1
+metadata:
+  name: my-template
+objects:
+- kind: BuildConfig
+  apiVersion: v1
+  metadata:
+    name: ...
+    annotations:
+      # wait-for-ready used on BuildConfig ensures that template instantiation
+      # will fail immediately if build fails
+      template.alpha.openshift.io/wait-for-ready: "true"
+           spec:
+    ...
+- kind: DeploymentConfig
+  apiVersion: v1
+  metadata:
+    name: ...
+    annotations:
+      template.alpha.openshift.io/wait-for-ready: "true"
+  spec:
+    ...
+- kind: Service
+  apiVersion: v1
+  metadata:
+    name: ...
+  spec:
+    ...
+----
+
+//added per customer request in email
+[[dev-guide-templates-edit-project-other]]
+== Other Project Restrictions
+
+In addition to the controls on resources you can add to templates, take note of the following
+restrictions you can also enforce on projects:
+
+xref:dev-guide-templates-edit-project-volume[Limiting Persistent Volume Usage]
+
+xref:dev-guide-templates-edit-project-pods[Limiting the Number of Pods per Node]
+
+
+[[dev-guide-templates-edit-project-volume]]
+=== Limiting Persistent Volume Usage
+
+//tag::template-limit-volume[]
+You can limit the persistent volume usage for objects based on a template using disk partitions to enforce disk quotas and size constraints. 
+Each partition can be its own export. Each export is one PV. OpenShift Container Platform enforces unique names for PVs, 
+but the uniqueness of the NFS volume’s server and path is up to the administrator.
+
+Enforcing quotas in this way allows the developer to request persistent storage by a specific amount (for example, 10Gi) 
+and be matched with a corresponding volume of equal or greater capacity.
+
+For more information on limiting persistent storage, see xref:../../install_config/persistent_storage/persistent_storage_nfs.adoc#nfs-enforcing-disk-quotas[Enforcing Disk Quotas].
+//end::template-limit-volume[]
+
+[[dev-guide-templates-edit-project-pods]]
+=== Limiting the Number of Pods per Node
+
+You can configure the maximum number of pods that can be launched on a node through the pod specification which is _*/etc/origin/node/node-config*_ by default
+
+Add the following under kubeletArguments: 
+
+----
+kubeletArguments
+  max-pods: 
+    - "30"
+----
+
