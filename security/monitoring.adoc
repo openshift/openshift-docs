@@ -1,0 +1,199 @@
+[[security-monitoring]]
+= Monitoring cluster events and logs
+{product-author}
+{product-version]
+:data-uri:
+:icons:
+:experimental:
+:toc: macro
+:toc-title:
+:prewrap!:
+
+toc::[]
+
+[[security-monitoring-intro]]
+== Introduction
+
+In addition to security measures mentioned in other sections of this
+guide, the ability to monitor and audit an {product-title} cluster is an
+important part of safeguarding the cluster itself and its users against
+inappropriate usage.
+
+There are two main sources of cluster-level information that
+are useful for this purpose: events and logs.
+
+[[security-monitoring-events]]
+== Cluster events
+
+Cluster administrators are encouraged to familiarize
+themselves with the _Event_ resource type and review a
+xref:../dev_guide/events.adoc#events-reference[list of events] to
+determine which may be of interest. There are typically more potential
+event types than listed here, depending on master controller and plugin
+configuration.
+
+Events are associated with a namespace, either the namespace of the
+resource they are related to or, for cluster events, the *_default_*
+namespace. The *_default_* namespace is likely to hold the most relevant
+events for monitoring or auditing a cluster, both *_Node_* events as well
+as resource events related to infrastructure components like the registry
+and router.
+
+The master API and `*oc*` command do not at this time provide parameters
+to scope a listing of events to only those related to nodes. A simple
+approach would be to use grep:
+
+----
+$ oc get event -n default | grep Node
+1h         20h         3         origin-node-1.example.local   Node      Normal    NodeHasDiskPressure   ...
+----
+
+A more flexible approach is to output the events in a form that other
+tools can then process. For example, the following example uses the `*jq*`
+tool against JSON output to extract only *_NodeHasDiskPressure_* events:
+
+----
+$ oc get events -n default -o json \
+  | jq '.items[] | select(.involvedObject.kind == "Node" and .reason == "NodeHasDiskPressure")'
+
+{
+  "apiVersion": "v1",
+  "count": 3,
+  "involvedObject": {
+    "kind": "Node",
+    "name": "origin-node-1.example.local",
+    "uid": "origin-node-1.example.local"
+  },
+  "kind": "Event",
+  "reason": "NodeHasDiskPressure",
+  ...
+}
+----
+
+Events related to resource creation, modification, or deletion globally
+may also be good candidates for detecting misuse of the cluster. As an
+example, to look for excessive pulling of images, the following query
+counts the number of such recent events:
+
+----
+$ oc get events --all-namespaces -o json \
+  | jq '[.items[] | select(.involvedObject.kind == "Pod" and .reason == "Pulling")] | length'
+
+4
+----
+
+Note that when a namespace is deleted, its events are deleted along with
+it. Events also expire and are removed to prevent filling up *etcd*. So
+events are not stored as a permanent record and frequent polling is
+necessary to capture statistics over time.
+
+[[security-monitoring-logs]]
+== Cluster logs
+
+[[security-monitoring-service-logs]]
+=== Service logs
+
+{product-title} produces logs with each *systemd* service that is running on a host:
+
+ifdef::openshift-origin[]
+- origin-master-api
+- origin-master-controllers
+- etcd
+- origin-node
+endif::[]
+ifdef::openshift-enterprise[]
+- atomic-openshift-master-api
+- atomic-openshift-master-controllers
+- etcd
+- atomic-openshift-node
+endif::[]
+
+These logs provide a relatively verbose record of component operations
+directed more at debugging purposes than security auditing. They can be
+retrieved per-host with `*journalctl*` or, in clusters with the aggregated
+logging stack deployed, in the logging _.operations_ indexes (possibly
+in the xref:../install_config/aggregate_logging.adoc#aggregated-ops[Ops
+cluster]) as a cluster administrator.
+
+[[security-monitoring-audit-log]]
+=== Master API audit log
+
+For security auditing purposes, there is an option to enable
+audit logging of the sequence of master API requests by individual
+users, administrators, or system components. The audit log can be
+xref:../install_config/master_node_configuration.adoc#master-node-config-audit-config[configured
+for the master API] to log separately to a file on each master host or
+(if no file is configured) to be included in the service's journal
+(where entries can easily be identified by searching for *"AUDIT"*).
+
+xref:../install_config/master_node_configuration.adoc#master-node-config-audit-config[Audit
+log entries] consist of one line recording each REST request when it is
+received and one line with the HTTP response code when it completes. For
+example, here is a record of the system administrator requesting a list
+of nodes:
+
+----
+2017-10-17T13:12:17.635085787Z AUDIT: id="410eda6b-88d4-4491-87ff-394804ca69a1" ip="192.168.122.156" method="GET" user="system:admin" groups="\"system:cluster-admins\",\"system:authenticated\"" as="<self>" asgroups="<lookup>" namespace="<none>" uri="/api/v1/nodes"
+2017-10-17T13:12:17.636081056Z AUDIT: id="410eda6b-88d4-4491-87ff-394804ca69a1" response="200"
+----
+
+So, for example, it may be useful to poll the log periodically to see
+if there are a lot of failed requests, as in the following command:
+
+----
+$ tail -5000 /var/log/openshift-audit.log \
+  | grep -Po 'response="..."' \
+  | sort | uniq -c | sort -rn
+
+   3288 response="200"
+      8 response="404"
+      6 response="201"
+----
+
+Most valid requests succeed with a 200 or 201 return code. 401 and
+403 are simple redirects, and 404 is a typically benign request for a
+resource that doesn't exist, but return code 400 specifically may be of
+interest as it indicates a malformed request, which should not occur with
+most clients. Responses in the 500 range indicate server errors which
+could be a result of bugs, system failures, or even malicious activity.
+If unusual numbers of error responses are found, the audit log entries
+for corresponding requests can be retrieved for further investigation.
+
+It could also be useful to look for unusual numbers of requests by a
+particular user or group. Note that the IP of the request is typically
+a cluster host or API load balancer, and there is no record of the IP
+behind a load balancer proxy request (however load balancer logs could
+potentially be useful for determining request origin). The following
+example lists the top 10 users by number of requests in the last 5000
+lines of the audit log:
+
+----
+$ tail -5000 /var/log/openshift-audit.log \
+  | grep -Po ' user="(.*?)(?<!\\)"' \
+  | sort | uniq -c | sort -rn | head -10
+
+    976  user="system:openshift-master"
+    270  user="system:node:origin-node-1.example.local"
+    270  user="system:node:origin-master.example.local"
+     66  user="system:anonymous"
+     32  user="system:serviceaccount:kube-system:cronjob-controller"
+     24  user="system:serviceaccount:kube-system:pod-garbage-collector"
+     18  user="system:serviceaccount:kube-system:endpoint-controller"
+     14  user="system:serviceaccount:openshift-infra:serviceaccount-pull-secrets-controller"
+     11  user="test user"
+      4  user="test \" user"
+----
+
+More sophisticated queries generally require more sophisticated
+log analysis tools. Auditors will also need a detailed familiarity
+with the xref:../rest_api/openshift_v1.adoc#rest-api-openshift-v1:[OpenShift v1 API]
+and xref:../rest_api/kubernetes_v1.adoc#rest-api-kubernetes-v1:[Kubernetes v1 API]
+to aggregate request summaries from the audit log according to which
+kind of resource is involved (the *_uri_* field).
+
+xref:../install_config/master_node_configuration.adoc#master-node-config-advanced-audit[More advanced audit logging capabilities]
+are introduced with {product-title} 3.7 as a technology preview.
+This feature enables providing an audit policy file to control which
+requests are logged and the level of detail to log. Advanced audit
+log entries provide more detail in JSON format and may be logged via a
+webhook as opposed to file or system journal.
