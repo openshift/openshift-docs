@@ -1,0 +1,378 @@
+[[admin-guide-encrypting-data-at-datastore]]
+= Encrypting Data at Datastore Layer
+:data-uri:
+:icons:
+:toc: macro
+:toc-title:
+
+toc::[]
+
+[[encrypting-data-overview]]
+== Overview
+
+This topic reviews how to enable and configure encryption of secret data at the
+datastore layer. While the examples use the `secrets` resource, any resource can be
+encrypted, such as `configmaps`.
+
+[[encrypting-data-configuration]]
+== Configuration and Determining Whether Encryption Is Already Enabled
+
+To activate experimental support for data encryption, pass the
+`--experimental-encryption-provider-config` argument to the Kubernetes API
+server:
+
+.Excerpt of *_master-config.yaml_*
+[source,yaml]
+----
+kubernetesMasterConfig:
+  apiServerArguments:
+    experimental-encryption-provider-config:
+    - /path/to/encryption-config.yaml
+----
+
+For more information about *_master-config.yaml_* and its format, see the
+xref:../install_config/master_node_configuration.adoc#master-configuration-files[Master
+Configuration Files] topic.
+
+[[encrypting-data-encryption-config]]
+== Understanding the Encryption Configuration
+
+.Encryption configuration file with all available providers
+[source,yaml]
+----
+kind: EncryptionConfig
+apiVersion: v1
+resources: <1>
+  - resources: <2>
+    - secrets
+    providers: <3>
+    - aescbc: <4>
+        keys:
+        - name: key1 <5>
+          secret: c2VjcmV0IGlzIHNlY3VyZQ== <6>
+        - name: key2
+          secret: dGhpcyBpcyBwYXNzd29yZA==
+    - secretbox:
+        keys:
+        - name: key1
+          secret: YWJjZGVmZ2hpamtsbW5vcHFyc3R1dnd4eXoxMjM0NTY=
+    - aesgcm:
+        keys:
+        - name: key1
+          secret: c2VjcmV0IGlzIHNlY3VyZQ==
+        - name: key2
+          secret: dGhpcyBpcyBwYXNzd29yZA==
+    - identity: {}
+----
+<1> Each `resources` array item is a separate configuration and contains a complete configuration.
+<2> The `resources.resources` field is an array of Kubernetes resource names (`resource` or
+`resource.group`) that should be encrypted.
+<3> The `providers` array is an ordered xref:encrypting-data-providers[list of
+the possible encryption providers]. Only one provider type can be specified per entry (`identity` or
+`aescbc` can be provided, but not both in the same item).
+<4> The first provider in the list is used to encrypt resources going into storage.
+<5> Arbitrary name of the secret.
+<6> Base64 encoded random key. Different providers have different key lengths. See instructions
+on xref:encrypting-data-process[how to generate the key].
+
+When reading resources from storage, each provider that matches the stored data attempts to decrypt
+the data in order. If no provider can read the stored data due to a mismatch in format or secret
+key, an error is returned, which prevents clients from accessing that resource.
+
+[IMPORTANT]
+====
+If any resource is not readable via the encryption configuration (because keys
+were changed), the only recourse is to delete that key from the underlying etcd
+directly. Calls attempting to read that resource will fail until it is deleted
+or a valid decryption key is provided.
+====
+
+[[encrypting-data-providers]]
+=== Available Providers
+
+[cols="1,1,1,1,1,3"]
+|===
+| Name | Encryption | Strength | Speed | Key Length | Other Considerations
+
+| *identity*
+| None
+| N/A
+| N/A
+| N/A
+| Resources written as-is without encryption. When set as the first provider, the resource will be
+decrypted as new values are written.
+
+| *aescbc*
+| AES-CBC with PKCS#7 padding
+| Strongest
+| Fast
+| 32-byte
+| The recommended choice for encryption, but may be slightly slower than *secretbox*.
+
+| *secretbox*
+| XSalsa20 and Poly1305
+| Strong
+| Faster
+| 32-byte
+| A newer standard and may not be considered acceptable in environments that
+require high levels of review.
+
+| *aesgcm*
+| AES-GCM with a random initialization vector (IV)
+| Must be rotated every 200,000 writes
+| Fastest
+| 16, 24, or 32-byte
+| *Is not recommended* for use except when an automated key rotation scheme is implemented.
+
+|===
+
+Each provider supports multiple keys. The keys are tried in order for
+decryption. If the provider is the first provider, the first key is used for
+encryption.
+
+[NOTE]
+====
+Kubernetes has no proper nonce generator and uses a random IV as nonce for
+AES-GCM. Since AES-GCM requires a proper nonce to be secure, AES-GCM is not
+recommended. The 200,000 write limit just limits the possibility of a fatal
+nonce misuse to a reasonable low margin.
+====
+
+[[encrypting-data-process]]
+== Encrypting Data
+
+Create a new encryption configuration file.
+
+[source,yaml]
+----
+kind: EncryptionConfig
+apiVersion: v1
+resources:
+  - resources:
+    - secrets
+    providers:
+    - aescbc:
+        keys:
+        - name: key1
+          secret: <BASE 64 ENCODED SECRET>
+    - identity: {}
+----
+
+To create a new secret:
+
+. Generate a 32-byte random key and base64 encode it. For example, on Linux and
+macOS use:
++
+----
+$ head -c 32 /dev/urandom | base64
+----
++
+[IMPORTANT]
+====
+The encryption key must be generated with an appropriate cryptographically
+secure random number generator like *_/dev/urandom_*. For example, `math/random`
+from Golang or `random.random()` from Python are not suitable.
+====
+
+. Place that value in the `secret` field.
+
+. Restart the API server:
++
+ifdef::openshift-origin[]
+----
+# systemctl restart origin-master
+----
+endif::[]
+ifdef::openshift-enterprise[]
+On a single master cluster installation:
++
+----
+# systemctl restart atomic-openshift-master
+----
+On a multi-master cluster installation, on each master:
++
+----
+# systemctl restart atomic-openshift-master-api
+----
+endif::[]
+
+[IMPORTANT]
+====
+The encryption provider configuration file contains keys that can decrypt
+content in etcd, so you must properly restrict permissions on masters so only
+the user who runs the master API server can read it.
+====
+
+[[encrypting-data-verification]]
+== Verifying that Data is Encrypted
+
+Data is encrypted when written to etcd. After restarting the API server, any newly created or
+updated secrets should be encrypted when stored. To check, you can use the `etcdctl` command line
+program to retrieve the contents of your secret.
+
+. Create a new secret called `secret1` in the `default` namespace:
++
+----
+$ oc create secret generic secret1 -n default --from-literal=mykey=mydata
+----
+
+. Using the `etcdctl` command line, read that secret out of etcd:
++
+----
+$ ETCDCTL_API=3 etcdctl get /kubernetes.io/secrets/default/secret1 -w fields [...] | grep Value
+----
++
+`[...]` must be the additional arguments for connecting to the etcd server.
++
+The final command will look similar to:
++
+----
+$ ETCDCTL_API=3 etcdctl get /kubernetes.io/secrets/default/secret1 -w fields \
+--cacert=/var/lib/origin/openshift.local.config/master/ca.crt \
+--key=/var/lib/origin/openshift.local.config/master/master.etcd-client.key \
+--cert=/var/lib/origin/openshift.local.config/master/master.etcd-client.crt \
+--endpoints 'https://127.0.0.1:4001' | grep Value
+----
+
+. Verify that the output of the command above is prefixed with *k8s:enc:aescbc:v1:* which
+indicates the *aescbc* provider has encrypted the resulting data.
+
+. Verify the secret is correctly decrypted when retrieved via the API:
++
+----
+$ oc get secret secret1 -n default -o yaml | grep mykey
+----
++
+This should match *mykey: bXlkYXRh*.
+
+[[encrypting-data-migration]]
+== Ensure All Secrets are Encrypted
+
+Since secrets are encrypted when written, performing an update on a secret will
+encrypt that content.
+
+----
+$ oc adm migrate storage --include=secrets --confirm
+----
+
+This command reads all secrets, then updates them to apply server-side
+encryption. If an error occurs due to a conflicting write, retry the command.
+
+For larger clusters, you can subdivide the secrets by namespace or script an
+update.
+
+[[encrypting-data-rotation]]
+== Rotating a Decryption Key
+
+Changing the secret without incurring downtime requires a multi-step operation,
+especially in the presence of a highly available deployment where multiple API
+servers are running.
+
+. Generate a new key and add it as the second key entry for the current provider
+on all servers.
+
+. Restart all API servers to ensure each server can decrypt using the new key.
++
+[NOTE]
+====
+If using a single API server, you can skip this step.
+====
++
+ifdef::openshift-origin[]
+----
+# systemctl restart origin-master
+----
+endif::[]
+ifdef::openshift-enterprise[]
+On a single master cluster installation:
++
+----
+# systemctl restart atomic-openshift-master
+----
+On a multi-master cluster installation, on each master:
++
+----
+# systemctl restart atomic-openshift-master-api
+----
+endif::[]
+
+. Make the new key the first entry in the `keys` array so that it is used for
+encryption in the configuration.
+
+. Restart all API servers to ensure each server now encrypts using the new
+key.
++
+ifdef::openshift-origin[]
+----
+# systemctl restart origin-master
+----
+endif::[]
+ifdef::openshift-enterprise[]
+On a single master cluster installation:
++
+----
+# systemctl restart atomic-openshift-master
+----
+On a multi-master cluster installation, on each master:
++
+----
+# systemctl restart atomic-openshift-master-api
+----
+endif::[]
+
+. Run the following to encrypt all existing secrets with the new key:
++
+----
+$ oc adm migrate storage --include=secrets --confirm
+----
+
+. After you back up etcd with the new key in use and update all secrets, remove
+the old decryption key from the configuration.
+
+[[encrypting-data-decryption]]
+== Decrypting Data
+
+To disable encryption at the datastore layer:
+
+. Place the *identity* provider as the first entry in the configuration:
+
+[source,yaml]
+----
+kind: EncryptionConfig
+apiVersion: v1
+resources:
+  - resources:
+    - secrets
+    providers:
+    - identity: {}
+    - aescbc:
+        keys:
+        - name: key1
+          secret: <BASE 64 ENCODED SECRET>
+----
+
+. Restart all API servers:
++
+ifdef::openshift-origin[]
+----
+# systemctl restart origin-master
+----
+endif::[]
+ifdef::openshift-enterprise[]
+On a single master cluster installation:
++
+----
+# systemctl restart atomic-openshift-master
+----
+On a multi-master cluster installation, on each master:
++
+----
+# systemctl restart atomic-openshift-master-api
+----
+endif::[]
+
+. Run the following to force all secrets to be decrypted:
++
+----
+$ oc adm migrate storage --include=secrets --confirm
+----
