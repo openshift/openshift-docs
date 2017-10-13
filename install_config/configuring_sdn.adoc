@@ -32,7 +32,7 @@ Red Hat has worked with a number of SDN providers to certify their SDN network
 solution on {product-title} via the Kubernetes CNI interface, including a
 support process for their SDN plug-in through their product’s entitlement
 process. Should you open a support case with OpenShift, Red Hat can facilitate
-an exchange process so that both companies are involved in meeting your needs. 
+an exchange process so that both companies are involved in meeting your needs.
 
 The following SDN solutions are validated and supported on {product-title}
 directly by the 3rd party vendor:
@@ -234,6 +234,17 @@ playbooks for installing *flannel*-based networking. This is useful if running
 as Red Hat OpenStack Platform, and you want to avoid encapsulating packets twice
 through both platforms.
 
+Flannel uses a single IP network space for all of the containers allocating a
+contiguous subset of the space to each instance. Consequently, nothing prevents
+a container from attempting to contact any IP address in the same network
+space. This hinders multi-tenancy because the network cannot be used to isolate
+containers in one application from another.
+
+The key to making the right decision rests between mutli-tenancy isolation vs
+performance. Depending on the priority of each of these, should determine the
+appropriate choice when deciding between OpenShift SDN and flannel internal
+networks.
+
 ifndef::openshift-origin[]
 [IMPORTANT]
 ====
@@ -243,8 +254,11 @@ endif::[]
 
 [IMPORTANT]
 ====
-Neutron port security must be configured, even when security groups are not
-being used.
+The current version of Neutron enforces port security on ports by default. This
+prevents the port from sending or receiving packets with a MAC address
+different from that on the port itself. flannel creates virtual MACs and IP
+addresses and must send and receive packets on the port so port security must
+be disabled on the ports that carry flannel traffic.
 ====
 
 To enable *flannel* within your {product-title} cluster:
@@ -275,6 +289,18 @@ service neutron-vpn-agent restart
 service neutron-server  restart
 ----
 
+When creating the OpenStack instances, disable both port-security and security
+groups in the ports where the container network Flannel interface will be:
+
+----
+neutron port-update $port --no-security-groups --port-security-enabled=False
+----
+
+NOTE: Flannel gather information from etcd to configure and assign
+the subnets in the nodes, therefore, the security group attached to the etcd
+hosts should allow access from nodes to port 2379/tcp, and nodes security
+group should allow egress communication to that port on the etcd hosts.
+
 . Set the following variables in your Ansible inventory file before running the
 installation:
 +
@@ -289,3 +315,45 @@ flannel_interface=eth0
 . Optionally, you can specify the interface to use for inter-host communication
 using the `flannel_interface` variable. Without this variable, the
 {product-title} installation uses the default interface.
+
+NOTE: In order to provide custom networking CIDR for pods and services using
+flannel, there is a bugzilla being invested by Red Hat Bugzilla ID 1473858 at
+the time of writing this paper.
+
+To isolate container traffic from the rest of the {product-title} traffic, it is
+recommended to create an isolated tenant network and attach all the nodes to it.
+If using a different network interface (eth1), remember to configure the
+interface to start at boot time as:
+*_/etc/sysconfig/network-scripts/ifcfg-eth1_* file:
+----
+DEVICE=eth1
+TYPE=Ethernet
+BOOTPROTO=dhcp
+ONBOOT=yes
+DEFTROUTE=no
+PEERDNS=no
+----
+
+=== Flannel iptables rules
+In order to enable flannel, a set of iptables rules should be added as well
+after the {product-title} installation has been completed.
+
+On every {product-title} node:
+
+----
+iptables -A DOCKER -p all -j ACCEPT
+iptables -t nat -A POSTROUTING -o eth1 -j MASQUERADE
+----
+
+To persist those changes in the *_/etc/sysconfig/iptables_* use the following
+snippet on every node:
+
+----
+cp /etc/sysconfig/iptables{,.orig}
+sh -c "tac /etc/sysconfig/iptables.orig | sed -e '0,/:DOCKER -/ s/:DOCKER -/:DOCKER ACCEPT/' | awk '"\!"p && /POSTROUTING/{print \"-A POSTROUTING -o eth1 -j MASQUERADE\"; p=1} 1' | tac > /etc/sysconfig/iptables"
+----
+
+NOTE: iptables-save saves all the current "in memory" iptables rules, but, as
+both Docker, Kubernetes and {product-title} creates a lot of iptables rules
+(services, etc.) not designed to be persisted, you will end up with a messy
+/etc/sysconfig/iptables file.
