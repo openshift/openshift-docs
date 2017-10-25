@@ -1,0 +1,180 @@
+[[install-config-configuring-local]]
+= Configuring for Local Volume
+{product-version}
+:data-uri:
+:icons:
+:experimental:
+:toc: macro
+:toc-title:
+
+toc::[]
+
+== Overview
+{product-title} can be configured to access
+xref:../install_config/persistent_storage/persistent_storage_local.adoc#install-config-persistent-storage-persistent-storage-local[Local
+Volumes] for application data.
+
+Local volumes are PersistentVolumes(PV) representing locally-mounted filesystems. In the future, they may be extended to raw block devices.
+
+Local volumes are different from HostPath. They have a special annotation that makes any Pod that uses the PV to be scheduled on the same node where the local volume is mounted.
+
+In addition, Local volume includes a provisioner that automatically creates PVs for locally mounted devices. This provisioner is currently limited and it only scans pre-configured directories. It cannot dynamically provision volumes, which may be implemented in a future release.
+
+The local volume provisioner allows using local storage within {product-title} and supports:
+
+* Volumes
+* Persistent Volumes
+
+[NOTE]
+====
+Local volumes is an alpha feature and may change in a future release of {product-title}.
+====
+
+[[local-volume-enabling-local-volumes]]
+=== Enable Local Volumes
+Enable the `PersistentLocalVolumes` feature gate on all masters and nodes.
+
+. Edit or create the master configuration file on all masters (*_/etc/origin/master/master-config.yaml_* by default) and add  `PersistentLocalVolumes=true` under the `apiServerArguments` and `controllerArguments` sections:
++
+[source, yaml]
+----
+apiServerArguments:
+   feature-gates:
+   - PersistentLocalVolumes=true
+...
+
+ controllerArguments:
+   feature-gates:
+   - PersistentLocalVolumes=true
+...
+----
+
+. On all nodes, edit or create the node configuration file (*_/etc/origin/node/node-config.yaml_* by default)  and add `PersistentLocalVolumes=true` fetaure gate under `kubeletArguments`.
++
+[source, yaml]
+----
+kubeletArguments:
+   feature-gates:
+     - PersistentLocalVolumes=true
+----
+
+[[local-volume-mounting-local-volumes]]
+=== Mount Local Volumes
+All local volumes must be manually mounted before they can be consumed by {product-title} as persistent volumes.
+
+All volumes must be mounted into the
+*_/mnt/local-storage/<storage-class-name>/<volume>_* path. The administrators are required to create the local devices as needed (by using any method such as
+a disk partition or an LVM), create suitable filesystems on these devices, and mount them by a script or by `/etc/fstab` entries.
+
+.Example `/etc/fstab` entries:
+
+[source]
+----
+# device name   # mount point                  # FS    # options # extra
+/dev/sdb1       /mount/local-storage/ssd/disk1 ext4     defaults 1 2
+/dev/sdb2       /mount/local-storage/ssd/disk2 ext4     defaults 1 2
+/dev/sdb3       /mount/local-storage/ssd/disk3 ext4     defaults 1 2
+/dev/sdc1       /mount/local-storage/hdd/disk1 ext4     defaults 1 2
+/dev/sdc2       /mount/local-storage/hdd/disk2 ext4     defaults 1 2
+----
+
+[[local-volume-configure-local-provisioner]]
+=== Configure Local Provisioner
+{product-title} depends on an external provisioner to create persistent volumes for local devices and to clean them up when they are not needed (to enable reuse).
+
+[NOTE]
+====
+* The local volume provisioner is different from most provisioners and does not support dynamic provisioning.
+* The local volume provisioner requires that the administrators preconfigure the local volumes on each node and mount them under discovery directories. The provisioner then manages the volumes by creating and cleaning up PersistentVolumes for each volume.
+====
+
+
+This external provisioner needs to be configured by using a `ConfigMap` to relate directores with StorageClasses. This configuration must be created before the provisioner is deployed.
+
+[NOTE]
+====
+_(Optional)_ Create a standalone namespace for local volume provisioner and its configuration, for example:
+`oc new-project local-storage`
+====
+
+[source, yaml]
+----
+kind: ConfigMap
+metadata:
+  name: local-volume-config
+data:
+    "local-ssd": | <1>
+      {
+        "hostDir": "/mnt/local-storage/ssd", <2>
+        "mountDir": "/mnt/local-storage/ssd" <3>
+      }
+    "local-hdd": |
+      {
+        "hostDir": "/mnt/local-storage/hdd",
+        "mountDir": "/mnt/local-storage/hdd"
+      }
+----
+<1> Name of the StorageClass.
+<2> Path to the directory on the host. It must be a subdirectory of *_/mnt/local-storage_*.
+<3> Path to the directory in the provisioner pod. We recommend using the same directory structure as used on the host.
+
+With this configuration the provisioner creates:
+
+* One PV with StorageClass `local-ssd` for every subdirectory in *_/mnt/local-storage/ssd_*.
+* One PV with StorageClass `local-hdd` for every subdirectory in *_/mnt/local-storage/hdd_*.
+
+[[local-volume-deployment-local-provisioner]]
+=== Deploy Local Provisioner
+
+[NOTE]
+====
+Before starting the provisioner, mount all local devices and create a ConfigMap
+with storage classes and their directories.
+====
+
+Install the local provisioner from the link:https://raw.githubusercontent.com/jsafrane/origin/local-storage/examples/storage-examples/local-examples/local-storage-provisioner-template.yaml[*_local-storage-provisioner-template.yaml_*] file.
+
+. Create a service account that allows running pods as a root user and use HostPath volumes:
++
+[source, bash]
+----
+$ oc create serviceaccount local-storage-admin
+$ oc adm policy add-scc-to-user hostmount-anyuid -z local-storage-admin
+----
+Root privileges are required for the provisioner pod for allowing it to delete
+content on local volumes. HostPath is required to access the
+*_/mnt/local-storage_* path on the host.
+
+. Install the template:
++
+[source, bash]
+----
+$ oc create -f https://raw.githubusercontent.com/jsafrane/origin/local-storage/examples/storage-examples/local-examples/local-storage-provisioner-template.yaml
+----
+
+. Instantiate the template by specifying values for `configmap` and `account` parameters:
++
+[source, bash]
+----
+$ oc new-app -p CONFIGMAP=local-volume-config \
+  -p SERVICE_ACCOUNT=local-storage-admin \
+  -p NAMESPACE=local-storage local-storage-provisioner
+----
+See the link:https://raw.githubusercontent.com/jsafrane/origin/local-storage/examples/storage-examples/local-examples/local-storage-provisioner-template.yaml[template] for other configurable options. This template creates a DaemonSet that runs a
+Pod on every node. The Pod watches directories specified in the `ConfigMap` and
+creates PVs for them automatically.
++
+The provisioner runs as root to be able to clean up the directories when a PV is released and all data need to be removed.
+
+[[local-volume-adding-new-devices]]
+=== Adding New Devices
+Adding a new device requires several manual steps:
+
+. Stop DaemonSet with the provisioner.
+. Create a subdirectory in the right directory on the node with the new device and mount it there.
+. Start the DaemonSet with the provisioner.
+
+[IMPORTANT]
+====
+Omitting any of these steps may result in a wrong PV being created.
+====
