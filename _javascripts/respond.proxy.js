@@ -10,7 +10,7 @@
 	function encode(url){
 		return win.encodeURIComponent(url);
 	}
-
+lol
 	 function fakejax( url, callback ){
 
 		var iframe,
