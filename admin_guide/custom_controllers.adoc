@@ -1,0 +1,96 @@
+[[admin-guide-custom-controllers]]
+= Creating Custom Controllers
+{product-author}
+{product-version}
+:data-uri:
+:icons:
+:experimental:
+:toc: macro
+:toc-title:
+
+toc::[]
+
+
+
+In the Kubernetes API a controller is a control loop that watches the shared state of the cluster 
+through the apiserver and makes changes attempting to move the current state towards the desired state. 
+Examples of controllers that ship with Kubernetes today are the 
+replication controller, endpoints controller, namespace controller, and serviceaccounts controller.
+
+You can create custom controllers.
+
+We've created a prototype "observe" command on the OpenShift CLI that works with Kubernetes or OpenShift to explore how we can make custom controllers easy / useful.  It's available as an image "openshift/observe:latest" so you can run it on a local machine, or you can download the 1.3.0-rc1 release binary of OpenShift.  This is tracking Allow admins to implement controller loops from the CLI (IFTTT) and is step one: getting feedback.
+
+The goal of the "observe" command is to help you build simple controller loops and help you do them correctly.  That is:
+
+1. Make it easy to run a script once for every X in the system, and to re-run that script when X changes
+2. Make it easy to get data off X - you shouldn't have to jump through 'jq' hoops if you want to fetch a service IP or annotation value
+3. Make it *possible* to write a correct reconciliation loop against an external system, and help guide you through the gotchas
+4. Be friendly for simple integrations, possible to write complex integrations, and eventually be able to tell you when you need to go write some Go code.  Not every problem can be solved here.
+
+If this describes a problem you've had that you've cobbled together a bunch of scripts for, please give the new command a try and see if it helps / hurts / is amazing for your use case, and give us feedback.
+
+
+## Try it out
+
+Get it locally - download the latest Origin client release binaries or run:
+
+    docker run --entrypoint /bin/bash -it openshift/observe:latest
+    # copy in a kubeconfig for your cluster or login using `oc config` or `oc login`
+    $ oc observe -h
+
+Watch everything:
+
+    # for every service, and any time a service changes, print out info
+    $ oc observe --all-namespaces services
+
+Add something to do:
+
+    # for every service, and any time a service changes, echo
+    $ oc observe --all-namespaces services -- echo
+
+You'll see that this prints out namespace and name for each one as arguments 1 and 2 to echo.  If you create / delete a service in the background, you'll see it show up in this list (the update, at least).
+
+Add the service IP to the output:
+
+    $ oc observe --all-namespaces services -a '{ .spec.clusterIP }' -- echo
+
+We've used '-a' to print a JSONPath style template for each object, which becomes the last argument of the command.   
+
+To turn this out into something practical, create a new script called 'record.sh' in the current directory and make it executable:
+
+    $ cat record.sh
+    #!/bin/sh
+    echo $1 $2 $3 >> services
+
+    $ oc observe --all-namespaces services -a '{ .spec.clusterIP }' -- ./record.sh
+
+All services and their IPs will be recorded in that local file.  You can extend that to anything you can do with bash.
+
+The more complex case is handling deletions.  Say you want to create an ingress for every service, but if the service gets deleted you want to delete the ingress.  To properly cleanup, we need to know the ingresses that were created this way.
+
+    $ cat create.sh
+    #!/bin/sh
+    echo "{\"kind\":\"Ingress\": \"apiVersion\": \"extensions/v1beta1\",\"metadata\":{\"name\":\"$2\"}, ...}' kubectl create -f - --namespace $1
+    kubectl annotate ingress/$2 fromservice=true
+    
+    $ cat names.sh
+    #!/bin/sh
+    kubectl get ingress --all-namespaces --template '{{ range .items }}{{ if eq (or .metadata.annotation.fromservice "") "true" }}{{ .metadata.namespace }}/{{ .metadata.name }}{{"\n"}}{{ end }}{{ end }}'
+
+    $ cat delete.sh
+    #!/bin/sh
+    kubectl delete ingress $2 --namespace=$1
+
+    $ oc observe --all-namespaces services --delete ./delete.sh --names=./names.sh -- ./create.sh
+
+The first script creates an ingress with the same name as the service and sets an annotation.  The second walks every ingress and outputs namespace/name for any that have the annotation fromservice=true (note that the go template here is actually not enough - you have to check for the annotation being empty because it will error otherwise).  
+
+The combination of those allows the observer to detect that a service has been deleted while it was not running - any ingress that has the annotation was created by a service, and since they match names, that must mean that a service was deleted.  If a user deletes a service directly, we'll get the watch notification - but not if we crashed, or on initial sync.
+
+This reconciliation is tricky to get right - but observe is able to use the exact same pattern and code that Kubernetes uses to ensure we only fix critical reconcile bugs once.
+
+There are other options around failure modes, retries, metrics endpoints, and restart behavior.  Please see the help for more.
+
+
+
