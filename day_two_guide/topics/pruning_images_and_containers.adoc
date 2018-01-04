@@ -1,0 +1,432 @@
+////
+Pruning Images and Containers
+
+Module included in the following assemblies:
+
+* day_two_guide/project_level_tasks.adoc
+////
+
+The {product-title} environment should be carefully monitored to avoid
+situations where the storage available for images and containers is full.
+
+After the environment has been in production for a while, unused containers and
+images still hosted on the node hosts can cause major issues if the environment
+is not being properly monitored. Such issues include file systems running out of
+space or inodes or some other storage problems that can lead to downtime.
+
+=== Container Storage
+The `container-storage-setup` tool configures the container storage to fit the
+requirements in the `/etc/sysconfig/container-storage-setup` file. It is
+recommended to dedicate a block device for container storage to avoid affecting
+the operating system file system if the container storage is full.
+Depending on the requisites, some storage technologies can be used to store
+the containers and the container images such as `devicemapper` or `overlay2`.
+
+NOTE: See the https://access.redhat.com/documentation/en-us/red_hat_enterprise_linux_atomic_host/7/html/managing_containers/managing_storage_with_docker_formatted_containers[official documentation] for more information about how to setup
+different options for containers storage.
+
+To see the current file system used for container storage, see the content
+of the `/etc/sysconfig/docker-storage` file:
+
+----
+$ sudo cat /etc/sysconfig/docker-storage
+DOCKER_STORAGE_OPTIONS="--storage-driver overlay2 "
+----
+
+In this example, `overlay2` is the configured driver. Run `docker info` to verify this matches the
+runtime information:
+
+[subs=+quotes]
+----
+$ sudo docker info | grep "Storage Driver" -A1
+Storage Driver: overlay2
+ Backing Filesystem: xfs
+----
+
+To be able to use `overlay2` on top of a `xfs` backing file system, the
+file system should be created with `-n ftype=1` (default option in {rhel} 7.4).
+To ensure the backing file system supports `overlay2`, `xfs_info` can be used:
+
+----
+$ sudo xfs_info /var/lib/docker | grep ftype
+naming   =version 2              bsize=4096   ascii-ci=0 ftype=1
+----
+
+If using a dedicated block device for container storage, the
+`/etc/sysconfig/container-storage-setup` file should look like:
+
+[subs=+quotes]
+----
+DEVS='/dev/vdb'
+VG=docker_vol
+STORAGE_DRIVER=overlay2
+CONTAINER_ROOT_LV_NAME=dockerlv
+CONTAINER_ROOT_LV_MOUNT_PATH=/var/lib/docker
+CONTAINER_ROOT_LV_SIZE=100%FREE
+----
+
+Those parameters used with `container-storage-setup` create a dedicated logical
+volume using `xfs` file system and `overlay2` as the storage driver for
+containers.
+
+To check the available storage for images and containers when using `overlay2`
+and `xfs`, `df` can be used:
+
+----
+$ df -h /var/lib/docker
+Filesystem                       Size  Used Avail Use% Mounted on
+/dev/mapper/docker_vol-dockerlv  100G   45G   56G  45% /var/lib/docker
+$ df -i /var/lib/docker
+Filesystem                        Inodes  IUsed    IFree IUse% Mounted on
+/dev/mapper/docker_vol-dockerlv 52426752 872611 51554141    2% /var/lib/docker
+----
+
+The {rhocp} node process contains the embedded `cadvisor` process that exposes
+private data structures. To see the actual file system values the node process sees, run:
+
+[subs=+quotes]
+----
+$ oc get --raw /stats/summary --server *https://app-node-0.example.com:10250*
+{
+  "node": {
+   "nodeName": "app-node-0.example.com",
+...[OUTPUT OMITTED]...
+   "fs": {
+    "time": "2017-12-11T17:53:37Z",
+    "availableBytes": 39128997888,
+    "capacityBytes": 42938118144,
+    "usedBytes": 3809120256,
+    "inodesFree": 20935672,
+    "inodes": 20970944,
+    "inodesUsed": 35272
+   },
+   "runtime": {
+    "imageFs": {
+     "time": "2017-12-11T17:53:37Z",
+     "availableBytes": 11616317440,
+     "capacityBytes": 21460156416,
+     "usedBytes": 19170515905,
+     "inodesFree": 10229977,
+     "inodes": 10483712,
+     "inodesUsed": 253735
+    }
+...[OUTPUT OMITTED]...
+----
+
+Where `node.fs` is the file system hosting the
+`/var/lib/origin/openshift.local.volumes` directory and
+`node.runtime.imageFs` is where the images are stored (`/var/lib/docker`)
+
+=== Pruning Old Images and Containers
+{rhocp} monitors the old images and containers being hosted in the nodes and
+triggers garbage collection processes to clean up the unused ones.
+
+There are some default values that can be tweaked if required in every node's
+configuration file located in `/etc/origin/node/node-config.yaml` within the
+`kubeletArguments` section.
+
+==== Image Garbage Collection
+
+Image pruning garbage collection tries to remove images not referenced by
+running pods by checking every five minutes. There are two options to
+tweak the image pruning process:
+
+* `image-gc-high-threshold` - The percent of disk usage which triggers image garbage collection. Default to 85%.
+* `image-gc-low-threshold` - The percent of disk usage to which image garbage collection attempts to free. Default to 81%.
+
+This means, by default, when a node reports the container storage is 85% used,
+the garbage collector tries to free 5% used storage.
+
+NOTE: As recommended, plan the size of the container storage
+to avoid wasting space or triggering the garbage collector too often which increases the risk of
+storage hiccups. For example, a 10% free threshold on a 10 GB volume size in an
+environment with a lot of containers could trigger the garbage collector too often.
+
+To modify these settings manually edit `/etc/origin/node/node-config.yaml` as:
+
+[subs=+quotes]
+----
+kubeletArguments:
+  image-gc-high-threshold:
+    - "*75*"
+  image-gc-low-threshold:
+    - "*70*"
+----
+
+And restart the `atomic-openshift-node` service:
+
+----
+$ sudo systemctl restart atomic-openshift-node
+----
+
+It is recommended to use the `Ansible` inventory to modify the setting otherwise
+it can be overwritten if running a playbook against the cluster such as the
+update playbook. The `openshift_node_kubelet_args` is used as:
+
+[subs=+quotes]
+----
+openshift_node_kubelet_args={'image-gc-high-threshold': ['*75*'], 'image-gc-low-threshold': ['*70*']}
+----
+
+After modifying the `Ansible` variable content, running the installer again
+may configure the new settings and restart the services:
+
+----
+$ ansible-playbook /usr/share/ansible/openshift-ansible/playbooks/byo/config.yml
+----
+
+WARNING: The `kubeletArguments` section is overwritten with the content of the
+variable when running the playbook, so if more parameters are required such as
+`max-pods` they should be present in the variable before running the playbook.
+
+The `atomic-openshift-node` logs show when the image pruning process has been
+executed by looking for `imageGCManager` or `Image garbage` messages:
+
+[subs=+quotes]
+----
+$ sudo journalctl -u atomic-openshift-node | grep -E 'imageGCManager|Image garbage'
+Dec 07 10:35:34 app-node-1.example.com atomic-openshift-node[3390]: I1207 10:35:34.264344    3390 image_gc_manager.go:270] *[imageGCManager]: Disk usage on "/dev/vda1" (/) is at 77% which is over the high threshold (75%).*
+Dec 07 10:40:37 app-node-1.example.com atomic-openshift-node[3390]: I1207 10:40:37.287970    3390 image_gc_manager.go:335] *[imageGCManager]: Removing image "sha256:0a2c8543c09d4ed7a121f3bf2fc0a76016b183aab3d28a471492e07fcd9e0457" to free 540485833 bytes*
+----
+
+Observe error messages if the pruning process is failing such as:
+
+----
+Dec 11 11:26:02 app-node-1.example.com atomic-openshift-node[3390]: E1211 11:26:02.271772    3390 kubelet.go:1170] Image garbage collection failed: wanted to free 2317889740, but freed 0 space with errors in image deletion: [rpc error: code = 2 desc = Error response from daemon: {"message":"conflict: unable to delete 161690d448ba (cannot be forced) - image has dependent child images"}, rpc error: code = 2 desc = Error response from daemon: {"message":"conflict: unable to delete 3a57255d6707 (must be forced) - image is referenced in one or more repositories"}]
+----
+
+The image garbage collection process doesn't remove images pulled manually using
+`docker pull` or `docker run` related tasks, so if needed, the images
+can be deleted using `docker rmi` as:
+
+[subs=+quotes]
+----
+$ sudo docker rmi *<my_manually_pulled_image:tag>*
+----
+
+In the event of a failure of garbage collection, manual deletion of unused images is required:
+
+----
+$ sudo docker rmi $(sudo docker images -f "dangling=true" -q)
+----
+
+WARNING: While not recommended, a more aggressive clean up can be performed
+by attempting to delete all the images. 
+`docker` protects images it is using; this can be performed as `sudo docker rmi $(sudo docker images -q)`
+
+==== Container Garbage Collection
+Old pods are not removed immediately as the user may want to perform some tasks
+such as seeing the logs of the failed pod or the failed build using
+`oc logs -p`. This leads to stopped containers living in the
+nodes. To see the unused containers, perform the following step in any node:
+
+----
+$ diff -w -b <(sudo docker ps) <(sudo docker ps -a)
+----
+
+{rhocp} performs a garbage collection process for dead containers that can
+be tweaked depending on three variables:
+
+* `minimum-container-ttl-duration` is the time since the pod is dead until it can be chosen to be deleted. Default value is set to 1 minute (1m). 0 to disable it.
+
+* `maximum-dead-containers-per-container` is the maximum number of dead containers every single pod (UID, container name) pair is allowed to have. Default value is set to 2. -1 to disable it. For instance, the pod named "myawesomeapp" when instantiated become "myawesomeapp-1-6mp91" that contains a container from "myregistry/myawesomeapp:tag" image and with the default setting, two instances of that container are allowed to be present in the host.
+
+* `maximum-dead-containers` is the maximum number of total dead containers. Default value is set to 240. -1 to disable it.
+
+NOTE: Containers not managed by {rhocp}, such as those created by manual `docker run` commands on
+the nodes, are not chosen by the garbage collection process.
+
+Every iteration of the container garbage collection process performs the following steps:
+
+* Retrieve a list of candidate containers to be pruned based on the `minimum-container-ttl-duration` parameter (dead containers older than that parameter)
+* Classify the candidates into equivalence classes based on pod and image name membership. For instance, the pod named "myawesomeapp" and its containers.
+* Remove all unidentified containers (managed by {rhocp} but with a malformed name).
+* For each class that contains more containers than the `maximum-dead-containers-per-container` parameter, sort containers in the class by creation time.
+* Start removing containers from the oldest first until the `maximum-dead-containers-per-container` parameter is met.
+* If there are still more containers in the list than the `maximum-dead-containers` parameter, the collector starts removing containers from each class so the number of containers in each one is not greater than the average number of containers per class, or <all_remaining_containers>/<number_of_classes>.
+* If this is still not enough, sort all containers in the list and start removing containers from the oldest first until the `maximum-dead-containers` criterion is met.
+
+As noticed, the `maximum-dead-containers` setting takes precedence over the `maximum-dead-containers-per-container` setting when there is a conflict.
+
+To modify this settings manually edit `/etc/origin/node/node-config.yaml` as:
+
+[subs=+quotes]
+----
+kubeletArguments:
+  minimum-container-ttl-duration:
+  - "1h"
+  maximum-dead-containers-per-container:
+  - "4"
+  maximum-dead-containers:
+  - "100"
+----
+
+And restart the `atomic-openshift-node` service:
+
+----
+$ sudo systemctl restart atomic-openshift-node
+----
+
+It is recommended to use the `Ansible` inventory to modify the setting otherwise
+it can be overwritten if running a playbook against the cluster such as the
+update playbook. The `openshift_node_kubelet_args` is used as:
+
+[subs=+quotes]
+----
+openshift_node_kubelet_args={'minimum-container-ttl-duration': ['*1h*'], 'maximum-dead-containers-per-container': ['*4*'], 'maximum-dead-containers': ['*100*']}
+----
+
+After modifying the `Ansible` variable content, running the installer again
+may configure the new settings and restart the services:
+
+----
+$ ansible-playbook /usr/share/ansible/openshift-ansible/playbooks/byo/config.yml
+----
+
+WARNING: The `kubeletArguments` section is overwritten with the content of the
+variable when running the playbook, so if more parameters are required such as
+`max-pods` they should be present in the variable before running the playbook.
+
+The `atomic-openshift-node` logs show when the container pruning process has
+been executed by looking for `SyncLoop (REMOVE` messages in the `atomic-openshift-node` service, or "Action=remove" in `docker` service:
+
+----
+$ sudo journalctl -u atomic-openshift-node | grep 'SyncLoop (REMOVE'
+Dec 07 10:19:36 app-node-1.example.com atomic-openshift-node[1642]: I1207 10:19:36.596860    1642 kubelet.go:1826] SyncLoop (REMOVE, "api"): "ruby-ex-2-build_xxx(0eaaeba7-cac5-11e7-b85b-fa163e9f7228)"
+
+$ sudo journalctl -u docker | grep 'Action=remove'
+Dec 07 10:20:40 app-node-1.example.com dockerd-current[1499]: time="2017-12-07T10:20:40.176868686-05:00" level=info msg="{Action=remove, LoginUID=4294967295, PID=1642}"
+----
+
+The garbage collection process does not remove manually started containers
+using `docker run` and related tasks, so if needed, those dead containers can be
+deleted using `docker rm` as:
+
+[subs=+quotes]
+----
+$ sudo docker rm *<mycontainer>*
+----
+
+In the event of a failure of garbage collection, manual deletion of unused containers is required.
+These containers can be deleted as:
+
+----
+$ sudo docker rm $(sudo docker ps -a -q -f status=exited)
+----
+
+WARNING: While not recommended, a more aggressive clean up can be performed
+by attempting to delete all containers. `docker` protects its running containers 
+from deletion. This can be performed as `sudo docker rm $(docker ps -a -q)`
+
+NOTE: In future {rhocp} releases, garbage collection will be deprecated in
+favor of a disk eviction based configuration.
+
+=== Disk Eviction Policies
+
+In recent {rhocp} releases, the eviction policies can be configured to prevent
+out of disk space and out of memory situations.
+
+An eviction policy allows a node to reclaim needed resources and it is a
+combination of an eviction trigger signal with a specific eviction threshold
+value. In order to be able to reclaim the resources, the node can proactively
+fail one or more pods to trigger the policy.
+
+Evictions can be either hard, where a node takes immediate action on a pod that
+exceeds a threshold, or soft, where a node allows a grace period before taking
+action.
+
+If an eviction threshold is met, the node reports a condition indicating that
+the node is under memory or disk pressure. This prevents the scheduler from
+scheduling any additional pods on the node while attempts to reclaim resources
+are made.
+
+The node continues to report node status updates at the frequency specified by
+the node-status-update-frequency argument, which defaults to 10s.
+
+Disk thresholds are configured in the node configuration file
+`/etc/origin/node/node-config.yaml` as:
+
+----
+kubeletArguments:
+  eviction-soft:
+  - nodefs.available<500Mi
+  - nodefs.inodesFree<100Mi
+  - imagefs.available<100Mi
+  - imagefs.inodesFree<100Mi
+  eviction-soft-grace-period:
+  - nodefs.available=1m30s
+  - nodefs.inodesFree=1m30s
+  - imagefs.available=1m30s
+  - imagefs.inodesFree=1m30s
+  eviction-hard:
+  - nodefs.available<500Mi
+  - nodefs.inodesFree<100Mi
+  - imagefs.available<100Mi
+  - imagefs.inodesFree<100Mi
+----
+
+NOTE: Quantities can be expressed as percentages by appending a %.
+
+And restart the `atomic-openshift-node` service:
+
+----
+$ sudo systemctl restart atomic-openshift-node
+----
+
+It is recommended to use the `Ansible` inventory to modify the setting otherwise
+it can be overwritten if running a playbook against the cluster such as the
+update playbook. The `openshift_node_kubelet_args` is used as:
+
+[subs=+quotes]
+----
+openshift_node_kubelet_args={"eviction-soft":["nodefs.available<500Mi","nodefs.inodesFree<100Mi","imagefs.available<100Mi","imagefs.inodesFree<100Mi"],"eviction-soft-grace-period":["nodefs.available=1m30s","nodefs.inodesFree=1m30s","imagefs.available=1m30s","imagefs.inodesFree=1m30s"],"eviction-hard":["nodefs.available<500Mi","nodefs.inodesFree<100Mi","imagefs.available<100Mi","imagefs.inodesFree<100Mi"]}
+----
+
+After modifying the `Ansible` variable content, running the installer again
+may configure the new settings and restart the services:
+
+----
+$ ansible-playbook /usr/share/ansible/openshift-ansible/playbooks/byo/config.yml
+----
+
+WARNING: The `kubeletArguments` section is overwritten with the content of the
+variable when running the playbook, so if more parameters are required such as
+`max-pods` they should be present in the variable before running the playbook.
+
+If an eviction threshold has been met and the grace period has passed, the node
+initiates the process of reclaiming the pressured resource until it has
+observed the signal has gone below its defined threshold.
+
+* If `nodefs` file system has met eviction thresholds, the node frees up disk
+space by deleting dead pods and their containers.
+
+* If `imagefs` file system has met eviction thresholds, the node frees up disk
+space by deleting all unused images.
+
+If the node is unable to reclaim sufficient disk space on the node it begins
+evicting pods by evicting one pod at a time to reclaim disk:
+
+* If the node is responding to inode starvation, it reclaims inodes by evicting
+pods with the lowest quality of service first.
+
+* If the node is responding to lack of available disk, it ranks pods first by
+quality of service then by disk usage, and evicts pods in that order.
+
+* If `nodefs` is triggering evictions, the node sorts pods based on the usage on `nodefs` (local volumes + logs of all its containers)
+
+* If `imagefs` is triggering evictions, the node sorts pods based on the writable
+layer usage of all its containers.
+
+The `atomic-openshift-node` logs show when the eviction process has
+been executed by looking for `eviction manager:` messages in the
+`atomic-openshift-node` service:
+
+[subs=+quotes]
+----
+$ sudo journalctl -u atomic-openshift-node | grep 'eviction manager:'
+Dec 12 08:23:27 app-node-1.example.com atomic-openshift-node[48332]: W1212 08:23:27.977625   48332 eviction_manager.go:299] eviction manager: attempting to reclaim imagefsInodes
+Dec 12 08:23:27 app-node-1.example.com atomic-openshift-node[48332]: I1212 08:23:27.977716   48332 helpers.go:996] eviction manager: attempting to delete unused images
+----
+
+NOTE: The eviction policies honor the `PodDisruptionBudget`. For more
+information about the eviction policies and the `PodDisruptionBudget` see <<pod-disruption-budget>>
