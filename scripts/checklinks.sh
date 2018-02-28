@@ -1,5 +1,10 @@
 #!/bin/bash
 set -ev
+
+git diff --name-only HEAD...$TRAVIS_BRANCH
+
+asciidoc-link-check -p creating_images/custom.adoc
+
 #if [ "${TRAVIS_PULL_REQUEST}" = "true" ]; then
   echo -e "\e[32mHYPERLINKS CHECK\e[0m"
   #run the loop for every modified or added file
