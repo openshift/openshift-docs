@@ -1,0 +1,1688 @@
+[[install-config-upgrading-manual-upgrades]]
+= Performing Manual In-place Cluster Upgrades
+{product-author}
+{product-version}
+:latest-tag: v3.7.9
+:latest-int-tag: v3.7.9
+:data-uri:
+:icons:
+:experimental:
+:toc: macro
+:toc-title:
+:prewrap!:
+
+toc::[]
+
+== Overview
+
+As an alternative to performing an
+xref:../upgrading/automated_upgrades.adoc#install-config-upgrading-automated-upgrades[automated upgrade], you can manually upgrade your {product-title} cluster. To manually
+upgrade without disruption, it is important to upgrade each component as
+documented in this topic.
+
+Before you begin your upgrade, familiarize yourself now with the entire
+procedure. xref:additional-instructions-per-release[Specific releases may
+require additional steps] to be performed at key points before or during the
+standard upgrade process.
+
+[IMPORTANT]
+====
+Ensure that you have met all
+xref:../install_config/install/prerequisites.adoc#install-config-install-prerequisites[prerequisites]
+before proceeding with an upgrade. Failure to do so can result in a failed
+upgrade.
+
+If you are using GlusterFS, see
+xref:../upgrading/automated_upgrades.adoc#special-considerations-for-glusterfs[Special
+Considerations When Using Containerized GlusterFS] before proceeding.
+====
+
+[[preparing-for-a-manual-upgrade]]
+== Preparing for a Manual Upgrade
+
+[NOTE]
+====
+Before upgrading your cluster to {product-title} 3.9, the cluster must be
+already upgraded to the
+link:https://docs.openshift.com/container-platform/3.7/release_notes/ocp_3_7_release_notes.html#ocp-37-asynchronous-errata-updates[latest asynchronous release of version 3.7]. If your cluster is at a version earlier
+than 3.7, you must first upgrade incrementally (e.g., 3.5 to 3.6, then 3.6 to
+3.7).
+====
+
+[NOTE]
+====
+Before attempting the upgrade, follow the steps in
+xref:manual-upgrades-verifying-the-upgrade[Verifying the Upgrade] to verify the
+cluster's health. This will confirm that nodes are in the *Ready* state, running
+the expected starting version, and will ensure that there are no diagnostic
+errors or warnings.
+====
+
+To prepare for a manual upgrade, follow these steps:
+
+ifdef::openshift-enterprise[]
+
+. Pull the latest subscription data from Red Hat Subscription Manager (RHSM):
++
+----
+# subscription-manager refresh
+----
+
+. If you are upgrading from {product-title} 3.7 to 3.9, manually disable the 3.7
+repository and enable both the 3.8 and 3.9 repositories on each master and node
+host. You must also enable the *rhel-7-server-ansible-2.4-rpms* repository, which
+is a new requirement starting with {product-title} 3.9:
++
+----
+# subscription-manager repos --disable="rhel-7-server-ose-3.7-rpms" \
+    --enable="rhel-7-server-ose-3.8-rpms" \
+    --enable="rhel-7-server-ose-3.9-rpms" \
+    --enable="rhel-7-server-extras-rpms" \
+    --enable="rhel-7-server-ansible-2.4-rpms" \
+    --enable="rhel-7-fast-datapath-rpms"
+# yum clean all
+----
+endif::[]
+
+. Install or update to the latest available version of the
+*atomic-openshift-utils* package on each RHEL 7 system, which provides files
+that will be used in later sections:
++
+----
+# yum install atomic-openshift-utils
+----
+
+. Install or update to the following latest available **-excluder* packages on
+each RHEL 7 system, which helps ensure your systems stay on the correct versions
+of *atomic-openshift* and *docker* packages when you are not trying to upgrade,
+according to the {product-title} version:
++
+----
+# yum install atomic-openshift-excluder atomic-openshift-docker-excluder
+----
++
+These packages add entries to the `exclude` directive in the host's
+*_/etc/yum.conf_* file.
+
+. Create an *etcd* backup on each master. The *etcd* package is required for
+access to the `etcdctl` command to make the backup.
++
+[NOTE]
+====
+The *etcd* package is installed by default for RHEL Atomic Host 7 systems. If
+the master is a RHEL 7 system and *etcd* is not already installed, install it
+now:
+
+----
+# yum install etcd
+----
+====
++
+To create the backup, run:
++
+----
+# ETCD_DATA_DIR=/var/lib/etcd <1>
+# etcdctl backup \
+    --data-dir $ETCD_DATA_DIR \
+    --backup-dir $ETCD_DATA_DIR.bak.<date> <2>
+----
+<1> This directory is for external etcd.
+<2> Use the date of the backup, or some unique identifier, for `<date>`.
+The command will not make a backup if the `--backup-dir` location
+already exists.
+
+. For any upgrade path, ensure that you are running the latest kernel on
+each RHEL 7 system:
++
+----
+# yum update kernel
+----
+
+////
+((Step removed per QE feedback))
+. When installing or updating *atomic-openshift-utils*,
+*_/usr/share/openshift/examples/_* does not get updated with the latest
+templates. To update these files:
++
+----
+# mkdir /usr/share/openshift/examples
+# cp -R /usr/share/ansible/openshift-ansible/roles/openshift_examples/files/examples/v3.7/* /usr/share/openshift/examples/
+----
+////
+
+[[upgrading-masters]]
+== Upgrading Master Components
+
+Before upgrading any stand-alone nodes, upgrade the master components (which
+provide the _control plane_ for the cluster).
+
+. Run the following command on each master to remove the *atomic-openshift*
+packages from the list of yum excludes on the host:
++
+----
+# atomic-openshift-excluder unexclude
+----
+
+. Upgrade *etcd* on all master hosts and any external etcd hosts.
+
+.. For RHEL 7 systems using the RPM-based method:
+
+... Upgrade the *etcd* package:
++
+----
+# yum update etcd
+----
+
+... Restart the *etcd* service and review the logs to ensure it restarts
+successfully:
++
+----
+# systemctl restart etcd
+# journalctl -r -u etcd
+----
+
+.. For RHEL Atomic Host 7 systems and RHEL 7 systems using the containerized
+method:
+
+... Pull the latest *rhel7/etcd* image:
++
+----
+# docker pull registry.access.redhat.com/rhel7/etcd
+----
+
+... Restart the *etcd_container* service and review the logs to ensure it restarts
+successfully:
++
+----
+# systemctl restart etcd_container
+# journalctl -r -u etcd_container
+----
+
+ifdef::openshift-origin[]
+. On each master host, upgrade the *origin-master* package:
++
+----
+# yum upgrade origin-master
+----
+
+. If you are upgrading from OpenShift Origin 1.0 to 1.1:
+
+.. Create the following master proxy client certificates:
++
+----
+# cd /etc/origin/master/
+# oc adm ca create-master-certs --cert-dir=/etc/origin/master/ \
+            --master=https://<internal-master-fqdn>:8443 \
+            --public-master=https://<external-master-fqdn>:8443 \
+            --hostnames=<external-master-fqdn>,<internal-master-fqdn>,localhost,127.0.0.1,<master-ip-address>,kubernetes.default.local \
+            --overwrite=false
+----
++
+This creates files at  *_/etc/origin/master/master.proxy-client.{crt,key}_*.
+Then, add the master proxy client certificates to the
+*_/etc/origin/master/master-config.yml_* file on each master:
++
+----
+kubernetesMasterConfig:
+  proxyClientInfo:
+    certFile: master.proxy-client.crt
+    keyFile: master.proxy-client.key
+----
+
+.. Enable the following renamed service(s) on master hosts.
++
+----
+# systemctl enable origin-master-api
+# systemctl enable origin-master-controllers
+----
+
+. Configure Dnsmasq. Because of changes made in {product-title} 3.6, you will need to
+perform the following steps to configure dnsmasq as part of the upgrade. See DNS Changes
+under xref:../../release_notes/ocp_3_6_release_notes.adoc#ocp-36-notable-technical-changes[Notable Technical Changes]
+in the {product-title} 3.6 Release Notes.
++
+.. Create a *_/etc/origin/node/node-dnsmasq.conf_*  node configuration file.
++
+----
+server=/in-addr.arpa/127.0.0.1
+server=/cluster.local/127.0.0.1
+----
+
+.. Edit the *_/etc/dnsmasq.d/origin-dns.conf_* file as follows:
++
+----
+no-resolv
+domain-needed
+no-negcache
+max-cache-ttl=1
+enable-dbus
+bind-interfaces
+listen-address=<node_ip_address> <1>
+----
++
+<1> This is the IP address of the node host.
+
+.. Edit the *_/etc/dnsmasq.d/origin-upstream-dns.conf_* file as follows:
++
+----
+server=<dns_server1_ip_address>
+server=<dns_server2_ip_address>
+----
+
+.. Edit the *_/etc/origin/node/node-config.yaml_* as follows:
++
+----
+dnsBindAddress: 127.0.0.1:53
+dnsRecursiveResolvConf: /etc/origin/node/resolv.conf
+dnsDomain: cluster.local
+dnsIP: <node_ip_address> <1>
+----
++
+<1> This is the IP address of the node host.
+
+.. Update the *_/etc/systemd/system/atomic-openshift-node.service_* node systemd unit file:
++
+----
+[Unit]
+Description=OpenShift Node
+After=docker.service
+Wants=openvswitch.service
+After=ovsdb-server.service
+After=ovs-vswitchd.service
+Wants=docker.service
+Documentation=https://github.com/openshift/origin
+Requires=dnsmasq.service
+After=dnsmasq.service
+
+[Service]
+Type=notify
+EnvironmentFile=/etc/sysconfig/atomic-openshift-node
+Environment=GOTRACEBACK=crash
+ExecStartPre=/usr/bin/cp /etc/origin/node/node-dnsmasq.conf /etc/dnsmasq.d/
+ExecStartPre=/usr/bin/dbus-send --system --dest=uk.org.thekelleys.dnsmasq /uk/org/thekelleys/dnsmasq uk.org.thekelleys.SetDomainServers array:string:/in-addr.arpa/127.0.0.1,/cluster.local/127.0.0.1
+ExecStopPost=/usr/bin/rm /etc/dnsmasq.d/node-dnsmasq.conf
+ExecStopPost=/usr/bin/dbus-send --system --dest=uk.org.thekelleys.dnsmasq /uk/org/thekelleys/dnsmasq uk.org.thekelleys.SetDomainServers array:string:
+ExecStart=/usr/bin/openshift start node --config=${CONFIG_FILE} $OPTIONS
+LimitNOFILE=65536
+LimitCORE=infinity
+WorkingDirectory=/var/lib/origin/
+SyslogIdentifier=atomic-openshift-node
+Restart=always
+RestartSec=5s
+TimeoutStartSec=300
+OOMScoreAdjust=-999
+
+[Install]
+WantedBy=multi-user.target
+----
++
+.. Reload systemd and restart node service.
++
+----
+# systemctl daemon-reload
+# systemctl restart atomic-openshift-node dnsmaq
+----
+
+. Restart the master service(s) on each master and review logs to ensure they
+restart successfully.
++
+----
+# systemctl restart origin-master-api origin-master-controllers
+# journalctl -r -u origin-master-controllers
+# journalctl -r -u origin-master-api
+----
+
+. Because masters also have node components running on them in order to be
+configured as part of the OpenShift SDN, restart the *origin-node* and
+*openvswitch* services:
++
+----
+# systemctl restart openvswitch
+# systemctl restart origin-node
+# journalctl -r -u openvswitch
+# journalctl -r -u origin-node
+----
+
+endif::[]
+ifdef::openshift-enterprise[]
+. On each master host, upgrade the *atomic-openshift* packages or related images.
+
+.. For masters using the RPM-based method on a RHEL 7 system, upgrade all installed
+*atomic-openshift* packages and the *openvswitch* package:
++
+----
+# yum upgrade atomic-openshift\* openvswitch
+----
+
+.. For masters using the containerized method on a RHEL 7 or RHEL Atomic Host 7
+system, set the `*IMAGE_VERSION*` parameter to the version you are upgrading to
+in the following files:
++
+--
+- *_/etc/sysconfig/atomic-openshift-master-controllers_*
+- *_/etc/sysconfig/atomic-openshift-master-api_*
+- *_/etc/sysconfig/atomic-openshift-node_*
+- *_/etc/sysconfig/atomic-openshift-openvswitch_*
+--
++
+For example:
++
+----
+IMAGE_VERSION=<tag>
+----
++
+Replace `<tag>` with `{latest-tag}` for the latest version.
+
+. Restart the master service(s) on each master and review logs to ensure they
+restart successfully.
++
+----
+# systemctl restart atomic-openshift-master-controllers
+# systemctl restart atomic-openshift-master-api
+# journalctl -r -u atomic-openshift-master-controllers
+# journalctl -r -u atomic-openshift-master-api
+----
+
+. Because masters also have node components running on them in order to be
+configured as part of the OpenShift SDN, restart the *atomic-openshift-node* and
+*openvswitch* services:
++
+----
+# systemctl restart openvswitch
+# systemctl restart atomic-openshift-node
+# journalctl -r -u openvswitch
+# journalctl -r -u atomic-openshift-node
+----
+
+endif::[]
+. If you are performing a cluster upgrade that requires updating Docker to version
+1.12, you must also perform the following steps if you are not already on Docker
+1.12:
++
+[IMPORTANT]
+====
+The node component on masters is set by default to unschedulable status during
+initial installation, so that pods are not deployed to them. However, it is
+possible to set them schedulable during the initial installation or manually
+thereafter. If any of your masters are also configured as a schedulable node,
+skip the following Docker upgrade steps for those masters and instead run all
+steps described in xref:upgrading-nodes[Upgrading Nodes] when you get to that
+section for those hosts as well.
+====
+
+.. Upgrade the *docker* package.
+
+... For RHEL 7 systems:
++
+----
+# yum update docker
+----
++
+Then, restart the *docker* service and review the logs to ensure it restarts
+successfully:
++
+----
+# systemctl restart docker
+# journalctl -r -u docker
+----
+
+... For RHEL Atomic Host 7 systems, upgrade to the latest Atomic tree if one is
+available:
++
+[NOTE]
+====
+If upgrading to RHEL Atomic Host 7.4.2, this upgrades Docker to version 1.12.
+====
++
+----
+# atomic host upgrade
+----
+
+.. After the upgrade is completed and prepared for the next boot, reboot the host
+and ensure the *docker* service starts successfully:
++
+----
+# systemctl reboot
+# journalctl -r -u docker
+----
+
+.. Remove the following file, which is no longer required:
++
+----
+# rm /etc/systemd/system/docker.service.d/docker-sdn-ovs.conf
+----
+
+. Run the following command on each master to add the *atomic-openshift* packages
+back to the list of yum excludes on the host:
++
+----
+# atomic-openshift-excluder exclude
+----
+
+[NOTE]
+====
+During the cluster upgrade, it can sometimes be useful to take a master out of
+rotation since some DNS client libraries will not properly to the other masters
+for cluster DNS. In addition to stopping the master and controller services, you
+can remove the EndPoint from the Kubernetes service's `*subsets.addresses*`.
+
+----
+$ oc edit ep/kubernetes -n default
+----
+
+When the master is restarted, the Kubernetes service will be automatically
+updated.
+====
+
+[[updating-policy-definitions]]
+== Updating Policy Definitions
+
+After a cluster upgrade, the default roles
+xref:../architecture/additional_concepts/authorization.adoc#roles[default
+cluster roles] are automatically updated. To check if all defaults are set as
+recommended for your environment, run:
+
+----
+# oc adm policy reconcile-cluster-roles
+----
+
+[WARNING]
+====
+If you have customized default cluster roles and want to ensure a role reconciliation
+does not modify those customized roles, annotate them with `openshift.io/reconcile-protect`
+set to `true` when using the old Openshift policy format. When using the new RBAC
+roles, use `rbac.authorization.kubernetes.io/autoupdate` set to `false` instead.
+In doing so, you are responsible for manually updating those roles with any new
+or required permissions during upgrades.
+====
+
+This command outputs a list of roles that are out of date and their new proposed
+values. For example:
+
+----
+# oc adm policy reconcile-cluster-roles
+apiVersion: v1
+items:
+- apiVersion: v1
+  kind: ClusterRole
+  metadata:
+    creationTimestamp: null
+    name: admin
+  rules:
+  - attributeRestrictions: null
+    resources:
+    - builds/custom
+...
+----
+
+[NOTE]
+====
+Your output will vary based on the OpenShift version and any local
+customizations you have made. Review the proposed policy carefully.
+====
+
+You can either modify this output to re-apply any local policy changes you have
+made, or you can automatically apply the new policy using the following process:
+
+. Reconcile the cluster roles:
++
+----
+# oc adm policy reconcile-cluster-roles \
+    --additive-only=true \
+    --confirm
+----
+
+. Reconcile the cluster role bindings:
++
+----
+# oc adm policy reconcile-cluster-role-bindings \
+    --exclude-groups=system:authenticated \
+    --exclude-groups=system:authenticated:oauth \
+    --exclude-groups=system:unauthenticated \
+    --exclude-users=system:anonymous \
+    --additive-only=true \
+    --confirm
+----
++
+Also run:
++
+----
+# oc adm policy reconcile-cluster-role-bindings \
+    system:build-strategy-jenkinspipeline \
+    --confirm \
+    -o name
+----
+
+. Reconcile security context constraints:
++
+----
+# oc adm policy reconcile-sccs \
+    --additive-only=true \
+    --confirm
+----
+
+[[upgrading-nodes]]
+== Upgrading Nodes
+
+After upgrading your masters, you can upgrade your nodes. When restarting the
+ifdef::openshift-origin[]
+*origin-node* service, there will be a brief disruption of outbound network
+endif::[]
+ifdef::openshift-enterprise[]
+*atomic-openshift-node* service, there will be a brief disruption of outbound network
+endif::[]
+connectivity from running pods to services while the
+xref:../architecture/infrastructure_components/kubernetes_infrastructure.adoc#service-proxy[service
+proxy] is restarted. The length of this disruption should be very short and
+scales based on the number of services in the entire cluster.
+
+[NOTE]
+====
+You can alternatively use the
+xref:../upgrading/blue_green_deployments.adoc#upgrading-blue-green-deployments[blue-green
+deployment] method at this point to create a parallel environment for new nodes
+instead of upgrading them in place.
+====
+
+One at at time for each node that is not also a master, you must disable
+scheduling and evacuate its pods to other nodes, then upgrade packages and
+restart services.
+
+. Run the following command on each node to remove the *atomic-openshift*
+packages from the list of yum excludes on the host:
++
+----
+# atomic-openshift-excluder unexclude
+----
+
+. As a user with *cluster-admin* privileges, disable scheduling for the node:
++
+----
+# oc adm manage-node <node> --schedulable=false
+----
+
+. Evacuate pods on the node to other nodes:
++
+[IMPORTANT]
+====
+The `--force` option deletes any pods that are not backed by a replication
+controller.
+====
++
+----
+# oc adm drain <node> --force --delete-local-data --ignore-daemonsets
+----
+
+ifdef::openshift-origin[]
+. On the node host, upgrade all *origin* packages:
++
+----
+# yum upgrade origin\*
+----
+
+. If you are upgrading from OpenShift Origin 1.0 to 1.1, enable the following
+renamed service on the node host:
++
+----
+# systemctl enable origin-node
+----
+
+. Restart the *origin-node* and *openvswitch* services and review the logs to
+ensure they restart successfully:
++
+----
+# systemctl restart openvswitch
+# systemctl restart origin-node
+# journalctl -r -u origin-node
+# journalctl -r -u openvswitch
+----
+
+endif::[]
+ifdef::openshift-enterprise[]
+. Upgrade the node component packages or related images.
+
+.. For nodes using the RPM-based method on a RHEL 7 system, upgrade all installed
+*atomic-openshift* packages and the *openvswitch* package:
++
+----
+# yum upgrade atomic-openshift\* openvswitch
+----
+
+.. For nodes using the containerized method on a RHEL 7 or RHEL Atomic Host 7
+system, set the `*IMAGE_VERSION*` parameter in the
+*_/etc/sysconfig/atomic-openshift-node_* and *_/etc/sysconfig/openvswitch_*
+files to the version you are upgrading to. For example:
++
+----
+IMAGE_VERSION=<tag>
+----
++
+Replace `<tag>` with `{latest-tag}` for the latest version.
+
+. Restart the *atomic-openshift-node* and *openvswitch* services and review the
+logs to ensure they restart successfully:
++
+----
+# systemctl restart openvswitch
+# systemctl restart atomic-openshift-node
+# journalctl -r -u atomic-openshift-node
+# journalctl -r -u openvswitch
+----
+endif::[]
+
+. If you are performing a cluster upgrade that requires updating Docker to version
+1.12, you must also perform the following steps if you are not already on Docker
+1.12:
+
+.. Upgrade the *docker* package.
+
+... For RHEL 7 systems:
++
+----
+# yum update docker
+----
++
+Then, restart the *docker* service and review the logs to ensure it restarts
+successfully:
++
+----
+# systemctl restart docker
+# journalctl -r -u docker
+----
++
+After Docker is restarted, restart the *atomic-openshift-node* service again and
+review the logs to ensure it restarts successfully:
++
+----
+# systemctl restart atomic-openshift-node
+# journalctl -r -u atomic-openshift-node
+----
+
+... For RHEL Atomic Host 7 systems, upgrade to the latest Atomic tree if one is
+available:
++
+[NOTE]
+====
+If upgrading to RHEL Atomic Host 7.4.2, this upgrades Docker to version 1.12.
+====
++
+----
+# atomic host upgrade
+----
++
+After the upgrade is completed and prepared for the next boot, reboot the host
+and ensure the *docker* service starts successfully:
++
+----
+# systemctl reboot
+# journalctl -r -u docker
+----
+
+.. Remove the following file, which is no longer required:
++
+----
+# rm /etc/systemd/system/docker.service.d/docker-sdn-ovs.conf
+----
+
+. Re-enable scheduling for the node:
++
+----
+# oc adm manage-node <node> --schedulable
+----
+
+. Run the following command on each node to add the *atomic-openshift* packages
+back to the list of yum excludes on the host:
++
+----
+# atomic-openshift-excluder exclude
+----
+
+. Repeat the previous steps on the next node, and continue repeating these steps
+until all nodes have been upgraded.
+
+. After all nodes have been upgraded, as a user with *cluster-admin* privileges,
+verify that all nodes are showing as *Ready*:
++
+----
+# oc get nodes
+NAME                   STATUS    ROLES     AGE       VERSION
+master.example.com     Ready     master    7h        v1.9.1+a0ce1bc657
+node1.example.com      Ready     compute   7h        v1.9.1+a0ce1bc657
+node2.example.com      Ready     compute   7h        v1.9.1+a0ce1bc657
+----
+
+[[upgrading-the-router]]
+== Upgrading the Router
+
+If you have previously
+xref:../install_config/router/index.adoc#install-config-router-overview[deployed a router], the
+router deployment configuration must be upgraded to apply updates contained in
+the router image. To upgrade your router without disrupting services, you must
+have previously deployed a
+xref:../admin_guide/high_availability.adoc#configuring-a-highly-available-service[highly available routing service].
+
+ifdef::openshift-origin[]
+[IMPORTANT]
+====
+If you are upgrading to OpenShift Origin 1.0.4 or 1.0.5, first see the
+xref:additional-instructions-per-release[Additional Manual Instructions per
+Release] section for important steps specific to your upgrade, then continue
+with the router upgrade as described in this section.
+====
+endif::[]
+
+Edit your router's deployment configuration. For example, if it has the default
+*router* name:
+
+----
+# oc edit dc/router
+----
+
+Apply the following changes:
+
+----
+...
+spec:
+ template:
+    spec:
+      containers:
+      - env:
+        ...
+ifdef::openshift-enterprise[]
+        image: registry.access.redhat.com/openshift3/ose-haproxy-router:<tag> <1>
+endif::[]
+ifdef::openshift-origin[]
+        image: openshift/origin-haproxy-router:v1.0.6 <1>
+endif::[]
+        imagePullPolicy: IfNotPresent
+        ...
+----
+<1> Adjust `<tag>` to match the version you are upgrading to (use `{latest-tag}`
+for the latest version).
+
+You should see one router pod updated and then the next.
+
+[[upgrading-the-registry]]
+== Upgrading the Registry
+
+The registry must also be upgraded for changes to take effect in the registry
+image. If you have used a `*PersistentVolumeClaim*` or a host mount point, you
+may restart the registry without losing the contents of your registry.
+xref:../install_config/registry/deploy_registry_existing_clusters.adoc#storage-for-the-registry[Storage for the Registry] details how to configure persistent storage for the registry.
+
+Edit your registry's deployment configuration:
+
+----
+# oc edit dc/docker-registry
+----
+
+Apply the following changes:
+
+----
+...
+spec:
+ template:
+    spec:
+      containers:
+      - env:
+        ...
+ifdef::openshift-enterprise[]
+        image: registry.access.redhat.com/openshift3/ose-docker-registry:<tag> <1>
+endif::[]
+ifdef::openshift-origin[]
+        image: openshift/origin-docker-registry:v1.0.4 <1>
+endif::[]
+        imagePullPolicy: IfNotPresent
+        ...
+----
+<1> Adjust `<tag>` to match the version you are upgrading to (use `{latest-tag}`
+for the latest version).
+
+ifdef::openshift-enterprise[]
+If the registry console is deployed, edit its deployment configuration:
+
+----
+# oc edit dc/registry-console
+----
+
+Apply the following changes:
+
+----
+...
+spec:
+ template:
+    spec:
+      containers:
+      - env:
+        ...
+        image: registry.access.redhat.com/openshift3/registry-console:v3.7
+        imagePullPolicy: IfNotPresent
+        ...
+----
+endif::[]
+
+[IMPORTANT]
+====
+Images that are being pushed or pulled from the internal registry at the time of
+upgrade will fail and should be restarted automatically. This will not disrupt
+pods that are already running.
+====
+
+ifdef::openshift-origin[]
+[[updating-the-registry-configuration-file]]
+=== Updating Custom Registry Configuration Files
+
+[NOTE]
+====
+You may safely skip this part if you do not use a custom registry configuration
+file.
+====
+
+The internal Docker registry version 1.4.0 and higher requires following entries
+in the
+xref:../install_config/registry/extended_registry_configuration.adoc#docker-registry-configuration-reference-middleware[middleware section] of the configuration file:
+
+[source,yaml]
+----
+middleware:
+  registry:
+    - name: openshift
+  repository:
+    - name: openshift
+  storage:
+    - name: openshift
+----
+
+. Edit your custom configuration file, adding the missing entries.
+
+. xref:../install_config/registry/extended_registry_configuration.adoc#advanced-overriding-the-registry-configuration[Deploy
+your updated configuration].
+
+. Append the `--overwrite` flag to `oc volume
+dc/docker-registry --add` to replace a volume mount of your previous secret.
+
+. You can safely remove the old secret.
+
+[[enforcing-quota-in-the-registry]]
+=== Enforcing Quota in the Registry
+
+Quota must be enforced to prevent layer blobs that exceed the size limit from
+being written to the registry's storage. This can be achieved via a
+xref:../install_config/registry/extended_registry_configuration.adoc#registry-configuration-reference[configuration file]:
+
+----
+...
+middleware:
+  repository:
+    - name: openshift
+      options:
+        enforcequota: true
+...
+----
+
+Alternatively, use the `*REGISTRY_MIDDLEWARE_REPOSITORY_OPENSHIFT_ENFORCEQUOTA*`
+environment variable, which is set to `*true*` for the new registry deployments
+by default. Existing deployments need to be modified using:
+
+----
+# oc set env dc/docker-registry REGISTRY_MIDDLEWARE_REPOSITORY_OPENSHIFT_ENFORCEQUOTA=true
+----
+endif::[]
+
+[[updating-the-default-image-streams-and-templates]]
+== Updating the Default Image Streams and Templates
+
+ifdef::openshift-origin[]
+By default, the xref:../install_config/install/advanced_install.adoc#install-config-install-advanced-install[advanced
+installation] method automatically creates default image streams, InstantApp
+templates, and database service templates in the *openshift* project, which is a
+default project to which all users have view access. These objects were created
+during installation from the JSON files located under
+*_/usr/share/openshift/examples_*.
+
+To update these objects:
+
+. Ensure that you have the latest *openshift-ansible* code checked out, which
+provides the example JSON files:
++
+----
+# cd ~/openshift-ansible
+# git pull https://github.com/openshift/openshift-ansible master
+----
+endif::[]
+ifdef::openshift-enterprise[]
+By default, the
+xref:../install_config/install/advanced_install.adoc#install-config-install-advanced-install[advanced installation]
+method automatically creates default image streams, InstantApp templates, and
+database service templates in the *openshift* project, which is a default
+project to which all users have view access. These objects were created during
+installation from the JSON files located under the
+*_/usr/share/ansible/openshift-ansible/roles/openshift_examples/files/examples/_*
+directory.
+
+[NOTE]
+====
+Because RHEL Atomic Host 7 cannot use *yum* to update packages, the following
+steps must take place on a RHEL 7 system.
+====
+
+Update the packages that provide the example JSON files. On a subscribed Red Hat
+Enterprise Linux 7 system where you can run the CLI as a user with
+*cluster-admin* permissions, install or update to the latest version of the
+*atomic-openshift-utils* package, which should also update the
+*openshift-ansible-* packages:
+
+----
+# yum update atomic-openshift-utils
+----
+
+To persist *_/usr/share/openshift/examples/_* on the first master:
+
+----
+$ scp -R /usr/share/ansible/openshift-ansible/roles/openshift_examples/files/examples/v3.7/* user@master1:/usr/share/openshift/examples/
+----
+
+To persist *_/usr/share/openshift/examples/_* on all masters:
+
+----
+$ mkdir /usr/share/openshift/examples
+$ scp -R /usr/share/ansible/openshift-ansible/roles/openshift_examples/files/examples/v3.7/* user@masterx:/usr/share/openshift/examples
+----
+
+The *openshift-ansible-roles* package provides the latest example JSON files.
+endif::[]
+
+. After a manual upgrade, get the latest templates from
+*openshift-ansible-roles*:
++
+----
+# rpm -ql openshift-ansible-roles | grep examples | grep v3.7
+----
++
+In this example,
+*_/usr/share/ansible/openshift-ansible/roles/openshift_examples/files/examples/v3.7/image-streams/image-streams-rhel7.json_*
+is the latest file that you want in the latest *openshift-ansible-roles* package.
++
+*_/usr/share/openshift/examples/image-streams/image-streams-rhel7.json_* is not
+owned by a package, but is updated by Ansible. If you are upgrading outside of
+Ansible. you need to get the latest .json files on the system where you are
+running `oc`, which can run anywhere that has access to the master.
+
+. Install *atomic-openshift-utils* and its dependencies to install the new content
+into
+*_/usr/share/ansible/openshift-ansible/roles/openshift_examples/files/examples/v3.7/_*.:
++
+----
+$ oc create -n openshift -f  /usr/share/ansible/openshift-ansible/roles/openshift_examples/files/examples/v3.7/image-streams/image-streams-rhel7.json
+$ oc create -n openshift -f  /usr/share/ansible/openshift-ansible/roles/openshift_examples/files/examples/v3.7/image-streams/dotnet_imagestreams.json
+$ oc replace -n openshift -f  /usr/share/ansible/openshift-ansible/roles/openshift_examples/files/examples/v3.7/image-streams/image-streams-rhel7.json
+$ oc replace -n openshift -f  /usr/share/ansible/openshift-ansible/roles/openshift_examples/files/examples/v3.7/image-streams/dotnet_imagestreams.json
+----
+
+. Update the templates:
++
+----
+$ oc create -n openshift -f /usr/share/ansible/openshift-ansible/roles/openshift_examples/files/examples/v3.7/quickstart-templates/
+$ oc create -n openshift -f /usr/share/ansible/openshift-ansible/roles/openshift_examples/files/examples/v3.7/db-templates/
+$ oc create -n openshift -f /usr/share/ansible/openshift-ansible/roles/openshift_examples/files/examples/v3.7/infrastructure-templates/
+$ oc create -n openshift -f /usr/share/ansible/openshift-ansible/roles/openshift_examples/files/examples/v3.7/xpaas-templates/
+$ oc create -n openshift -f /usr/share/ansible/openshift-ansible/roles/openshift_examples/files/examples/v3.7/xpaas-streams/
+$ oc replace -n openshift -f /usr/share/ansible/openshift-ansible/roles/openshift_examples/files/examples/v3.7/quickstart-templates/
+$ oc replace -n openshift -f /usr/share/ansible/openshift-ansible/roles/openshift_examples/files/examples/v3.7/db-templates/
+$ oc replace -n openshift -f /usr/share/ansible/openshift-ansible/roles/openshift_examples/files/examples/v3.7/infrastructure-templates/
+$ oc replace -n openshift -f /usr/share/ansible/openshift-ansible/roles/openshift_examples/files/examples/v3.7/xpaas-templates/
+$ oc replace -n openshift -f /usr/share/ansible/openshift-ansible/roles/openshift_examples/files/examples/v3.7/xpaas-streams/
+----
++
+Errors are generated for items that already exist. This is expected behavior:
++
+----
+# oc create -n openshift -f /usr/share/ansible/openshift-ansible/roles/openshift_examples/files/examples/v3.7/quickstart-templates/
+Error from server: error when creating "/usr/share/ansible/openshift-ansible/roles/openshift_examples/files/examples/v3.7/quickstart-templates/cakephp-mysql.json": templates "cakephp-mysql-example" already exists
+Error from server: error when creating "/usr/share/ansible/openshift-ansible/roles/openshift_examples/files/examples/v3.7/quickstart-templates/cakephp.json": templates "cakephp-example" already exists
+Error from server: error when creating "/usr/share/ansible/openshift-ansible/roles/openshift_examples/files/examples/v3.7/quickstart-templates/dancer-mysql.json": templates "dancer-mysql-example" already exists
+Error from server: error when creating "/usr/share/ansible/openshift-ansible/roles/openshift_examples/files/examples/v3.7/quickstart-templates/dancer.json": templates "dancer-example" already exists
+Error from server: error when creating "/usr/share/ansible/openshift-ansible/roles/openshift_examples/files/examples/v3.7/quickstart-templates/django-postgresql.json": templates "django-psql-example" already exists
+----
+
+Now, content can be updated. Without running the automated upgrade playbooks,
+the content is not updated in *_/usr/share/openshift/_*.
+
+[[importing-the-latest-images]]
+== Importing the Latest Images
+
+After xref:updating-the-default-image-streams-and-templates[updating the
+default image streams], you may also want to ensure that the images within those
+streams are updated. For each image stream in the default *openshift* project,
+you can run:
+
+----
+# oc import-image -n openshift <imagestream>
+----
+
+For example, get the list of all image streams in the default *openshift*
+project:
+
+----
+# oc get is -n openshift
+NAME     DOCKER REPO                                                      TAGS                   UPDATED
+mongodb  registry.access.redhat.com/openshift3/mongodb-24-rhel7           2.4,latest,v3.1.1.6    16 hours ago
+mysql    registry.access.redhat.com/openshift3/mysql-55-rhel7             5.5,latest,v3.1.1.6    16 hours ago
+nodejs   registry.access.redhat.com/openshift3/nodejs-010-rhel7           0.10,latest,v3.1.1.6   16 hours ago
+...
+----
+
+Update each image stream one at a time:
+
+----
+# oc import-image -n openshift nodejs
+The import completed successfully.
+
+Name:			nodejs
+Created:		10 seconds ago
+Labels:			<none>
+Annotations:		openshift.io/image.dockerRepositoryCheck=2016-07-05T19:20:30Z
+Docker Pull Spec:	172.30.204.22:5000/openshift/nodejs
+
+Tag	Spec								Created		PullSpec						Image
+latest	4								9 seconds ago	registry.access.redhat.com/rhscl/nodejs-4-rhel7:latest	570ad8ed927fd5c2c9554ef4d9534cef808dfa05df31ec491c0969c3bd372b05
+4	registry.access.redhat.com/rhscl/nodejs-4-rhel7:latest		9 seconds ago	<same>							570ad8ed927fd5c2c9554ef4d9534cef808dfa05df31ec491c0969c3bd372b05
+0.10	registry.access.redhat.com/openshift3/nodejs-010-rhel7:latest	9 seconds ago	<same>							a1ef33be788a28ec2bdd48a9a5d174ebcfbe11c8e986d2996b77f5bccaaa4774
+----
+
+[IMPORTANT]
+====
+In order to update your S2I-based applications, you must manually trigger a new
+build of those applications after importing the new images using `oc start-build
+<app-name>`.
+====
+
+ifdef::openshift-origin[]
+:sect: manual
+// tag::30to31updatingcerts[]
+[id='{sect}-updating-master-and-node-certificates']
+== Updating Master and Node Certificates
+
+The following steps may be required for any OpenShift cluster that was
+originally installed prior to the
+https://github.com/openshift/origin/releases[OpenShift Origin 1.0.8 release].
+This may include any and all updates from that version.
+
+[id='{sect}-updating-node-certificates']
+=== Node Certificates
+
+With the 1.0.8 release, certificates for each of the kubelet nodes were updated
+to include the IP address of the node. Any node certificates generated before
+the 1.0.8 release may not contain the IP address of the node.
+
+If a node is missing the IP address as part of its certificate, clients may
+refuse to connect to the kubelet endpoint. Usually this will result in errors
+regarding the certificate not containing an `IP SAN`.
+
+In order to remedy this situation, you may need to manually update the
+certificates for your node.
+
+[id='{sect}-checking-the-nodes-certificate']
+==== Checking the Node's Certificate
+
+The following command can be used to determine which Subject Alternative Names
+(SANs) are present in the node's serving certificate. In this example, the
+Subject Alternative Names are *mynode*, *mynode.mydomain.com*, and *1.2.3.4*:
+
+----
+# openssl x509 -in /etc/origin/node/server.crt -text -noout | grep -A 1 "Subject Alternative Name"
+X509v3 Subject Alternative Name:
+DNS:mynode, DNS:mynode.mydomain.com, IP: 1.2.3.4
+----
+
+Ensure that the `*nodeIP*` value set in the
+*_/etc/origin/node/node-config.yaml_* file is present in the IP values from the
+Subject Alternative Names listed in the node's serving certificate. If the
+`*nodeIP*` is not present, then it will need to be added to the node's
+certificate.
+
+If the `*nodeIP*` value is already contained within the Subject Alternative
+Names, then no further steps are required.
+
+You will need to know the Subject Alternative Names and `*nodeIP*` value for the
+following steps.
+
+[id='{sect}-generating-a-new-node-certificate']
+==== Generating a New Node Certificate
+
+If your current node certificate does not contain the proper IP address, then
+you must regenerate a new certificate for your node.
+
+[IMPORTANT]
+====
+Node certificates will be regenerated on the master (or first master) and are
+then copied into place on node systems.
+====
+
+. Create a temporary directory in which to perform the following steps:
++
+----
+# mkdir /tmp/node_certificate_update
+# cd /tmp/node_certificate_update
+----
+
+. Export the signing options:
++
+----
+# export signing_opts="--signer-cert=/etc/origin/master/ca.crt \
+    --signer-key=/etc/origin/master/ca.key \
+    --signer-serial=/etc/origin/master/ca.serial.txt"
+----
+
+. Generate the new certificate:
++
+----
+# oc adm ca create-server-cert --cert=server.crt \
+  --key=server.key $signing_opts \
+  --hostnames=<existing_SANs>,<nodeIP>
+----
++
+For example, if the Subject Alternative Names from before were *mynode*,
+*mynode.mydomain.com*, and *1.2.3.4*, and the `*nodeIP*` was 10.10.10.1, then
+you would need to run the following command:
++
+----
+# oc adm ca create-server-cert --cert=server.crt \
+  --key=server.key $signing_opts \
+  --hostnames=mynode,mynode.mydomain.com,1.2.3.4,10.10.10.1
+----
+
+[id='{sect}-replace-node-serving-certificates']
+==== Replace Node Serving Certificates
+
+Back up the existing *_/etc/origin/node/server.crt_* and
+*_/etc/origin/node/server.key_* files for your node:
+
+----
+# mv /etc/origin/node/server.crt /etc/origin/node/server.crt.bak
+# mv /etc/origin/node/server.key /etc/origin/node/server.key.bak
+----
+
+You must now copy the new *_server.crt_* and *_server.key_* created in the
+temporary directory during the previous step:
+
+----
+# mv /tmp/node_certificate_update/server.crt /etc/origin/node/server.crt
+# mv /tmp/node_certificate_update/server.key /etc/origin/node/server.key
+----
+
+After you have replaced the node's certificate, restart the node service:
+
+----
+# systemctl restart origin-node
+----
+
+[id='{sect}-updating-master-certificates']
+=== Master Certificates
+
+With the 1.0.8 release, certificates for each of the masters were updated to
+include all names that pods may use to communicate with masters. Any master
+certificates generated before the 1.0.8 release may not contain these additional
+service names.
+
+[id='{sect}-checking-the-masters-certificate']
+==== Checking the Master's Certificate
+
+The following command can be used to determine which Subject Alternative Names
+(SANs) are present in the master's serving certificate. In this example, the
+Subject Alternative Names are *mymaster*, *mymaster.mydomain.com*, and
+*1.2.3.4*:
+
+----
+# openssl x509 -in /etc/origin/master/master.server.crt -text -noout | grep -A 1 "Subject Alternative Name"
+X509v3 Subject Alternative Name:
+DNS:mymaster, DNS:mymaster.mydomain.com, IP: 1.2.3.4
+----
+
+Ensure that the following entries are present in the Subject Alternative Names
+for the master's serving certificate:
+
+[options="header"]
+|===
+|Entry |Example
+
+|Kubernetes service IP address
+|172.30.0.1
+
+|All master host names
+|*master1.example.com*
+
+|All master IP addresses
+|192.168.122.1
+
+|Public master host name in clustered environments
+|*public-master.example.com*
+
+|*kubernetes*
+|
+
+|*kubernetes.default*
+|
+
+|*kubernetes.default.svc*
+|
+
+|*kubernetes.default.svc.cluster.local*
+|
+
+|*openshift*
+|
+
+|*openshift.default*
+|
+
+|*openshift.default.svc*
+|
+
+|*openshift.default.svc.cluster.local*
+|
+|===
+
+If these names are already contained within the Subject Alternative Names, then
+no further steps are required.
+
+[id='{sect}-generating-a-new-master-certificate']
+==== Generating a New Master Certificate
+
+If your current master certificate does not contain all names from the list
+above, then you must generate a new certificate for your master:
+
+. Back up the existing *_/etc/origin/master/master.server.crt_* and
+*_/etc/origin/master/master.server.key_* files for your master:
++
+----
+# mv /etc/origin/master/master.server.crt /etc/origin/master/master.server.crt.bak
+# mv /etc/origin/master/master.server.key /etc/origin/master/master.server.key.bak
+----
+
+. Export the service names. These names will be used when generating the new
+certificate:
++
+----
+# export service_names="kubernetes,kubernetes.default,kubernetes.default.svc,kubernetes.default.svc.cluster.local,openshift,openshift.default,openshift.default.svc,openshift.default.svc.cluster.local"
+----
+
+. You will need the first IP in the services
+subnet (the *kubernetes* service IP) as well as the values of `*masterIP*`,
+`*masterURL*` and `*publicMasterURL*` contained in the
+*_/etc/origin/master/master-config.yaml_* file for the following steps.
++
+The *kubernetes* service IP can be obtained with:
++
+----
+# oc get svc/kubernetes --template='{{.spec.clusterIP}}'
+----
+
+. Generate the new certificate:
++
+----
+# oc adm ca create-master-certs \
+      --hostnames=<master_hostnames>,<master_IP_addresses>,<kubernetes_service_IP>,$service_names \ <1> <2> <3>
+      --master=<internal_master_address> \ <4>
+      --public-master=<public_master_address> \ <5>
+      --cert-dir=/etc/origin/master/ \
+      --overwrite=false
+----
+<1> Adjust `<master_hostnames>` to match your master host name. In a clustered
+environment, add all master host names.
+<2> Adjust `<master_IP_addresses>` to match the value of `*masterIP*`. In a
+clustered environment, add all master IP addresses.
+<3> Adjust `<kubernetes_service_IP>` to the first IP in the *kubernetes*
+services subnet.
+<4> Adjust `<internal_master_address>` to match the value of `*masterURL*`.
+<5> Adjust `<public_master_address>` to match the value of `*masterPublicURL*`.
+
+. Restart master services. For single master deployments:
++
+----
+# systemctl restart origin-master-api origin-master-controllers
+----
++
+After the service restarts, the certificate update is complete.
+// end::30to31updatingcerts[]
+endif::[]
+
+[[manual-upgrading-service-catalog]]
+== Upgrading the Service Catalog
+
+[NOTE]
+====
+Manual upgrade steps for the service catalog and service brokers are not available.
+====
+
+include::upgrading/automated_upgrades.adoc[tag=automated-service-catalog-upgrade-steps]
+
+[[manual-upgrading-efk-logging-stack]]
+== Upgrading the EFK Logging Stack
+
+[NOTE]
+====
+Manual upgrade steps for logging deployments are no longer available starting in
+{product-title}
+ifdef::openshift-enterprise[]
+3.5.
+endif::[]
+ifdef::openshift-origin[]
+1.5.
+endif::[]
+====
+
+include::upgrading/automated_upgrades.adoc[tag=automated-logging-upgrade-steps]
+
+[[manual-upgrading-cluster-metrics]]
+== Upgrading Cluster Metrics
+
+[NOTE]
+====
+Manual upgrade steps for metrics deployments are no longer available starting in
+{product-title}
+ifdef::openshift-enterprise[]
+3.5.
+endif::[]
+ifdef::openshift-origin[]
+1.5.
+endif::[]
+====
+
+include::upgrading/automated_upgrades.adoc[tag=automated-metrics-upgrade-steps]
+
+[[additional-instructions-per-release]]
+== Additional Manual Steps Per Release
+
+Some {product-title} releases may have additional instructions specific to that
+release that must be performed to fully apply the updates across the cluster.
+ifdef::openshift-enterprise[]
+This section will be updated over time as new asynchronous updates are released
+for {product-title} 3.7.
+
+See the xref:../release_notes/ocp_3_7_release_notes.adoc#release-notes-ocp-3-7-release-notes[{product-title} 3.7 Release Notes] to review the latest release notes.
+
+ifdef::openshift-origin[]
+Read through the following sections carefully depending on your upgrade path, as
+you may be required to perform certain steps at key points during the standard
+upgrade process described earlier in this topic.
+
+[[openshift-origin-1-0-4]]
+=== OpenShift Origin 1.0.4
+
+The following steps are required for the
+https://github.com/openshift/origin/releases/tag/v1.0.4[OpenShift Origin 1.0.4
+release].
+
+*Creating a Service Account for the Router*
+
+The default HAProxy router was updated to utilize host ports and requires that a
+service account be created and made a member of the privileged
+xref:../admin_guide/manage_scc.adoc#admin-guide-manage-scc[security context constraint] (SCC).
+Additionally, "down-then-up" rolling upgrades have been added and is now the
+preferred strategy for upgrading routers.
+
+After upgrading your master and nodes but before updating to the newer router,
+you must create a service account for the router. As a cluster administrator,
+ensure you are operating on the *default* project:
+
+----
+# oc project default
+----
+
+Delete any existing *router* service account and create a new one:
+
+----
+# oc delete serviceaccount/router
+serviceaccounts/router
+
+# echo '{"kind":"ServiceAccount","apiVersion":"v1","metadata":{"name":"router"}}' | oc create -f -
+serviceaccounts/router
+----
+
+Edit the *privileged* SCC:
+
+----
+# oc edit scc privileged
+----
+
+Apply the following changes:
+
+----
+allowHostDirVolumePlugin: true
+allowHostNetwork: true <1>
+allowHostPorts: true <2>
+allowPrivilegedContainer: true
+...
+users:
+- system:serviceaccount:openshift-infra:build-controller
+- system:serviceaccount:default:router <3>
+----
+<1> Add or update `allowHostNetwork: true`.
+<2> Add or update `allowHostPorts: true`.
+<3> Add the service account you created to the `*users*` list at the end of the
+file.
+
+Edit your router's deployment configuration:
+
+----
+# oc edit dc/router
+----
+
+Apply the following changes:
+
+----
+...
+spec:
+  replicas: 2
+  selector:
+    router: router
+  strategy:
+    resources: {}
+    rollingParams:
+      intervalSeconds: 1
+      timeoutSeconds: 120
+      updatePeriodSeconds: 1
+      updatePercent: -10 <1>
+    type: Rolling
+    ...
+  template:
+    ...
+    spec:
+      ...
+      dnsPolicy: ClusterFirst
+      restartPolicy: Always
+      serviceAccount: router <2>
+      serviceAccountName: router <3>
+...
+----
+<1> Add `updatePercent: -10` to allow down-then-up rolling upgrades.
+<2> Add `serviceAccount: router` to the template `*spec*`.
+<3> Add `serviceAccountName: router` to the template `*spec*`.
+
+Now upgrade your router per the xref:upgrading-the-router[standard router
+upgrade steps].
+
+[[openshift-origin-1-0-5]]
+=== OpenShift Origin 1.0.5
+
+The following steps are required for the
+https://github.com/openshift/origin/releases[OpenShift Origin 1.0.5
+release].
+
+*Switching the Router to Use the Host Network Stack*
+
+The default HAProxy router was updated to use the host networking stack by
+default instead of the former behavior of
+xref:../install_config/router/default_haproxy_router.adoc#using-the-container-network-stack[using
+the container network stack], which proxied traffic to the router, which in turn
+proxied the traffic to the target service and container. This new default
+behavior benefits performance because network traffic from remote clients no
+longer needs to take multiple hops through user space in order to reach the
+target service and container.
+
+Additionally, the new default behavior enables the router to get the actual
+source IP address of the remote connection. This is useful for defining
+ingress rules based on the originating IP, supporting sticky sessions, and
+monitoring traffic, among other uses.
+
+Existing router deployments will continue to use the container network stack
+unless modified to switch to using the host network stack.
+
+To switch the router to use the host network stack, edit your router's
+deployment configuration:
+
+----
+# oc edit dc/router
+----
+
+Apply the following changes:
+
+----
+...
+spec:
+  replicas: 2
+  selector:
+    router: router
+    ...
+  template:
+    ...
+    spec:
+      ...
+      ports:
+        - containerPort: 80 <1>
+          hostPort: 80
+          protocol: TCP
+        - containerPort: 443 <1>
+          hostPort: 443
+          protocol: TCP
+        - containerPort: 1936 <1>
+          hostPort: 1936
+          name: stats
+          protocol: TCP
+        resources: {}
+        terminationMessagePath: /dev/termination-log
+      dnsPolicy: ClusterFirst
+      hostNetwork: true <2>
+      restartPolicy: Always
+...
+----
+<1> For host networking, ensure that the `*containerPort*` value matches the
+`*hostPort*` values for each of the ports.
+<2> Add `*hostNetwork: true*` to the template `*spec*`.
+
+Now upgrade your router per the xref:upgrading-the-router[standard router
+upgrade steps].
+
+*Configuring serviceNetworkCIDR for the SDN*
+
+Add the `*serviceNetworkCIDR*` parameter to the `*networkConfig*` section in
+*_/etc/origin/master/master-config.yaml_*. This value should match the
+`*servicesSubnet*` value in the `*kubernetesMasterConfig*` section:
+
+----
+kubernetesMasterConfig:
+  servicesSubnet: 172.30.0.0/16
+...
+networkConfig:
+  serviceNetworkCIDR: 172.30.0.0/16
+----
+
+*Adding the Scheduler Configuration API Version*
+
+The scheduler configuration file incorrectly lacked `*kind*` and `*apiVersion*`
+fields when deployed using the quick or advanced installation methods. This will
+affect future upgrades, so it is important to add those values if they do not
+exist.
+
+Modify the *_/etc/origin/master/scheduler.json_* file to add the `*kind*` and
+`*apiVersion*` fields:
+
+----
+{
+  "kind": "Policy", <1>
+  "apiVersion": "v1", <2>
+  "predicates": [
+  ...
+}
+----
+<1> Add `*"kind": "Policy",*`
+<2> Add `*"apiVersion": "v1",*`
+
+[[openshift-origin-1-1-0]]
+=== OpenShift Origin 1.1.0
+
+There are no additional manual steps for this release that are not already
+mentioned inline during the xref:preparing-for-a-manual-upgrade[standard manual upgrade
+process].
+
+[[openshift-origin-1-5-0]]
+=== OpenShift Origin 1.5.0
+
+With deprecation of the `extensions/v1beta1.Job` resource, you must migrate all
+`Job` resources to use the `batch/v1.Job` instead. To verify which objects will
+be migrated, run:
+
+----
+$ oc adm migrate storage --include=jobs
+----
+
+You can also increase the log level using the `--loglevel` flag. When you are
+ready to perform the actual migration, add the `--confirm` option:
+
+----
+$ oc adm migrate storage --include=jobs --confirm
+----
+endif::[]
+
+[[manual-upgrades-verifying-the-upgrade]]
+== Verifying the Upgrade
+
+To verify the upgrade:
+
+. Check that all nodes are marked as *Ready*:
++
+----
+# oc get nodes
+NAME                   STATUS    ROLES     AGE       VERSION
+master.example.com     Ready     master    7h        v1.9.1+a0ce1bc657
+node1.example.com      Ready     compute   7h        v1.9.1+a0ce1bc657
+node2.example.com      Ready     compute   7h        v1.9.1+a0ce1bc657
+----
+
+. Verify that you are running the expected versions of the *docker-registry*
+and *router* images, if deployed.
+ifdef::openshift-enterprise[]
+Replace `<tag>` with `{latest-tag}` for the latest version.
+endif::[]
++
+----
+ifdef::openshift-enterprise[]
+# oc get -n default dc/docker-registry -o json | grep \"image\"
+    "image": "openshift3/ose-docker-registry:<tag>",
+# oc get -n default dc/router -o json | grep \"image\"
+    "image": "openshift3/ose-haproxy-router:<tag>",
+endif::[]
+ifdef::openshift-origin[]
+# oc get -n default dc/docker-registry -o json | grep \"image\"
+    "image": "openshift/origin-docker-registry:v1.0.6",
+# oc get -n default dc/router -o json | grep \"image\"
+    "image": "openshift/origin-haproxy-router:v1.0.6",
+endif::[]
+----
+
+ifdef::openshift-origin[]
+. If you upgraded from Origin 1.0 to Origin 1.1, verify in your old
+*_/etc/sysconfig/openshift-master_* and *_/etc/sysconfig/openshift-node_* files
+that any custom configuration is added to your new
+*_/etc/sysconfig/origin-master_* and *_/etc/sysconfig/origin-node_* files.
+endif::[]
+
+. Use the diagnostics tool on the master to look for common issues:
++
+----
+# oc adm diagnostics
+...
+[Note] Summary of diagnostics execution:
+[Note] Completed with no errors or warnings seen.
+----

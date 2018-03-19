@@ -1,0 +1,378 @@
+[[dev-guide-application-memory-sizing]]
+= Application memory sizing
+{product-author}
+{product-version}
+:data-uri:
+:icons:
+:experimental:
+:toc: macro
+:toc-title:
+:prewrap!:
+
+toc::[]
+
+[[overview]]
+== Overview
+
+This page is intended to provide guidance to application developers using
+{product-title} on:
+
+. Determining the memory and risk requirements of a containerized application
+   component and configuring the container memory parameters to suit those
+   requirements.
+
+. Configuring containerized application runtimes (for example, OpenJDK) to adhere
+   optimally to the configured container memory parameters.
+
+. Diagnosing and resolving memory-related error conditions associated with
+   running in a container.
+
+[[background]]
+== Background
+
+It is recommended to read fully the overview of how {product-title} manages
+xref:compute_resources.adoc#dev-compute-resources[Compute Resources] before
+proceeding.
+
+For the purposes of sizing application memory, the key points are:
+
+* For each kind of resource (memory, cpu, storage), {product-title} allows
+  optional *request* and *limit* values to be placed on each container in a
+  pod. For the purposes of this page, we are solely interested in memory
+  requests and memory limits.
+
+* *Memory request*
+
+  - The memory request value, if specified, influences the {product-title}
+    scheduler. The scheduler considers the memory request when scheduling a
+    container to a node, then fences off the requested memory on the chosen node
+    for the use of the container.
+
+  - If a node’s memory is exhausted, {product-title} prioritizes evicting its
+    containers whose memory usage most exceeds their memory request. In serious
+    cases of memory exhaustion, the node OOM killer may select and kill a
+    process in a container based on a similar metric.
+
+* *Memory limit*
+
+  - The memory limit value, if specified, provides a hard limit on the memory
+    that can be allocated across all the processes in a container.
+
+  - If the memory allocated by all of the processes in a container exceeds the
+    memory limit, the node OOM killer will immediately select and kill a
+    process in the container.
+
+  - If both memory request and limit are specified, the memory limit value must
+    be greater than or equal to the memory request.
+
+* *Administration*
+
+  - The cluster administrator may assign quota against the memory request value,
+    limit value, both, or neither.
+
+  - The cluster administrator may assign default values for the memory request
+    value, limit value, both, or neither.
+
+  - The cluster administrator may override the memory request values that a
+    developer specifies, in order to manage cluster overcommit. This occurs on
+    OpenShift Online, for example.
+
+[[strategy]]
+== Strategy
+
+The steps for sizing application memory on {product-title} are as follows:
+
+. *Determine expected container memory usage*
++
+Determine expected mean and peak container memory usage, empirically if
+necessary (for example, by separate load testing). Remember to consider all the
+processes that may potentially run in parallel in the container: for example,
+does the main application spawn any ancillary scripts?
+
+. *Determine risk appetite*
++
+Determine risk appetite for eviction. If the risk appetite is low, the
+container should request memory according to the expected peak usage plus a
+percentage safety margin. If the risk appetite is higher, it may be more
+appropriate to request memory according to the expected mean usage.
+
+. *Set container memory request*
++
+Set container memory request based on the above. The more accurately the
+request represents the application memory usage, the better. If the request is
+too high, cluster and quota usage will be inefficient. If the request is too
+low, the chances of application eviction increase.
+
+. *Set container memory limit, if required*
++
+Set container memory limit, if required. Setting a limit has the effect of
+immediately killing a container process if the combined memory usage of all
+processes in the container exceeds the limit, and is therefore a mixed blessing.
+On the one hand, it may make unanticipated excess memory usage obvious early
+("fail fast"); on the other hand it also terminates processes abruptly.
++
+Note that some {product-title} clusters may require a limit value to be set;
+some may override the request based on the limit; and some application images
+rely on a limit value being set as this is easier to detect than a request
+value.
++
+If the memory limit is set, it should not be set to less than the expected peak
+container memory usage plus a percentage safety margin.
+
+. *Ensure application is tuned*
++
+Ensure application is tuned with respect to configured request and limit values,
+if appropriate. This step is particularly relevant to applications which pool
+memory, such as the JVM. The rest of this page discusses this.
+
+[[sizing-openjdk]]
+== Sizing OpenJDK on {product-title}
+
+The default OpenJDK settings unfortunately do not work well with containerized
+environments, with the result that as a rule, some additional Java memory
+settings must always be provided whenever running the OpenJDK in a container.
+
+The JVM memory layout is complex, version dependent, and describing it in detail
+is beyond the scope of this documentation. However, as a starting point for
+running OpenJDK in a container, at least the following three memory-related
+tasks are key:
+
+. Overriding the JVM maximum heap size.
+
+. Encouraging the JVM to release unused memory to the operating system, if
+   appropriate.
+
+. Ensuring all JVM processes within a container are appropriately configured.
+
+Optimally tuning JVM workloads for running in a container is beyond the scope of
+this documentation, and may involve setting multiple additional JVM options.
+
+[[overriding-the-jvm-maximum-heap-size]]
+=== Overriding the JVM Maximum Heap Size
+
+For many Java workloads, the JVM heap is the largest single consumer of memory.
+Currently, the OpenJDK defaults to allowing up to 1/4 (1/`-XX:MaxRAMFraction`)
+of the compute node’s memory to be used for the heap, regardless of whether the
+OpenJDK is running in a container or not. It is therefore *essential* to
+override this behaviour, especially if a container memory limit is also set.
+
+There are at least two ways the above can be achieved:
+
+. If the container memory limit is set and the experimental options are
+   supported by the JVM, set `-XX:+UnlockExperimentalVMOptions
+   -XX:+UseCGroupMemoryLimitForHeap`.
++
+This sets `-XX:MaxRAM` to the container memory limit, and the maximum heap size
+(`-XX:MaxHeapSize` / `-Xmx`) to 1/`-XX:MaxRAMFraction` (1/4 by default).
+
+. Directly override one of `-XX:MaxRAM`, `-XX:MaxHeapSize` or `-Xmx`.
++
+This option involves hard-coding a value, but has the advantage of allowing a
+safety margin to be calculated.
+
+[[encouraging-the-JVM-to-release-unused-memory]]
+=== Encouraging the JVM to Release Unused Memory to the Operating System
+
+By default, the OpenJDK does not aggressively return unused memory to the
+operating system. This may be appropriate for many containerized Java
+workloads, but notable exceptions include workloads where additional active
+processes co-exist with a JVM within a container, whether those additional
+processes are native, additional JVMs, or a combination of the two.
+
+The xref:../using_images/other_images/jenkins_slaves.adoc#[{product-title}
+Jenkins maven slave image] uses the following JVM arguments to encourage the JVM
+to release unused memory to the operating system: `-XX:+UseParallelGC
+-XX:MinHeapFreeRatio=5 -XX:MaxHeapFreeRatio=10 -XX:GCTimeRatio=4
+-XX:AdaptiveSizePolicyWeight=90`. These arguments are intended to return heap
+memory to the operating system whenever allocated memory exceeds 110% of in-use
+memory (`-XX:MaxHeapFreeRatio`), spending up to 20% of CPU time in the garbage
+collector (`-XX:GCTimeRatio`). At no time will the application heap allocation
+be less than the initial heap allocation (overridden by `-XX:InitialHeapSize` /
+`-Xms`). Detailed additional information is available
+link:https://developers.redhat.com/blog/2014/07/15/dude-wheres-my-paas-memory-tuning-javas-footprint-in-openshift-part-1/[Tuning Java's footprint in OpenShift (Part 1)],
+link:https://developers.redhat.com/blog/2014/07/22/dude-wheres-my-paas-memory-tuning-javas-footprint-in-openshift-part-2/[Tuning Java's footprint in OpenShift (Part 2)],
+and at
+link:https://developers.redhat.com/blog/2017/04/04/openjdk-and-containers/[OpenJDK
+and Containers].
+
+[[ensuring-all-jvm-processes]]
+=== Ensuring All JVM Processes Within a Container Are Appropriately Configured
+
+In the case that multiple JVMs run in the same container, it is essential to
+ensure that they are all configured appropriately. For many workloads it will
+be necessary to grant each JVM a percentage memory budget, leaving a perhaps
+substantial additional safety margin.
+
+Many Java tools use different environment variables (`JAVA_OPTS`, `GRADLE_OPTS`,
+`MAVEN_OPTS`, and so on) to configure their JVMs and it can be challenging to ensure
+that the right settings are being passed to the right JVM.
+
+The `JAVA_TOOL_OPTIONS` environment variable is always respected by the OpenJDK,
+and values specified in `JAVA_TOOL_OPTIONS` will be overridden by other options
+specified on the JVM command line. By default, the
+xref:../using_images/other_images/jenkins_slaves.adoc#[{product-title} Jenkins
+maven slave image] sets `JAVA_TOOL_OPTIONS="-XX:+UnlockExperimentalVMOptions
+-XX:+UseCGroupMemoryLimitForHeap -Dsun.zip.disableMemoryMapping=true"` to ensure
+that these options are used by default for all JVM workloads run in the slave
+image. This does not guarantee that additional options are not required, but is
+intended to be a helpful starting point.
+
+[[finding-memory-request-limit-within-pod]]
+== Finding the Memory Request and Limit From Within a Pod
+
+An application wishing to dynamically discover its memory request and limit from
+within a pod should use the
+xref:downward_api.adoc#dev-guide-downward-api[Downward API]. The following
+snippet shows how this is done.
+
+[source,yaml]
+----
+apiVersion: v1
+kind: Pod
+metadata:
+  name: test
+spec:
+  containers:
+  - name: test
+    image: fedora:latest
+    command:
+    - sleep
+    - "3600"
+    env:
+    - name: MEMORY_REQUEST
+      valueFrom:
+        resourceFieldRef:
+          containerName: test
+          resource: requests.memory
+    - name: MEMORY_LIMIT
+      valueFrom:
+        resourceFieldRef:
+          containerName: test
+          resource: limits.memory
+    resources:
+      requests:
+        memory: 384Mi
+      limits:
+        memory: 512Mi
+----
+
+----
+# oc rsh test
+$ env | grep MEMORY | sort
+MEMORY_LIMIT=536870912
+MEMORY_REQUEST=402653184
+----
+
+The memory limit value can also be read from inside the container by the
+`/sys/fs/cgroup/memory/memory.limit_in_bytes` file.
+
+[[diagnosing-an-oom-kill]]
+== Diagnosing an OOM Kill
+
+{product-title} may kill a process in a container if the total memory usage of
+all the processes in the container exceeds the memory limit, or in serious cases
+of node memory exhaustion.
+
+When a process is OOM killed, this may or may not result in the container
+exiting immediately. If the container PID 1 process receives the *SIGKILL*, the
+container will exit immediately. Otherwise, the container behavior is
+dependent on the behavior of the other processes.
+
+If the container does not exit immediately, an OOM kill is detectable as
+follows:
+
+. A container process exited with code 137, indicating it received a SIGKILL
+   signal
+
+. The oom_kill counter in `/sys/fs/cgroup/memory/memory.oom_control` is
+   incremented
+
+----
+$ grep '^oom_kill ' /sys/fs/cgroup/memory/memory.oom_control
+oom_kill 0
+$ sed -e '' </dev/zero  # provoke an OOM kill
+Killed
+$ echo $?
+137
+$ grep '^oom_kill ' /sys/fs/cgroup/memory/memory.oom_control
+oom_kill 1
+----
+
+If one or more processes in a pod are OOM killed, when the pod subsequently
+exits, whether immediately or not, it will have phase *Failed* and reason
+*OOMKilled*. An OOM killed pod may be restarted depending on the value of
+`restartPolicy`. If not restarted, controllers such as the
+ReplicationController will notice the pod’s failed status and create a new pod
+to replace the old one.
+
+If not restarted, the pod status is as follows:
+
+----
+$ oc get pod test
+NAME      READY     STATUS      RESTARTS   AGE
+test      0/1       OOMKilled   0          1m
+
+$ oc get pod test -o yaml
+...
+status:
+  containerStatuses:
+  - name: test
+    ready: false
+    restartCount: 0
+    state:
+      terminated:
+        exitCode: 137
+        reason: OOMKilled
+  phase: Failed
+----
+
+If restarted, its status is as follows:
+
+----
+$ oc get pod test
+NAME      READY     STATUS    RESTARTS   AGE
+test      1/1       Running   1          1m
+
+$ oc get pod test -o yaml
+...
+status:
+  containerStatuses:
+  - name: test
+    ready: true
+    restartCount: 1
+    lastState:
+      terminated:
+        exitCode: 137
+        reason: OOMKilled
+    state:
+      running:
+  phase: Running
+----
+
+[[diagnosing-evicted-pod]]
+== Diagnosing an Evicted Pod
+
+{product-title} may evict a pod from its node when the node’s memory is
+exhausted. Depending on the extent of memory exhaustion, the eviction may or
+may not be graceful. Graceful eviction implies the main process (PID 1) of each
+container receiving a SIGTERM signal, then some time later a SIGKILL signal if
+the process hasn’t exited already. Non-graceful eviction implies the main
+process of each container immediately receiving a SIGKILL signal.
+
+An evicted pod will have phase *Failed* and reason *Evicted*. It will not be
+restarted, regardless of the value of `restartPolicy`. However, controllers
+such as the ReplicationController will notice the pod’s failed status and create
+a new pod to replace the old one.
+
+----
+$ oc get pod test
+NAME      READY     STATUS    RESTARTS   AGE
+test      0/1       Evicted   0          1m
+
+$ oc get pod test -o yaml
+...
+status:
+  message: 'Pod The node was low on resource: [MemoryPressure].'
+  phase: Failed
+  reason: Evicted
+----

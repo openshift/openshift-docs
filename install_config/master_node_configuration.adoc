@@ -43,7 +43,7 @@ file] to see the valid options for your installed version of {product-title}.
 [IMPORTANT]
 ====
 Whenever you modify the *_master-config.yaml_* file, you must restart the master
-for the changes to take effect.
+for the changes to take effect. See xref:master-node-config-restart-services[Restarting {product-title} services].
 ====
 
 [[master-config-admission-control-config]]
@@ -298,20 +298,25 @@ provide a strategy of their own. Valid grant handling methods are:
 
 | Parameter Name | Description
 
-|`*DisableScheduledImport*`
-|Allows scheduled background import of images to be disabled.
-
 |`*Format*`
 |The format of the name to be built for the system component.
 
-|`*ImageConfig*`
-|Holds options that describe how to build image names for system components.
-
-|`*ImagePolicyConfig*`
-|Controls limits and behavior for importing images.
-
 |`*Latest*`
 |Determines if the latest tag will be pulled from the registry.
+
+|===
+
+[[master-config-image-policy-config]]
+=== Image Policy Configuration
+
+.Image Policy Configuration Parameters
+[cols="3a,6a",options="header"]
+|===
+
+| Parameter Name | Description
+
+|`*DisableScheduledImport*`
+|Allows scheduled background import of images to be disabled.
 
 |`*MaxImagesBulkImportedPerRepository*`
 |Controls the number of images that are imported when a user does a bulk import
@@ -326,6 +331,28 @@ background per minute. The default value is 60.
 |The minimum number of seconds that can elapse between when image streams
 scheduled for background import are checked against the upstream repository. The
 default value is 15 minutes.
+
+|`*AllowedRegistriesForImport*`
+|Limits the docker registries that normal users may import
+images from. Set this list to the registries that you trust to contain valid Docker
+images and that you want applications to be able to import from. Users with
+permission to create Images or ImageStreamMappings via the API are not affected by
+this policy - typically only administrators or system integrations will have those
+permissions.
+
+|`*InternalRegistryHostname*`
+|Sets the hostname for the default internal image
+registry. The value must be in `*hostname[:port]*` format.
+For backward compatibility, users can still use `*OPENSHIFT_DEFAULT_REGISTRY*`
+environment variable but this setting overrides the environment variable.  When
+this is set, the internal registry must have its hostname set as well.
+See xref:registry/extended_registry_configuration#setting-the-registry-hostname[setting the registry hostname] for more details.
+
+|`*ExternalRegistryHostname*`
+|ExternalRegistryHostname sets the hostname for the default external image
+registry. The external hostname should be set only when the image registry
+is exposed externally. The value is used in `*publicDockerImageRepository*`
+field in ImageStreams. The value must be in `*hostname[:port]*` format.
 
 |===
 
@@ -692,7 +719,7 @@ At present this is only implemented for emptyDir volumes, and if the underlying
 |===
 
 [[master-node-config-audit-config]]
-=== Audit Configuration
+=== Basic Audit
 
 Audit provides a security-relevant chronological set of records documenting the
 sequence of activities that have affected system by individual users,
@@ -774,8 +801,117 @@ The directory in `auditFilePath` will be created if it does not exist.
 openshift_master_audit_config={"enabled": true, "auditFilePath": "/var/log/openpaas-oscp-audit/openpaas-oscp-audit.log", "maximumFileRetentionDays": 14, "maximumFileSizeMegabytes": 500, "maximumRetainedFiles": 5}
 ----
 
-[[node-configuration-files]]
+[[master-node-config-advanced-audit]]
+=== Advanced Audit
 
+The advanced audit feature provides several improvements over the
+xref:master-node-config-audit-config[basic audit functionality], including
+fine-grained events filtering and multiple output back ends. The following table
+contains additional options you can use.
+
+.Advanced Audit Configuration Parameters
+
+[cols="3a,6a",options="header"]
+|===
+| Parameter Name | Description
+
+|`policyFile`
+|Path to the file that defines the audit policy configuration.
+
+|`policyConfiguration`
+|An embedded audit policy configuration.
+
+|`logFormat`
+|Specifies the format of the saved audit logs. Allowed values are `legacy` (the
+format used in basic audit), and `json`.
+
+|`webHookKubeConfig`
+|Path to a `.kubeconfig`-formatted file that defines the audit webhook
+configuration, where the events are sent to.
+
+|`webHookMode`
+|Specifies the strategy for sending audit events. Allowed values are `block`
+(blocks processing another event until the previous has fully processed) and
+`batch` (buffers events and delivers in batches).
+|===
+
+To enable the advanced audit feature, you must provide either `policyFile` or
+`policyConfiguration` describing the audit policy rules:
+
+.Sample Audit Policy Configuration
+[source,yaml]
+----
+apiVersion: audit.k8s.io/v1beta1
+kind: Policy
+rules:
+
+  # Do not log watch requests by the "system:kube-proxy" on endpoints or services
+  - level: None <1>
+    users: ["system:kube-proxy"] <2>
+    verbs: ["watch"] <3>
+    resources: <4>
+    - group: ""
+      resources: ["endpoints", "services"]
+
+  # Do not log authenticated requests to certain non-resource URL paths.
+  - level: None
+    userGroups: ["system:authenticated"] <5>
+    nonResourceURLs: <6>
+    - "/api*" # Wildcard matching.
+    - "/version"
+
+  # Log the request body of configmap changes in kube-system.
+  - level: Request
+    resources:
+    - group: "" # core API group
+      resources: ["configmaps"]
+    # This rule only applies to resources in the "kube-system" namespace.
+    # The empty string "" can be used to select non-namespaced resources.
+    namespaces: ["kube-system"] <7>
+
+  # Log configmap and secret changes in all other namespaces at the metadata level.
+  - level: Metadata
+    resources:
+    - group: "" # core API group
+      resources: ["secrets", "configmaps"]
+
+  # Log all other resources in core and extensions at the request level.
+  - level: Request
+    resources:
+    - group: "" # core API group
+    - group: "extensions" # Version of group should NOT be included.
+
+  # A catch-all rule to log all other requests at the Metadata level.
+  - level: Metadata <1>
+----
+<1> There are four possible levels every event can be logged at:
++
+* `None` - Do not log events that match this rule.
++
+* `Metadata` - Log request metadata (requesting user, time stamp, resource, verb,
+etc.), but not request or response body. This is the same level as the one used
+in basic audit.
++
+* `Request` - Log event metadata and request body, but not response body.
++
+* `RequestResponse` - Log event metadata, request, and response bodies.
+<2> A list of users the rule applies to. An empty list implies every user.
+<3> A list of verbs this rule applies to. An empty list implies every verb. This is
+ Kubernetes verb associated with API requests (including `get`, `list`, `watch`,
+ `create`, `update`, `patch`, `delete`, `deletecollection`, and `proxy`).
+<4> A list of resources the rule applies to. An empty list implies every resource.
+Each resource is specified as a group it is assigned to (for example, an empty for
+Kubernetes core API, batch, build.openshift.io, etc.), and a resource list from
+that group.
+<5> A list of groups the rule applies to. An empty list implies every group.
+<6> A list of non-resources URLs the rule applies to.
+<7> A list of namespaces the rule applies to. An empty list implies every namespace.
+
+For more information on advanced audit, see the
+link:https://kubernetes.io/docs/tasks/debug-application-cluster/audit[Kubernetes
+documentation]
+
+[[node-configuration-files]]
 == Node Configuration Files
 
 The following *_node-config.yaml_* file is a sample node configuration file that
@@ -961,9 +1097,12 @@ To create the encrypted file and key file for the above example:
 
 [options="nowrap"]
 ----
-$ oadm ca encrypt --genkey=bindPassword.key --out=bindPassword.encrypted
+$ oc adm ca encrypt --genkey=bindPassword.key --out=bindPassword.encrypted
 > Data to encrypt: B1ndPass0rd!
 ----
+
+Run `oc adm` commands only from the first master listed in the Ansible host inventory file,
+by default *_/etc/ansible/hosts_*.
 
 [WARNING]
 ====
@@ -980,7 +1119,7 @@ new configuration files.
 
 For master host configuration files, use the `openshift start` command with the
 `--write-config` option to write the configuration files. For node hosts, use
-the `oadm create-node-config` command to write the configuration files.
+the `oc adm create-node-config` command to write the configuration files.
 
 The following commands write the relevant launch configuration file(s),
 certificate files, and any other necessary files to the specified
@@ -1012,7 +1151,7 @@ related files in the specified directory:
 
 [options="nowrap"]
 ----
-$ oadm create-node-config \
+$ oc adm create-node-config \
     --node-dir=/openshift.local.config/node-<node_hostname> \
     --node=<node_hostname> \
     --hostnames=<node_hostname>,<ip_address> \
@@ -1075,7 +1214,8 @@ $ openshift start node --config=/openshift.local.config/node-<node_hostname>/nod
 |8|Body-level API debugging information
 |===
 
-You can control which INFO messages are logged by setting the loglevel option in the in *_/etc/sysconfig/atomic-openshift-node_* or *_/etc/sysconfig/atomic-openshift-master_* file. Configuring the logs to collect all messages can lead to large logs that are difficult to interpret and can take up excessive space. Collecting all messages should only be used in debug situations.
+You can control which INFO messages are logged by setting the loglevel option in the in *_/etc/sysconfig/atomic-openshift-node_*, the *_/etc/sysconfig/atomic-openshift-master-api_* file
+and the *_/etc/sysconfig/atomic-openshift-master-controllers_* file. Configuring the logs to collect all messages can lead to large logs that are difficult to interpret and can take up excessive space. Collecting all messages should only be used in debug situations.
 
 [NOTE]
 ====
@@ -1093,7 +1233,8 @@ Use the `-r` option to show the newest entries first.
 For example:
 
 ----
-# journalctl -r -u atomic-openshift-master.service
+# journalctl -r -u atomic-openshift-master-controllers
+# journalctl -r -u atomic-openshift-master-api
 # journalctl -r -u atomic-openshift-node.service
 ----
 
@@ -1107,12 +1248,7 @@ For example:
 ----
 OPTIONS=--loglevel=4
 ----
-. Restart the master or node host as appropriate:
-
-----
-# systemctl restart atomic-openshift-master
-# systemctl restart atomic-openshift-node
-----
+. Restart the master or node host as appropriate.  See xref:master-node-config-restart-services[Restarting {product-title} services].
 
 After the restart, all new log messages will conform to the new setting. Older messages do not change.
 
@@ -1123,82 +1259,162 @@ The default log level can be set using the Advanced Install. For more informatio
 
 The following examples are excerpts from a master *journald* log at various log levels. Timestamps and system information have been removed from these examples.
 
-.Excerpt of journalctl -u atomic-openshift-master.service output at loglevel=0
+.Excerpt of journalctl -u atomic-openshift-master-controllers.service output at loglevel=0
 
 ----
-fit failure on node: PodFitsHostPorts
-E0222 factory.go:361] Error scheduling default router-1
-I0222 event.go:211] Event(api.ObjectReference
-I0222 start_master.go:644] Started Origin Controllers
-I0222 start_master.go:623] Started Kubernetes Controllers
-I0222 endpoints_controller.go:283] Waiting for pods controller
-I0222 event.go:211] Event(api.ObjectReference{Kind:"Node"
-W0222 nodecontroller.go:671] Missing timestamp for Node
-W0222 nodecontroller.go:671] Missing timestamp for Node
-----
-
-
-.Excerpt of journalctl -u atomic-openshift-master.service output at loglevel=2
-
-----
-E0222 factory.go:361] Error scheduling default router-1
-Always TerminationGracePeriodSeconds:0xc20d819b78 ActiveDeadlineSeconds:<nil>
-I0222 scheduler.go:117] Failed to schedule: &{TypeMeta:
-I0222 event.go:211] Event(api.ObjectReference{Kind:
-I0222 replication_controller.go:434] Too few "default"/"router"
-I0222 start_master.go:644] Started Origin Controllers
-I0222 subnets.go:27] Found existing HostSubnet
-I0222 subnets.go:27] Found existing HostSubnet
-I0222 common.go:79] Initializing single-tenant plugin
-I0222 common.go:54] Starting with configured hostname
-I0222 start_master.go:623] Started Kubernetes Controllers
-I0222 plugins.go:291] Loaded volume plugin "kubernetes.io/nf"
-I0222 plugins.go:291] Loaded volume plugin "kubernetes.io/ho"
-I0222 endpoints_controller.go:283] Waiting for pods controller"
-I0222 endpoints_controller.go:283] Waiting for pods controller"
-W0222 nodecontroller.go:671] Missing timestamp for Node
-I0222 nodecontroller.go:604] Recording Registered Node
-I0222 nodecontroller.go:416] NodeController observed
+4897 plugins.go:77] Registered admission plugin "NamespaceLifecycle"
+4897 start_master.go:290] Warning: assetConfig.loggingPublicURL: Invalid value: "": required to view aggregated container logs in the console, master start will continue.
+4897 start_master.go:290] Warning: assetConfig.metricsPublicURL: Invalid value: "": required to view cluster metrics in the console, master start will continue.
+4897 start_master.go:290] Warning: aggregatorConfig.proxyClientInfo: Invalid value: "": if no client certificate is specified, the aggregator will be unable to proxy to remote servers,
+4897 start_master.go:412] Starting controllers on 0.0.0.0:8444 (v3.7.14)
+4897 start_master.go:416] Using images from "openshift3/ose-<component>:v3.7.14"
+4897 standalone_apiserver.go:106] Started health checks at 0.0.0.0:8444
+4897 plugins.go:77] Registered admission plugin "NamespaceLifecycle"
+4897 configgetter.go:53] Initializing cache sizes based on 0MB limit
+4897 leaderelection.go:105] Attempting to acquire openshift-master-controllers lease as master-bkr-hv03-guest44.dsal.lab.eng.bos.redhat.com-10.19.41.74-xtz6lbqb, renewing every 3s, hold
+4897 leaderelection.go:179] attempting to acquire leader lease...
+systemd[1]: Started Atomic OpenShift Master Controllers.
+4897 leaderelection.go:189] successfully acquired lease kube-system/openshift-master-controllers
+4897 event.go:218] Event(v1.ObjectReference{Kind:"ConfigMap", Namespace:"kube-system", Name:"openshift-master-controllers", UID:"aca86731-ffbe-11e7-8d33-525400c845a8", APIVersion:"v1",
+4897 start_master.go:627] Started serviceaccount-token controller
+4897 factory.go:351] Creating scheduler from configuration: {{ } [{NoVolumeZoneConflict <nil>} {MaxEBSVolumeCount <nil>} {MaxGCEPDVolumeCount <nil>} {MaxAzureDiskVolumeCount <nil>} {Mat
+4897 factory.go:360] Registering predicate: NoVolumeZoneConflict
+4897 plugins.go:145] Predicate type NoVolumeZoneConflict already registered, reusing.
+4897 factory.go:360] Registering predicate: MaxEBSVolumeCount
+4897 plugins.go:145] Predicate type MaxEBSVolumeCount already registered, reusing.
+4897 factory.go:360] Registering predicate: MaxGCEPDVolumeCount
 ----
 
 
-.Excerpt of journalctl -u atomic-openshift-master.service output at loglevel=4
+.Excerpt of journalctl -u atomic-openshift-master-controllers.service output at loglevel=2
 
 ----
-controller_utils.go:592] Ignoring inactive pod default/router-1-0ww1g in state Failed, deletion time <nil>
-I0222 replication_controller.go:497] Finished syncing controller "default/docker-registry-2" (206.507µs)
-I0222 controller_utils.go:592] Ignoring inactive pod default/router-1-zyi9y in state Failed, deletion time <nil>
-I0222 replication_controller.go:497] Finished syncing controller "default/docker-registry-1" (176.748µs)
-I0222 controller_utils.go:160] Controller default/router-1 either never recorded expectations, or the ttl expired.
-I0222 controller_utils.go:160] Controller default/docker-registry-2 either never recorded expectations, or the ttl expired.
-I0222 nodecontroller.go:709] Node dell-r430-20.gsslab.pnq.redhat.com ReadyCondition updated. Updating timestamp.
-I0222 factory.go:474] Backing off 1m0s for pod &{backoff:60000000000 lastUpdate:{sec:636233 loc:0x59a6560} reqInFlight:1}
-; retrying
-fit failure on node (ibm-x3650m4-01-vm-02.lab.eng.bos.redhat.com): PodFitsHostPorts
-E0222 factory.go:361] Error scheduling default router-1-d7svd: pod (router-1-d7svd) failed to fit in any node
-b089d8 ActiveDeadlineSeconds:<nil> DNSPolicy:ClusterFirst NodeSelector:map[region:infra] ServiceAccountName:router NodeName: SecurityContext:0xc20ecd00c0 ImagePullSec
-]} Spec:{Volumes:[{Name:router-token-h6q3n VolumeSource:{HostPath:<nil> EmptyDir:<nil> GCEPersistentDisk:<nil> AWSElasticBlockStore:<nil> GitRepo:<nil> Secret:0xc20eb
- I0222 factory.go:474] Backing off 16s for pod &{backoff:32000000000 lastUpdate:{sec:63623353879 nsec:506358920 loc:0x59a6560} reqInFlight:1}
-b118b8 ActiveDeadlineSeconds:<nil> DNSPolicy:ClusterFirst NodeSelector:map[region:infra] ServiceAccountName:router NodeName:
+4897 master.go:47] Initializing SDN master of type "redhat/openshift-ovs-subnet"
+4897 master.go:107] Created ClusterNetwork default (network: "10.128.0.0/14", hostSubnetBits: 9, serviceNetwork: "172.30.0.0/16", pluginName: "redhat/openshift-ovs-subnet")
+4897 start_master.go:690] Started "openshift.io/sdn"
+4897 start_master.go:680] Starting "openshift.io/service-serving-cert"
+4897 controllermanager.go:466] Started "namespace"
+4897 controllermanager.go:456] Starting "daemonset"
+4897 controller_utils.go:1025] Waiting for caches to sync for namespace controller
+4897 shared_informer.go:298] resyncPeriod 120000000000 is smaller than resyncCheckPeriod 600000000000 and the informer has already started. Changing it to 600000000000
+4897 start_master.go:690] Started "openshift.io/service-serving-cert"
+4897 start_master.go:680] Starting "openshift.io/image-signature-import"
+4897 start_master.go:690] Started "openshift.io/image-signature-import"
+4897 start_master.go:680] Starting "openshift.io/templateinstance"
+4897 controllermanager.go:466] Started "daemonset"
+4897 controllermanager.go:456] Starting "statefulset"
+4897 daemoncontroller.go:222] Starting daemon sets controller
+4897 controller_utils.go:1025] Waiting for caches to sync for daemon sets controller
+4897 controllermanager.go:466] Started "statefulset"
+4897 controllermanager.go:456] Starting "cronjob"
+4897 stateful_set.go:147] Starting stateful set controller
+4897 controller_utils.go:1025] Waiting for caches to sync for stateful set controller
+4897 start_master.go:690] Started "openshift.io/templateinstance"
+4897 start_master.go:680] Starting "openshift.io/horizontalpodautoscaling
 ----
 
 
-.Excerpt of journalctl -u atomic-openshift-master.service output at loglevel=8
+.Excerpt of journalctl -u atomic-openshift-master-controllers.service output at loglevel=4
 
 ----
-I0222 round_trippers.go:271] Request Headers:
-I0222 round_trippers.go:264] GET https://dell-r430-20.gsslab
-I0222 round_trippers.go:274]     User-Agent: openshift/v3.2.
-I0222 round_trippers.go:274]     Accept: application/json, *
-I0222 round_trippers.go:271] Request Headers:
-I0222 round_trippers.go:264] GET https://dell-r430-20.gsslab
-I0222 request.go:870] Response Body: {"kind":"ClusterRole","
-I0222 round_trippers.go:295]     Content-Type: application/j
-I0222 round_trippers.go:295]     Cache-Control: no-store
-I0222 round_trippers.go:295]     Content-Length: 898
-I0222 round_trippers.go:295]     Date: Wed, 22 Feb 2017 09:3
-I0222 round_trippers.go:292] Response Headers:
-I0222 round_trippers.go:289] Response Status: 200 OK in 7 mi
-I0222 configgetter.go:127]  using watch cache storage (capacity=1000)
-I0222 controller_utils.go:592] Ignoring inactive pod
+4897 factory.go:366] Registering priority: Zone
+4897 factory.go:401] Creating scheduler with fit predicates 'map[GeneralPredicates:{} CheckNodeMemoryPressure:{} CheckNodeDiskPressure:{} Region:{} NoVolumeZoneC
+4897 controller_utils.go:1025] Waiting for caches to sync for tokens controller
+4897 controllermanager.go:108] Version: v1.7.6+a08f5eeb62
+4897 leaderelection.go:179] attempting to acquire leader lease...
+4897 leaderelection.go:189] successfully acquired lease kube-system/kube-controller-manager
+4897 event.go:218] Event(v1.ObjectReference{Kind:"ConfigMap", Namespace:"kube-system", Name:"kube-controller-manager", UID:"acb3e9c6-ffbe-11e7-8d33-525400c845a8", APIVersion:"v1", Resou
+4897 controller_utils.go:1032] Caches are synced for tokens controller
+4897 plugins.go:101] No cloud provider specified.
+4897 controllermanager.go:481] "serviceaccount-token" is disabled
+4897 controllermanager.go:450] "bootstrapsigner" is disabled
+4897 controllermanager.go:450] "tokencleaner" is disabled
+4897 controllermanager.go:456] Starting "garbagecollector"
+4897 start_master.go:680] Starting "openshift.io/build"
+4897 controllermanager.go:466] Started "garbagecollector"
+4897 controllermanager.go:456] Starting "deployment"
+4897 garbagecollector.go:126] Starting garbage collector controller
+4897 controller_utils.go:1025] Waiting for caches to sync for garbage collector controller
+4897 controllermanager.go:466] Started "deployment"
+4897 controllermanager.go:450] "horizontalpodautoscaling" is disabled
+4897 controllermanager.go:456] Starting "disruption"
+4897 deployment_controller.go:152] Starting deployment controller
 ----
+
+
+.Excerpt of journalctl -u atomic-openshift-master-controllers.service output at loglevel=8
+
+----
+4897 plugins.go:77] Registered admission plugin "NamespaceLifecycle"
+4897 start_master.go:290] Warning: assetConfig.loggingPublicURL: Invalid value: "": required to view aggregated container logs in the console, master start will continue.
+4897 start_master.go:290] Warning: assetConfig.metricsPublicURL: Invalid value: "": required to view cluster metrics in the console, master start will continue.
+4897 start_master.go:290] Warning: aggregatorConfig.proxyClientInfo: Invalid value: "": if no client certificate is specified, the aggregator will be unable to proxy to remote serv
+4897 start_master.go:412] Starting controllers on 0.0.0.0:8444 (v3.7.14)
+4897 start_master.go:416] Using images from "openshift3/ose-<component>:v3.7.14"
+4897 standalone_apiserver.go:106] Started health checks at 0.0.0.0:8444
+4897 plugins.go:77] Registered admission plugin "NamespaceLifecycle"
+4897 configgetter.go:53] Initializing cache sizes based on 0MB limit
+4897 leaderelection.go:105] Attempting to acquire openshift-master-controllers lease as master-bkr-hv03-guest44.dsal.lab.eng.bos.redhat.com-10.19.41.74-xtz6lbqb, renewing every 3s,
+4897 leaderelection.go:179] attempting to acquire leader lease...
+systemd[1]: Started Atomic OpenShift Master Controllers.
+4897 leaderelection.go:189] successfully acquired lease kube-system/openshift-master-controllers
+4897 event.go:218] Event(v1.ObjectReference{Kind:"ConfigMap", Namespace:"kube-system", Name:"openshift-master-controllers", UID:"aca86731-ffbe-11e7-8d33-525400c845a8", APIVersion:"
+4897 start_master.go:627] Started serviceaccount-token controller
+----
+
+
+.Excerpt of journalctl -u atomic-openshift-master-api.service output at loglevel=2
+
+----
+4613 plugins.go:77] Registered admission plugin "NamespaceLifecycle"
+4613 master.go:320] Starting Web Console https://bkr-hv03-guest44.dsal.lab.eng.bos.redhat.com:8443/console/
+4613 master.go:329] Starting OAuth2 API at /oauth
+4613 master.go:320] Starting Web Console https://bkr-hv03-guest44.dsal.lab.eng.bos.redhat.com:8443/console/
+4613 master.go:329] Starting OAuth2 API at /oauth
+4613 master.go:320] Starting Web Console https://bkr-hv03-guest44.dsal.lab.eng.bos.redhat.com:8443/console/
+4613 master.go:329] Starting OAuth2 API at /oauth
+4613 swagger.go:38] No API exists for predefined swagger description /oapi/v1
+4613 swagger.go:38] No API exists for predefined swagger description /api/v1
+[restful] 2018/01/22 16:53:14 log.go:33: [restful/swagger] listing is available at https://bkr-hv03-guest44.dsal.lab.eng.bos.redhat.com:8443/swaggerapi
+[restful] 2018/01/22 16:53:14 log.go:33: [restful/swagger] https://bkr-hv03-guest44.dsal.lab.eng.bos.redhat.com:8443/swaggerui/ is mapped to folder /swagger-ui/
+4613 master.go:320] Starting Web Console https://bkr-hv03-guest44.dsal.lab.eng.bos.redhat.com:8443/console/
+4613 master.go:329] Starting OAuth2 API at /oauth
+4613 swagger.go:38] No API exists for predefined swagger description /oapi/v1
+4613 swagger.go:38] No API exists for predefined swagger description /api/v1
+[restful] 2018/01/22 16:53:14 log.go:33: [restful/swagger] listing is available at https://bkr-hv03-guest44.dsal.lab.eng.bos.redhat.com:8443/swaggerapi
+[restful] 2018/01/22 16:53:14 log.go:33: [restful/swagger] https://bkr-hv03-guest44.dsal.lab.eng.bos.redhat.com:8443/swaggerui/ is mapped to folder /swagger-ui/
+Starting Web Console https://bkr-hv03-guest44.dsal.lab.eng.bos.redhat.com:8443/console/
+Starting OAuth2 API at /oauth
+No API exists for predefined swagger description /oapi/v1
+No API exists for predefined swagger description /api/v1
+----
+
+[[master-node-config-restart-services]]
+== Restarting {product-title} services
+To apply configuration changes, you must restart {product-title} services.
+
+* To restart master, run the command:
++
+ifdef::openshift-enterprise[]
+----
+# systemctl restart atomic-openshift-master-api atomic-openshift-master-controller
+----
+endif::[]
+ifdef::openshift-origin[]
+----
+# systemctl restart origin-master-api origin-master-controllers
+----
+endif::[]
+
+* To restart node hosts, on each node, run the command:
++
+ifdef::openshift-enterprise[]
+----
+# systemctl restart atomic-openshift-node
+----
+endif::[]
+ifdef::openshift-origin[]
+----
+# systemctl restart origin-node
+----
+endif::[]

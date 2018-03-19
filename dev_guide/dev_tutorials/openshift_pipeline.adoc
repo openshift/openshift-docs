@@ -1,0 +1,290 @@
+[[dev-guide-openshift-pipeline-builds]]
+= OpenShift Pipeline Builds
+{product-author}
+{product-version}
+:data-uri:
+:icons:
+:experimental:
+:toc: macro
+:toc-title:
+:prewrap!:
+
+toc::[]
+
+[[introduction]]
+== Introduction
+
+Whether you are creating a simple website or a complex web of microservices, use
+OpenShift Pipelines to build, test, deploy, and promote your applications on
+OpenShift.
+
+In addition to standard Jenkins Pipeline Syntax, the OpenShift Jenkins image
+provides the OpenShift Domain Specific Language (DSL) (through the OpenShift Jenkins
+Client Plug-in), which aims to provide a readable, concise, comprehensive, and
+fluent syntax for rich interactions with an OpenShift API server, allowing for
+even more control over the build, deployment, and promotion of applications on
+your OpenShift cluster.
+
+This example demonstrates how to create an OpenShift Pipeline that will build,
+deploy, and verify a `Node.js/MongoDB` application using the
+link:https://github.com/openshift/nodejs-ex/blob/master/openshift/templates/nodejs-mongodb.json[`nodejs-mongodb.json`]
+template.
+
+
+[[creating-the-jenkins-master]]
+== Creating the Jenkins Master
+
+To create the Jenkins master, run:
+
+----
+  $ oc project <project_name> <1>
+  $ oc new-app jenkins-ephemeral <2>
+----
+<1> Select the project that you want to use or create a new project with `oc
+new-project <project_name>`.
+<2> If you want to use persistent storage, use `jenkins-persistent` instead.
+
+[NOTE]
+====
+If Jenkins auto-provisioning is enabled on your cluster, and you do not need to
+make any customizations to the Jenkins master, you can skip the previous step.
+
+ifdef::openshift-origin,openshift-enterprise[]
+For more information about
+Jenkins autoprovisioning, see
+xref:../../install_config/configuring_pipeline_execution.adoc#install-config-configuring-pipeline-execution[Configuring
+Pipeline Execution].
+endif::[]
+====
+
+[[the-pipeline-build-config]]
+== The Pipeline Build Configuration
+
+Now that the Jenkins master is up and running, create a BuildConfig that employs
+the Jenkins pipeline strategy to build, deploy, and scale the `Node.js/MongoDB`
+example application.
+
+Create a file named *nodejs-sample-pipeline.yaml* with the following content:
+
+[source,yaml]
+
+----
+kind: "BuildConfig"
+apiVersion: "v1"
+metadata:
+  name: "nodejs-sample-pipeline"
+spec:
+  strategy:
+    jenkinsPipelineStrategy:
+      jenkinsfile: <pipeline content from below>
+    type: JenkinsPipeline
+----
+
+For more information about configuring the Pipeline Build Strategy, see
+xref:../builds/build_strategies.adoc#pipeline-strategy-options[Pipeline
+Strategy Options].
+
+[[the-jenkinsfile]]
+== The Jenkinsfile
+
+Once you create a BuildConfig with a `jenkinsPipelineStrategy`, tell the
+pipeline what to do by using an inline `jenkinsfile`. This example does not set
+up a Git repository for the application.
+
+The following `jenkinsfile` content is written in Groovy using the OpenShift
+DSL. For this example, include inline content in the BuildConfig using the
+link:http://www.yaml.org/spec/1.2/spec.html#id2795688[YAML Literal Style],
+though including a `jenkinsfile` in your source repository is the preferred
+method.
+
+The completed BuildConfig can be viewed in the OpenShift Origin repository in
+the examples directory,
+link:https://github.com/openshift/origin/tree/master/examples/jenkins/pipeline/nodejs-sample-pipeline.yaml[`nodejs-sample-pipeline.yaml`].
+
+[source, groovy]
+
+----
+def templatePath = 'https://raw.githubusercontent.com/openshift/nodejs-ex/master/openshift/templates/nodejs-mongodb.json' <1>
+def templateName = 'nodejs-mongodb-example' <2>
+pipeline {
+  agent {
+    node {
+      label 'nodejs' <3>
+    }
+  }
+  options {
+    timeout(time: 20, unit: 'MINUTES') <4>
+  }
+  stages {
+    stage('preamble') {
+        steps {
+            script {
+                openshift.withCluster() {
+                    openshift.withProject() {
+                        echo "Using project: ${openshift.project()}"
+                    }
+                }
+            }
+        }
+    }
+    stage('cleanup') {
+      steps {
+        script {
+            openshift.withCluster() {
+                openshift.withProject() {
+                  openshift.selector("all", [ template : templateName ]).delete() <5>
+                  if (openshift.selector("secrets", templateName).exists()) { <6>
+                    openshift.selector("secrets", templateName).delete()
+                  }
+                }
+            }
+        }
+      }
+    }
+    stage('create') {
+      steps {
+        script {
+            openshift.withCluster() {
+                openshift.withProject() {
+                  openshift.newApp(templatePath) <7>
+                }
+            }
+        }
+      }
+    }
+    stage('build') {
+      steps {
+        script {
+            openshift.withCluster() {
+                openshift.withProject() {
+                  def builds = openshift.selector("bc", templateName).related('builds')
+                  timeout(5) { <8>
+                    builds.untilEach(1) {
+                      return (it.object().status.phase == "Complete")
+                    }
+                  }
+                }
+            }
+        }
+      }
+    }
+    stage('deploy') {
+      steps {
+        script {
+            openshift.withCluster() {
+                openshift.withProject() {
+                  def rm = openshift.selector("dc", templateName).rollout()
+                  timeout(5) { <9>
+                    openshift.selector("dc", templateName).related('pods').untilEach(1) {
+                      return (it.object().status.phase == "Running")
+                    }
+                  }
+                }
+            }
+        }
+      }
+    }
+    stage('tag') {
+      steps {
+        script {
+            openshift.withCluster() {
+                openshift.withProject() {
+                  openshift.tag("${templateName}:latest", "${templateName}-staging:latest") <10>
+                }
+            }
+        }
+      }
+    }
+  }
+}
+----
+<1> Path of the template to use.
+<2> Name of the template that will be created.
+<3> Spin up a `node.js` slave pod on which to run this build.
+<4> Set a timeout of 20 minutes for this pipeline.
+<5> Delete everything with this template label.
+<6> Delete any secrets with this template label.
+<7> Create a new application from the `templatePath`.
+<8> Wait up to five minutes for the build to complete.
+<9> Wait up to five minutes for the deployment to complete.
+<10> If everything else succeeded, tag the `$ {templateName}:latest` image as
+`$ {templateName}-staging:latest`. A pipeline BuildConfig for the staging
+environment can watch for the `$ {templateName}-staging:latest` image to change
+and then deploy it to the staging environment.
+
+[NOTE]
+====
+The previous example was written using the *declarative pipeline* style,
+but the older *scripted pipeline* style is also supported.
+====
+
+
+[[creating-the-pipeline]]
+== Creating the Pipeline
+
+You can create the BuildConfig in your OpenShift cluster by running:
+
+[source]
+
+----
+$ oc create -f nodejs-sample-pipeline.yaml
+----
+
+If you do not want to create your own file, you can use the sample from the
+Origin repository by running:
+
+[source]
+
+----
+$ oc create -f https://raw.githubusercontent.com/openshift/origin/master/examples/jenkins/pipeline/nodejs-sample-pipeline.yaml
+----
+
+For more information about the OpenShift DSL syntax used here, see
+https://github.com/openshift/jenkins-client-plugin/blob/master/README.md[OpenShift
+Jenkins Client Plug-in].
+
+[[starting-the-pipeline]]
+== Starting the Pipeline
+
+Start the pipeline with the following command:
+
+[source]
+
+----
+$ oc start-build nodejs-sample-pipeline
+----
+
+[NOTE]
+====
+Alternatively, you can start your pipeline with the OpenShift Web Console by
+navigating to the Builds -> Pipeline section and clicking *Start Pipeline*, or
+by visiting the Jenkins Console, navigating to the Pipeline that you created,
+and clicking *Build Now*.
+====
+
+Once the pipeline is started, you should see the following actions performed
+within your project:
+
+* A job instance is created on the Jenkins server.
+* A slave pod is launched, if your pipeline requires one.
+* The pipeline runs on the slave pod, or the master if no slave is required.
+** Any previously created resources with the `template=nodejs-mongodb-example`
+label will be deleted.
+** A new application, and all of its associated resources, will be created from
+the `nodejs-mongodb-example` template.
+** A build will be started using the `nodejs-mongodb-example` BuildConfig.
+*** The pipeline will wait until the build has completed to trigger the next stage.
+** A deployment will be started using the `nodejs-mongodb-example` deployment
+configuration.
+*** The pipeline will wait until the deployment has completed to trigger the next
+stage.
+** If the build and deploy are successful, the `nodejs-mongodb-example:latest`
+image will be tagged as `nodejs-mongodb-example:stage`.
+* The slave pod is deleted, if one was required for the pipeline.
+
+[NOTE]
+====
+The best way to visualize the pipeline execution is by viewing it in the
+OpenShift Web Console. You can view your pipelines by logging into the web
+console and navigating to Builds -> Pipelines.
+====

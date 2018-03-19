@@ -46,7 +46,7 @@ with, for example, those used in step 3 of the instructions in the
 xref:registry-non-production-use[Non-Production Use] section:
 +
 ----
-$ oadm registry <options> -o yaml > registry.yaml
+$ oc adm registry <options> -o yaml > registry.yaml
 ----
 
 . Edit *_registry.yaml_*, find the `Service` there,
@@ -67,10 +67,10 @@ To minimize cluster disruption, you must reboot the masters:
 +
 ----
 ifdef::openshift-origin[]
-# systemctl restart origin-master
+# systemctl restart origin-master-api origin-master-controllers
 endif::[]
 ifdef::openshift-enterprise[]
-# systemctl restart atomic-openshift-master
+# systemctl restart atomic-openshift-master-api atomic-openshift-master-controllers
 endif::[]
 ----
 // Code block snarfed from ../http_proxies.adoc, w/ node-reboot stuff removed.
@@ -120,6 +120,37 @@ link:https://access.redhat.com/search/#/container-images[Red Hat Customer Portal
 Once the whitelist is configured, if a user tries to pull from a docker registry
 that is not on the whitelist, they will receive an error message stating that
 this registry is not allowed.
+
+[[setting-the-registry-hostname]]
+== Setting the Registry Hostname
+
+You can configure the hostname and port the registry is known by for both internal and external references.
+By doing this, image streams will provide hostname based push and pull specifications for images,
+allowing consumers of the images to be isolated from changes to the registry service ip and potentially
+allowing image streams and their references to be portable between clusters.
+
+To set the hostname used to reference the registry from within the cluster, set the `internalRegistryHostname`
+in the `imagePolicyConfig` section of the master configuration file.  The external hostname is controlled by setting the `externalRegistryHostname` value in the same location.
+
+.Image Policy Configuration
+[source,yaml]
+----
+imagePolicyConfig:
+  internalRegistryHostname: docker-registry.default.svc.cluster.local:5000
+  externalRegistryHostname: docker-registry.mycompany.com
+----
+
+The registry itself must be configured with the same internal hostname value.  This can be accomplished by setting the
+`*REGISTRY_OPENSHIFT_SERVER_ADDR*` environment variable on the registry deployment configuration,
+or by setting the value in the xref:extended_registry_configuration#docker-registry-configuration-reference-openshift[OpenShift section] of the registry configuration.
+
+[NOTE]
+====
+If you have enabled TLS for your registry the server certificate must
+include the hostnames by which you expect the registry to be referenced.
+See xref:securing_and_exposing_registry.adoc#securing-the-registry[securing
+the registry] for instructions on adding hostnames to the server certificate.
+====
 
 [[advanced-overriding-the-registry-configuration]]
 == Overriding the Registry Configuration
@@ -525,6 +556,29 @@ xref:../../architecture/core_concepts/builds_and_image_streams.adoc#image-stream
 stream], a client pulls from. All the unique remote registry references in
 such entries will be tried in turn until the blob is found.
 
+Pullthrough will only occur if an image stream tag exists for the image being
+pulled. For example, if the image being pulled is
+`*docker-registry.default.svc:5000/yourproject/yourimage:prod*` then the
+registry will look for an image stream tag named `*yourimage:prod*` in the
+project `*yourproject*`. If it finds one, it will attempt to pull the image
+using the `*dockerImageReference*` associated with that image stream tag.
+
+When performing pullthrough, the registry will use pull credentials found in the
+project associated with the image stream tag that is being referenced. This
+capability also makes it possible for you to pull images that reside on a
+registry they do not have credentials to access, as long as you have access
+to the image stream tag that references the image.
+
+Note that by default image stream tags use a reference policy type of `*Source*`
+which means that when the image stream reference is resolved to an image pull
+specification, the specification used will point to the source of the image.
+For images hosted on external registries, this will be the external registry and
+as a result the resource will reference and pull the image by the external
+registry. For example, `*registry.access.redhat.com/openshift3/jenkins-2-rhel7*` and
+pullthrough will not apply. To ensure that resources referencing image streams
+use a pull specification that points to the internal registry, the image stream
+tag should use a reference policy type of `*Local*`. More information is available on
+xref:../../dev_guide/managing_images.adoc#reference-policy[Reference Policy].
 
 This feature is on by default. However, it can be disabled using a
 xref:docker-registry-configuration-reference-middleware[configuration option].
@@ -607,18 +661,45 @@ Currently, this section allows you to configure registry metrics collection:
 ----
 openshift:
   version: 1.0 <1>
+  server:
+    addr: docker-registry.default.svc <2>
   metrics:
-    enabled: false <2>
-    secret: <secret> <3>
+    enabled: false <3>
+    secret: <secret> <4>
+  requests:
+    read:
+      maxrunning: 10 <5>
+      maxinqueue: 10 <6>
+      maxwaitinqueue 2m <7>
+    write:
+      maxrunning: 10 <8>
+      maxinqueue: 10 <9>
+      maxwaitinqueue 2m <10>
+
 ----
 <1> A mandatory entry specifying configuration version of this section. The only
 supported value is `1.0`.
-<2> Can be set to `true` to enable metrics collection. The same can be achieved
-using the boolean environment variable
-`REGISTRY_OPENSHIFT_METRICS_ENABLED=true`.
-<3> A secret used to authorize client requests. Metrics clients must use it as a
+<2> The hostname of the registry.  Should be set to the same value configured on the
+master.  It can be overridden by the environment variable `REGISTRY_OPENSHIFT_SERVER_ADDR`.
+<3> Can be set to `true` to enable metrics collection. It can be overridden by the boolean
+environment variable `REGISTRY_OPENSHIFT_METRICS_ENABLED`.
+<4> A secret used to authorize client requests. Metrics clients must use it as a
 bearer token in `Authorization` header. It can be overridden by the environment
 variable `REGISTRY_OPENSHIFT_METRICS_SECRET`.
+<5> Maximum number of simultaneous pull requests.  It can be overridden by the
+environment variable `REGISTRY_OPENSHIFT_REQUESTS_READ_MAXRUNNING`.  Zero indicates no limit.
+<6> Maximum number of queued pull requests.  It can be overridden by the
+environment variable `REGISTRY_OPENSHIFT_REQUESTS_READ_MAXINQUEUE`.  Zero indicates no limit.
+<7> Maximum time a pull request can wait in the queue before being rejected.
+It can be overridden by the environment variable `REGISTRY_OPENSHIFT_REQUESTS_READ_MAXWAITINQUEUE`.
+Zero indicates no limit.
+<8> Maximum number of simultaneous push requests.  It can be overridden by the
+environment variable `REGISTRY_OPENSHIFT_REQUESTS_WRITE_MAXRUNNING`.  Zero indicates no limit.
+<9> Maximum number of queued push requests.  It can be overridden by the
+environment variable `REGISTRY_OPENSHIFT_REQUESTS_WRITE_MAXINQUEUE`.  Zero indicates no limit.
+<10> Maximum time a push request can wait in the queue before being rejected.  It can be overridden by the
+environment variable `REGISTRY_OPENSHIFT_REQUESTS_WRITE_MAXWAITINQUEUE`.
+Zero indicates no limit.
 
 See xref:accessing_registry.adoc#accessing-registry-metrics[Accessing Registry Metrics] for usage information.
 
@@ -685,5 +766,41 @@ health check at */healthz*.
 Proxy configuration should not be enabled. This functionality is provided by
 the xref:docker-registry-configuration-reference-middleware[{product-title}
 repository middleware extension], *pullthrough: true*.
+
+[[docker-registry-configuration-reference-cache]]
+=== Cache
+
+The integrated registry actively caches data to reduce the number of calls to
+slow external resources. There are two caches:
+
+. The storage cache that is used to cache blobs metadata. This cache does not
+have an expiration time and the data is there until it is explicitly deleted.
+
+. The application cache contains association between blobs and repositories.
+The data in this cache has an expiration time.
+
+In order to completely turn off the cache, you need to change the configuration:
+
+[source,yaml]
+----
+version: 0.1
+log:
+  level: debug
+http:
+  addr: :5000
+storage:
+  cache: {} <1>
+openshift:
+  version: 1.0
+  cache:
+    disabled: true <2>
+    blobrepositoryttl: 10m
+----
+
+<1> Disables cache of metadata accessed in the storage backend. Without this
+cache, the registry server will constantly access the backend for metadata.
+<2> Disables the cache in which contains the blob and repository associations.
+Without this cache, the registry server will continually re-query the data from
+the master API and recompute the associations.
 
 // end::registry-configuration-reference[]

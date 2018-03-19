@@ -33,7 +33,7 @@ administrator that is interacting with {product-title}.
 A user can be assigned to one or more _groups_, each of which represent a
 certain set of users. Groups are useful when
 ifdef::openshift-enterprise,openshift-origin[]
-xref:../../admin_guide/manage_authorization_policy.adoc#admin-guide-manage-authorization-policy[managing authorization
+xref:../../admin_guide/manage_rbac.adoc#admin-guide-manage-rbac[managing authorization
 policies]
 endif::[]
 ifdef::openshift-dedicated[]
@@ -49,7 +49,7 @@ system groups, or _virtual groups_, that are automatically provisioned by
 OpenShift.
 ifdef::openshift-enterprise,openshift-origin[]
 These can be seen when
-xref:../../admin_guide/manage_authorization_policy.adoc#viewing-cluster-bindings[viewing
+xref:../../admin_guide/manage_rbac.adoc#viewing-cluster-bindings[viewing
 cluster bindings].
 endif::[]
 
@@ -120,7 +120,7 @@ impersonate *system:admin*, which in turn has cluster administrator permissions.
 This grants some protection against typos (but not security) for someone
 administering the cluster. For example, `oc delete nodes --all` would be
 forbidden, but `oc delete nodes --all --as=system:admin` would be allowed. You
-can add a user to that group using `oadm policy add-cluster-role-to-user sudoer
+can add a user to that group using `oc adm policy add-cluster-role-to-user sudoer
 <username>`.
 
 [[oauth]]
@@ -172,7 +172,7 @@ To register additional clients:
 ----
 $ oc create -f <(echo '
 kind: OAuthClient
-apiVersion: v1
+apiVersion: oauth.openshift.io/v1
 metadata:
  name: demo <1>
 secret: "..." <2>
@@ -195,8 +195,8 @@ xref:../../admin_guide/service_accounts.adoc#admin-guide-service-accounts[servic
 account] can be used as a constrained form of OAuth client. Service accounts can
 only request a subset of
 xref:../../admin_guide/scoped_tokens.adoc#admin-guide-scoped-tokens[scopes] that
-allow access to some basic user information and role-based power inside of the
-service account's own namespace:
+allow access to some basic user information
+and role-based power inside of the service account's own namespace:
 
 * `user:info`
 * `user:check-access`
@@ -221,7 +221,7 @@ xref:redirect-uris-for-service-accounts[Redirect URIs for Service Accounts as
 OAuth Clients] provides more information.
 
 [[redirect-uris-for-service-accounts]]
-==== Redirect URIs for Service Accounts as OAuth Clients
+=== Redirect URIs for Service Accounts as OAuth Clients
 
 Annotation keys must have the prefix
 `serviceaccounts.openshift.io/oauth-redirecturi.` or
@@ -343,6 +343,207 @@ desired behavior:
 ----
 "serviceaccounts.openshift.io/oauth-redirectreference.first": "{\"kind\":\"OAuthRedirectReference\",\"apiVersion\":\"v1\",\"reference\":{\"kind\":\"Route\",\"name\":\"jenkins\"}}"
 "serviceaccounts.openshift.io/oauth-redirecturi.second": "https://other.com"
+----
+
+[[api-events-oauth-clients]]
+==== API Events for OAuth
+
+In some cases the API server returns an *unexpected condition* error message
+that is difficult to debug without direct access to the API master log.
+The underlying reason for the error is purposely obscured in order
+to avoid providing an unauthenticated user with information about the server's state.
+
+A subset of these errors is related to service account OAuth configuration issues.
+These issues are captured in events that can be viewed by non-administrator users. When encountering
+an *unexpected condition* server error during OAuth, run `oc get events` to view these events under `ServiceAccount`.
+
+The following example warns of a service account that is missing a proper OAuth redirect URI:
+
+----
+$ oc get events | grep ServiceAccount
+1m         1m          1         proxy                    ServiceAccount                                  Warning   NoSAOAuthRedirectURIs   service-account-oauth-client-getter   system:serviceaccount:myproject:proxy has no redirectURIs; set serviceaccounts.openshift.io/oauth-redirecturi.<some-value>=<redirect> or create a dynamic URI using serviceaccounts.openshift.io/oauth-redirectreference.<some-value>=<reference>
+----
+
+Running `oc describe sa/<service-account-name>` reports any OAuth events associated with the given service account name.
+
+----
+$ oc describe sa/proxy | grep -A5 Events
+Events:
+  FirstSeen     LastSeen        Count   From                                    SubObjectPath   Type            Reason                  Message
+  ---------     --------        -----   ----                                    -------------   --------        ------                  -------
+  3m            3m              1       service-account-oauth-client-getter                     Warning         NoSAOAuthRedirectURIs   system:serviceaccount:myproject:proxy has no redirectURIs; set serviceaccounts.openshift.io/oauth-redirecturi.<some-value>=<redirect> or create a dynamic URI using serviceaccounts.openshift.io/oauth-redirectreference.<some-value>=<reference>
+----
+
+The following is a  a list of the possible event errors:
+
+**No redirect URI annotations or an invalid URI is specified**
+
+----
+Reason                  Message
+NoSAOAuthRedirectURIs   system:serviceaccount:myproject:proxy has no redirectURIs; set serviceaccounts.openshift.io/oauth-redirecturi.<some-value>=<redirect> or create a dynamic URI using serviceaccounts.openshift.io/oauth-redirectreference.<some-value>=<reference>
+----
+
+**Invalid route specified**
+
+----
+Reason                  Message
+NoSAOAuthRedirectURIs   [routes.route.openshift.io "<name>" not found, system:serviceaccount:myproject:proxy has no redirectURIs; set serviceaccounts.openshift.io/oauth-redirecturi.<some-value>=<redirect> or create a dynamic URI using serviceaccounts.openshift.io/oauth-redirectreference.<some-value>=<reference>]
+----
+
+**Invalid reference type specified**
+
+----
+Reason                  Message
+NoSAOAuthRedirectURIs   [no kind "<name>" is registered for version "v1", system:serviceaccount:myproject:proxy has no redirectURIs; set serviceaccounts.openshift.io/oauth-redirecturi.<some-value>=<redirect> or create a dynamic URI using serviceaccounts.openshift.io/oauth-redirectreference.<some-value>=<reference>]
+----
+
+**Missing SA tokens**
+
+----
+Reason                  Message
+NoSAOAuthTokens         system:serviceaccount:myproject:proxy has no tokens
+----
+
+===== Sample API Event Caused by a Possible Misconfiguration
+
+The following steps represent one way a user could get into a broken state and how to debug or fix the issue:
+
+. Create a project utilizing a service account as an OAuth client.
+
+.. Create YAML for a proxy service account object and ensure it uses the route `proxy`:
++
+----
+vi serviceaccount.yaml
+----
++
+Add the following sample code:
++
+----
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: proxy
+  annotations:
+    serviceaccounts.openshift.io/oauth-redirectreference.primary: '{"kind":"OAuthRedirectReference","apiVersion":"v1","reference":{"kind":"Route","name":"proxy"}}'
+----
+
+.. Create YAML for a route object to create a secure connection to the proxy:
++
+----
+vi route.yaml
+----
++
+Add the following sample code:
++
+----
+apiVersion: route.openshift.io/v1
+kind: Route
+metadata:
+  name: proxy
+spec:
+  to:
+    name: proxy
+  tls:
+    termination: Reencrypt
+apiVersion: v1
+kind: Service
+metadata:
+  name: proxy
+  annotations:
+    service.alpha.openshift.io/serving-cert-secret-name: proxy-tls
+spec:
+  ports:
+  - name: proxy
+    port: 443
+    targetPort: 8443
+  selector:
+    app: proxy
+----
+
+.. Create a YAML for a deployment configuration to launch a proxy as a sidecar:
++
+----
+vi proxysidecar.yaml
+----
++
+Add the following sample code:
++
+----
+apiVersion: extensions/v1beta1
+kind: Deployment
+metadata:
+  name: proxy
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: proxy
+  template:
+    metadata:
+      labels:
+        app: proxy
+    spec:
+      serviceAccountName: proxy
+      containers:
+      - name: oauth-proxy
+        image: openshift/oauth-proxy:v1.0.0
+        imagePullPolicy: IfNotPresent
+        ports:
+        - containerPort: 8443
+          name: public
+        args:
+        - --https-address=:8443
+        - --provider=openshift
+        - --openshift-service-account=proxy
+        - --upstream=http://localhost:8080
+        - --tls-cert=/etc/tls/private/tls.crt
+        - --tls-key=/etc/tls/private/tls.key
+        - --cookie-secret=SECRET
+        volumeMounts:
+        - mountPath: /etc/tls/private
+          name: proxy-tls
+
+      - name: app
+        image: openshift/hello-openshift:latest
+      volumes:
+      - name: proxy-tls
+        secret:
+          secretName: proxy-tls
+----
++
+.. Create the objects
++
+----
+oc create -f serviceaccount.yaml
+oc create -f route.yaml
+oc create -f proxysidecar.yaml
+----
+
+. Run `oc edit sa/proxy` to edit the service account and change the `serviceaccounts.openshift.io/oauth-redirectreference` annotation to point to a Route that does not exist.
++
+----
+apiVersion: v1
+imagePullSecrets:
+- name: proxy-dockercfg-08d5n
+kind: ServiceAccount
+metadata:
+  annotations:
+    serviceaccounts.openshift.io/oauth-redirectreference.primary: '{"kind":"OAuthRedirectReference","apiVersion":"v1","reference":{"kind":"Route","name":"notexist"}}'
+...
+----
+
+. Review the OAuth log for the service to locate the server error:
++
+----
+The authorization server encountered an unexpected condition that prevented it from fulfilling the request.
+----
+
+. Run `oc get events` to view the `ServiceAccount` event:
++
+----
+oc get events | grep ServiceAccount
+
+23m        23m         1         proxy                    ServiceAccount                                  Warning   NoSAOAuthRedirectURIs   service-account-oauth-client-getter   [routes.route.openshift.io "notexist" not found, system:serviceaccount:myproject:proxy has no redirectURIs; set serviceaccounts.openshift.io/oauth-redirecturi.<some-value>=<redirect> or create a dynamic URI using serviceaccounts.openshift.io/oauth-redirectreference.<some-value>=<reference>]
 ----
 
 [[integrations]]
@@ -473,3 +674,14 @@ responses from `/oauth/authorize`, and how they should be handled:
 |401    | `WWW-Authenticate` header missing                                                                                                                | No challenge authentication is possible. Fail and show response body (which might contain links or details on alternate methods to obtain an OAuth token)
 |Other  | Other                                                                                                                                            | Fail, optionally surfacing response body to the user
 |===
+
+[[authentication-prometheus-system-metrics]]
+=== Authentication Metrics for Prometheus
+
+{product-title} captures the following Prometheus system metrics during authentication attempts:
+
+* `openshift_auth_basic_password_count` counts the number of `oc login` user name and password attempts.
+* `openshift_auth_basic_password_count_result` counts the number of `oc login` user name and password attempts by result (success or error).
+* `openshift_auth_form_password_count` counts the number of web console login attempts.
+* `openshift_auth_form_password_count_result` counts the number of web console login attempts by result (success or error).
+* `openshift_auth_password_total` counts the total number of `oc login` and web console login attempts.

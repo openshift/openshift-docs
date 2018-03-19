@@ -24,8 +24,14 @@ The full state of a cluster installation includes:
 - volume storage
 
 This topic does not cover how to back up and restore
+ifdef::openshift-enterprise,openshift-origin[]
 xref:../install_config/persistent_storage/index.adoc#install-config-persistent-storage-index[persistent
-storage], as those topics are left to the underlying storage provider. However,
+storage],
+endif::openshift-enterprise,openshift-origin[]
+ifdef::openshift-dedicated[]
+persistent storage,
+endif::openshift-enterprise,openshift-origin[]
+as those topics are left to the underlying storage provider. However,
 an example of how to perform a *generic* backup of
 xref:backup-application-data[application data] is provided.
 
@@ -37,6 +43,20 @@ Therefore, you should create a full backup and restore procedure. To prevent
 data loss, necessary precautions should be taken.
 ====
 
+Note that the etcd backup still has all the references to the storage volumes.
+When you restore etcd, {product-title} starts launching the previous pods on
+nodes and reattaching the same storage. This is really no different than the
+process of when you remove a node from the cluster and add a new one back in its
+place. Anything attached to that node will be reattached to the pods on whatever
+nodes they get rescheduled to.
+
+[IMPORTANT]
+====
+Backup and restore is not guaranteed. You are responsible for backing up your own
+data.
+====
+
+ifdef::openshift-enterprise,openshift-origin[]
 [[backup-restore-prerequisites]]
 == Prerequisites
 
@@ -82,16 +102,22 @@ following sections), which depends on how *etcd* is deployed.
 |all-in-one cluster
 |*_/var/lib/origin/openshift.local.etcd_*
 
-|external etcd (not on master)
+|external etcd (located either on a master or another host)
 |*_/var/lib/etcd_*
 
-|embedded etcd (on master)
-|*_/var/lib/etcd_*
 |===
+
+[WARNING]
+====
+Embedded etcd is no longer supported starting with {product-title} 3.7.
+====
 
 
 [[cluster-backup]]
 == Cluster Backup
+
+[[master-backup]]
+=== Master Backup
 
 . Save all the certificates and keys, on each master:
 +
@@ -99,6 +125,9 @@ following sections), which depends on how *etcd* is deployed.
 # cd /etc/origin/master
 # tar cf /tmp/certs-and-keys-$(hostname).tar *.key *.crt
 ----
+
+[[etcd-backup]]
+=== Etcd Backup
 
 . If *etcd* is running on more than one host, stop it on each host:
 +
@@ -133,8 +162,26 @@ inside the container.
 . Copy the *_db_* file over to the backup you created:
 +
 ----
-$ cp "$ETCD_DATA_DIR"/member/snap/db "$HOTDIR"/member/snap/db'
+# cp "$ETCD_DATA_DIR"/member/snap/db "$ETCD_DATA_DIR.bak"/member/snap/db
 ----
+
+[[registry-certificates-backup]]
+=== Registry Certificates Backup
+
+. Save all the registry certificates, on every master and node host.
++
+----
+# cd /etc/docker/certs.d/
+# tar cf /tmp/docker-registry-certs-$(hostname).tar *
+----
++
+[NOTE]
+====
+When working with one or more
+xref:../install_config/registry/securing_and_exposing_registry.adoc#exposing-the-registry[external
+secured registry], any host required to pull or push images must trust registry
+certificates in order to run pods.
+====
 
 [[cluster-restore-single-member-etcd-clusters]]
 == Cluster Restore for Single-member etcd Clusters
@@ -213,63 +260,6 @@ by creating a new, single node etcd cluster. If using external etcd with
 multiple members, you must then also add any additional etcd members to the
 cluster one by one.
 
-However, the details of the restoration process differ between
-xref:restoring-embedded-etcd[embedded] and
-xref:restoring-external-etcd[external] etcd. See the following
-section and follow the relevant steps
-before
-xref:bringing-openshift-services-back-online[Bringing OpenShift
-Services Back Online].
-
-[[restoring-embedded-etcd]]
-=== Embedded etcd
-
-Restore your etcd backup and configuration:
-
-. Run the following on the master with the embedded etcd:
-+
-----
-# ETCD_DIR=/var/lib/origin/openshift.local.etcd
-# mv $ETCD_DIR /var/lib/etcd.orig
-# cp -Rp /var/lib/origin/etcd-backup-<timestamp>/ $ETCD_DIR
-# chcon -R --reference /var/lib/etcd.orig/ $ETCD_DIR
-# chown -R etcd:etcd $ETCD_DIR
-----
-+
-[WARNING]
-====
-The `$ETCD_DIR` location differs between external and embedded etcd.
-====
-
-. Create the new, single node etcd cluster:
-+
-----
-# etcd -data-dir=/var/lib/origin/openshift.local.etcd \
-    -force-new-cluster
-----
-+
-Verify etcd has started successfully by checking the output from the above
-command, which should look similar to the following near the end:
-+
-----
-[...]
-2016-06-24 12:14:45.644073 I | etcdserver: starting server... [version: 2.2.5, cluster version: 2.2]
-[...]
-2016-06-24 12:14:46.834394 I | etcdserver: published {Name:default ClientURLs:[http://localhost:2379 http://localhost:4001]} to cluster 5580663a6e0002
-----
-
-. Shut down the process by running the following from a separate terminal:
-+
-----
-# pkill etcd
-----
-
-. Continue to xref:bringing-openshift-services-back-online[Bringing
-{product-title} Services Back Online].
-
-[[restoring-external-etcd]]
-=== External etcd
-
 Choose a system to be the initial etcd member, and restore its etcd backup and
 configuration:
 
@@ -282,16 +272,76 @@ configuration:
 # chcon -R --reference /var/lib/etcd.orig/ $ETCD_DIR
 # chown -R etcd:etcd $ETCD_DIR
 ----
-+
-[WARNING]
-====
-The `$ETCD_DIR` location differs between external and embedded etcd.
-====
 
 . Restore your *_/etc/etcd/etcd.conf_* file from backup or *_.rpmsave_*.
 
+. Depending on your environment, follow the instructions for
+xref:backup-containerized-etcd-deployments[Containerized etcd Deployments] or
+xref:backup-non-containerized-etcd-deployments[Non-Containerized etcd
+Deployments].
+
+[[backup-containerized-etcd-deployments]]
+=== Containerized etcd Deployments
+
 . Create the new single node cluster using etcd's `--force-new-cluster`
-option. You can do this with a long complex command using the values from
+option. You can do this with a long, complex command using the values from
+*_/etc/etcd/etcd.conf_*, or you can temporarily modify the *systemd* unit file
+and start the service normally.
++
+To do so, edit the *_/etc/systemd/system/etcd_container.service_* file, and add
+`--force-new-cluster`:
++
+----
+# sed -i '/ExecStart=/s/$/  --force-new-cluster/' /etc/systemd/system/etcd_container.service
+
+ExecStart=/usr/bin/docker run --name etcd --rm -v \
+/var/lib/etcd:/var/lib/etcd:z -v /etc/etcd:/etc/etcd:ro --env-file=/etc/etcd/etcd.conf \
+--net=host --entrypoint=/usr/bin/etcd rhel7/etcd:3.1.9  --force-new-cluster
+----
++
+Then, restart the *etcd* service:
++
+----
+# systemctl daemon-reload
+# systemctl start etcd_container
+----
+
+. Verify the *etcd* service started correctly, then re-edit the
+*_/etc/systemd/system/etcd_container.service_* file and remove the
+`--force-new-cluster` option:
++
+----
+# sed  -i '/ExecStart=/s/ --force-new-cluster//' /etc/systemd/system/etcd_container.service
+
+ExecStart=/usr/bin/docker run --name etcd --rm -v /var/lib/etcd:/var/lib/etcd:z -v \
+/etc/etcd:/etc/etcd:ro --env-file=/etc/etcd/etcd.conf --net=host \
+--entrypoint=/usr/bin/etcd rhel7/etcd:3.1.9
+----
+
+. Restart the *etcd* service, then verify the etcd cluster is running correctly
+and displays {product-title}'s configuration:
++
+----
+# systemctl daemon-reload
+# systemctl restart etcd_container
+# etcdctl --cert-file=/etc/etcd/peer.crt \
+    --key-file=/etc/etcd/peer.key \
+    --ca-file=/etc/etcd/ca.crt \
+    --peers="https://172.16.4.18:2379,https://172.16.4.27:2379" \
+    ls /
+----
+
+. If you have additional etcd members to add to your cluster, continue to
+xref:adding-addtl-etcd-members[Adding Additional etcd Members].
+Otherwise, if you only want a single node external etcd, continue to
+xref:bringing-openshift-services-back-online[Bringing {product-title}
+Services Back Online].
+
+[[backup-non-containerized-etcd-deployments]]
+=== Non-Containerized etcd Deployments
+
+. Create the new single node cluster using etcd's `--force-new-cluster`
+option. You can do this with a long, complex command using the values from
 *_/etc/etcd/etcd.conf_*, or you can temporarily modify the *systemd* unit file
 and start the service normally.
 +
@@ -343,7 +393,7 @@ xref:bringing-openshift-services-back-online[Bringing {product-title}
 Services Back Online].
 
 [[adding-addtl-etcd-members]]
-==== Adding Additional etcd Members
+=== Adding Additional etcd Members
 
 To add additional etcd members to the cluster, you must first adjust the default
 *localhost* peer in the `*peerURLs*` value for the first member:
@@ -531,7 +581,7 @@ Stop the etcd service on the failed etcd member:
   --state NEW -m tcp --dport 2379 -j ACCEPT
 # iptables -A OS_FIREWALL_ALLOW -p tcp -m state \
   --state NEW -m tcp --dport 2380 -j ACCEPT
-# iptables-save
+# iptables-save > /etc/sysconfig/iptables
 ----
 
 . Generate the required certificates for the new host. On a surviving etcd host:
@@ -673,16 +723,10 @@ etcdctl -C https://${ETCD_CA_HOST}:2379 --ca-file=/etc/etcd/ca.crt \
 .. If a failed etcd host was replaced, remove it from the list.
 .. Restart the master API service.
 +
-On a single master cluster installation:
+On each master:
 +
 ----
-# systemctl restart atomic-openshift-master
-----
-+
-On a multi-master cluster installation, on each master:
-+
-----
-# systemctl restart atomic-openshift-master-api
+# systemctl restart atomic-openshift-master-api atomic-openshift-master-controllers
 ----
 
 The procedure to add an etcd member is complete.
@@ -693,20 +737,6 @@ The procedure to add an etcd member is complete.
 
 On each {product-title} master, restore your master and node configuration from
 backup and enable and restart all relevant services.
-
-On the master in a single master cluster:
-
-----
-# cp /etc/sysconfig/atomic-openshift-master.rpmsave /etc/sysconfig/atomic-openshift-master
-# cp /etc/origin/master/master-config.yaml.<timestamp> /etc/origin/master/master-config.yaml
-# cp /etc/origin/node/node-config.yaml.<timestamp> /etc/origin/node/node-config.yaml
-# systemctl enable atomic-openshift-master
-# systemctl enable atomic-openshift-node
-# systemctl start atomic-openshift-master
-# systemctl start atomic-openshift-node
-----
-
-On each master in a multi-master cluster:
 
 ----
 # cp /etc/sysconfig/atomic-openshift-master-api.rpmsave /etc/sysconfig/atomic-openshift-master-api
@@ -731,7 +761,7 @@ and enable and restart the *atomic-openshift-node* service:
 ----
 
 Your {product-title} cluster should now be back online.
-
+endif::openshift-enterprise,openshift-origin[]
 [[project-backup]]
 == Project Backup
 
@@ -757,7 +787,7 @@ $ oc export all -o yaml > project.yaml
 === Role Bindings
 
 Sometimes custom policy
-xref:../admin_guide/manage_authorization_policy.adoc#managing-role-bindings[role
+xref:../admin_guide/manage_rbac.adoc#managing-role-bindings[role
 bindings] are used in a project. For example, a project administrator can give
 another user a certain role in the project and grant that user project access.
 
@@ -789,7 +819,7 @@ $ oc get secret -o yaml --export=true > secret.yaml
 [[backup-pvc]]
 === Persistent Volume Claims
 
-If the an application within a project uses a persistent volume through a
+If the application within a project uses a persistent volume through a
 persistent volume claim (PVC), these should be backed up:
 
 ----
@@ -800,7 +830,7 @@ $ oc get pvc -o yaml --export=true > pvc.yaml
 [[project-restore]]
 == Project Restore
 
-To restore a project, recreate the project and recreate all all of the objects
+To restore a project, recreate the project and recreate all of the objects
 that were exported during the backup:
 
 ----
@@ -828,7 +858,7 @@ contain it as well. See xref:../cli_reference/basic_cli_operations.adoc#cli-oper
 [WARNING]
 ====
 This is a _generic_ backup of application data and does not take into account
-application-specific backup procedures, for example special export/import
+application-specific backup procedures, for example, special export/import
 procedures for database systems.
 ====
 
