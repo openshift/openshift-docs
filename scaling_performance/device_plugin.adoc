@@ -1,0 +1,354 @@
+[[scaling-performance-using-device-plugin]]
+= Using the Device Plug-in
+{product-author}
+{product-version}
+:data-uri:
+:icons:
+:experimental:
+:toc: macro
+:toc-title:
+:prewrap!:
+
+toc::[]
+
+[[what-the-device-plugin-does]]
+== What the Device Plug-in Does
+
+The Device Plug-in allows you to use a particular device type (GPU, InfiniBand,
+or other similar computing resources that require vendor-specific initialization
+and setup) in your {product-title} pod without needing to write custom code. The
+Device Plug-in provides a consistent and portable solution to consume hardware
+devices across clusters. The Device Plug-in provides support for these devices
+through an extension mechanism, which makes these devices available to
+containers, provides health checks of these devices, and securely shares them.
+
+[[device-plugin-setup]]
+== Setup
+
+[[device-plugin-prerequistes]]
+=== Prerequisites
+* Your base system must be properly registered with Red Hat or have access to the
+proper set of `yum` repositories.
+
+* You must have {product-title} 3.9 xref:../install_config/index.adoc#install-config-install-index[installed].
+
+[[device-plugin-host-preparation]]
+=== Prepare the Host
+
+Before you can use GPUs in {product-title}, you must first prepare the host by
+installing the needed NVIDIA drivers and container enablement.
+
+[[device-plugin-driver-installation]]
+=== Install the Driver
+
+. To have the correct kernel source for the build, you must install the correct
+`kernel-devel` version. Otherwise, the newest `kernel-devel` package will be
+installed, which does not match the current running kernel.
++
+----
+# yum install kernel-devel-`uname -r`
+----
+
+. The *xorg-x11-drv-nvidia* package needs the *dkms* package as a dependency.
+Install the *_epel_* repository:
++
+----
+# rpm -ivh https://dl.fedoraproject.org/pub/epel/epel-release-latest-7.noarch.rpm
+----
++
+The newest NVIDIA drivers are located in the following repository:
++
+----
+# rpm -ivh https://developer.download.nvidia.com/compute/cuda/repos/rhel7/x86_64/cuda-repo-rhel7-9.1.85-1.x86_64.rpm
+----
+
+. Auxiliary tools and mandatory libraries are contained in the
+*xorg-x11-drv-nvidia* and *xorg-x11-drv-nvidia-devel* packages. Install them to
+have all necessary utilities:
++
+----
+# yum -y install xorg-x11-drv-nvidia xorg-x11-drv-nvidia-devel
+----
++
+This will also pull the *nvidia-kmod* package, which contains the NVIDIA kernel
+modules.
+
+. Remove the *nouveau* kernel module. Otherwise, the NVIDIA kernel module will not
+load.
++
+----
+# modprobe -r nouveau
+----
+
+. Load the NVIDIA and the unified memory kernel modules:
++
+----
+# nvidia-modprobe && nvidia-modprobe -u
+----
+
+. Ensure that the installation was successful and that the drivers are working.
++
+----
+# nvidia-smi --query-gpu=gpu_name --format=csv,noheader --id=0 | sed -e 's/ /-/g' Tesla-M60
+----
++
+[NOTE]
+====
+By extracting the name of the GPU now, you can use it later to label the node in
+the OpenShift context.
+====
+
+. Enable containerized GPU workloads and install the *_libnvidia-container_* and
+*_nvidia-container-runtime_* repositories:
++
+----
+# curl -s -L https://nvidia.github.io/nvidia-container-runtime/centos7/x86_64/nvidia-container-runtime.repo | tee /etc/yum.repos.d/nvidia-container-runtime.repo
+----
+
+. Install an OCI prestart hook, which is responsible for making all the needed
+NVIDIA libraries and binaries available in the GPU container, depending on the
+driver capabilities stated in the environmental variable
+`NVIDIA_DRIVER_CAPABILITIES=compute,utility`.
+
++
+----
+# yum -y install nvidia-container-runtime-hook
+----
++
+[NOTE]
+====
+RHEL Docker has all of the patches to run the hook natively. If you are using
+RHEL, you do not need the custom runtime and do not need to run or register it
+as the default.
+====
+
+. Make the container aware of the hook.
+
+.. If using RHEL Docker:
++
+----
+# cat <<’EOF’ >> /usr/libexec/oci/hooks.d/oci-nvidia-hook
+#!/bin/bash
+/usr/bin/nvidia-container-runtime-hook $1
+EOF
+----
+
+... Make the hook executable:
++
+----
+chmod +x /usr/libexec/oci/hooks.d/oci-nvidia-hook
+----
+
+.. To use the hook with CRI-O, create the following JSON file. This is the same
+hook, only in a description file read by CRI-O.
++
+----
+# cat <<’EOF’ >> /usr/share/containers/oci/hooks.d/oci-nvidia-hook.json
+{
+    "hook": "/usr/bin/nvidia-container-runtime-hook",
+    "stage": [ "prestart" ]
+}
+EOF
+----
+
+. Label the installed NVIDIA files with the correct SELinux label. Otherwise, you
+can receive a *Permission Denied* error if used inside a container and SELinux
+is enforced. If in permissive mode, no action is necessary.
++
+----
+# chcon -t container_file_t  /dev/nvidia*
+----
++
+Everything is now set up to run a GPU-enabled container. The hook is triggered
+by several environmental variables contained in the container.
+
+. If a custom GPU container is built, include the following environmental
+variables in the Dockerfile or in the pod YAML description.
++
+----
+# nvidia-container-runtime-hook triggers
+ENV NVIDIA_VISIBLE_DEVICES all
+ENV NVIDIA_DRIVER_CAPABILITIES compute,utility
+ENV NVIDIA_REQUIRE_CUDA "cuda>=8.0"   # depending on the driver
+----
+
+. Run the container as usual.
++
+----
+# docker run --rm -it <cuda-image>
+----
+
+[[device-plugin-configuring-for-openshift]]
+== Configuring for {product-title}
+
+. Add the Device Plug-in feature gate to the *_/etc/origin/node/node-config.yaml_*
+file:
++
+----
+...
+kind: NodeConfig
+kubeletArguments:
+  feature-gates:
+  - DevicePlugins=true
+  image-gc-high-threshold:
+  - '90'
+...
+----
+
+. Restart the node:
++
+----
+# systemctl restart atomic-openshift-node
+----
+
+. Create a new project:
++
+----
+# oc new-project nvidia
+----
++
+The project is necessary for the creation of additional service accounts that
+will have different security context constraints (SCCs), depending on the pods
+scheduled.
+
+. The *nvidia-deviceplugin* will have different responsibilities and
+capabilities. Therefore, in additional to the service accounts, SCCs will be installed.
++
+----
+# oc create serviceaccount nvidia-deviceplugin
+
+# nvida-deviceplugin-scc.yaml
+allowHostDirVolumePlugin: true
+allowHostIPC: true
+allowHostNetwork: true
+allowHostPID: true
+allowHostPorts: true
+allowPrivilegedContainer: true
+allowedCapabilities:
+- '*'
+allowedFlexVolumes: null
+apiVersion: v1
+defaultAddCapabilities:
+- '*'
+fsGroup:
+  type: RunAsAny
+groups:
+- system:cluster-admins
+- system:nodes
+- system:masters
+kind: SecurityContextConstraints
+metadata:
+  annotations:
+    kubernetes.io/description: anyuid provides all features of the restricted SCC
+      but allows users to run with any UID and any GID.
+  creationTimestamp: null
+  name: nvidia-deviceplugin
+priority: 10
+readOnlyRootFilesystem: false
+requiredDropCapabilities:
+runAsUser:
+  type: RunAsAny
+seLinuxContext:
+  type: RunAsAny
+seccompProfiles:
+- '*'
+supplementalGroups:
+  type: RunAsAny
+users:
+- system:serviceaccount:nvidia:nvidia-deviceplugin
+volumes:
+- '*'
+
+# oc create -f nvidia-deviceplugin-scc.yaml
+----
+
+. Verify the newly installed SCCs:
++
+----
+# oc get scc | grep nvidia
+
+nvidia-deviceplugin true [*] RunAsAny RunAsAny RunAsAny RunAsAny 10 false [*]
+----
+
+. To schedule the device plug-in on the correct GPU node, label the node
+correctly. Otherwise, the device plug-in will run on any node in the cluster.
++
+----
+# oc label node <node-with-gpu> openshift.com/gpu-accelerator=true
+node "<node-with-gpu>" labeled
+----
+
+. Start the NVIDIA device plug-in so that the GPUs can be consumed by a pod:
++
+----
+# oc create -f
+https://raw.githubusercontent.com/NVIDIA/k8s-device-plugin/v1.9/nvidia-device-plugin.yml
+----
+
+. Verify the correct execution of the device plug-in:
++
+----
+# oc get pods
+NAME                                   READY     STATUS     RESTARTS   AGE
+nvidia-device-plugin-daemonset-s9ngg   1/1       Running    0          1m
+# oc logs nvidia-device-plugin-daemonset-s9ngg -c nvidia-device-plugin-ctr
+2018/01/23 10:39:30 Loading NVML
+2018/01/23 10:39:30 Fetching devices.
+2018/01/23 10:39:30 Starting FS watcher.
+2018/01/23 10:39:30 Starting OS watcher.
+2018/01/23 10:39:30 Starting to serve on /var/lib/kubelet/device-plugins/nvidia.sock
+2018/01/23 10:39:30 Registered device plugin with Kubelet
+----
+
+. Take a GPU-enabled image and run it on the cluster. In this example, the
+*cuda-vector-add* image is used:
++
+----
+# cuda-vector-add.yaml
+apiVersion: v1
+kind: Pod
+metadata:
+  name: cuda-vector-add
+  namespace: nvidia
+spec:
+  restartPolicy: OnFailure
+  serviceAccount: nvidia-deviceplugin
+  serivceAccountName: nvidia-deviceplugin
+  hostNetwork: true
+  hostPID: true
+  containers:
+    - name: cuda-vector-add
+      image: "docker.io/mirrorgooglecontainers/cuda-vector-add:v0.1"
+      env:
+        - name: NVIDIA_VISIBLE_DEVICES
+          value: all
+        - name: NVIDIA_DRIVER_CAPABILITIES
+          value: "compute,utility"
+        - name: NVIDIA_REQUIRE_CUDA
+          value: "cuda>=5.0"
+
+      resources:
+        limits:
+          nvidia.com/gpu: 1 # requesting 1 GPU
+
+# oc create -f cuda-vector-add.yaml
+----
++
+After a few seconds, the container finishes.
+
+. Examine the logs to ensure success:
++
+----
+# oc get pods
+NAME                                   READY     STATUS           RESTARTS   AGE
+cuda-vector-add                        0/1       Completed        0          3s
+nvidia-device-plugin-daemonset-s9ngg   1/1       Running          0          9m
+
+# oc logs cuda-vector-add
+[Vector addition of 50000 elements]
+Copy input data from the host memory to the CUDA device
+CUDA kernel launch with 196 blocks of 256 threads
+Copy output data from the CUDA device to the host memory
+Test PASSED
+Done
+----
