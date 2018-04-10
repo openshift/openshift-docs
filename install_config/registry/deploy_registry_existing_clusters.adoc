@@ -26,8 +26,11 @@ xref:../../install_config/install/stand_alone_registry.adoc#install-config-insta
 ====
 endif::[]
 
-[[deploy-registry]]
-== Deploying the Registry
+[[deploying-new-registry]]
+== Deploying a new Integrated Registry
+
+[[registry-deploymentconfig]]
+=== Standard Deployment as a DeploymentConfig
 
 ifdef::atomic-registry[]
 [NOTE]
@@ -82,7 +85,7 @@ $ oc adm registry --help
 endif::[]
 
 [[registry-daemonset]]
-== Deploying the Registry as a DaemonSet
+=== Deploying the Registry as a DaemonSet
 
 Use the `oc adm registry` command to deploy the registry as a `DaemonSet` with the
 `--daemonset` option.
@@ -91,7 +94,204 @@ Daemonsets ensure that when nodes are created, they contain copies of a
 specified pod. When the nodes are removed, the pods are garbage collected.
 
 For more information on `DaemonSets`, see
-xref:../../dev_guide/daemonsets.adoc#dev-guide-daemonsets[Using Daemonsets].
+xref:../../dev_guide/daemonsets.adoc#dev-guide-daemonsets[Using DaemonSets].
+
+[[redeploy-registry]]
+== Re-deploying the Registry
+
+Since there is a plenty of configuration options for deploying the integrated registry, this
+section will try to be as generic as possible and will mention exceptions just for the common
+cases. Any invocation of `oc adm registry` command below may be passed additional arguments.
+
+One of the key rules while re-deploying the registry is to never change it's service IP
+although it's very easy to do so.
+
+[[maintaining-the-registry-ip-address]]
+==== Maintaining the Registry IP Address
+
+{product-title} refers to the integrated registry by its service IP address unless the
+xref:extended_registry_configuration.adoc#setting-the-registry-hostname[internal hostname is
+configured]. When the service IP is used, it's the admin's responsibility to preserve it to remain
+consistent with internal etcd database. If a custom internal hostname is used, it's still highly
+recommended to preserve the service IP whenever the registry is re-deployed.
+
+If you decide to delete and recreate the *docker-registry* service, you can ensure a completely
+transparent transition by arranging to re-use the old IP address in the new service. If a new IP
+address cannot be avoided, you can minimize cluster disruption by rebooting only the masters.
+
+Why care?::
+
+The internal registry address is used to construct docker image pull-specifications that are used
+by {product-title}'s components such us deployer and builder to pull them from the integrated
+registry when needed. Moreover, {product-title}'s client tools like `oc adm prune images`
+determine the address of the integrated Docker registry from the existing images unless directly
+provided.
+
+So if the registry's service IP does not match with the references in image streams and images,
+such client tools can misbehave. It also complicates future migration process.
+
+All the example scenarios listed below will stick to this rule.
+
+=== Changing the pod's specification
+
+When only the registry pod specification needs to be changed, all the other registry objects that
+are usually created side-by-side with the `docker-registry` DeploymentConfig or DaemonSet
+(*deployment* from now on) can be left unchaged. Those are:
+
+- `serviceaccount/registry`
+- `service/docker-registry`
+- `clusterrolebinding/registry-registry-role`
+
+The registry's behaviour can be easily tuned using environment variables or configuration file as
+documented in the
+xref:extended_registry_configuration.adoc#install-config-registry-extended-configuration[extended
+registry configuration]. Therefor, there's no need for deleting the existing *deployment*. The
+admin can utilize tools like `oc env`, `oc volume`, or `oc edit` to change the existing
+*deployment*.
+
+This way, it's easy to roll-back to older working configurations `oc rollout undo ...`.
+
+==== Replacing the Existing *deployment*
+
+In rare cases, it's possible to create a completely new *deployment* from scratch. This can be
+achieved like this:
+
+0. Back up the existing *deployment*:
++
+====
+----
+$ oc get -n default -o yaml dc/docker-registry \ <1>
+  >dc-docker-registry.yaml
+----
+<1> Replace `dc` with `ds` if your *deployment* is a DaemonSet. The same applies to the next
+command below.
+====
++
+1. Delete the existing deployment:
++
+----
+$ oc delete -n default dc/docker-registry
+----
++
+2. Create a new deployment with `oc adm registry ...`:
++
+The command will fail because some objects already exist as the following output illustrates. That
+can be ignored because the desired DeploymentConfig has been successfully created.
++
+====
+----
+$ oc adm registry -o json \ <1>
+  | oc create -f -
+deploymentconfig "docker-registry" created
+Error from server (AlreadyExists): serviceaccounts "registry" already exists
+Error from server (AlreadyExists): clusterrolebindings "registry-registry-role" already exists
+----
+<1> Add additional arbitrary arguments as you see fit. Add `*--daemonset*` if you want to deploy
+a DaemonSet.
+====
+
+=== Changing the service IP
+
+xref:maintaining-the-registry-ip-address[Should be avoided] if possible. However, it can be useful
+when the service has been already unintentionally reinstantiated with a different IP while there
+are existing objects in the registry. The process is different for the DeploymentConfig and
+DaemonSet.
+
+DeploymentConfig::
+
+====
+1. Replace the existing service object with new one with the desired cluster IP:
++
+----
+$ oc expose -n default dc/docker-registry \ <1>
+  --session-affinity=ClientIP --cluster-ip=172.30.1.1 <2> \
+  -o json --dry-run | \
+  oc replace -n default -f - --force <3>
+----
++
+2. xref:#restart-masters[Restart the masters].
++
+3. Restart the registry pods:
++
+This is needed unless `*REGISTRY_OPENSHIFT_SERVER_ADDR*` is set for the registry services to
+reload their internal registry address.
++
+----
+$ oc rollout latest -n default dc/docker-registry
+----
+
+<1> The command produces a specification of the new service named `docker-registry` in the default
+namespace for the given DeploymentConfig.
+<2> Use the desired IP address instead.
+<3> If the service does not exist anymore, change the last line to `oc create -f -`.
+====
+
+DaemonSet::
+
+In case of a DaemonSet, its update strategy needs to be first changed to `*RollingUpdate*` so that
+pods will be cleanly restarted in a controlled fashion. 
+
+====
+1. Set the update strategy to `*RollingUpdate*`:
++
+----
+$ oc patch -n default ds/docker-registry \
+  -p '{"spec":{"updateStrategy":{"type":"RollingUpdate"}}}'
+----
++
+2. Replace the registry's service:
++
+----
+$ oc create service clusterip -n default docker-registry --dry-run --tcp=5000:5000 \
+  -o json --clusterip=172.30.1.1 | \ <1>
+  oc patch -f - --type=json -p '[
+      {"op":"add","path":"/spec/sessionAffinity","value":"ClientIP"},
+      {"op":"add","path":"/spec/selector","value":{"docker-registry":"default"}}
+    ]' --local=true -o json | \
+    oc replace -n default -f - --force <2>
+----
++
+3. xref:#restart-masters[Restart the masters].
++
+4. Redeploy the DaemonSet pods in a safe manner by updating the pod spec template:
++
+This is needed unless `*REGISTRY_OPENSHIFT_SERVER_ADDR*` is set for the registry services to
+reload their internal registry address.
++
+----
+$ oc env -n default ds/docker-registry "TIMESTAMP=$(date +%s%N)"
+----
+
+<1> Make sure to choose the right IP address.
+<2> If the service does not exist anymore, change the last line to `oc create -f -`.
+====
+
+[[restart-masters]]
+==== Restart the Masters
+
+The masters cache the internal registry address for their whole lifetime. Unless a
+xref:extended_registry_configuration.adoc#setting-the-registry-hostname[custom internal registry
+hostname is set], the masters must be restarted to minimize cluster's disruption:
+
+----
+ifdef::openshift-origin[]
+# systemctl restart origin-master-api origin-master-controllers
+endif::[]
+ifdef::openshift-enterprise[]
+# systemctl restart atomic-openshift-master-api atomic-openshift-master-controllers
+endif::[]
+----
+// Code block snarfed from ../http_proxies.adoc, w/ node-reboot stuff removed.
+// tnguyen opines: It would be nice to #define this somewhere and include it here...
+
+This ensures that the old registry URL, which includes the old IP address, is cleared from the
+cache.
+
+[NOTE]
+====
+We recommend against rebooting the entire cluster because that incurs unnecessary downtime for
+pods and does not actually clear the cache.
+====
 
 ifdef::openshift-enterprise,openshift-origin[]
 [[registry-compute-resource]]
@@ -217,13 +417,12 @@ is then created as a host-mount at the specified `<path>`.
 
 [IMPORTANT]
 ====
-The `--mount-host` option mounts a directory from the node on which the registry
-container lives. If you scale up the *docker-registry* deployment configuration,
-it is possible that your registry pods and containers will run on different
-nodes, which can result in two or more registry containers, each with its own
-local storage. This will lead to unpredictable behavior, as subsequent requests
-to pull the same image repeatedly may not always succeed, depending on which
-container the request ultimately goes to.
+The `--mount-host` option mounts a directory from the node on which the registry container lives.
+If you scale up the *docker-registry* DeploymentConfig, it is possible that your registry pods and
+containers will run on different nodes, which can result in two or more registry containers, each
+with its own local storage. This will lead to unpredictable behavior, as subsequent requests to
+pull the same image repeatedly may not always succeed, depending on which container the request
+ultimately goes to.
 ====
 
 The `--mount-host` option requires that the registry container run in privileged
