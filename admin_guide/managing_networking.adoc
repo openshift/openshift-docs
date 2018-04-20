@@ -86,19 +86,41 @@ Alternatively, instead of specifying specific project names, you can use the
 `--selector=<project_selector>` option.
 
 [[admin-guide-disabling-hostname-collision]]
-== Disabling Host Name Collision Prevention For Ingress Objects
+== Disabling Host Name Collision Prevention For Routes and Ingress Objects
 
 In {product-title}, host name collision prevention for routes and ingress
-objects is enabled by default. This means that the host name in a route or
-ingress object can only be set on creation and not edited afterwards. Disabling
-host name collision prevention lets you edit a host name for ingress objects after creation.
-However, because {product-title} uses the object creation timestamp to determine
-the oldest route or ingress object for a given host name, the route or ingress
-object can hijack a host name with a newer route. This can happen if an older
-route changes its host name, or if an ingress object is introduced.
+objects is enabled by default. This means that users without the *cluster-admin*
+role can set the host name in a route or ingress object only on creation and
+cannot change it afterwards.  However, you can relax this restriction on routes
+and ingress objects for some or all users.
 
-This is relevant to {product-title} installations that depend upon Kubernetes
-behavior, including allowing the host names in ingress objects be edited.
+[WARNING]
+====
+Because {product-title} uses the object creation timestamp to determine the
+oldest route or ingress object for a given host name, a route or ingress object
+can hijack a host name of a newer route if the older route changes its host
+name, or if an ingress object is introduced.
+====
+
+As an {product-title} cluster administrator, you can edit the host name in a
+route even after creation.  You can also create a role to allow specific users
+to do so:
+
+----
+$ oc create clusterrole route-editor --verb=update --resource=routes.route.openshift.io/custom-host
+----
+
+You can then bind the new role to a user:
+
+----
+$ oc adm policy add-cluster-role-to-user route-editor user
+----
+
+You can also disable host name collision prevention for ingress objects.  Doing
+so lets users without the *cluster-admin* role edit a host name for ingress
+objects after creation.  This is useful to {product-title} installations that
+depend upon Kubernetes behavior, including allowing the host names in ingress
+objects be edited.
 
 . Add the following to the `master.yaml` file:
 +
@@ -114,11 +136,65 @@ admissionConfig:
       location: ""
 ----
 
-. Restart the master service for the changes to take effect:
+. Restart the master services for the changes to take effect:
 +
 [source, bash]
 ----
-$ systemctl restart atomic-openshift-master
+$ systemctl restart atomic-openshift-master-api atomic-openshift-master-controllers
+
+----
+
+[[admin-guide-managing-networking-ingress]]
+== Setting up the HAProxy router to accept ingress objects
+
+By default, the HAProxy router only accepts route objects. You can set up the
+HAProxy router as a Kubernetes
+link:https://kubernetes.io/docs/concepts/services-networking/ingress/[Ingress
+Controller] so that it accepts both route and ingress objects. If configured,
+the same rules apply for claiming a domain for a namespace based on the creation
+time of the object. For example, the oldest route winning against any other
+claimants wanting to use the same namespace.
+
+For example, ownership of routes is based on the claims made for that host name
+with the same namespace. The oldest route wins against any other claims.
+
+[NOTE]
+====
+Routes and ingress objects have the same data structure internally on the
+router, with ingress objects having the capability to turn into multiple route
+objects. The claim rules above apply for each of these objects. However, because
+an ingress object can have two hostnames, one hostname can be claimed by the
+ingress object and be active, while the second cannot claim, and remains
+inactive.
+====
+
+While this makes the router compatible with Kubernetes ingress
+objects, some caveats exist:
+
+* Ingress objects store the keys and certificates in secrets, so the router needs permission to read all secrets in the system.
+* Ingress objects only support edge termination for *https* routes.
+
+To configure an existing router to have ingress support (assuming the default
+name of `router` for the deployment configuration and the service-account):
+
+. Set the `ROUTER_ENABLE_INGRESS` environment variable to `true`:
++
+----
+$ oc env dc router ROUTER_ENABLE_INGRESS=true`
+----
+
+. Add the `cluster-reader` role to the router, where `-z` is the service
+account:
++
+----
+$ oc adm policy add-cluster-role-to-user cluster-reader -z router
+----
+
+. Give the router the authorization to manage ingress objects:
++
+----
+$ oc adm policy add-cluster-role-to-user \ 
+    system:openshift:controller:service-serving-cert-controller -z router
 ----
 
 [[admin-guide-controlling-egress-traffic]]
@@ -149,17 +225,27 @@ the JDBC connection information) rather than the actual protected service URL.
 You can also assign static IP addresses to projects, ensuring that all
 outgoing external connections from the specified project have recognizable
 origins. This is different from the default egress router, which is used to send
-traffic to specific destinations. See the
+traffic to specific destinations.
+ifdef::openshift-origin,openshift-enterprise[]
+See the
 xref:enabling-static-ips-for-external-project-traffic[Enabling Fixed IPs for
 External Project Traffic] section for more information.
+endif::openshift-origin,openshift-enterprise[]
 
-As an {product-title} cluster administrator, you can control egress traffic in three ways:
+[NOTE]
+====
+The egress router is not available for OpenShift Dedicated.
+====
+
+As an {product-title} cluster administrator, you can control egress traffic in these ways:
 
 xref:admin-guide-limit-pod-access-egress[Firewall]::
 Using an egress firewall allows you to enforce the acceptable outbound traffic
 policies, so that specific endpoints or IP ranges (subnets) are the only
 acceptable targets for the dynamic endpoints (pods within {product-title}) to
 talk to.
+
+ifdef::openshift-origin,openshift-enterprise[]
 
 xref:admin-guide-limit-pod-access-egress-router[Router]::
 Using an egress router allows you to create identifiable services to send
@@ -174,6 +260,9 @@ In addition to the above {product-title}-internal solutions, it is also
 possible to create iptables rules that will be applied to outgoing
 traffic. These rules allow for more possibilities than the egress
 firewall, but cannot be limited to particular projects.
+
+endif::openshift-origin,openshift-enterprise[]
+
 
 [[admin-guide-limit-pod-access-egress]]
 === Using an Egress Firewall to Limit Access to External Resources
@@ -312,6 +401,8 @@ and egress network policy enforcement is not applied. Administrators can prevent
 this bypass by limiting access to create routes.
 ====
 
+ifdef::openshift-origin,openshift-enterprise[]
+
 [[admin-guide-limit-pod-access-egress-router]]
 === Using an Egress Router to Allow External Resources to Recognize Pod Traffic
 
@@ -377,7 +468,7 @@ Specifically, ensure that the following are enabled:
 
 The egress router can run in two different modes:
 xref:admin-guide-deploying-an-egress-router-pod[redirect mode] and
-xref:admin-guide-deploying-an-egress-router-http-proxy-pod[HTTP proxy mode].
+xref:admin-guide-deploying-an-egress-http-proxy-pod[HTTP proxy mode].
 Redirect mode works for all services except for HTTP and HTTPS. For HTTP and
 HTTPS services, use HTTP proxy mode.
 
@@ -434,10 +525,10 @@ endif::openshift-origin[]
   nodeSelector:
     site: springfield-1 <6>
 ----
-<1> The `pod.network.openshift.io/assign-macvlan annotation` creates a Macvlan
-network interface on the primary network interface, and then moves it into the
-pod's network name space before starting the *egress-router* container. Preserve
-the quotation marks around `"true"`. Omitting them results in errors.
+<1> Creates a Macvlan network interface on the primary network interface, and
+moves it into the pod's network project before starting the *egress-router*
+container. Preserve the quotation marks around `"true"`. Omitting them results
+in errors. To create the Macvlan interface on a network interface other than the primary one, set the annotation value to the name of that interface. For example, `eth1`.
 <2> IP address from the physical network that the node is on and is
 reserved by the cluster administrator for use by this pod.
 <3> Same value as the default gateway used by the node.
@@ -655,7 +746,7 @@ The egress router does not automatically update when the ConfigMap changes.
 Restart the pod to get updates.
 ====
 
-[[admin-guide-deploying-an-egress-router-http-proxy-pod]]
+[[admin-guide-deploying-an-egress-http-proxy-pod]]
 ==== Deploying an Egress Router HTTP Proxy Pod
 
 In _HTTP proxy mode_, the egress router runs as an HTTP proxy on port `8080`.
@@ -696,10 +787,10 @@ endif::openshift-origin[]
   containers:
   - name: egress-router-proxy
 ifdef::openshift-enterprise[]
-    image: registry.access.redhat.com/openshift3/ose-egress-router-http-proxy
+    image: registry.access.redhat.com/openshift3/ose-egress-http-proxy
 endif::openshift-enterprise[]
 ifdef::openshift-origin[]
-    image: openshift/origin-egress-router-http-proxy
+    image: openshift/origin-egress-http-proxy
 endif::openshift-origin[]
     env:
     - name: EGRESS_HTTP_PROXY_DESTINATION <5>
@@ -708,10 +799,10 @@ endif::openshift-origin[]
         !192.168.1.0/24
         *
 ----
-<1> The `pod.network.openshift.io/assign-macvlan annotation` creates a Macvlan
-network interface on the primary network interface, then moves it into the
-pod's network name space before starting the *egress-router* container. Preserve
-the quotation marks around `"true"`. Omitting them results in errors.
+<1> Creates a Macvlan network interface on the primary network interface, then
+moves it into the pod's network project before starting the *egress-router*
+container. Preserve the quotation marks around `"true"`. Omitting them results
+in errors.
 <2> An IP address from the physical network that the node itself is on and is
 reserved by the cluster administrator for use by this pod.
 <3> Same value as the default gateway used by the node itself.
@@ -890,6 +981,9 @@ is complicated, because nodes have both "external" IP addresses and
 pass through this chain, but other pod-to-node/master traffic may
 bypass it.
 
+endif::openshift-origin,openshift-enterprise[]
+
+ifdef::openshift-origin,openshift-enterprise[]
 [[enabling-static-ips-for-external-project-traffic]]
 == Enabling Static IPs for External Project Traffic
 
@@ -898,29 +992,13 @@ projects, so that traffic is externally easily recognizable. This is different
 from the default egress router, which is used to send traffic to specific
 destinations.
 
-Recognizable IP traffic increases cluster security by ensuring the origins
+Recognizable IP traffic increases cluster security by ensuring the origin is
 visible. Once enabled, all outgoing external connections from the specified
 project will share the same, fixed source IP, meaning that any external
 resources can recognize the traffic.
 
 Unlike the egress router, this is subject to `EgressNetworkPolicy` firewall
 rules.
-
-[IMPORTANT]
-====
-Enabling static IPs for external project traffic is a Technology Preview feature
-only.
-ifdef::openshift-enterprise[]
-Technology Preview features are not supported with Red Hat production service
-level agreements (SLAs), might not be functionally complete, and Red Hat does
-not recommend to use them for production. These features provide early access to
-upcoming product features, enabling customers to test functionality and provide
-feedback during the development process.
-
-For more information on Red Hat Technology Preview features support scope, see
-https://access.redhat.com/support/offerings/techpreview/.
-endif::[]
-====
 
 To enable static source IPs:
 
@@ -973,7 +1051,7 @@ If the above is enabled for a project, all egress traffic from that project will
 be routed to the node hosting that egress IP, then connected (using NAT) to that
 IP address. If `egressIPs` is set on a `NetNamespace`, but there is no node
 hosting that egress IP, then egress traffic from the namespace will be dropped.
-
+endif::openshift-origin,openshift-enterprise[]
 
 [[admin-guide-networking-multicast]]
 == Enabling Multicast
@@ -1281,3 +1359,42 @@ such as Google can construct a list of sites that have `preload` set. Browsers
 can then use these lists to determine which sites to only talk to over HTTPS,
 even before they have interacted with the site. Without `preload` set, they need
 to have talked to the site over HTTPS to get the header.
+
+[[admin-guide-enabling-iperf]]
+== Troubleshooting Throughput Issues
+
+Sometimes applications deployed through {product-title} can cause 
+network throughput issues such as unusually high latency between specific services. 
+
+Use the following methods to analyze performance issues if pod logs do not reveal any cause of the problem:
+
+* Use a packet analyzer, such as ping or link:http://www.tcpdump.org/[tcpdump] to analyze traffic between a pod and its node.
++
+For example, run the tcpdump tool on each pod while reproducing the behavior that led to the issue.
+Review the captures on both sides to compare send and receive timestamps to analyze the latency of traffic to/from a pod. 
+Latency can occur in {product-title} if a node interface is overloaded with traffic from other pods, storage devices, or the data plane.
++
+----
+$ tcpdump -s 0 -i any -w /tmp/dump.pcap host <podip 1> && host <podip 2> <1>
+----
++
+<1> `podip` is the IP address for the pod. Run the following command to get the IP address of the pods:
++
+----
+# oc get pod <podname> -o wide 
+----
++
+tcpdump generates a file at *_/tmp/dump.pcap_* containing all traffic between these two pods. Ideally, run the analyzer shortly 
+before the issue is reproduced and stop the analyzer shortly after the issue is finished reproducing to minimize the size of the file. 
+You can also run a packet analyzer between the nodes (eliminating the SDN from the equation) with: 
++
+----
+# tcpdump -s 0 -i any -w /tmp/dump.pcap port 4789
+----
+
+* Use a bandwidth measuring tool, such as iperf, to measure streaming throughput and UDP throughput. Run the tool from the pods first, then from the nodes
+to attempt to locate any bottlenecks. The iperf3 tool is included as part of RHEL 7. 
+
+ifdef::openshift-enterprise[]
+For information on installing and using iperf3, see this link:https://access.redhat.com/solutions/33103[Red Hat Solution].
+endif::openshift-enterprise[]

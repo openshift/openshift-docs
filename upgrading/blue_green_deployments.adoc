@@ -1,0 +1,372 @@
+[[upgrading-blue-green-deployments]]
+= Blue-Green Deployments
+{product-author}
+{product-version}
+:data-uri:
+:icons:
+:experimental:
+:toc: macro
+:toc-title:
+:prewrap!:
+
+toc::[]
+
+== Overview
+
+[NOTE]
+====
+This topic serves as an alternative approach for node host upgrades to the in-place
+upgrade method.
+====
+
+The _blue-green deployment_ upgrade method follows a similar flow to the
+in-place method: masters and etcd servers are still upgraded first, however a
+parallel environment is created for new node hosts instead of upgrading them
+in-place.
+
+This method allows administrators to switch traffic from the old set of node
+hosts (e.g., the _blue_ deployment) to the new set (e.g., the _green_
+deployment) after the new deployment has been verified. If a problem is
+detected, it is also then easy to rollback to the old deployment quickly.
+
+While blue-green is a proven and valid strategy for deploying just about any
+software, there are always trade-offs. Not all environments have the same uptime
+requirements or the resources to properly perform blue-green deployments.
+
+In an {product-title} environment, the most suitable candidate for blue-green
+deployments are the node hosts. All user processes run on these systems and even
+critical pieces of {product-title} infrastructure are self-hosted on these
+resources. Uptime is most important for these workloads and the additional
+complexity of blue-green deployments can be justified.
+
+The exact implementation of this approach varies based on your requirements.
+Often the main challenge is having the excess capacity to facilitate such an
+approach.
+
+.Blue-Green Deployment
+image::blue-green-deployment.gif[Blue-Green Deployment Upgrade]
+
+[[blue-green-deployments-preparing-for-upgrade]]
+== Preparing for a Blue-Green Upgrade
+
+After you have upgraded your master and etcd hosts using method described for
+xref:../upgrading/manual_upgrades.adoc#upgrading-masters[In-place
+Upgrades], use the following sections to prepare your environment for a
+blue-green upgrade of the remaining node hosts.
+
+ifdef::openshift-enterprise[]
+[[blue-green-sharing-software-entitltments]]
+=== Sharing Software Entitlements
+
+Administrators must temporarily share the Red Hat software entitlements between
+the blue-green deployments or provide access to the installation content by
+means of a system such as Red Hat Satellite. This can be accomplished by sharing
+the consumer ID from the previous node host:
+
+. On each old node host that will be upgraded, note its `system identity` value,
+which is the consumer ID:
++
+----
+# subscription-manager identity | grep system
+system identity: 6699375b-06db-48c4-941e-689efd6ce3aa
+----
+
+. On each new RHEL 7 or RHEL Atomic Host 7 system that is going to replace an old
+node host, register using the respective consumer ID from the previous step:
++
+----
+# subscription-manager register --consumerid=6699375b-06db-48c4-941e-689efd6ce3aa
+----
+
+[IMPORTANT]
+====
+After a successful deployment, remember to unregister the old host with
+`subscription-manager clean` to prevent the environment from being out of
+compliance.
+====
+endif::openshift-enterprise[]
+
+[[blue-green-labeling-node-hosts]]
+=== Labeling Blue Nodes
+
+You must ensure that your current node hosts in production are labeled either
+`blue` or `green`. In this example, the current production environment will be
+`blue` and the new environment will be `green`.
+
+. Get the current list of node names known to the cluster:
++
+----
+$ oc get nodes
+----
+
+. Ensure that all hosts have appropriate node labels. All master hosts should
+be configured as schedulable node hosts (so that they are joined to the
+xref:../architecture/networking/network_plugins.adoc#architecture-additional-concepts-network-plugins[pod network]
+and can run the web console pod). To improve cluster management, add a label
+to each host that describes its type, such as `type=master` or `type=node`. 
++
+For example, to label node hosts that are also masters as `type=master`, run the
+following for each relevant `<node_name>`:
++
+----
+$ oc label node <node_name> type=master
+----
++
+To label non-master node hosts as `type=node`, run the following for each
+relevant `<node_name>`:
++
+----
+$ oc label node <node_name> type=node
+----
++
+Alternatively, if you have already finished labeling certain nodes with
+`type=master` and just want to label all remaining nodes as `type=node`, you can
+use the `--all` option and any hosts that already had a `type=` set will not be
+overwritten:
++
+----
+$ oc label node --all type=node
+----
+
+. Label all non-master node hosts in your current production environment to
+`color=blue`. For example, using the labels described in the previous step:
++
+----
+$ oc label node -l type=node color=blue
+----
++
+In the above command, the `-l` flag is used to match a subset of the environment
+using the selector `type=node`, and all matches are labeled with `color=blue`.
+
+[[blue-green-creating-labeling-green-nodes]]
+=== Creating and Labeling Green Nodes
+
+Create the new green environment for any node hosts that are to be replaced by
+adding an equal number of new node hosts to the existing cluster. You can use
+either the quick installer or advanced install method as described in
+xref:../install_config/adding_hosts_to_existing_cluster.adoc#adding-nodes-advanced[Adding
+Hosts to an Existing Cluster].
+
+When adding these new nodes, use the following Ansible variables:
+
+- Apply the `color=green` label automatically during the installation of these
+hosts by setting the `openshift_node_labels` variable for each node host. You
+can always adjust the labels after installation as well, if needed, using the
+`oc label node` command.
+
+- In order to delay workload scheduling until the nodes are deemed
+xref:../architecture/infrastructure_components/kubernetes_infrastructure.adoc#node[healthy]
+(which you will verify in later steps), set the `openshift_schedulable=false`
+variable for each node host to ensure they are unschedulable initially.
+
+.Example new_nodes Host Group
+
+Add the following to your existing inventory. Everything that was in your
+inventory previously should remain.
+
+----
+[new_nodes]
+node4.example.com openshift_node_labels="{'region': 'primary', 'color':'green'}" openshift_schedulable=false
+node5.example.com openshift_node_labels="{'region': 'primary', 'color':'green'}" openshift_schedulable=false
+node6.example.com openshift_node_labels="{'region': 'primary', 'color':'green'}" openshift_schedulable=false
+infra-node3.example.com openshift_node_labels="{'region': 'infra', 'color':'green'}" openshift_schedulable=false
+infra-node4.example.com openshift_node_labels="{'region': 'infra', 'color':'green'}" openshift_schedulable=false
+----
+
+[[blue-green-verifying-green-nodes]]
+=== Verifying Green Nodes
+
+Verify that your new green nodes are in a healthy state. Perform the following
+checklist:
+
+. Verify that new nodes are detected in the cluster and are in *Ready* state:
++
+----
+$ oc get nodes
+
+ip-172-31-49-10.ec2.internal    Ready                      3d
+----
+
+. Verify that the green nodes have proper labels:
++
+----
+$ oc get nodes --show-labels
+
+ip-172-31-49-10.ec2.internal    Ready                      4d        beta.kubernetes.io/arch=amd64,beta.kubernetes.io/instance-type=m4.large,beta.kubernetes.io/os=linux,color=green,failure-domain.beta.kubernetes.io/region=us-east-1,failure-domain.beta.kubernetes.io/zone=us-east-1c,hostname=openshift-cluster-1d005,kubernetes.io/hostname=ip-172-31-49-10.ec2.internal,region=us-east-1,type=infra
+----
+
+. Perform a diagnostic check for the cluster:
++
+----
+$ oc adm diagnostics
+
+[Note] Determining if client configuration exists for client/cluster diagnostics
+Info:  Successfully read a client config file at '/root/.kube/config'
+Info:  Using context for cluster-admin access: 'default/internal-api-upgradetest-openshift-com:443/system:admin'
+[Note] Performing systemd discovery
+
+[Note] Running diagnostic: ConfigContexts[default/api-upgradetest-openshift-com:443/system:admin]
+       Description: Validate client config context is complete and has connectivity
+...
+         [Note] Running diagnostic: CheckExternalNetwork
+              Description: Check that external network is accessible within a pod
+
+       [Note] Running diagnostic: CheckNodeNetwork
+              Description: Check that pods in the cluster can access its own node.
+
+       [Note] Running diagnostic: CheckPodNetwork
+              Description: Check pod to pod communication in the cluster. In case of ovs-subnet network plugin, all pods
+should be able to communicate with each other and in case of multitenant network plugin, pods in non-global projects
+should be isolated and pods in global projects should be able to access any pod in the cluster and vice versa.
+
+       [Note] Running diagnostic: CheckServiceNetwork
+              Description: Check pod to service communication in the cluster. In case of ovs-subnet network plugin, all
+pods should be able to communicate with all services and in case of multitenant network plugin, services in non-global
+projects should be isolated and pods in global projects should be able to access any service in the cluster.
+...
+----
+
+[[blue-green-canary-deployment]]
+== Registry and Router Canary Deployments
+
+A common practice is to scale the registry and router pods until they are
+migrated to new (green) infrastructure node hosts. For these pods, a
+xref:../dev_guide/deployments/deployment_strategies.adoc#canary-deployments[_canary_
+deployment] approach is commonly used.
+
+Scaling these pods up will make them immediately active on the new
+infrastructure nodes. Pointing their deployment configuration to the new image
+initiates a rolling update. However, because of node anti-affinity, and the fact
+that the blue nodes are still unschedulable, the deployments to the old nodes
+will fail.
+
+At this point, the registry and router deployments can be scaled down to the
+original number of pods. At any given point, the original number of pods is
+still available so no capacity is lost and downtime should be avoided.
+
+[[blue-green-warming-green-nodes]]
+== Warming the Green Nodes
+
+In order for pods to be migrated from the blue environment to the green, the
+required container images must be pulled. Network latency and load on the
+registry can cause delays if there is not sufficient capacity built in to the
+environment.
+
+Often, the best way to minimize impact to the running system is to trigger new
+pod deployments that will land on the new nodes. Accomplish this by importing
+new image streams.
+
+Major releases of {product-title} (and sometimes asynchronous errata updates)
+introduce new image streams for builder images for users of Source-to-Image
+(S2I). Upon import, any builds or deployments configured with
+xref:../dev_guide/builds/triggering_builds.adoc#image-change-triggers[image
+change triggers] are automatically created.
+
+Another benefit of triggering the builds is that it does a fairly good job of
+fetching the majority of the ancillary images to all node hosts such as the
+various builder images, the pod infrastructure image, and deployers. The green
+nodes are then considered _warmed_ (that is, ready for the expected load
+increase), and everything else can be migrated over using node evacuation in a
+later step, proceeding more quickly as a result.
+
+When you are ready to continue with the upgrade process, follow these steps to
+warm the green nodes:
+
+. Set the green nodes to schedulable so that new pods only land on them:
++
+----
+$ oc adm manage-node --schedulable=true --selector=color=green
+----
+
+. Disable the blue nodes so that no new pods are run on them by setting them
+unschedulable:
++
+----
+$ oc adm manage-node --schedulable=false --selector=color=blue
+----
+
+. Update the default image streams and templates as described in
+xref:../upgrading/manual_upgrades.adoc#updating-the-default-image-streams-and-templates[Manual In-place Upgrades].
+
+. Import the latest images as described in
+xref:../upgrading/manual_upgrades.adoc#importing-the-latest-images[Manual In-place Upgrades].
++
+It is important to realize that this process can trigger a large number of
+builds. The good news is that the builds are performed on the green nodes and,
+therefore, do not impact any traffic on the blue deployment.
+
+. To monitor build progress across all namespaces (projects) in the cluster:
++
+----
+$ oc get events -w --all-namespaces
+----
++
+In large environments, builds rarely completely stop. However, you should see a
+large increase and decrease caused by the administrative image import.
+
+[[blue-green-deployments-node-evacuation]]
+== Evacuating and Decommissioning Blue Nodes
+
+For larger deployments, it is possible to have other labels that help determine
+how evacuation can be coordinated. The most conservative approach for avoiding
+downtime is to evacuate one node host at a time.
+
+If services are composed of pods using zone anti-affinity, then an entire zone
+can be evacuated at once. It is important to ensure that the storage volumes
+used are available in the new zone as this detail can vary among cloud
+providers.
+
+ifdef::openshift-origin[]
+In {product-title} 1.2 and later,
+endif::[]
+ifdef::openshift-enterprise[]
+In {product-title} 3.2 and later,
+endif::[]
+a node host evacuation is triggered whenever the node service is stopped. Node
+labeling is very important and can cause issues if nodes are mislabeled or
+commands are run on nodes with generalized labels. Exercise caution if master
+hosts are also labeled with `color=blue`.
+
+When you are ready to continue with the upgrade process, follow these steps.
+
+. Evacuate and delete all blue nodes by following one of the following options:
+
+.. *Option A* Manually evacuate then delete all the `color=blue` nodes with the
+following commands:
++
+----
+$ oc adm manage-node --selector=color=blue --evacuate
+$ oc delete node --selector=color=blue
+----
+
+.. *Option B* Filter out the masters before running the `delete` command:
+
+... Verify the list of blue node hosts to delete by running the following
+command. The output of this command includes a list of all node hosts that have 
+the `color=blue` label but do not have the `type=master` label. All of the hosts
+in your cluster must be assigned both the `color` and `type` labels. You can
+change the command to apply more filters if you need to further limit the list
+of nodes. 
++
+----
+$ oc get nodes -o go-template='{{ range .items }}{{ if (eq .metadata.labels.color "blue") and (ne .metadata.labels.type "master") }}{{ .metadata.name }}{{ "\n" }}{{end}}{{ end }}'
+----
+
+... After you confirm the list of blue nodes to delete, run this command to
+delete that list of nodes:
++
+----
+$ for i in $(oc get nodes -o \
+    go-template='{{ range .items }}{{ if (eq .metadata.labels.color "blue") and (ne .metadata.labels.type "master") }}{{ .metadata.name }}{{ "\n" }}{{end}}{{ end }}'); \
+do
+    oc delete node $i
+done
+----
+
+. After the blue node hosts no longer contain pods and have been removed from {product-title}
+they are safe to power off. As a safety precaution, leaving the hosts around
+for a short period of time can prove beneficial if the upgrade has issues.
+
+. Ensure that any desired scripts or files are captured before terminating these
+hosts. After a determined time period and capacity is not an issue, remove these
+hosts.

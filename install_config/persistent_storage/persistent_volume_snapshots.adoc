@@ -1,0 +1,418 @@
+[[persistent_volume_snapshots]]
+= Persistent Volume Snapshots
+{product-author}
+{product-version}
+:data-uri:
+:icons:
+:experimental:
+:toc: macro
+:toc-title:
+:prewrap!:
+
+toc::[]
+
+== Overview
+
+[IMPORTANT]
+====
+Persistent Volume Snapshots are a Technology Preview feature.
+ifdef::openshift-enterprise[]
+Technology Preview features are not supported with Red Hat production service
+level agreements (SLAs), might not be functionally complete, and Red Hat does
+not recommend to use them for production. These features provide early access to
+upcoming product features, enabling customers to test functionality and provide
+feedback during the development process.
+
+For more information on Red Hat Technology Preview features support scope, see
+https://access.redhat.com/support/offerings/techpreview/.
+endif::[]
+====
+
+Many storage systems provide the ability to create "snapshots" of a persistent
+volume (PV) to protect against data loss. The external snapshot controller and
+provisioner provide means to use the feature in the {product-title} cluster and
+handle volume snapshots through the {product-title} API.
+
+This document describes the current state of volume snapshot support in
+{product-title}. Familiarity with
+link:https://kubernetes.io/docs/concepts/storage/persistent-volumes/[PVs],
+link:https://kubernetes.io/docs/concepts/storage/persistent-volumes/#persistentvolumeclaims[persistent
+volume claims (PVCs)], and
+link:http://blog.kubernetes.io/2016/10/dynamic-provisioning-and-storage-in-kubernetes.html[dynamic
+provisioning] is recommended.
+
+[[features]]
+== Features
+
+* Create snapshot of a `PersistentVolume` bound to a `PersistentVolumeClaim`
+* List existing `VolumeSnapshots`
+* Delete existing `VolumeSnapshot`
+* Create a new `PersistentVolume` from an existing `VolumeSnapshot`
+* Supported `PersistentVolume` link:https://kubernetes.io/docs/concepts/storage/persistent-volumes/#types-of-persistent-volumes[types]:
+** AWS Elastic Block Store (EBS)
+** Google Compute Engine (GCE) Persistent Disk (PD)
+
+[[installation-setup]]
+== Installation and Setup
+
+The external controller and provisioner are the external components that provide
+volume snapshotting. These external components run in the cluster. The
+controller is responsible for creating, deleting, and reporting events on volume
+snapshots. The provisioner creates new `PersistentVolumes` from the volume
+snapshots. See xref:create-snapshot[Create Snapshot]
+and xref:restore-snapshot[Restore Snapshot] for more information.
+
+[[start-controller-and-provisioner]]
+=== Starting the External Controller and Provisioner
+
+The external controller and provisioner services are distributed as container
+images and can be run in the {product-title} cluster as usual. There are also
+RPM versions for the controller and provisioner.
+
+To allow the containers managing the API objects, the necessary role-based access control
+(RBAC) rules need to be configured by the administrator:
+
+. Create a `ServiceAccount` and `ClusterRole`:
++
+[source,yaml]
+----
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: snapshot-controller-runner
+kind: ClusterRole
+apiVersion: rbac.authorization.k8s.io/v1
+metadata:
+  name: snapshot-controller-role
+rules:
+  - apiGroups: [""]
+    resources: ["persistentvolumes"]
+    verbs: ["get", "list", "watch", "create", "delete"]
+  - apiGroups: [""]
+    resources: ["persistentvolumeclaims"]
+    verbs: ["get", "list", "watch", "update"]
+  - apiGroups: ["storage.k8s.io"]
+    resources: ["storageclasses"]
+    verbs: ["get", "list", "watch"]
+  - apiGroups: [""]
+    resources: ["events"]
+    verbs: ["list", "watch", "create", "update", "patch"]
+  - apiGroups: ["apiextensions.k8s.io"]
+    resources: ["customresourcedefinitions"]
+    verbs: ["create", "list", "watch", "delete"]
+  - apiGroups: ["volumesnapshot.external-storage.k8s.io"]
+    resources: ["volumesnapshots"]
+    verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
+  - apiGroups: ["volumesnapshot.external-storage.k8s.io"]
+    resources: ["volumesnapshotdatas"]
+    verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
+----
+
+. Bind the rules via `ClusterRoleBinding`:
++
+[source,yaml]
+----
+apiVersion: rbac.authorization.k8s.io/v1beta1
+kind: ClusterRoleBinding
+metadata:
+  name: snapshot-controller
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: snapshot-controller-role
+subjects:
+- kind: ServiceAccount
+  name: snapshot-controller-runner
+  namespace: default
+----
+
+If the external controller and provisioner are deployed in Amazon Web Services
+(AWS), they must be able to authenticate using the access key. To provide the
+credential to the pod, the administrator creates a new secret:
+
+[source,yaml]
+----
+apiVersion: v1
+kind: Secret
+metadata:
+  name: awskeys
+type: Opaque
+data:
+  access-key-id: <base64 encoded AWS_ACCESS_KEY_ID>
+  secret-access-key: <base64 encoded AWS_SECRET_ACCESS_KEY>
+----
+
+The AWS deployment of the external controller and provisioner containers (note
+that both pod containers use the secret to access the AWS cloud provider API):
+
+[source,yaml]
+----
+kind: Deployment
+apiVersion: extensions/v1beta1
+metadata:
+  name: snapshot-controller
+spec:
+  replicas: 1
+  strategy:
+    type: Recreate
+  template:
+    metadata:
+      labels:
+        app: snapshot-controller
+    spec:
+      serviceAccountName: snapshot-controller-runner
+      containers:
+        - name: snapshot-controller
+          image: "registry.access.redhat.com/openshift3/snapshot-controller:latest"
+          imagePullPolicy: "IfNotPresent"
+          args: ["-cloudprovider", "aws"]
+          env:
+            - name: AWS_ACCESS_KEY_ID
+              valueFrom:
+                secretKeyRef:
+                  name: awskeys
+                  key: access-key-id
+            - name: AWS_SECRET_ACCESS_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: awskeys
+                  key: secret-access-key
+        - name: snapshot-provisioner
+          image: "registry.access.redhat.com/openshift3/snapshot-provisioner:latest"
+          imagePullPolicy: "IfNotPresent"
+          args: ["-cloudprovider", "aws"]
+          env:
+            - name: AWS_ACCESS_KEY_ID
+              valueFrom:
+                secretKeyRef:
+                  name: awskeys
+                  key: access-key-id
+            - name: AWS_SECRET_ACCESS_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: awskeys
+                  key: secret-access-key
+----
+
+For GCE, there is no need to use secrets to access the GCE cloud provider API.
+The administrator can proceed with the deployment:
+
+[source,yaml]
+----
+kind: Deployment
+apiVersion: extensions/v1beta1
+metadata:
+  name: snapshot-controller
+spec:
+  replicas: 1
+  strategy:
+    type: Recreate
+  template:
+    metadata:
+      labels:
+        app: snapshot-controller
+    spec:
+      serviceAccountName: snapshot-controller-runner
+      containers:
+        - name: snapshot-controller
+          image: "registry.access.redhat.com/openshift3/snapshot-controller:latest"
+          imagePullPolicy: "IfNotPresent"
+          args: ["-cloudprovider", "gce"]
+        - name: snapshot-provisioner
+          image: "registry.access.redhat.com/openshift3/snapshot-provisioner:latest"
+          imagePullPolicy: "IfNotPresent"
+          args: ["-cloudprovider", "gce"]
+----
+
+[[manage-snapshot-users]]
+=== Managing Snapshot Users
+
+Depending on the cluster configuration, it might be necessary to allow
+non-administrator users to manipulate the `VolumeSnapshot` objects on the API
+server. This can be done by creating a `ClusterRole` bound to a particular user
+or group.
+
+For example, assume the user 'alice' needs to work with snapshots in the cluster. The cluster administrator completes the following steps:
+
+. Define a new `ClusterRole`:
++
+[source,yaml]
+----
+apiVersion: v1
+kind: ClusterRole
+metadata:
+  name: volumesnapshot-admin
+rules:
+- apiGroups:
+  - "volumesnapshot.external-storage.k8s.io"
+  attributeRestrictions: null
+  resources:
+  - volumesnapshots
+  verbs:
+  - create
+  - delete
+  - deletecollection
+  - get
+  - list
+  - patch
+  - update
+  - watch
+----
+
+. Bind the cluster role to the user 'alice' by creating a `ClusterRole` binding object:
++
+[source,yaml]
+----
+apiVersion: rbac.authorization.k8s.io/v1beta1
+kind: ClusterRoleBinding
+metadata:
+  name: volumesnapshot-admin
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: volumesnapshot-admin
+subjects:
+- kind: User
+  name: alice
+----
+
+[NOTE]
+====
+This is only an example of API access configuration. The `VolumeSnapshot` objects behave similar to other {product-title} API objects. See the link:https://kubernetes.io/docs/admin/accessing-the-api/[API access control documentation] for more information on managing the API RBAC.
+====
+
+[[lifecycle]]
+== Lifecycle of a Volume Snapshot and Volume Snapshot Data
+
+[[pvc-and-pv]]
+=== Persistent Volume Claim and Persistent Volume
+
+The `PersistentVolumeClaim` is bound to a `PersistentVolume`. The `PersistentVolume` type must be one of the snapshot supported persistent volume types.
+
+[[snapshot-promoter]]
+==== Snapshot Promoter
+
+To create a `StorageClass`:
+
+[source,yaml]
+----
+kind: StorageClass
+apiVersion: storage.k8s.io/v1
+metadata:
+  name: snapshot-promoter
+provisioner: volumesnapshot.external-storage.k8s.io/snapshot-promoter
+----
+
+This `StorageClass` is necessary to restore a `PersistentVolume` from a `VolumeSnapshot` that was previously created.
+
+[[create-snapshot]]
+=== Create Snapshot
+
+To take a snapshot of a PV, create a new `VolumeSnapshot` object:
+
+[source,yaml]
+----
+apiVersion: volumesnapshot.external-storage.k8s.io/v1
+kind: VolumeSnapshot
+metadata:
+  name: snapshot-demo
+spec:
+  persistentVolumeClaimName: ebs-pvc
+----
+
+`persistentVolumeClaimName` is the name of the `PersistentVolumeClaim` bound to
+a `PersistentVolume`. This particular PV is snapshotted.
+
+A `VolumeSnapshotData` object is then automatically created based on the
+`VolumeSnapshot`. The relationship between `VolumeSnapshot` and
+`VolumeSnapshotData` is similar to the relationship between
+`PersistentVolumeClaim` and `PersistentVolume`.
+
+Depending on the PV type, the operation might go through several phases, which
+are reflected by the `VolumeSnapshot` status:
+
+. The new `VolumeSnapshot` object is created.
+. The controller starts the snapshot operation. The snapshotted `PersistentVolume` might need to be frozen and the applications paused.
+. The storage system finishes creating the snapshot (the snapshot is "cut") and the snapshotted `PersistentVolume` might return to normal operation. The snapshot itself is not yet ready. The last status condition is of `Pending` type with status value `True`. A new `VolumeSnapshotData` object is created to represent the actual snapshot.
+. The newly created snapshot is complete and ready to use. The last status condition is of `Ready` type with status value `True`.
+
+[IMPORTANT]
+====
+It is the user's responsibility to ensure data consistency (stop the pod/application, flush caches, freeze the file system, and so on).
+====
+
+[NOTE]
+====
+In case of error, the `VolumeSnapshot` status is appended with an `Error` condition.
+====
+
+To display the `VolumeSnapshot` status:
+
+----
+$ oc get volumesnapshot -o yaml
+----
+
+The status is displayed.
+
+[source,yaml]
+----
+apiVersion: volumesnapshot.external-storage.k8s.io/v1
+  kind: VolumeSnapshot
+  metadata:
+    clusterName: ""
+    creationTimestamp: 2017-09-19T13:58:28Z
+    generation: 0
+    labels:
+      Timestamp: "1505829508178510973"
+    name: snapshot-demo
+    namespace: default
+    resourceVersion: "780"
+    selfLink: /apis/volumesnapshot.external-storage.k8s.io/v1/namespaces/default/volumesnapshots/snapshot-demo
+    uid: 9cc5da57-9d42-11e7-9b25-90b11c132b3f
+  spec:
+    persistentVolumeClaimName: ebs-pvc
+    snapshotDataName: k8s-volume-snapshot-9cc8813e-9d42-11e7-8bed-90b11c132b3f
+  status:
+    conditions:
+    - lastTransitionTime: null
+      message: Snapshot created successfully
+      reason: ""
+      status: "True"
+      type: Ready
+    creationTimestamp: null
+----
+
+[[restore-snapshot]]
+=== Restore Snapshot
+
+To restore a PV from a `VolumeSnapshot`, create a PVC:
+
+[source,yaml]
+----
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: snapshot-pv-provisioning-demo
+  annotations:
+    snapshot.alpha.kubernetes.io/snapshot: snapshot-demo
+spec:
+  storageClassName: snapshot-promoter
+----
+
+`annotations`: `snapshot.alpha.kubernetes.io/snapshot` is the name of the
+`VolumeSnapshot` to be restored. `storageClassName`: `StorageClass` is created
+by the administrator for restoring `VolumeSnapshots`.
+
+A new `PersistentVolume` is created and bound to the `PersistentVolumeClaim`.
+The process may take several minutes depending on the PV type.
+
+[[delete-snapshot]]
+=== Delete Snapshot
+
+To delete a `snapshot-demo`:
+
+----
+$ oc delete volumesnapshot/snapshot-demo
+----
+
+The `VolumeSnapshotData` bound to the `VolumeSnapshot` is automatically deleted.

@@ -1,0 +1,538 @@
+[[architecture-additional-concepts-dynamic-admission-controllers]]
+= Custom Admission Controllers
+{product-author}
+{product-version}
+:data-uri:
+:icons:
+:experimental:
+:toc: macro
+:toc-title:
+:prewrap!:
+
+toc::[]
+
+
+== Overview
+
+In addition to the the default xref:../../architecture/additional_concepts/admission_controllers.html#architecture-additional-concepts-admission-controllers[admission controllers], 
+you can use _admission webhooks_ as part of the admission chain. 
+
+Admission webhooks call webhook servers to either mutate pods upon creation, such as to inject labels, 
+or to validate specific aspects of the pod configuration during the admission process.  
+
+Admission webhooks intercept requests to the master API prior to the persistence of a resource, but after the request is authenticated and authorized. 
+
+//// 
+do not document initializers PR-7789
+There are two general types of dynamic admission controllers available in {product-title}:
+
+* xref:architecture-additional-concepts-dynamic-admission-initializer[Initializers]. A user-customized controller that performs specific pre-initialization tasks.
+* xref:architecture-additional-concepts-dynamic-admission-webhooks[External Admission Webhooks]. HTTPS callbacks that receive admission requests and performs specific tasks.
+////
+ 
+
+//// 
+do not document initializers PR-7789
+[[architecture-additional-concepts-dynamic-admission-initializer]]
+== Initializers
+
+An *Initializer* is a user-customized controller, known as *initializer controllers*, 
+that performs a list of pre-initialization tasks, stored in every object's metadata
+(for example, *AddMyCorporatePolicySidecar*). Initializers are allowed to make mutations to objects.
+
+Initializers intercept objects _before_ they are created, allowing you to interact with the objects in any way you like, or prevent the objects from being created.
+
+[WARNING]
+====
+The initializer feature is an alpha feature and may change in a future release of {product-title}.
+====
+
+After an initializer has performed its assigned task, {product-title} removes the intializer from
+the pre-initialization list. The list is called *metadata.initializers.pending*.
+
+For example, an inititalizer, *AddContainertoPod*, sends a patch that inserts a container in a pod. After the pod is inserted, 
+*AddContainertoPod* removes its name from `metadata.initializers.pending`. 
+
+Objects which have a non-empty initializer list are considered _uninitialized_,
+and are not visible in the API unless specifically requested by using the query parameter,
+`includeUninitialized=true`.
+
+Initializers are useful for administrators to force policies, such as an (xref:../../architecture/additional_concepts/admission_controllers.adoc#admission-controllers-general-admission-rules
+[Always Pull Images] policy that forces pods to pull images prior to starting containers.
+
+[NOTE]
+====
+If your use case does not involve mutating objects, consider using
+xref:architecture-additional-concepts-dynamic-admission-webhooks[external admission webhooks], 
+for better performance.
+====
+
+As an {product-title} object is being created, the object is considered uninitialized. 
+Uninitialized object are checked against all existing
+xref:architecture-additional-concepts-dynamic-admission-initializer-config[`initializerConfiguration` objects]. 
+All matching `spec.initializers[].name` are appended to the new object's
+`metadata.initializers.pending` field.
+
+An initializer controller then checks
+check if its name matches `metadata.initializers.pending[0]`. If so, it should then
+perform its assigned task and remove its name from the list.
+
+[[architecture-additional-concepts-dynamic-admission-initializer-list]]
+=== Create the List of Initializers
+
+Set the list of pending initializers to exclude itself
+
+[source,yaml]
+----
+apiVersion: apps/v1beta1
+kind: Deployment
+metadata:
+  initializers:
+    pending:
+      - initializer.project.io
+  name: initializer
+----
+
+Set the pending initializers to an empty array:
+
+[source,yaml]
+----
+apiVersion: apps/v1beta1
+kind: Deployment
+metadata:
+  initializers:
+    pending: []
+----
+
+Setting the pending initializers to empty on the metadata allows it to bypass the initializer.
+
+
+Limit the scope of objects to be initialized to the smallest subset possible using an InitializerConfiguration. 
+
+Examples:
+
+The following initializer will work with only xref:../../dev_guide/deployments/how_deployments_work.adoc#dev-guide-how-deployments-work[deployment configuration objects]:
+
+.Example initializer for only deployment objects
+
+[source,yaml]
+----
+apiVersion: admissionregistration.k8s.io/v1beta1
+kind: InitializerConfiguration
+metadata:
+  name: deploy
+initializers:
+  - name: deploy.initializer.kubernetes.io
+    rules:
+      - apiGroups:
+          - "*"
+        apiVersions:
+          - "*"
+        resources:
+          - deployments
+----
+
+The following initializer Use annotations to enable opting in or out of initialization. Examples:
+
+.Opting in using an annotation
+
+[source,yaml]
+----
+apiVersion: apps/v1beta1
+kind: Deployment
+metadata:
+  annotations:
+    "initializer.kubernetes.io": "true"
+  labels:
+    app: helloworld
+  name: helloworld
+...
+----
+
+[[architecture-additional-concepts-dynamic-admission-initializer-config]]
+=== Configure Initializers
+
+you should first deploy the initializer controller and make sure that it is
+working properly before creating the `initializerConfiguration`. Otherwise, any
+newly created resources will be stuck in an uninitialized state.
+
+The following list represents a set of best practices to follow when building Initializers.
+
+* Initializers must have a unique fully qualified name. Examples: initializer.vaultproject.io initializer.example.com
+* Initializers should be deployed using a Deployment for easy upgrades and auto restarts.
+* Initializers should explicitly set the list of pending initializers to exclude itself, or to an empty array, to avoid getting stuck waiting to initialize. Examples:
+
+. Configure which initializers are enabled and which resource types need initialization
+by creating *initializer configuration* resources.
++
+The following is an example `initializerConfiguration`:
++
+[source-yaml]
+----
+apiVersion: admissionregistration.k8s.io/v1beta1
+kind: InitializerConfiguration
+metadata:
+  name: example-config
+initializers:
+  # the name needs to be fully qualified, i.e., containing at least two "."
+  - name: podimage.example.com
+    rules:
+      # apiGroups, apiVersion, resources all support wildcard "*".
+      # "*" cannot be mixed with non-wildcard.
+      - apiGroups:
+          - ""
+        apiVersions:
+          - v1
+        resources:
+          - pods
+----
++
+Ensure that all expansions of the `<apiGroup, apiVersions, resources>` tuple
+in a `rule` are valid. If they are not, separate them in different `rules`.
++
+After you create the `initializerConfiguration`, the system will take a few
+seconds to honor the new configuration. 
+
+. {product-title} appends the name of the initializer configuration object, here  `podimage.example.com`, 
+to the `metadata.initializers.pending` field of any newly created pods. 
+
+. An initializer controller should list and watch for uninitialized objects, by
+using the query parameter `includeUninitialized=true`. If using client-go, just
+set 
+[listOptions.includeUninitialized](https://github.com/kubernetes/kubernetes/blob/v1.7.0-rc.1/staging/src/k8s.io/apimachinery/pkg/apis/meta/v1/types.go#L315)
+to true.
+
+////
+
+[[architecture-additional-concepts-dynamic-admission-webhooks]]
+== Admission Webhooks
+
+In {product-title} you can use admission webhook objects that call webhook servers during the
+API admission chain.
+
+There are two types of admission webhook objects you can configure:
+
+* xref:admission-webhooks-m[Mutating admission webhooks] allow for the use of mutating webhooks to modify resource content before it is persisted.
+
+* xref:admission-webhooks-v[Validating admission webhooks] allow for the use of validating webhooks to enforce custom admission policies.   
+
+Configuring the webhooks and external webhook servers is beyond the scope of this document. However, the webhooks must adhere to an
+https://github.com/kubernetes/kubernetes/blob/v1.10.0-beta.1/staging/src/k8s.io/api/admission/v1beta1/types.go#L28[interface]
+in order to work properly with {product-title}. 
+
+[IMPORTANT]
+====
+*Admission webhooks* is a Technology Preview feature only.
+ifdef::openshift-enterprise[]
+Technology Preview features are not supported with Red Hat production service
+level agreements (SLAs), might not be functionally complete, and Red Hat does
+not recommend to use them for production. These features provide early access to
+upcoming product features, enabling customers to test functionality and provide
+feedback during the development process.
+
+For more information on Red Hat Technology Preview features support scope, see
+https://access.redhat.com/support/offerings/techpreview/.
+endif::[]
+====
+
+When an object is instantiated, {product-title} makes an API call to admit the object. During the admission process, a _mutating admission controller_ 
+can invoke webhooks to perform tasks, such as injecting affinity labels. At the end of the admissions process, 
+a _validating admission controller_ can invoke webhooks to make sure the object is configured properly, such as verifying affinity labels. 
+If the validation passes, {product-title} schedules the object as configured.
+
+When the API request comes in, the mutating or validating admission controller 
+uses the list of external webhooks in the configuration and calls them in parallel: 
+
+* If *all* of the webhooks approve the request, the admission chain continues. 
+
+* If *any* of the webhooks deny the request, the admission request is denied, and
+the reason for doing so is based on the _first_ webhook denial reason. 
++
+If more than one webhook denies the admission request, 
+only the first will be returned to the user.
+
+* If there is an error encountered when calling a
+webhook, that request is ignored and is be used to approve/deny the
+admission request.
+
+The communication between the admission controller and the webhook server needs to be
+secured using  TLS. Generate a CA certificate and use the certificate to sign the server certificate
+used by your webhook server. The PEM-formatted CA certificate is supplied
+to the admission controller using a mechanism, such as 
+xref:../../dev_guide/secrets.adoc#service-serving-certificate-secrets[Service Serving Certificate Secrets].
+
+The following diagram illustrates this process with two admission webhooks that call multiple webhooks.
+
+image::api-server-pipeline.png["API admission stage", align="center"]
+
+A simple example use case for admission webhooks is syntactical validation
+of resources. For example, you have an infrastructure that requires all pods to
+have a common set of labels, and you do not want any pod to be
+persisted if the pod does not have those labels. You could write a webhook to inject these labels 
+and another webhook to verify that the labels are present.
+The {product-title} will then schedule pod that have the labels and pass validation
+and reject pods that do not pass due to missing labels.
+
+Some common use-cases include:
+
+* Mutating resources to inject side-car containers into pods. 
+* Restricting projects to block some resources from a project. 
+* Custom resource validation to perform complex validation on dependent fields.
+
+=== Types of Admission Webhooks
+
+Cluster administrators can include _mutating admission webhooks_ or _validating admission webhooks_ 
+in the admission chain of the API server.
+
+[[admission-webhooks-m]]
+*Mutating admission webhooks* are invoked during the mutation phase of the admission process, which allows modification of the resource content before it is persisted.  
+One example of a mutating admission webhook is the 
+xref:../../admin_guide/scheduling/pod_placement.adoc#constraining-pod-placement-nodeselector[Pod Node Selector] feature, 
+which uses an annotation on a namespace to find a label selector and add it to the pod specification. 
+
+[[architecture-additional-concepts-dynamic-admission-webhooks-ex-m]]
+.Sample mutating admission webhook configuration:
+
+[source,yaml]
+----
+apiVersion: admissionregistration.k8s.io/v1beta1
+  kind: MutatingWebhookConfiguration <1>
+  metadata:
+    name: <controller_name> <2>
+  webhooks:
+  - name: <webhook_name> <3>
+    clientConfig: <4>
+      service:
+        namespace:  <5>
+        name: <6>
+       path: <webhook_url> <7>
+      caBundle: <cert> <8>
+    rules: <9>
+    - operations: <10>
+      - <operation>
+      apiGroups:
+      - ""
+      apiVersions:
+      - "*"
+      resources:
+      - <resource>
+    failurePolicy: <policy> <11>
+----
+
+<1> Specifies a mutating admission webhook configuration.
+<2> The name for the admission webhook object.
+<3> The name of the webhook to call.
+<4> Information about how to connect to, trust, and send data to the webhook server.
+<5> The project where the front-end service is created.
+<6> The name of the front-end service.
+<7> The webhook URL used for admission requests.
+<8> A PEM-encoded CA certificate that signs the server certificate used by the webhook server.
+<9> Rules that define when the API server should use this controller.
+<10> The operation(s) that triggers the API server to call this controller: 
+* create
+* update
+* delete
+* connect
+<11> Specifies how the policy should proceed if the webhook admission server is unavailable. 
+Either `Ignore` (allow/fail open) or `Fail` (block/fail closed). 
+
+[[admission-webhooks-v]]
+*Validating admission webhooks* are invoked during the validation phase of the admission process. 
+This phase allows the enforcement of invariants on particular API resources 
+to ensure that the resource does not change again. The Pod Node Selector is also an example of a validation admission, 
+by ensuring that all `nodeSelector` fields are constrained by the node selector restrictions on the project. 
+
+[[architecture-additional-concepts-dynamic-admission-webhooks-ex-v]]
+//http://blog.kubernetes.io/2018/01/extensible-admission-is-beta.html
+.Sample validating admission webhook configuration:
+
+[source,yaml]
+----
+apiVersion: admissionregistration.k8s.io/v1beta1
+  kind: ValidatingWebhookConfiguration <1>
+  metadata:
+    name: <controller_name> <2>
+  webhooks:
+  - name: <webhook_name> <3>
+    clientConfig: <4>
+      service:
+        namespace: default  <5>
+        name: kubernetes <6>
+       path: <webhook_url> <7>
+      caBundle: <cert> <8>
+    rules: <9>
+    - operations: <10>
+      - <operation>
+      apiGroups:
+      - ""
+      apiVersions:
+      - "*"
+      resources:
+      - <resource>
+    failurePolicy: <policy> <11>
+----
+
+<1> Specifies a validating admission webhook configuration.
+<2> The name for the webhook admission object.
+<3> The name of the webhook to call.
+<4> Information about how to connect to, trust, and send data to the webhook server.
+<5> The project where the front-end service is created.
+<6> The name of the front-end service.
+<7> The webhook URL used for admission requests.
+<8> A PEM-encoded CA certificate that signs the server certificate used by the webhook server.
+<9> Rules that define when the API server should use this controller.
+<10> The operation that triggers the API server to call this controller. 
+* create
+* update
+* delete
+* connect
+<11> Specifies how the policy should proceed if the webhook admission server is unavailable. 
+Either `Ignore` (allow/fail open) or `Fail` (block/fail closed). 
+
+[NOTE]
+====
+Fail open can result in unpredictable behavior for all clients.
+====
+ 
+[[architecture-additional-concepts-dynamic-admission-webhooks-writing]]
+=== Create the Admission Webhook
+
+To create an admission webhook, create an admission webhook object in {product-title}, 
+create a service, and add labels to the object you want acted upon by the admission webhook.
+
+Make sure the webhook and external webhook server are working properly. 
+Otherwise, depending whether the webhook is configured as `fail open` or 
+`fail closed`, operations will be unconditionally accepted or rejected. 
+
+. Configure a xref:architecture-additional-concepts-dynamic-admission-webhooks-ex-m[mutating] 
+or xref:architecture-additional-concepts-dynamic-admission-webhooks-ex-v[validating] admission webhook object in a YAML file.
+
+. Run the following command to create the object:
++
+----
+oc create -f <file-name>.yaml
+----
++
+After you create the admission webhook object, {product-title} takes a few
+seconds to honor the new configuration.
+
+. Create a front-end service for the admission webhook:
++
+[source,yaml]
+----
+apiVersion: v1
+kind: Service
+metadata:
+  labels:
+    role: webhook <1>
+  name: <name>
+spec:
+  selector:
+   role: webhook <1>
+----
++
+<1> Free-form label to trigger the webhook.
+
+. Run the following command to create the object:
++
+----
+oc create -f <file-name>.yaml
+----
+
+. Add the admission webhook name to pods you want controlled by the webhook:
++
+[source,yaml]
+----
+apiVersion: v1
+kind: Pod
+metadata:
+  labels:
+    role: webhook <1>
+  name: <name>
+spec:
+  containers:
+    - name: <name>
+      image: myrepo/myimage:latest
+      imagePullPolicy: <policy>
+      ports:
+       - containerPort: 8000
+----
++
+<1> Label to trigger the webhook. 
+
+[NOTE]
+====
+See the link:https://github.com/openshift/kubernetes-namespace-reservation[kubernetes-namespace-reservation projects] 
+for an end-to-end example of how to build your own secure and portable webhook admission server 
+and link:https://github.com/openshift/generic-admission-server[generic-admission-apiserver] for the library.
+====
+
+[[architecture-additional-concepts-dynamic-admission-webhooks-examples]]
+=== Admission Webhook Example
+
+The following is an example admission webhook that will not allow 
+link:https://github.com/openshift/kubernetes-namespace-reservation[namespace creation if the namespace is reserved]:
+
+[source,yaml]
+----
+apiVersion: admissionregistration.k8s.io/v1beta1
+  kind: ValidatingWebhookConfiguration
+  metadata:
+    name: namespacereservations.admission.online.openshift.io
+  webhooks:
+  - name: namespacereservations.admission.online.openshift.io
+    clientConfig:
+      service:
+        namespace: default
+        name: webhooks
+       path: /apis/admission.online.openshift.io/v1beta1/namespacereservations 
+      caBundle: KUBE_CA_HERE 
+    rules: 
+    - operations: 
+      - CREATE
+      apiGroups:
+      - ""
+      apiVersions:
+      - "b1"
+      resources:
+      - namespaces
+    failurePolicy: Ignore
+----
+
+The following is an example pod that will be
+evaluated by the admission webhook named _webhook_:
+
+[source,yaml]
+----
+apiVersion: v1
+kind: Pod
+metadata:
+  labels:
+    role: webhook
+  name: webhook
+spec:
+  containers:
+    - name: webhook
+      image: myrepo/myimage:latest
+      imagePullPolicy: IfNotPresent
+      ports:
+- containerPort: 8000
+----
+
+The following is the front-end service for the webhook: 
+
+[source,yaml]
+----
+apiVersion: v1
+kind: Service
+metadata:
+  labels:
+    role: webhook
+  name: webhook
+spec:
+  ports:
+    - port: 443
+      targetPort: 8000
+  selector:
+role: webhook
+----

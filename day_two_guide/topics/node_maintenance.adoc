@@ -1,0 +1,338 @@
+////
+Node maintenance
+
+Module included in the following assemblies:
+
+* day_two_guide/host_level_tasks.adoc
+////
+
+In the event a node host requires scheduled maintenance, such as replacing
+failing hardware, scheduling a reboot due to kernel updates, or any other
+situation where the workload shouldn't be affected, the proper method to perform
+the maintenance is to avoid running the workloads during the maintenance window.
+
+Ideally, the workloads running on top of {product-title} should be deployed in a
+proper highly available architecture. This includes:
+
+* None without `Replication Controllers`
+* Avoiding using local storage for pods (`EmptyDir`) for persistent data, and using `Persistent Volume Claims` instead
+* At least two replicas of each pod on different nodes
+* Proper `Liveness probes` and `Readiness probes`
+
+Ideally, failing nodes lead to pods being rescheduled to a different nodes host
+thanks to robust application control and node label usage. But if the
+application is not robust enough, due to, for example, being deployed as a
+single replica, downtime occurs while the pod is rescheduled to run on a
+different node and the time while the application starts.
+
+==== Performing node maintenance
+
+*Set node as unschedulable*
+
+[discrete]
+== Prerequisites
+
+. Configuring the node to be `unschedulable`. This ensures that no
+new pods will be started on that node:
++
+----
+$ oc get nodes
+NAME                           STATUS                     AGE       VERSION
+app-node-0.example.com     Ready                      63d       v1.6.1+5115d708d7
+app-node-1.example.com     Ready                      63d       v1.6.1+5115d708d7
+infra-node-0.example.com   Ready                      63d       v1.6.1+5115d708d7
+infra-node-1.example.com   Ready                      63d       v1.6.1+5115d708d7
+infra-node-2.example.com   Ready                      63d       v1.6.1+5115d708d7
+master-0.example.com       Ready,SchedulingDisabled   63d       v1.6.1+5115d708d7
+master-1.example.com       Ready,SchedulingDisabled   63d       v1.6.1+5115d708d7
+master-2.example.com       Ready,SchedulingDisabled   63d       v1.6.1+5115d708d7
+
+$ oc adm manage-node app-node-0.example.com --schedulable=false
+NAME                         STATUS                     AGE       VERSION
+app-node-0.example.com   Ready,SchedulingDisabled   63d       v1.6.1+5115d708d7
+----
++
+[NOTE]
+====
+Nodes can be set to unschedulable by using label selector as
+`--selector="mylabel=myvalue"` instead provide the node name.
+====
++
+In recent {product-title} versions, `oc adm cordon` can be used as well:
++
+----
+$ oc adm cordon app-node-0.example.com
+node "app-node-0.example.com" cordoned
+----
+
+. To verify the node has been configured as unschedulable, verify the status
+includes `SchedulingDisabled`:
++
+----
+$ oc get node app-node-0.example.com
+NAME                         STATUS                     AGE       VERSION
+app-node-0.example.com   Ready,SchedulingDisabled   63d       v1.6.1+5115d708d7
+----
+
+*Evacuating pods*
+
+. Setting the node as unschedulable means the scheduler won't use the node
+for new pods, but the current pods running in the host will be running until
+they are rescheduled due to a failure or a new deployment.
++
+If for any reason the pods shouldn't be removed, the node can stay as
+unschedulable and the evacuation process waits until new deployments of those
+particular pods are created where eventually the unschedulable host will be
+free of pods running. This may take a while if the *{rhocp}* doesn't
+create many pods, so this can be manually performed by evacuating the node.
+
+WARNING: The evacuation procedure respect the `PodDisruptionBudget` so if the
+pods cannot be deleted, the procedure retries until the conditions are met.
+
+To evacuate the node, the `oc adm manage-node` command line can be used as well.
+
+To verify the pods about to evacuate, use the `--dry-run` flag:
+
+[subs=+quotes]
+----
+$ *oc adm manage-node app-node-0.example.com --evacuate --dry-run*
+Listing matched pods on node: app-node-0.example.com
+
+NAME                       READY     STATUS    RESTARTS   AGE
+registry-console-4-k61cz   1/1       Running   4          16d
+guestbook-1-p5kcx          1/1       Running   0          2d
+ruby-ex-1-zbj21            1/1       Running   0          2d
+guestbook-1-67c55          1/1       Running   0          8d
+guestbook-1-kc00w          1/1       Running   0          8d
+hello-openshift-1-1mhnq    1/1       Running   0          8d
+----
+
+To perform the evacuation, remove the `--dry-run` flag:
+
+[subs=+quotes]
+----
+$ oc adm manage-node *app-node-0.example.com* --evacuate
+Migrating these pods on node: app-node-0.example.com
+
+NAME                       READY     STATUS    RESTARTS   AGE
+registry-console-4-k61cz   1/1       Running   4          16d
+guestbook-1-p5kcx   1/1       Running   0         2d
+ruby-ex-1-zbj21   1/1       Running   0         2d
+guestbook-1-67c55   1/1       Running   0         8d
+guestbook-1-kc00w   1/1       Running   0         8d
+hello-openshift-1-1mhnq   1/1       Running   0         8d
+----
+
+To verify the pods have been migrated, `--list-pods` flag can be used with
+`oc adm manage-node` command line:
+
+[subs=+quotes]
+----
+$ oc adm manage-node *app-node-0.example.com* --list-pods
+Listing matched pods on node: app-node-0.example.com
+
+NAME      READY     STATUS    RESTARTS   AGE
+----
+
+Or using `oc get pods` and filtering the results:
+
+[subs=+quotes]
+----
+$ *oc get pods --all-namespaces -o wide |grep app-node-0.example.com*
+$ *oc get pod --all-namespaces -o=custom-columns=NAME:.metadata.name,NODE:.spec.nodeName | grep app-node-0.example.com*
+----
+
+In recent {rhocp} versions, `oc adm drain` command line can be used as well:
+
+[subs=+quotes]
+----
+$ *oc adm drain app-node-0.example.com*
+node "app-node-0.example.com" cordoned
+node "app-node-0.example.com" drained
+----
+
+NOTE: `oc adm drain` cordons the node first then evacuate the pods.
+
+The evacuation procedure can be modified using some flags:
+
+[[drain_flags]]
+
+.oc adm manage-node and oc adm drain differences
+|===
+^|Flag ^|Description ^|`oc adm manage-node --evacuate` ^|`oc adm drain`
+|`--force=true` | Delete pods not backed by replication controller | Supported | Supported
+|`--grace-period=<number>` | Grace period (seconds) for pods being deleted | Supported | Supported
+| `--delete-local-data` | Continue even if there are pods using emptyDir | Not supported | Supported
+|===
+
+The `--force` flag cannot be used to ignore the `PodDisruptionBudget` if the
+maintenance is required. For instance, a `PodDisruptionBudget` of minimum 3
+replicas is created and all the replicas are hosted in the same node that is
+about to be drained:
+
+[subs=+quotes]
+----
+$ *oc get pod -o=custom-columns=NAME:.metadata.name,NODE:.spec.nodeName | grep app-node-0.example.com*
+guestbook-5-2brlq         app-node-0.example.com
+guestbook-5-7rrkk         app-node-0.example.com
+guestbook-5-90wml         app-node-0.example.com
+----
+
+The drain operation waits until the requisites are met:
+
+[subs=+quotes]
+----
+$ *oc adm drain app-node-0.example.com --force*
+node "app-node-0.example.com" already cordoned
+[Waits for requisites met]
+----
+
+In this particular case and if the maintenance is required to occur immediately then
+the pods running in that particular host can be deleted. As the node has been
+cordoned, the new pods start in different nodes:
+
+[subs=+quotes]
+----
+$ NODE="*app-node-0.example.com*"
+$ for pod in $(oc adm manage-node ${NODE} --list-pods -o name)
+do
+  oc delete ${pod}
+done
+----
+
+NOTE: This previous command delete all the pods running in the node, use it with
+caution.
+
+The `oc adm` commands require higher permissions, but a regular user can perform
+the same procedure in his own project as:
+
+[subs=+quotes]
+----
+$ NODE="*app-node-0.example.com*"
+$ for pod in $(oc get pods -o=custom-columns=NAME:.metadata.name,NODE:.spec.nodeName | grep ${NODE} | awk '{ print $1 }')
+do
+  oc delete pod ${pod}
+done
+----
+
+===== Evacuation Grace Period
+The grace period is a period of time while the *{rhocp}* node waits for the pod
+to stop its process in a clean way. The default grace period time is 30 seconds,
+but it can be overwritten by the user in the pod definition in the
+`spec.terminationGracePeriodSeconds` option:
+
+----
+apiVersion: v1
+kind: Pod
+metadata:
+...[OUTPUT OMITTED]...
+spec:
+  containers:
+  ...[OUTPUT OMITTED]...
+  terminationGracePeriodSeconds: 60
+...[OUTPUT OMITTED]...
+----
+
+The evacuation process honor the grace period, but the administrator can choose
+to force the grace period using the `--grace-period` flag in the
+`oc adm manage-node` or the `oc adm drain` commands as:
+
+[subs=+quotes]
+----
+$ *oc adm drain app-node-0.example.com --grace-period=x*
+----
+
+===== Delete Local Data
+When running pods in *{rhocp}* that require data to be stored on the filesystem
+the users can choose different methods to store the data including use object
+storage or using the *{rhocp}* capabilities.
+
+If using `PersistentVolumeClaims`, *{rhocp}* uses an external to the node
+filesystem to provide storage to the pod.
+
+NOTE: For more information about persistent storage, see
+https://docs.openshift.com/container-platform/latest/architecture/additional_concepts/storage.html[Persistent Storage] explanation.
+
+If using `EmptyDir`, the user can use the node filesystem to store temporary
+data but if the node needs to be evacuated or if the node fails, the data
+is lost. The location of the data in the *{rhocp}* node is located in
+`/var/lib/origin/openshift.local.volumes` and the temporary storage size can
+be configured:
+
+NOTE: If the XFS filesystem hosting that folder is mounted with the
+`gquota` option in the `/etc/fstab`
+* the matching security context contraint’s `fsGroup` type set to `MustRunAs`
+* The `/etc/origin/node/node-config.yml` is configured as:
+
+[subs=+quotes]
+----
+volumeConfig:
+  localQuota:
+     perFSGroup: *512Mi*
+----
+
+If there are pods using local storage and the evacuation needs to be
+performed, the admin user can use the `--delete-local-data` flag in the
+`oc adm drain` command to force the pod evacuation even if the local data
+is lost.
+
+WARNING: Use `EmptyDir` volumes for temporary and non-important data only.
+
+=== Pod Disruption Budget
+
+`PodDisruptionBudget` is supported starting with {product-title} version 3.6. `PodDisruptionBudget` is an object that specifies the minimum percentage of
+pod replicas or number of pods that must be running at a time on voluntary
+disruptions such as evacuate a node.
+
+For example, in a situation where the `PodDisruptionBudget` is configured to
+have a minimum of two pods running and there are three replicas, but two of
+those replicas are running in the same node. Without the `PodDisruptionBudget`,
+both replicas are evicted at the same time, but using the `PodDisruptionBudget`
+the evacuation procedure respect it and the pods are evicted respecting one by
+one.
+
+NOTE: This object is useful to avoid the application to fail in node maintenance
+tasks or cluster upgrade procedures and the value depends on the application
+but it shouldn't be the same number as the `ReplicationController` otherwise
+the node cannot be evacuated normally and the evacuation needs to be forced.
+
+To create a `PodDisruptionBudget`:
+
+. Create the `guestbook-pdb.yaml`:
++
+----
+apiVersion: policy/v1beta1
+kind: PodDisruptionBudget
+metadata:
+  name: guestbook-pdb
+spec:
+  selector:
+    matchLabels:
+      app: guestbook
+  minAvailable: 2 <1>
+EOF
+----
+<1> Specify a minimum of two pods. To specify a percentage the percentage (`%`) symbol is used as: `80%`.
+
+. Create the `PodDisruptionBudget`:
++
+----
+$ oc create -f guestbook-pdb.yaml
+----
+
+. Verify it:
++
+----
+$ oc get pdb
+NAME            MIN-AVAILABLE   ALLOWED-DISRUPTIONS   AGE
+guestbook-pdb   2               1                     6s
+----
++
+In this example the "guestbook" application has three replicas so one pod is
+allowed to be "disrupted".
+
+[WARNING]
+====
+`PodDisruptionBudget` objects cannot be edited. In the event of any changes then
+it is required to deploy a new `PodDisruptionBudget` object should be created.
+====
