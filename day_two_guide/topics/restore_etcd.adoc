@@ -1,0 +1,386 @@
+////
+etcd restore
+
+Module included in the following assemblies:
+
+* day_two_guide/host_level_tasks.adoc
+////
+
+The restore procedure for etcd configuration files replaces the appropriate
+files, then restarts the service.
+
+If an etcd host has become corrupted and the `/etc/etcd/etcd.conf` file is lost,
+restore it using:
+
+----
+$ ssh master-0
+# cp /backup/yesterday/master-0-files/etcd.conf /etc/etcd/etcd.conf
+# restorecon -Rv /etc/etcd/etcd.conf
+# systemctl restart etcd.service
+----
+
+In this example, the backup file is stored in the
+`/backup/yesterday/master-0-files/etcd.conf` path where it can be used as an
+external NFS share, S3 bucket, or other storage solution.
+
+==== Restoring etcd v2 & v3 data
+
+The following process restores healthy data files and starts the etcd cluster as
+a single node, then adds the rest of the nodes if an etcd cluster is required.
+
+[discrete]
+== Procedure
+
+. Stop all etcd services:
++
+----
+# systemctl stop etcd.service
+----
+
+. To ensure the proper backup is restored, delete the etcd directories:
++
+** To back up the current etcd data before you delete the directory, run the following command:
++
+----
+# mv /var/lib/etcd /var/lib/etcd.old
+# mkdir /var/lib/etcd
+# chown -R etcd.etcd /var/lib/etcd/
+# restorecon -Rv /var/lib/etcd/
+----
++
+** Or, to delete the directory and the etcd, data, run the following command:
++
+----
+# rm -Rf /var/lib/etcd/*
+----
++
+[NOTE]
+====
+In an all-in-one cluster, the etcd data directory is located in the
+`/var/lib/origin/openshift.local.etcd` directory.
+====
+
+. Restore a healthy backup data file to each of the etcd nodes. Perform this step on all etcd hosts, including master hosts collocated with
+etcd.
++
+----
+# cp -R /backup/etcd-xxx/* /var/lib/etcd/
+# mv /var/lib/etcd/db /var/lib/etcd/member/snap/db
+----
+
+. Run the etcd service one each host, forcing a new cluster.
++
+This creates a custom file for the etcd service, which overwrites the execution
+command adding the `--force-new-cluster` option:
++
+----
+# mkdir -p /etc/systemd/system/etcd.service.d/
+# echo "[Service]" > /etc/systemd/system/etcd.service.d/temp.conf
+# echo "ExecStart=" >> /etc/systemd/system/etcd.service.d/temp.conf
+# sed -n '/ExecStart/s/"$/ --force-new-cluster"/p' \
+    /usr/lib/systemd/system/etcd.service \
+    >> /etc/systemd/system/etcd.service.d/temp.conf
+
+# systemctl daemon-reload
+# systemctl restart etcd
+----
+
+. Check for error messages:
++
+----
+$ journalctl -fu etcd.service
+----
+
+. Check for health status:
++
+----
+# etcdctl2 cluster-health
+member 5ee217d17301 is healthy: got healthy result from https://192.168.55.8:2379
+cluster is healthy
+----
+
+. Restart the etcd service in cluster mode:
++
+----
+# rm -f /etc/systemd/system/etcd.service.d/temp.conf
+# systemctl daemon-reload
+# systemctl restart etcd
+----
+
+. Check for health status and member list:
++
+----
+# etcdctl2 cluster-health
+member 5ee217d17301 is healthy: got healthy result from https://192.168.55.8:2379
+cluster is healthy
+
+# etcdctl2 member list
+5ee217d17301: name=master-0.example.com peerURLs=http://localhost:2380 clientURLs=https://192.168.55.8:2379 isLeader=true
+----
+
+. After the first instance is running, you can restore the rest of your etcd servers.
+
+*Fix the `peerURLS` parameter*
+
+After restoring the data and creating a new cluster, the `peerURLs` parameter
+shows `localhost` instead of the IP where etcd is listening for peer
+communication:
+
+----
+# etcdctl2 member list
+5ee217d17301: name=master-0.example.com peerURLs=http://*localhost*:2380 clientURLs=https://192.168.55.8:2379 isLeader=true
+----
+
+[discrete]
+== Procedure
+
+. Get the member ID using `etcdctl member list`:
++
+----
+`etcdctl member list`
+----
+
+. Get the IP where etcd listens for peer communication:
++
+----
+$ ss -l4n | grep 2380
+----
+
+. Update the member information with that IP:
++
+----
+# etcdctl2 member update 5ee217d17301 https://192.168.55.8:2380
+Updated member with ID 5ee217d17301 in cluster
+----
+
+. To verify, check that the IP is in the menber list:
++
+----
+$ etcdctl2 member list
+5ee217d17301: name=master-0.example.com peerURLs=https://*192.168.55.8*:2380 clientURLs=https://192.168.55.8:2379 isLeader=true
+----
+
+*Add more members*
+
+In the instance joining the cluster:
+
+. Get the etcd name for the instance in the `ETCD_NAME` variable:
++
+----
+# grep ETCD_NAME /etc/etcd/etcd.conf
+----
+
+. Get the IP where etcd listens for peer communication:
++
+----
+# grep ETCD_INITIAL_ADVERTISE_PEER_URLS /etc/etcd/etcd.conf
+----
+
+. If the node was previously part of a etcd cluster, delete the previous etcd data:
++
+----
+# rm -Rf /var/lib/etcd/*
+----
+
+. On the etcd host where etcd is properly running, add the new member:
++
+----
+$ etcdctl2 member add <name> <advertise_peer_urls>
+----
++
+The command outputs some variables. For example:
++
+----
+ETCD_NAME="master2"
+ETCD_INITIAL_CLUSTER="master1=https://10.0.0.7:2380,master2=https://10.0.0.5:2380"
+ETCD_INITIAL_CLUSTER_STATE="existing"
+----
+
+. Add the values from the previous command to the `/etc/etcd/etcd.conf` file of the new host:
++
+----
+# vi /etc/etc/etcd.conf
+----
+
+. Start the etcd service in the node joining the cluster:
++
+----
+# systemctl start etcd.service
+----
+
+. Check for error messages:
++
+----
+$ journalctl -fu etcd.service
+----
+
+. Repeat the previous steps for every etcd node joining the cluster.
+
+. Once all the nodes have joined, verify the cluster status and cluster health:
++
+----
+# etcdctl2 member list
+5cd050b4d701: name=master1 peerURLs=https://10.0.0.7:2380 clientURLs=https://10.0.0.7:2379 isLeader=true
+d0c57659d8990cbd: name=master2 peerURLs=https://10.0.0.5:2380 clientURLs=https://10.0.0.5:2379 isLeader=false
+e4696d637de3eb2d: name=master3 peerURLs=https://10.0.0.6:2380 clientURLs=https://10.0.0.6:2379 isLeader=false
+----
++
+----
+# etcdctl2 cluster-health
+member 5cd050b4d701 is healthy: got healthy result from https://10.0.0.7:2379
+member d0c57659d8990cbd is healthy: got healthy result from https://10.0.0.5:2379
+member e4696d637de3eb2d is healthy: got healthy result from https://10.0.0.6:2379
+cluster is healthy
+----
+
+==== Restoring etcd for v3
+
+The restore procedure for v3 data is similar to the restore procedure for the v2
+data.
+
+Snapshot integrity may be optionally verified at restore time. If the snapshot
+is taken with `etcdctl snapshot save`, it will have an integrity hash that is
+checked by `etcdctl snapshot restore`. If the snapshot is copied from the data
+directory, there is no integrity hash and it will only restore by using
+`--skip-hash-check`.
+
+[IMPORTANT]
+====
+The procedure to restore only the v3 data must be performed on a single etcd
+host. You can then add the rest of the nodes to the cluster.
+====
+
+[discrete]
+== Procedure
+
+. Stop all etcd services:
++
+----
+# systemctl stop etcd.service
+----
+
+. Clear all old data, because `etcdctl` recreates it in the node where the
+restore procedure is going to be performed:
++
+----
+# rm -Rf /var/lib/etcd
+----
+
+. Run the `snapshot restore` command, substituting the values from the
+`/etc/etcd/etcd.conf` file:
++
+----
+# etcdctl3 snapshot restore /backup/etcd-xxxxxx/backup.db \
+  --data-dir /var/lib/etcd \
+  --name master-0.example.com \
+  --initial-cluster "master-0.example.com=https://192.168.55.8:2380" \ --initial-cluster-token "etcd-cluster-1" \
+  --initial-advertise-peer-urls https://192.168.55.8:2380
+
+2017-10-03 08:55:32.440779 I | mvcc: restore compact to 1041269
+2017-10-03 08:55:32.468244 I | etcdserver/membership: added member 40bef1f6c79b3163 [https://192.168.55.8:2380] to cluster 26841ebcf610583c
+----
+
+. Restore permissions and `selinux` context to the restored files:
++
+----
+# chown -R etcd.etcd /var/lib/etcd/
+# restorecon -Rv /var/lib/etcd
+----
+
+. Start the etcd service:
++
+----
+# systemctl start etcd
+----
+
+. Check for any error messages:
++
+----
+$ journalctl -fu etcd.service
+----
+
+*Adding more nodes*
+
+After the first instance is running, it is safe to restore multiple etcd servers to your cluster.
+
+[discrete]
+== Procedure
+
+. Get the etcd name for the instance in the `ETCD_NAME` variable:
++
+----
+# grep ETCD_NAME /etc/etcd/etcd.conf
+----
+
+. Get the IP where etcd listens for peer communication:
++
+----
+# grep ETCD_INITIAL_ADVERTISE_PEER_URLS /etc/etcd/etcd.conf
+----
+
+. On the etcd host where etcd is still running, add the new member:
++
+----
+# etcdctl3 member add *<name>* \
+  --peer-urls="*<advertise_peer_urls>*"
+----
++
+The command outputs some variables. For example:
++
+----
+ETCD_NAME="master2"
+ETCD_INITIAL_CLUSTER="master-0.example.com=https://192.168.55.8:2380"
+ETCD_INITIAL_CLUSTER_STATE="existing"
+----
+
+. Add the values found from the previous step to the `/etc/etcd/etcd.conf` file of the new host:
++
+----
+# vi /etc/etc/etcd.conf
+----
+
+. In the recently added etcd node, clean the etcd data directories to ensure the
+proper backup is restored:
++
+** Keep the existing copy:
++
+----
+# mv /var/lib/etcd /var/lib/etcd.old
+# mkdir /var/lib/etcd
+# chown -R etcd.etcd /var/lib/etcd/
+# restorecon -Rv /var/lib/etcd/
+----
++
+** Or deleting the etcd data directory:
++
+----
+# rm -Rf /var/lib/etcd/*
+----
+
+. Start the etcd service in the recently added etcd host:
++
+----
+# systemctl start etcd
+----
+
+. Check for errors:
++
+----
+# journalctl -fu etcd.service
+----
+
+. Repeat the previous steps for every etcd node to be added.
+
+. Verify the cluster has been properly set:
++
+----
+# etcdctl3 endpoint health
+https://master-0.example.com:2379 is healthy: successfully committed proposal: took = 1.423459ms
+https://master-1.example.com:2379 is healthy: successfully committed proposal: took = 1.767481ms
+https://master-2.example.com:2379 is healthy: successfully committed proposal: took = 1.599694ms
+
+# etcdctl3 endpoint status
+https://master-0.example.com:2379, 40bef1f6c79b3163, 3.2.5, 28 MB, true, 9, 2878
+https://master-1.example.com:2379, 1ea57201a3ff620a, 3.2.5, 28 MB, false, 9, 2878
+https://master-2.example.com:2379, 59229711e4bc65c8, 3.2.5, 28 MB, false, 9, 2878
+----

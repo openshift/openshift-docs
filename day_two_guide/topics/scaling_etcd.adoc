@@ -1,0 +1,432 @@
+////
+Scaling etcd
+
+Module included in the following assemblies:
+
+* day_two_guide/host_level_tasks.adoc
+////
+
+You can scale the etcd cluster vertically by adding more resources to the etcd
+hosts or horizontally by adding more etcd hosts.
+
+[NOTE]
+====
+Due to the voting system etcd uses, the cluster must always contain an odd
+number of members.
+====
+
+The new host requires a fresh Red Hat Enterprise Linux version 7 dedicated host.
+The etcd storage should be located on an SSD disk to achieve maximum performance
+and on a dedicated disk mounted in `/var/lib/etcd`.
+
+[NOTE]
+====
+{product-title} version 3.7 ships with an automated way to add a new etcd host
+using Ansible.
+====
+
+[discrete]
+== Prerequisites
+
+. Before adding a new etcd host, perform a backup of both etcd configuration and
+data to prevent data loss.
+
+. Check the current etcd cluster status to avoid adding new hosts to an
+unhealthy cluster:
++
+----
+# etcdctl --cert-file=/etc/etcd/peer.crt \
+          --key-file=/etc/etcd/peer.key \
+          --ca-file=/etc/etcd/ca.crt \
+          --peers="https://*master-0.example.com*:2379,\
+          https://*master-1.example.com*:2379,\
+          https://*master-2.example.com*:2379"\
+          cluster-health
+member 5ee217d19001 is healthy: got healthy result from https://192.168.55.12:2379
+member 2a529ba1840722c0 is healthy: got healthy result from https://192.168.55.8:2379
+member ed4f0efd277d7599 is healthy: got healthy result from https://192.168.55.13:2379
+cluster is healthy
+----
++
+Or, using etcd v3 API:
++
+----
+# ETCDCTL_API=3 etcdctl --cert="/etc/etcd/peer.crt" \
+          --key=/etc/etcd/peer.key \
+          --cacert="/etc/etcd/ca.crt" \
+          --endpoints="https://*master-0.example.com*:2379,\
+            https://*master-1.example.com*:2379,\
+            https://*master-2.example.com*:2379"
+            endpoint health
+https://master-0.example.com:2379 is healthy: successfully committed proposal: took = 5.011358ms
+https://master-1.example.com:2379 is healthy: successfully committed proposal: took = 1.305173ms
+https://master-2.example.com:2379 is healthy: successfully committed proposal: took = 1.388772ms
+----
+
+. Before running the `scaleup` playbook, ensure the new host is registered to
+the proper Red Hat software channels:
++
+----
+# subscription-manager register \
+    --username=*<username>* --password=*<password>*
+# subscription-manager attach --pool=*<poolid>*
+# subscription-manager repos --disable="*"
+# subscription-manager repos \
+    --enable=rhel-7-server-rpms \
+    --enable=rhel-7-server-extras-rpms
+----
++
+etcd is hosted in the `rhel-7-server-extras-rpms` software channel.
+
+==== Adding a new etcd host using Ansible
+
+[discrete]
+== Procedure
+
+. Modify the Ansible inventory file and create a new group named `[new_etcd]`
+and add the new host. Then, add the `new_etcd` group as a child of the `[OSEv3]`
+group:
++
+----
+[OSEv3:children]
+masters
+nodes
+etcd
+<new_etcd>
+
+... [OUTPUT ABBREVIATED] ...
+
+[etcd]
+master-0.example.com
+master-1.example.com
+master-2.example.com
+
+[new_etcd]
+etcd0.example.com
+----
+
+. Run the etcd `scaleup` playbook from the host that executed the initial
+installation and where the Ansible inventory file is:
++
+----
+$ ansible-playbook  /usr/share/ansible/openshift-ansible/playbooks/byo/openshift-etcd/scaleup.yml
+----
+
+. After the previous step above has completed, modify the inventory file to
+reflect the current status by moving the new etcd host from the `[new_etcd]`
+group to the `[etcd]` group:
++
+----
+[OSEv3:children]
+masters
+nodes
+etcd
+<new_etcd>
+
+... [OUTPUT ABBREVIATED] ...
+
+[etcd]
+master-0.example.com
+master-1.example.com
+master-2.example.com
+etcd0.example.com
+----
+
+. If you are using Flannel, modify the `flanneld` service configuration, located at
+`/etc/sysconfig/flanneld` on every {product-title} host, to include the new etcd
+host:
++
+----
+FLANNEL_ETCD_ENDPOINTS=https://master-0.example.com:2379,https://master-1.example.com:2379,https://master-2.example.com:2379,https://etcd0.example.com:2379
+----
+
+. Restart the `flanneld` service:
++
+----
+# systemctl restart flanneld.service
+----
+
+==== Manually adding a new etcd host
+
+The following steps can be performed on any etcd member. If using the Ansible
+installer, the first host provided in the `[etcd]` Ansible inventory is used to
+generate the etcd configuration and certificates stored in
+`/etc/etcd/generated_certs`, so perform the next steps in that etcd host.
+
+*Steps to be performed on the current etcd cluster*
+
+[discrete]
+== Procedure
+
+In order to create the etcd certificates, run the `openssl` command replacing the values with those from your environment. 
+
+. Create some environment variables:
++
+----
+export NEW_ETCD_HOSTNAME="*etcd0.example.com*"
+export NEW_ETCD_IP="192.168.55.21"
+
+export CN=$NEW_ETCD_HOSTNAME
+export SAN="IP:${NEW_ETCD_IP}"
+export PREFIX="/etc/etcd/generated_certs/etcd-$CN/"
+export OPENSSLCFG="/etc/etcd/ca/openssl.cnf"
+----
++
+[NOTE]
+====
+The custom `openssl` extensions used as `etcd_v3_ca_*` include the
+$SAN environment variable as `subjectAltName`. See `/etc/etcd/ca/openssl.cnf`
+for more information.
+====
+
+. Create the directory to store the configuration and certificates:
++
+----
+# mkdir -p ${PREFIX}
+----
+
+. Create the server certificate request and sign it:
++
+----
+# openssl req -new -config ${OPENSSLCFG} \
+    -keyout ${PREFIX}server.key  \
+    -out ${PREFIX}server.csr \
+    -reqexts etcd_v3_req -batch -nodes \
+    -subj /CN=$CN
+
+# openssl ca -name etcd_ca -config ${OPENSSLCFG} \
+    -out ${PREFIX}server.crt \
+    -in ${PREFIX}server.csr \
+    -extensions etcd_v3_ca_server -batch
+----
+
+. Create the peer certificate request and sign it:
++
+----
+# openssl req -new -config ${OPENSSLCFG} \
+    -keyout ${PREFIX}peer.key \
+    -out ${PREFIX}peer.csr \
+    -reqexts etcd_v3_req -batch -nodes \
+    -subj /CN=$CN
+
+# openssl ca -name etcd_ca -config ${OPENSSLCFG} \
+  -out ${PREFIX}peer.crt \
+  -in ${PREFIX}peer.csr \
+  -extensions etcd_v3_ca_peer -batch
+----
+
+. Copy the current etcd configuration and `ca.crt` files from the current node
+as examples to be modified later:
++
+----
+# cp /etc/etcd/etcd.conf ${PREFIX}
+# cp /etc/etcd/ca.crt ${PREFIX}
+----
+
+. Add the new host to the etcd cluster. Note the new host is not configured yet
+so the status stays as `unstarted` until the new host is properly configured:
++
+----
+# etcdctl2 member add ${NEW_ETCD_HOSTNAME} https://${NEW_ETCD_IP}:2380
+----
++
+This command outputs the following variables:
++
+----
+ETCD_NAME="<NEW_ETCD_HOSTNAME>"
+ETCD_INITIAL_CLUSTER="<NEW_ETCD_HOSTNAME>=https://<NEW_HOST_IP>:2380,<CLUSTERMEMBER1_NAME>=https:/<CLUSTERMEMBER2_IP>:2380,<CLUSTERMEMBER2_NAME>=https:/<CLUSTERMEMBER2_IP>:2380,<CLUSTERMEMBER3_NAME>=https:/<CLUSTERMEMBER3_IP>:2380"
+ETCD_INITIAL_CLUSTER_STATE="existing"
+----
+
+. Those values must be overwritten by the current ones in the sample
+`${PREFIX}/etcd.conf` file. Also, modify the following variables with the new
+host IP (`${NEW_ETCD_IP}` can be used) in that file from the output of the last command:
++
+----
+ETCD_LISTEN_PEER_URLS
+ETCD_LISTEN_CLIENT_URLS
+ETCD_INITIAL_ADVERTISE_PEER_URLS
+ETCD_ADVERTISE_CLIENT_URLS
+----
+
+. Modify the `${PREFIX}/etcd.conf` file, checking for syntax errors or missing
+IPs, otherwise the etcd service might fail:
++
+----
+# vi ${PREFIX}/etcd.conf
+----
+
+. Once the file has been properly modified, a `tgz` file with the certificates,
+the sample configuration file, and the `ca` is created and copied to the new
+host:
++
+----
+# tar -czvf /etc/etcd/generated_certs/${CN}.tgz -C ${PREFIX} .
+# scp /etc/etcd/generated_certs/${CN}.tgz ${CN}:/tmp/
+----
+
+*Steps to be performed on the new etcd host*
+
+[discrete]
+== Procedure
+
+. Install `iptables-services` to provide iptables utilities to open the required
+ports for etcd:
++
+----
+# yum install -y iptables-services
+----
+
+. Create the `OS_FIREWALL_ALLOW` firewall rules to allow etcd to communicate:
++
+* Port 2379/tcp for clients
+* Port 2380/tcp for peer communication
++
+----
+# systemctl enable iptables.service --now
+# iptables -N OS_FIREWALL_ALLOW
+# iptables -t filter -I INPUT -j OS_FIREWALL_ALLOW
+# iptables -A OS_FIREWALL_ALLOW -p tcp -m state --state NEW -m tcp --dport 2379 -j ACCEPT
+# iptables -A OS_FIREWALL_ALLOW -p tcp -m state --state NEW -m tcp --dport 2380 -j ACCEPT
+# iptables-save | tee /etc/sysconfig/iptables
+----
++
+[NOTE]
+====
+In this example, a new chain `OS_FIREWALL_ALLOW` is created, which is the
+standard naming the {product-title} installer uses for firewall rules.
+====
++
+[WARNING]
+====
+If the environment is hosted in an IaaS environment, modify the security groups
+for the instance to allow incoming traffic to those ports as well.
+====
+
+. Install etcd:
++
+----
+# yum install -y etcd
+----
+
+. Ensure the etcd service is not running:
++
+----
+# systemctl disable etcd --now
+----
+
+. Remove any etcd configuration and data:
++
+----
+# rm -Rf /etc/etcd/*
+# rm -Rf /var/lib/etcd/*
+----
+
+. Untar the certificates and configuration files:
++
+----
+# tar xzvf /tmp/etcd0.example.com.tgz -C /etc/etcd/
+----
+
+. Modify the file ownership permissions:
++
+----
+# chown -R etcd.etcd /etc/etcd/
+# chown -R etcd.etcd /var/lib/etcd/
+----
+
+. Start etcd on the new host:
++
+----
+# systemctl enable etcd --now
+----
+
+. Verify the host has been added to the cluster and the current cluster health:
++
+----
+# etcdctl --cert-file=/etc/etcd/peer.crt \
+          --key-file=/etc/etcd/peer.key \
+          --ca-file=/etc/etcd/ca.crt \
+          --peers="https://*master-0.example.com*:2379,\
+          https://*master-1.example.com*:2379,\
+          https://*master-2.example.com*:2379,\
+          https://*etcd0.example.com*:2379"\
+          cluster-health
+member 5ee217d19001 is healthy: got healthy result from https://192.168.55.12:2379
+member 2a529ba1840722c0 is healthy: got healthy result from https://192.168.55.8:2379
+member 8b8904727bf526a5 is healthy: got healthy result from https://192.168.55.21:2379
+member ed4f0efd277d7599 is healthy: got healthy result from https://192.168.55.13:2379
+cluster is healthy
+----
++
+Or, using etcd v3 API:
++
+----
+# ETCDCTL_API=3 etcdctl --cert="/etc/etcd/peer.crt" \
+          --key=/etc/etcd/peer.key \
+          --cacert="/etc/etcd/ca.crt" \
+          --endpoints="https://*master-0.example.com*:2379,\
+            https://*master-1.example.com*:2379,\
+            https://*master-2.example.com*:2379,\
+            https://*etcd0.example.com*:2379"\
+            endpoint health
+https://master-0.example.com:2379 is healthy: successfully committed proposal: took = 5.011358ms
+https://master-1.example.com:2379 is healthy: successfully committed proposal: took = 1.305173ms
+https://master-2.example.com:2379 is healthy: successfully committed proposal: took = 1.388772ms
+https://etcd0.example.com:2379 is healthy: successfully committed proposal: took = 1.498829ms
+----
+
+*Steps to be performed on all {product-title} masters*
+
+[discrete]
+== Procedure
+
+. Modify the master configuration to add the new etcd host to the list of the
+etcd servers {product-title} uses to store the data, located in the
+`etcClientInfo` section of the `/etc/origin/master/master-config.yaml` file on
+every master:
++
+----
+etcdClientInfo:
+  ca: master.etcd-ca.crt
+  certFile: master.etcd-client.crt
+  keyFile: master.etcd-client.key
+  urls:
+    - https://master-0.example.com:2379
+    - https://master-1.example.com:2379
+    - https://master-2.example.com:2379
+    - https://etcd0.example.com:2379
+----
+
+. Restart the master API service:
++
+** On every master:
++
+----
+# systemctl restart atomic-openshift-master-api
+----
++
+** Or, on a single master cluster installation:
++
+----
+# systemctl restart atomic-openshift-master
+----
+
+[WARNING]
+====
+The number of etcd nodes must be odd, so at least two hosts must be added.
+====
+
+. If you are using Flannel, the `flanneld` service configuration located at
+`/etc/sysconfig/flanneld` on every {product-title} host must be modified to
+include the new etcd host:
++
+----
+FLANNEL_ETCD_ENDPOINTS=https://master-0.example.com:2379,https://master-1.example.com:2379,https://master-2.example.com:2379,https://etcd0.example.com:2379
+----
+
+. Restart the `flanneld` service:
++
+----
+# systemctl restart flanneld.service
+----
