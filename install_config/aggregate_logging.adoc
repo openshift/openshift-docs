@@ -3509,6 +3509,14 @@ applies appropriate changes to the Elasticsearch cluster without down time
 (provided three masters are configured) and a full restart safely applies major
 changes without risk to existing data.
 
+This section also describes actions you can take when encountering issues
+during rollouts with the Openshift-Ansible playbook:
+
+  * xref:optimal-state-cluster[Cluster Not in an Optimal State]
+  * xref:node-unable-rollout[Node Unable to Roll Out]
+  * xref:recover-yellow-state[Unable to Recover to At Least yellow State]
+  * xref:recover-green-state[Unable to Recover to a green State]
+
 [[elasticsearch-rolling-restart]]
 === Performing an Elasticsearch Rolling Cluster Restart
 
@@ -3543,7 +3551,7 @@ $ oc exec -c elasticsearch <any_es_pod_in_the_cluster> --
 to deploy the latest version of the `dc` object:
 +
 ----
-$ oc rollout latest <dc_name>
+$ oc rollout latest dc/<dc_name>
 ----
 +
 You will see a new pod deployed. Once the pod has two ready containers, you can
@@ -3615,7 +3623,7 @@ $ oc exec -c elasticsearch <any_es_pod_in_the_cluster> --
 to deploy the latest version of the `dc` object:
 +
 ----
-$ oc rollout latest <dc_name>
+$ oc rollout latest dc/<dc_name>
 ----
 +
 You will see a new pod deployed. Once the pod has two ready containers, you can
@@ -3628,3 +3636,301 @@ cluster. Edit your non-cluster logging service (for example, `logging-es`,
 ----
 $ oc patch svc/logging-es -p '{"spec":{"selector":{"component":"es","provider":"openshift"}}}'
 ----
+
+[[optimal-state-cluster]]
+=== Cluster Not in an Optimal State
+
+The reasons that your cluster may not be considered to be in an optimal state are
+that the cluster health is not `green` or the cluster size specified in the
+cluster health does not match the number of pods running for that cluster (e.g.,
+not all nodes have joined the cluster).
+
+To check which currently applies to your cluster:
+
+. Get the name of all pods for your particular cluster:
++
+----
+$ oc get pods -l component=es[-ops] -o name
+----
++
+. Check the health of the cluster using one of the pods:
+----
+$ oc exec -c elasticsearch <es_pod> -- es_cluster_health
+----
+
+The total number of nodes in the cluster displayed from the second command should
+match the number of pods returned in the first command.
+
+[[if-the-cluster-is-not-green]]
+=== If the Cluster is Not in a `green` State
+
+[[recover-yellow-state]]
+==== Unable to recover to at least `yellow` state
+
+If the cluster is in a `red` state, that means that it is unable to place all primary
+shards for its indices.
+
+First, determine if the cluster is simply recovering a large number of indices or
+if it has errors preventing it from placing all of its primary shards.
+
+From the output of the cluster health, take note of the `number_of_pending_tasks`.
+Over time, we would expect this value to decrease to zero. If we see that it instead
+stops at a non-zero number and the cluster is still `red`, then it is likely that
+a node is in a stuck/bad state.
+
+See xref:recover-stuck-node[recovering a stuck node] on how to continue.
+
+[[recover-green-state]]
+==== Unable to recover to at least `green` state
+
+If the cluster is in a `yellow` state, that means that it is unable to place all
+replica shards for its primary shards.
+
+First, ensure that shard allocation is enabled:
+----
+$ oc exec -c elasticsearch <es_pod> -- es_util --query=_cluster/settings -XPUT -d '{ "transient": { "cluster.routing.allocation.enable" : "all" } }'
+----
+
+During upgrades, this value is set to `'none'` to prevent the cluster trying to
+balance itself as nodes come up and go down.
+
+From the output of the cluster health, take note of the `number_of_pending_tasks`.
+Over time, we would expect this value to decrease to zero. If we see that it instead
+stops at a non-zero number and the cluster is still `yellow`, then it is likely that
+a node is in a stuck/bad state.
+
+See xref:recover-stuck-node[recovering a stuck node] on how to continue.
+
+[[if-the-cluster-size-does-not-match-pod-count]]
+=== If the Cluster Size Does Not Match Pod Count
+
+If the cluster size does not match the pod count, this likely means that the quorum
+for the cluster is not high enough and has resulted in another pod establishing
+a new cluster.
+
+For all the Deploymentconfigs, verify that the `NODE_QUORUM` environment variable
+is `(n / 2) + 1`. Where `n` is the number of nodes for the cluster.
+[NOTE]
+====
+For one node the quorum should be `1`, for two nodes it should be `2`, for three
+it should be `2`, etc.
+====
+
+Update any that do not match this formula and roll them out:
+----
+$oc rollout latest dc/<dc_name>
+----
+
+[[node-unable-rollout]]
+=== Node Unable to Roll Out
+
+To determine why a node failed to roll out, check the events for that particular
+pod and deployment config. The follow commands assume you are currently in the project
+where the logging API objects exist:
+
+ * Given a pod:
+----
+$ oc describe pod/<es_pod>
+----
+
+ * Given a DC:
+----
+$ oc get events | grep <dc_name>
+----
+
+Once you are able to resolve why the pod could not roll out, you can perform
+another roll out using:
+
+ * If you made changed to the DC:
+----
+$ oc rollout latest dc/<dc_name>
+----
+
+ * If you did not make a change to the DC:
+----
+$ oc rollout retry dc/<dc_name>
+----
+
+[[recover-stuck-node]]
+=== Recovering a stuck node
+
+To determine the current state of your cluster we can run the following three queries:
+
+. Information about the entire cluster, based on its shards:
++
+====
+----
+$ oc exec -c elasticsearch <es_pod> -- \
+     es_util --query=_cat/health?v
+----
+* *status*: This is the current cluster status, it will be one of `green`, `yellow`, or `red`
+** node.total*: this is the number of nodes currently in your cluster, it should
+match the number of pods running for the ES cluster
+* *init*: the number of shards currently being initialized
+* *unassign*: the number of shards that are currently unassigned
+** if your status is `red` that means at least one of these is a primary shard
+* *max_task_wait_time*: this is the amount of time between the pending tasks to be
+executed. This value is a good canary for whether or your the cluster is in a bad state.
+It should ideally be `30s` or less.
+====
+
+. Information about the cluster nodes and their disk utilization:
++
+====
+----
+$ oc exec -c elasticsearch <es_pod> -- \
+     es_util --query=_cat/allocation?v\&h=node,host,ip,shards,disk.indices,disk.used,disk.avail,disk.total,disk.percent
+----
+* *node*: This is the [deploymentconfig] name for this node
+* *disk.percent*: This is the percent utilization for this node
+** This should ideally be <= `*80%*`
+** At `*85%*` the node will stop accepting replica shard data
+** At `*90%*` the node will stop accepting writes entirely
+====
+
+. Information about the cluster and its heap/memory utilization and cpu load:
+====
+----
+$ oc exec -c elasticsearch <es_pod> -- \
+     es_util --query=_cat/nodes?v\&h=name,host,r,m,hc,hp,hm,rc,rp,rm,fdc,fdp,fdm,load,uptime
+----
+* *name*: This is the [deploymentconfig] name for the node
+* *m*: This indicates whether or not the particular node is a master
+** `*m*` denotes this is a master node
+** `***` denotes this is the elected master of the quorum
+* *hp*: This is the heap percentage utilization
+** A high value of this may indicate Java Garbage Collection is occurring
+** The container logs can be viewed to get an idea of how often GC is running
+* *load*: This is the cpu load on the node
+** If the elected master node has a high load value, this is a sign there may be
+something going wrong with the cluster.
+====
+
+[NOTE]
+====
+See https://www.elastic.co/guide/en/elasticsearch/reference/2.4/cat-nodes.html for more information regarding header meanings
+====
+
+==== High heap utilization, lots of garbage collection
+
+When the ES cluster gets to a state where it is doing constant/frequent garbage
+collection, it can quickly lead to a node getting hit with OOM which would result
+in it being kicked from the cluster and causing the cluster to rebalance the shards
+that were on the node that OOM'd.
+
+The most simple way to mitigate the high heap utilization is to horizontally scale
+the ES cluster. This can be accomplished via Ansible and updating the
+`es_cluster_size` or `es_ops_cluster_size` inventory variable, which ever is appropriate
+for the cluster that needs to scale up.
+
+==== High disk utilization
+
+When a node reaches a disk utilization percentage of at least `*85%*` it will stop
+accepting data. This can lead to other nodes needing to pick up the slack which
+can result in them quickly reaching the same utilization percentage.
+
+To expand the disk:
+
+. Flush any indices:
++
+====
+----
+$ oc exec -c elasticsearch <es_pod> -- es_util --query=_flush/synced -XPOST
+----
+====
+
+. Disable shard allocation:
++
+====
+----
+$ oc exec -c elasticsearch <es_pod> -- es_util --query=_cluster/settings -XPUT -d '{ "transient": { "cluster.routing.allocation.enable" : "none" } }'
+----
+====
+
+. Scale down the cluster:
++
+====
+----
+oc scale dc -l component=es --replicas=0
+----
+====
+
+. Expand the storage for the nodes
++
+Depending on the storage backing for the Elasticsearch nodes, different approaches
+may be required for expansion.
++
+If using host mounts, then it is a matter of expanding the storage location.
++
+If using a PVC backed by a storage solution, the storage will need to be expanded
+and the PVC will need to be recreated to reflect this increased storage size.
+For each PVC that is attached to an ES node:
++
+.. Export the PVC definition:
++
+====
+----
+$ oc -o yaml export pvc <pvc_name> > pvc.yml
+----
+====
+
+.. Edit the exported definition claim size and remove specific attributes
+(e.g. `uuid`, `creationTimestamp`, `volumeName`):
++
+====
+----
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: logging-es-2  #PVC name correlating to the POD
+  labels:
+    logging-infra: support
+spec:
+  accessModes:
+  - ReadWriteOnce
+  resources:
+    requests:
+      storage: 1Ti  #NewSize
+  storageClassName: gp2
+----
+====
+
+.. Delete the existing PVC that was exported:
++
+====
+----
+$ oc delete pvc <pvc_name>
+----
+====
+
+. Scale the cluster back up:
++
+====
+----
+oc scale dc -l component=es --replicas=1
+----
+====
+
+. Wait for the cluster to return to `yellow` state:
++
+====
+----
+$ oc exec -c elasticsearch <es_pod> -- es_cluster_health
+----
+====
+
+. Enable shard allocation:
++
+====
+----
+$ oc exec -c elasticsearch <es_pod> -- es_util --query=_cluster/settings -XPUT -d '{ "transient": { "cluster.routing.allocation.enable" : "all" } }'
+----
+====
+
+. Wait for the cluster to return to `green` state:
++
+====
+----
+$ oc exec -c elasticsearch <es_pod> -- es_cluster_health
+----
+====
