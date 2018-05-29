@@ -148,12 +148,12 @@ ifdef::openshift-origin[]
   -p PROVISIONER_IMAGE=quay.io/external_storage/local-volume-provisioner:v1.0.1 \
 endif::[]
 ifndef::openshift-origin[]
-  -p PROVISIONER_IMAGE=registry.access.redhat.com/openshift3/local-storage-provisioner:v3.9 \ <1>
+  -p PROVISIONER_IMAGE=registry.access.redhat.com/openshift3/local-storage-provisioner:v3.10 \ <1>
 endif::[]
   local-storage-provisioner
 ----
 ifndef::openshift-origin[]
-<1> Replace `v3.9` with the right {product-title} version.
+<1> Replace `v3.10` with the right {product-title} version.
 +
 endif::[]
 
@@ -208,3 +208,236 @@ $ chcon -R unconfined_u:object_r:svirt_sandbox_file_t:s0 /mnt/local-storage/
 ====
 Omitting any of these steps may result in the wrong PV being created.
 ====
+
+[[local-volume-raw-block-devices]]
+=== Raw Block Devices
+It is possible to statically provision also raw block devices using the local
+volume provisioner. This feature is disabled by default and requires additional
+configuration.
+
+. Enable the `BlockVolume` feature gate on all masters.
+Edit or create the master configuration file on all masters
+(*_/etc/origin/master/master-config.yaml_* by default) and add `BlockVolume=true`
+under the `apiServerArguments` and `controllerArguments` sections:
++
+[source, yaml]
+----
+apiServerArguments:
+   feature-gates:
+   - BlockVolume=true
+...
+
+ controllerArguments:
+   feature-gates:
+   - BlockVolume=true
+...
+----
+
+. Enable the feature gate on all nodes by editing the node configuration `ConfigMap`:
++
+[source, bash]
+----
+$ oc edit configmap node-config-compute --namespace openshift-node
+$ oc edit configmap node-config-master --namespace openshift-node
+$ oc edit configmap node-config-infra --namespace openshift-node
+----
++
+Ensure all the configmaps contain `BlockVolume=true` in the feature-gates
+array of the `kubeletArguments`:
++
+.Example node configmap feature-gates setting
+[source, yaml]
+----
+kubeletArguments:
+   feature-gates:
+   - RotateKubeletClientCertificate=true,RotateKubeletServerCertificate=true,BlockVolume=true
+----
+
+. Restart the master. The nodes should be restarted automatically after the
+configuration change (it may take several minutes).
+
+[[local-volume-prepare-block-devices]]
+==== Prepare the Block Devices
+Before starting the provisioner all the block devices that should be available
+to the pods need to be linked to the *_/mnt/local-storage/<storage class>_* directory
+structure. Example: to make a device *_/dev/dm-36_* available:
+
+. Create a directory for its `StorageClass` in *_/mnt/local-storage_*:
++
+[source, bash]
+----
+$ mkdir -p /mnt/local-storage/block-devices
+----
+
+. Create a symbolic link that would point to the device:
++
+[source, bash]
+----
+$ ln -s /dev/dm-36 dm-uuid-LVM-1234
+----
++
+[NOTE]
+====
+It is a good practice to use the same name for the symbolic link as the link
+from *_/dev/disk/by-uuid_* or *_/dev/disk/by-id_* directory to avoid possible name conflicts.
+====
+
+. Create or update the `ConfigMap` configuring the provisioner:
++
+[source, yaml]
+----
+kind: ConfigMap
+metadata:
+  name: local-volume-config
+data:
+    storageClassMap: |
+        block-devices: <1>
+            hostDir:  /mnt/local-storage/block-devices <2>
+            mountDir: /mnt/local-storage/block-devices <3>
+----
+<1> Name of the StorageClass.
+<2> Path to the directory on the host. It must be a subdirectory of *_/mnt/local-storage_*.
+<3> Path to the directory in the provisioner pod. We recommend using the same directory structure as used on the host and `mountDir` can be omitted in this case.
+. Change the SELinux label of the device and the *_/mnt/local-storage/_*:
++
+[source, bash]
+----
+$ chcon -R unconfined_u:object_r:svirt_sandbox_file_t:s0 /mnt/local-storage/
+$ chcon unconfined_u:object_r:svirt_sandbox_file_t:s0 /dev/dm-36
+----
+
+. Create `StorageClass` for the block-devices:
++
+[source, yaml]
+----
+apiVersion: storage.k8s.io/v1
+kind: StorageClass
+metadata:
+ name: block-devices
+provisioner: kubernetes.io/no-provisioner
+volumeBindingMode: WaitForFirstConsumer
+----
+
+Now the block device *_/dev/dm-36_* is ready to be used by the provisioner and
+provisioned as a PV.
+
+==== Deploy the Provisioner
+The deployment of the provisioner is similar as with the usual filesytem-type of
+volumes. There are two differences: the provisioner needs to be run in a
+privileged container and have access to the *_/dev_* filesystem from the host.
+Download the template from the
+link:https://raw.githubusercontent.com/openshift/origin/release-3.9/examples/storage-examples/local-examples/local-storage-provisioner-template.yaml[*_local-storage-provisioner-template.yaml_*]
+file and make the following changes:
+
+. Set the `privileged` attribute of the `securityContext` of the container spec
+to `true`:
++
+[source, yaml]
+----
+...
+  containers:
+...
+    name: provisioner
+...
+      securityContext:
+        privileged: true
+...
+----
+
+. Ensure the host *_/dev/_* filesystem would be mounted into the container using `hostPath`:
++
+[source, yaml]
+----
+...
+  containers:
+...
+    name: provisioner
+...
+    volumeMounts:
+    - mountPath: /dev
+      name: dev
+...
+    volumes:
+    - hostPath:
+        path: /dev
+     name: dev
+...
+----
+
+. Create the template from the modified yaml file:
++
+[source, bash]
+----
+$ oc create -f local-storage-provisioner-template.yaml
+----
+
+. Start the provisioner the same way as in the case without the block devices
+support:
++
+[source, bash]
+----
+$ oc new-app -p CONFIGMAP=local-volume-config \
+  -p SERVICE_ACCOUNT=local-storage-admin \
+  -p NAMESPACE=local-storage \
+ifdef::openshift-origin[]
+  -p PROVISIONER_IMAGE=quay.io/external_storage/local-volume-provisioner:v1.0.1 \
+endif::[]
+ifndef::openshift-origin[]
+  -p
+  PROVISIONER_IMAGE=registry.access.redhat.com/openshift3/local-storage-provisioner:v3.10 \
+endif::[]
+  local-storage-provisioner
+----
+
+==== Using the raw block PV
+To use the block device in the pod, create a PVC with `volumeMode: Block` and
+the `storageClass` of the block device:
+
+[source, yaml]
+----
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: block-pvc
+spec:
+  storageClassName: block-devices
+  accessModes:
+    - ReadWriteOnce
+  volumeMode: Block
+  resources:
+    requests:
+      storage: 1Gi
+----
+
+An example pod using the block device PVC:
+
+[source, yaml]
+----
+apiVersion: v1
+kind: Pod
+metadata:
+  name: busybox-test
+  labels:
+    name: busybox-test
+spec:
+  restartPolicy: Never
+  containers:
+    - resources:
+        limits :
+          cpu: 0.5
+      image: gcr.io/google_containers/busybox
+      command:
+        - "/bin/sh"
+        - "-c"
+        - "while true; do date; sleep 1; done"
+      name: busybox
+      volumeDevices:
+        - name: vol
+          devicePath: /dev/xvda
+  volumes:
+      - name: vol
+        persistentVolumeClaim:
+          claimName: block-pvc
+----
+Note the volume is not mounted in the pod but exposed as the
+*_/dev/xvda_* block device.
