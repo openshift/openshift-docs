@@ -1,0 +1,359 @@
+[[install-config-persistent-storage-persistent-storage-csi]]
+= Persistent Storage Using Container Storage Interface (CSI)
+{product-author}
+{product-version}
+:data-uri:
+:icons:
+:experimental:
+:toc: macro
+:toc-title:
+:prewrap!:
+
+toc::[]
+
+== Overview
+Container Storage Interface (CSI) allows {product-title} to consume storage from storage backends that implement the link:https://github.com/container-storage-interface/spec[CSI interface] as xref:../../architecture/additional_concepts/storage.adoc#architecture-additional-concepts-storage[persistent
+storage].
+
+
+[NOTE]
+====
+CSI volumes is a beta feature and may change in a future release of {product-title}.
+====
+
+[NOTE]
+====
+{product-title} does not ship with any CSI drivers. It is recommended to use the CSI drivers provided by link:https://kubernetes-csi.github.io/docs/Drivers.html[community or storage vendors].
+====
+
+[NOTE]
+====
+{product-title} {product-version} supports version 0.2.0 of the link:https://github.com/container-storage-interface/spec[CSI specification].
+====
+
+
+[[install-config-persistent-storage-csi-architecture]]
+== Architecture
+
+CSI drivers are typically shipped as container images. These containers are not aware of {product-title} where they run. To use CSI-compatible storage backend in {product-title}, the cluster administrator must deploy several components that serve as a bridge between {product-title} and the storage driver.
+
+The following diagram provides a high-level overview about the components running in pods in the {product-title} cluster.
+
+image::OpenShift_CSI_Arch_470752_0518.png["Architecture of CSI components"]
+
+It is possible to run multiple CSI drivers for different storage backends. Each driver needs its own external controllers' deployment and DaemonSet with the driver and CSI registrar.
+
+=== External CSI Controllers
+
+External CSI Controllers is a deployment that deploys one or more pods with two containers:
+
+* External CSI attacher container that translates `attach` and `detach` calls from {product-title} to respective `ControllerPublish` and `ControllerUnpublish` calls to CSI driver
+* External CSI provisioner container that translates `provision` and `delete` calls from {product-title} to respective `CreateVolume` and `DeleteVolume` calls to CSI driver
+* CSI driver container
+
+The CSI attacher and CSI provisioner containers talk to the CSI driver container using UNIX Domain Sockets, ensuring that no CSI communication leaves the pod. The CSI driver is not accessible from outside of the pod.
+
+[NOTE]
+====
+`attach`, `detach`, `provision`, and `delete` operations typically require the CSI driver to use credentials to the storage backend. Run the CSI controller pods on xref:../../install_config/install/advanced_install.adoc#configuring-dedicated-infrastructure-nodes[infrastructure nodes] so the credentials never leak to user processes, even in the event of a catastrophic security breach on a compute node.
+====
+
+[NOTE]
+====
+The external attacher must also run for CSI drivers that do not support third-party attach/detach operations. The external attacher will not issue any `ControllerPublish` or `ControllerUnpublish` operations to the CSI driver. However, it still must run to implement the necessary {product-title} attachment API.
+====
+
+=== CSI Driver DaemonSet
+
+Finally, the CSI driver DaemonSet runs a pod on every node that allows {product-title} to mount storage provided by the CSI driver to the node and use it in user workloads (pods) as persistent volumes (PVs). The pod with the CSI driver installed contains the following containers:
+
+* CSI driver registrar, which registers the CSI driver into the `openshift-node` service running on the node. The `openshift-node` process running on the node then directly connects with the CSI driver using the UNIX Domain Socket available on the node.
+* CSI driver.
+
+The CSI driver deployed on the node should have as few credentials to the storage backend as possible. {product-title} will only use the node plug-in set of CSI calls such as `NodePublish`/`NodeUnpublish` and `NodeStage`/`NodeUnstage` (if implemented).
+
+[[install-config-persistent-storage-csi-example-deployment]]
+== Example Deployment
+
+Since {product-title} does not ship with any CSI driver installed, this example shows how to deploy a community driver for OpenStack Cinder in {product-title}.
+
+. Create a new project where the CSI components will run and a new service account that will run the components. Explicit node selector is used to run the Daemonset with the CSI driver also on master nodes.
++
+[source,shell]
+----
+# oc adm new-project csi --node-selector=""
+Now using project "csi" on server "https://example.com:8443".
+
+# oc create serviceaccount cinder-csi
+serviceaccount "cinder-csi" created
+
+# oc adm policy add-scc-to-user privileged system:serviceaccount:csi:cinder-csi
+scc "privileged" added to: ["system:serviceaccount:csi:cinder-csi"]
+----
+
+. Apply this YAML file to create the deployment with the external CSI attacher and provisioner and DaemonSet with the CSI driver.
++
+[source,yaml]
+----
+# This YAML file contains all API objects that are necessary to run Cinder CSI
+# driver.
+#
+# In production, this needs to be in separate files, e.g. service account and
+# role and role binding needs to be created once.
+#
+# It server as an example how to use external attacher and external provisioner
+# images shipped with {product-title} with a community CSI driver.
+
+kind: ClusterRole
+apiVersion: rbac.authorization.k8s.io/v1
+metadata:
+  name: cinder-csi-role
+rules:
+  - apiGroups: [""]
+    resources: ["persistentvolumes"]
+    verbs: ["create", "delete", "get", "list", "watch", "update", "patch"]
+  - apiGroups: [""]
+    resources: ["events"]
+    verbs: ["create", "get", "list", "watch", "update", "patch"]
+  - apiGroups: [""]
+    resources: ["persistentvolumeclaims"]
+    verbs: ["get", "list", "watch", "update", "patch"]
+  - apiGroups: [""]
+    resources: ["nodes"]
+    verbs: ["get", "list", "watch", "update", "patch"]
+  - apiGroups: ["storage.k8s.io"]
+    resources: ["storageclasses"]
+    verbs: ["get", "list", "watch"]
+  - apiGroups: ["storage.k8s.io"]
+    resources: ["volumeattachments"]
+    verbs: ["get", "list", "watch", "update", "patch"]
+  - apiGroups: [""]
+    resources: ["configmaps"]
+    verbs: ["get", "list", "watch", "create", "update", "patch"]
+
+---
+
+kind: ClusterRoleBinding
+apiVersion: rbac.authorization.k8s.io/v1
+metadata:
+  name: cinder-csi-role
+subjects:
+  - kind: ServiceAccount
+    name: cinder-csi
+    namespace: csi
+roleRef:
+  kind: ClusterRole
+  name: cinder-csi-role
+  apiGroup: rbac.authorization.k8s.io
+
+---
+apiVersion: v1
+data:
+  cloud.conf: W0dsb2JhbF0KYXV0aC11cmwgPSBodHRwczovL2V4YW1wbGUuY29tOjEzMDAwL3YyLjAvCnVzZXJuYW1lID0gYWxhZGRpbgpwYXNzd29yZCA9IG9wZW5zZXNhbWUKdGVuYW50LWlkID0gZTBmYTg1YjZhMDY0NDM5NTlkMmQzYjQ5NzE3NGJlZDYKcmVnaW9uID0gcmVnaW9uT25lCg== <1>
+kind: Secret
+metadata:
+  creationTimestamp: null
+  name: cloudconfig
+---
+kind: Deployment
+apiVersion: apps/v1
+metadata:
+  name: cinder-csi-controller
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app: cinder-csi-controllers
+  template:
+    metadata:
+      labels:
+        app: cinder-csi-controllers
+    spec:
+      serviceAccount: cinder-csi
+      containers:
+        - name: csi-attacher
+          image: registry.access.redhat.com/openshift3/csi-attacher:v3.10
+          args:
+            - "--v=5"
+            - "--csi-address=$(ADDRESS)"
+            - "--leader-election"
+            - "--leader-election-namespace=$(MY_NAMESPACE)"
+            - "--leader-election-identity=$(MY_NAME)"
+          env:
+            - name: MY_NAME
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.name
+            - name: MY_NAMESPACE
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.namespace
+            - name: ADDRESS
+              value: /csi/csi.sock
+          volumeMounts:
+            - name: socket-dir
+              mountPath: /csi
+        - name: csi-provisioner
+          image: registry.access.redhat.com/openshift3/csi-provisioner:v3.10
+          args:
+            - "--v=5"
+            - "--provisioner=csi-cinderplugin"
+            - "--csi-address=$(ADDRESS)"
+          env:
+            - name: ADDRESS
+              value: /csi/csi.sock
+          volumeMounts:
+            - name: socket-dir
+              mountPath: /csi
+        - name: cinder-driver
+          image: quay.io/jsafrane/cinder-csi-plugin
+          command: [ "/bin/cinder-csi-plugin" ]
+          args:
+            - "--nodeid=$(NODEID)"
+            - "--endpoint=unix://$(ADDRESS)"
+            - "--cloud-config=/etc/cloudconfig/cloud.conf"
+          env:
+            - name: NODEID
+              valueFrom:
+                fieldRef:
+                  fieldPath: spec.nodeName
+            - name: ADDRESS
+              value: /csi/csi.sock
+          volumeMounts:
+            - name: socket-dir
+              mountPath: /csi
+            - name: cloudconfig
+              mountPath: /etc/cloudconfig
+      volumes:
+        - name: socket-dir
+          emptyDir:
+        - name: cloudconfig
+          secret:
+            secretName: cloudconfig
+
+---
+
+kind: DaemonSet
+apiVersion: apps/v1
+metadata:
+  name: cinder-csi-ds
+spec:
+  selector:
+    matchLabels:
+      app: cinder-csi-driver
+  template:
+    metadata:
+      labels:
+        app: cinder-csi-driver
+    spec:
+      nodeSelector:
+          role: node
+      serviceAccount: cinder-csi
+      containers:
+        - name: csi-driver-registrar
+          image: registry.access.redhat.com/openshift3/csi-driver-registrar:v3.10
+          securityContext:
+            privileged: true
+          args:
+            - "--v=5"
+            - "--csi-address=$(ADDRESS)"
+          env:
+            - name: ADDRESS
+              value: /csi/csi.sock
+            - name: KUBE_NODE_NAME
+              valueFrom:
+                fieldRef:
+                  fieldPath: spec.nodeName
+          volumeMounts:
+            - name: socket-dir
+              mountPath: /csi
+        - name: cinder-driver
+          securityContext:
+            privileged: true
+            capabilities:
+              add: ["SYS_ADMIN"]
+            allowPrivilegeEscalation: true
+          image: quay.io/jsafrane/cinder-csi-plugin
+          command: [ "/bin/cinder-csi-plugin" ]
+          args:
+            - "--nodeid=$(NODEID)"
+            - "--endpoint=unix://$(ADDRESS)"
+            - "--cloud-config=/etc/cloudconfig/cloud.conf"
+          env:
+            - name: NODEID
+              valueFrom:
+                fieldRef:
+                  fieldPath: spec.nodeName
+            - name: ADDRESS
+              value: /csi/csi.sock
+          volumeMounts:
+            - name: socket-dir
+              mountPath: /csi
+            - name: cloudconfig
+              mountPath: /etc/cloudconfig
+            - name: mountpoint-dir
+              mountPath: /var/lib/origin/openshift.local.volumes/pods/
+              mountPropagation: "Bidirectional"
+            - name: cloud-metadata
+              mountPath: /var/lib/cloud/data/
+            - name: dev
+              mountPath: /dev
+      volumes:
+        - name: cloud-metadata
+          hostPath:
+            path: /var/lib/cloud/data/
+        - name: socket-dir
+          hostPath:
+            path: /var/lib/kubelet/plugins/csi-cinderplugin
+            type: DirectoryOrCreate
+        - name: mountpoint-dir
+          hostPath:
+            path: /var/lib/origin/openshift.local.volumes/pods/
+            type: Directory
+        - name: cloudconfig
+          secret:
+            secretName: cloudconfig
+        - name: dev
+          hostPath:
+            path: /dev
+----
+<1> Replace with `cloud.conf` for your OpenStack deployment, as described in
+ xref:../../install_config/configuring_openstack.adoc#configuring-openstack-variables[OpenStack configuration]. For example, the Secret can be generated using the `oc create secret generic cloudconfig --from-file cloud.conf --dry-run -o yaml`.
+
+[[install-config-persistent-storage-csi-dynamic-provisioning]]
+== Dynamic Provisioning
+
+Dynamic provisioning of persistent storage depends on the capabilities of the CSI driver and underlying storage backend. The provider of the CSI driver should document how to create a StorageClass in {product-title} and the parameters available for configuration.
+
+As seen in the OpenStack Cinder example, you can deploy this StorageClass to enable dynamic provisioning. The following example creates a new default storage class that ensures that all PVCs that do not require any special storage class are provisioned by the installed CSI driver:
+
+[source,shell]
+----
+# oc create -f - << EOF
+apiVersion: storage.k8s.io/v1
+kind: StorageClass
+metadata:
+  name: cinder
+  annotations:
+    storageclass.kubernetes.io/is-default-class: "true"
+provisioner: csi-cinderplugin
+parameters:
+EOF
+----
+
+[[install-config-persistent-storage-csi-usage]]
+== Usage
+
+Once the CSI driver is deployed and the StorageClass for dynamic provisioning is created, {product-title} is ready to use CSI. The following example installs a default MySQL template without any changes to the template:
+
+[source,shell]
+----
+# oc new-app oc new-app mysql-persistent
+--> Deploying template "openshift/mysql-persistent" to project default
+...
+
+# oc get pvc
+[root@host-172-16-120-9 ~]# oc get pvc
+NAME              STATUS    VOLUME                                   CAPACITY   ACCESS MODES   STORAGECLASS   AGE
+mysql             Bound     kubernetes-dynamic-pv-3271ffcb4e1811e8   1Gi        RWO            cinder         3s
+----
