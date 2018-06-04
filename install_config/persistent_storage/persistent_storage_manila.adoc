@@ -1,0 +1,264 @@
+[[persistent_storage_manila]]
+= Persistent Storage Using OpenStack Manila
+{product-author}
+{product-version}
+:data-uri:
+:icons:
+:experimental:
+:toc: macro
+:toc-title:
+:prewrap!:
+
+toc::[]
+
+== Overview
+
+[IMPORTANT]
+====
+Persistent volume (PV) provisionining using OpenStack Manila is a Technology Preview
+feature only.
+ifdef::openshift-enterprise[]
+Technology Preview features are not supported with Red Hat production service
+level agreements (SLAs), might not be functionally complete, and Red Hat does
+not recommend to use them for production. These features provide early access to
+upcoming product features, enabling customers to test functionality and provide
+feedback during the development process.
+
+For more information on Red Hat Technology Preview features support scope, see
+https://access.redhat.com/support/offerings/techpreview/.
+endif::[]
+====
+
+{product-title} is capable of provisioning PVs using the
+link:https://wiki.openstack.org/wiki/Manila[OpenStack Manila] shared file system service.
+
+It is assumed the OpenStack Manila service has been correctly set up and is
+accessible from the {product-title} cluster. Only the NFS share types can be
+provisioned.
+
+Familiarity with
+link:https://kubernetes.io/docs/concepts/storage/persistent-volumes/[PVs],
+link:https://kubernetes.io/docs/concepts/storage/persistent-volumes/#persistentvolumeclaims[persistent
+volume claims (PVCs)],
+link:http://blog.kubernetes.io/2016/10/dynamic-provisioning-and-storage-in-kubernetes.html[dynamic
+provisioning], and 
+link:https://kubernetes.io/docs/admin/authorization/rbac/[RBAC authorization] is recommended.
+
+[[installation-setup]]
+== Installation and Setup
+
+The feature is provided by an external provisioner. You must install and
+configure it in the {product-title} cluster.
+
+=== Starting the External Provisioner
+
+The external provisioner service is distributed as a container image and can be run in the
+{product-title} cluster as usual.
+
+To allow the containers managing the API objects, configure the required role-based access
+control (RBAC) rules as a cluster administrator:
+
+. Create a `ServiceAccount`:
++
+[source,yaml]
+----
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: manila-provisioner-runner
+----
+
+. Create a `ClusterRole`:
++
+[source,yaml]
+----
+kind: ClusterRole
+apiVersion: rbac.authorization.k8s.io/v1
+metadata:
+  name: manila-provisioner-role
+rules:
+  - apiGroups: [""]
+    resources: ["persistentvolumes"]
+    verbs: ["get", "list", "watch", "create", "delete"]
+  - apiGroups: [""]
+    resources: ["persistentvolumeclaims"]
+    verbs: ["get", "list", "watch", "update"]
+  - apiGroups: ["storage.k8s.io"]
+    resources: ["storageclasses"]
+    verbs: ["get", "list", "watch"]
+  - apiGroups: [""]
+    resources: ["events"]
+    verbs: ["list", "watch", "create", "update", "patch"]
+----
+
+. Bind the rules via `ClusterRoleBinding`:
++
+[source,yaml]
+----
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: manila-provisioner
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: manila-provisioner-role
+subjects:
+- kind: ServiceAccount
+  name: manila-provisioner-runner
+  namespace: default
+----
+
+. Create a new `StorageClass`:
++
+[source,yaml]
+----
+apiVersion: storage.k8s.io/v1
+kind: StorageClass
+metadata:
+  name: "manila-share"
+provisioner: "externalstorage.k8s.io/manila"
+parameters:
+  type: "default" <1>
+  zones: "nova" <2>
+----
+<1> The link:https://docs.openstack.org/manila/latest/admin/shared-file-systems-share-types.html[Manila share type]
+the provisioner will create for the volume.
+<2> Set of Manila availability zones that the volume might be created in.
+
+Configure the provisioner to connect, authenticate, and authorize to the Manila servic using
+environment variables. Select the appropriate combination of environment variables for your installation
+from the following list:
+[source]
+----
+OS_USERNAME
+OS_PASSWORD
+OS_AUTH_URL
+OS_DOMAIN_NAME
+OS_TENANT_NAME
+----
+
+[source]
+----
+OS_USERID
+OS_PASSWORD
+OS_AUTH_URL
+OS_TENANT_ID
+----
+
+[source]
+----
+OS_USERNAME
+OS_PASSWORD
+OS_AUTH_URL
+OS_DOMAIN_ID
+OS_TENANT_NAME
+----
+
+[source]
+----
+OS_USERNAME
+OS_PASSWORD
+OS_AUTH_URL
+OS_DOMAIN_ID
+OS_TENANT_ID
+----
+
+To pass the variables to the provisioner, use a `Secret`.
+The following example shows a `Secret` configured for the first variables combination
+
+[source,yaml]
+----
+apiVersion: v1
+kind: Secret
+metadata:
+  name: manila-provisioner-env
+type: Opaque
+data:
+  os_username: <base64 encoded Manila username>
+  os_password: <base64 encoded password>
+  os_auth_url: <base64 encoded OpenStack Keystone URL>
+  os_domain_name: <base64 encoded Manila service Domain>
+  os_tenant_name: <base64 encoded Manila service Tenant/Project name>
+----
+
+[NOTE]
+====
+Newer OpenStack versions use "project" instead of "tenant," however, the
+environment variables used by the provisioner must use `TENANT` in their
+names.
+====
+
+The last step is to start the provisioner itself, for example, using a deployment:
+
+[source, yaml]
+----
+kind: Deployment
+apiVersion: extensions/v1beta1
+metadata:
+  name: manila-provisioner
+spec:
+  replicas: 1
+  strategy:
+    type: Recreate
+  template:
+    metadata:
+      labels:
+        app: manila-provisioner
+    spec:
+      serviceAccountName: manila-provisioner-runner
+      containers:
+        - image: "registry.access.redhat.com:8888/openshift3/manila-provisioner:latest"
+          imagePullPolicy: "IfNotPresent"
+          name: manila-provisioner
+          env:
+            - name: "OS_USERNAME"
+              valueFrom:
+                secretKeyRef:
+                  name: manila-provisioner-env
+                  key: os_username
+            - name: "OS_PASSWORD"
+              valueFrom:
+                secretKeyRef:
+                  name: manila-provisioner-env
+                  key: os_password
+            - name: "OS_AUTH_URL"
+              valueFrom:
+                secretKeyRef:
+                  name: manila-provisioner-env
+                  key: os_auth_url
+            - name: "OS_DOMAIN_NAME"
+              valueFrom:
+                secretKeyRef:
+                  name: manila-provisioner-env
+                  key: os_domain_name
+            - name: "OS_TENANT_NAME"
+              valueFrom:
+                secretKeyRef:
+                  name: manila-provisioner-env
+                  key: os_tenant_name
+----
+
+[[usage]]
+== Usage
+
+After the provisioner is running, you can provision PVs using a PVC and the corresponding StorageClass:
+[source,yaml]
+----
+kind: PersistentVolumeClaim
+apiVersion: v1
+metadata:
+  name: manila-nfs-pvc
+spec:
+  accessModes:
+    - ReadWriteOnce
+  resources:
+    requests:
+      storage: 2G
+  storageClassName: manila-share
+----
+
+The `PersistentVolumeClaim` is then bound to a `PersistentVolume` backed by
+the newly provisioned Manila share. When the `PersistentVolumeClaim` and
+subsequently the `PersistentVolume` are deleted, the provisioner deletes and unexports
+the Manila share.
