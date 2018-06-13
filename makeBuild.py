@@ -9,7 +9,7 @@ from aura.transformers.tf_asciidoc import AsciiDocPublicanTransformer
 transformer = AsciiDocPublicanTransformer()
 
 # Transform the AsciiDoc to DocBook XML
-transformer._build_docbook_src("drupal-build/install_config/build/master.adoc", "build")
+transformer._build_docbook_src("drupal-build/install_config/master.adoc", "build")
 transformer._before_xml_parse("build/master.xml")
 
 # Parse the transformed XML
