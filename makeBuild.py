@@ -3,7 +3,7 @@ import sys
 from lxml.etree import XMLSyntaxError, XIncludeError
 
 from aura import utils
-from aura.transformers import AsciiDocPublicanTransformer
+from aura.transformers.tf_asciidoc import AsciiDocPublicanTransformer
 
 # Create the transformer instance
 transformer = AsciiDocPublicanTransformer()
