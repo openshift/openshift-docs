@@ -26,6 +26,8 @@ try:
     # Parse the XML content
     tree = utils.parse_xml("build/master.xml")
 except (XMLSyntaxError, XIncludeError) as e:
+    logging.error(e)
+    logging.error("Unable to parse the AsciiDoc built DocBook XML")
     print("Validation failed")
     sys.exit(-1)
 
