@@ -23,7 +23,7 @@ transformer._before_xml_parse("build/master.xml")
 # Parse the transformed XML
 try:
     # Parse the XML content
-    tree = utils.parse_xml(asciidoc_xml_file)
+    tree = utils.parse_xml("build/master.xml")
 except (XMLSyntaxError, XIncludeError) as e:
     print("Validation failed")
     sys.exit(-1)
