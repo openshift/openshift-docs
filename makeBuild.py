@@ -22,7 +22,7 @@ logging.Logger.verbose = logging.Logger.debug
 transformer._build_docbook_src("master.adoc", "build")
 transformer._before_xml_parse("build/master.xml")
 
-print ''.join(file('build/master.xml'))
+# print ''.join(file('build/master.xml'))
 
 # Parse the transformed XML
 try:
