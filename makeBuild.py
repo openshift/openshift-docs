@@ -2,6 +2,7 @@ import sys
 import os
 import logging
 
+logging.basicConfig(level=logging.INFO)
 print(os.getcwd() + "\n")
 os.chdir("drupal-build/install_config/")
 print(os.getcwd() + "\n")
