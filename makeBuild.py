@@ -1,4 +1,8 @@
 import sys
+import os
+
+# print(os.getcwd() + "\n")
+# print(os.getcwd() + "\n")
 
 from lxml.etree import XMLSyntaxError, XIncludeError
 
@@ -9,7 +13,8 @@ from aura.transformers.tf_asciidoc import AsciiDocPublicanTransformer
 transformer = AsciiDocPublicanTransformer()
 
 # Transform the AsciiDoc to DocBook XML
-transformer._build_docbook_src("drupal-build/install_config/master.adoc", "build")
+os.chdir("drupal-build/install_config/")
+transformer._build_docbook_src("master.adoc", "build")
 transformer._before_xml_parse("build/master.xml")
 
 # Parse the transformed XML
