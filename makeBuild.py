@@ -1,5 +1,6 @@
 import sys
 import os
+import logging
 
 print(os.getcwd() + "\n")
 os.chdir("drupal-build/install_config/")
@@ -13,6 +14,7 @@ from aura.transformers.tf_asciidoc import AsciiDocPublicanTransformer
 # Create the transformer instance
 transformer = AsciiDocPublicanTransformer()
 
+logging.Logger.verbose = logging.Logger.debug
 # Transform the AsciiDoc to DocBook XML
 #os.chdir("drupal-build/install_config/")
 transformer._build_docbook_src("master.adoc", "build")
