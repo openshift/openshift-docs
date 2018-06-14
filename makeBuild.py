@@ -8,7 +8,10 @@ from aura import cli, utils
 from aura.transformers.tf_asciidoc import AsciiDocPublicanTransformer
 
 # list of books - CHANGE HERE
-book_list = ['install_config', 'architecture', 'getting_started', 'admin_guide', 'dev_guide']
+book_list = ['admin_guide', 'architecture', 'cli_reference', 'dev_guide', 'getting_started', 'install_config']
+
+# all validated?
+all_validated = True
 
 # Initialize logging
 cli.init_logging(False, False)
@@ -24,11 +27,14 @@ for book in book_list:
 
   # Transform the AsciiDoc to DocBook XML
   if not transformer._build_docbook_src("master.adoc", "build"):
+    print("Could not transform book " + book)
     sys.exit(-1)
+  
   transformer._before_xml_parse("build/master.xml")
 
   # Parse the transformed XML
   try:
+    
     # Parse the XML content
     tree = utils.parse_xml("build/master.xml")
     
@@ -36,15 +42,18 @@ for book in book_list:
 
     # Validate the transformed XML
     if not transformer._validate_docbook_idrefs(tree):
-      print("Validation failed")
-      sys.exit(-1)
+      logging.error(">> Validation of book " + book + " failed <<")
+      all_validated = False
+      # sys.exit(-1)
     
     os.chdir("../../")
     
   except (XMLSyntaxError, XIncludeError) as e:
     logging.error(e)
-    logging.error("Unable to parse the AsciiDoc built DocBook XML")
-    print("Validation failed")
+    logging.error("Unable to parse the AsciiDoc built DocBook XML")    
     os.chdir("../../")
 
-    #sys.exit(-1)
+if not all_validated:
+    sys.exit(-1)
+else: 
+  print("Successful")
