@@ -8,7 +8,7 @@ from aura import cli, utils
 from aura.transformers.tf_asciidoc import AsciiDocPublicanTransformer
 
 # list of books - CHANGE HERE
-book_list = ['admin_guide', 'architecture', 'cli_reference', 'dev_guide', 'getting_started', 'install_config']
+book_list = ['admin_guide', 'architecture', 'cli_reference', 'dev_guide', 'getting_started', 'install_config', 'release_notes']
 
 # all validated?
 all_validated = True
