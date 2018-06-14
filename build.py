@@ -13,9 +13,6 @@ import sys
 import time
 import yaml
 
-from aura import cli
-
-cli.init_logging(False, False)
 
 CLONE_DIR = "."
 BASE_PORTAL_URL = "https://access.redhat.com/documentation/en-us/"
@@ -896,7 +893,7 @@ def main():
     book_nodes = [node for node in data if check_node_distro_matches(node, args.distro)]
 
     # Make the new source tree
-    dest_dir = os.path.join(os.getcwd(), "drupal-build")
+    dest_dir = os.path.join(os.getcwd(), "drupal-build", args.distro)
     if not args.no_clean:
         log.info("Cleaning the drupal-build directory")
         if os.path.exists(dest_dir):

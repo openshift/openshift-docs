@@ -22,55 +22,61 @@ all_validated = True
 # Initialize logging
 cli.init_logging(False, False)
 
-for book in book_list:
-
-  #print(os.getcwd() + "\n")
-  if not os.path.isdir("drupal-build/" + book):
+for distro in os.listdir("drupal-build"):
+    
     print("---------------------------------------")
-    print(">>> No Book " + book + " in this repo. Skipping <<<")
+    print("BUILDING " + distro + " BOOKS")
     print("---------------------------------------")
     
-    continue
-    
-  os.chdir("drupal-build/" + book)
-  #print(os.getcwd() + "\n")
+    for book in os.listdir(os.path.join("drupal-build", distro)):
 
-  # Create the transformer instance
-  transformer = AsciiDocPublicanTransformer()
+      #print(os.getcwd() + "\n")
+      #if not os.path.isdir("drupal-build/" + distro + "/" + book):
+        #print("---------------------------------------")
+        #print(">>> No Book " + book + " in this repo. Skipping <<<")
+        #print("---------------------------------------")
+        
+        #continue
+        
+      os.chdir("drupal-build/" + distro + "/" + book)
+      #print(os.getcwd() + "\n")
 
-  # Transform the AsciiDoc to DocBook XML
-  print(">>> Working on " + book + " book <<<")
-  if not transformer._build_docbook_src("master.adoc", "build"):
-    print("Could not transform book " + book)
-    sys.exit(-1)
-  
-  # Parse the transformed XML
-  try:
-            
-    transformer._before_xml_parse("build/master.xml")
-    
-    # Parse the XML content
-    tree = utils.parse_xml("build/master.xml")
-    
-    transformer._fix_uncoverted_xrefs_with_file_paths(tree)
+      # Create the transformer instance
+      transformer = AsciiDocPublicanTransformer()
 
-    # Validate the transformed XML
-    if not transformer._validate_docbook_idrefs(tree):
-      logging.error(">>> Validation of book " + book + " failed <<<")
-      all_validated = False
-      # sys.exit(-1)
-    
-    print(">>> Finished with " + book + " book <<<")
-    print("---------------------------------------")
-    
-    os.chdir("../../")
-    
-  except (XMLSyntaxError, XIncludeError, InvalidInputException) as e:
-    logging.error(e)
-    all_validated = False
-    print(">>> Finished with " + book + " book <<<")
-    print("---------------------------------------")    
-    os.chdir("../../")
+      # Transform the AsciiDoc to DocBook XML
+      print(">>> Working on " + book + " book <<<")
+      if not transformer._build_docbook_src("master.adoc", "build"):
+        print("Could not transform book " + book)
+        sys.exit(-1)
+      
+      # Parse the transformed XML
+      try:
+                
+        transformer._before_xml_parse("build/master.xml")
+        
+        # Parse the XML content
+        tree = utils.parse_xml("build/master.xml")
+        
+        transformer._fix_uncoverted_xrefs_with_file_paths(tree)
+
+        # Validate the transformed XML
+        if not transformer._validate_docbook_idrefs(tree):
+          logging.error(">>> Validation of book " + book + " failed <<<")
+          all_validated = False
+          # sys.exit(-1)
+        
+        print(">>> Finished with " + book + " book <<<")
+        print("---------------------------------------")
+        
+        os.chdir("../../../")
+        
+      except (XMLSyntaxError, XIncludeError, InvalidInputException) as e:
+        logging.error(e)
+        all_validated = False
+        print(">>> Finished with " + book + " book <<<")
+        print("---------------------------------------")    
+        os.chdir("../../../")
 
 if not all_validated:
     sys.exit(-1)
