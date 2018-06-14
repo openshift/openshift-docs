@@ -11,7 +11,7 @@ from aura.transformers.tf_asciidoc import AsciiDocPublicanTransformer
 # branch = os.system("git symbolic-ref -q --short HEAD")
 
 # list of books - CHANGE HERE
-book_list = ['admin_guide', 'apb_devel', 'architecture', 'cli_reference', 
+book_list = ['admin_guide', 'apb_devel', 'architecture', 
   'creating_images', 'day_two_guide', 'dev_guide', 
   'getting_started', 'install_config', 'release_notes', 'scaling_performance', 
   'security', 'upgrading', 'using_images']
