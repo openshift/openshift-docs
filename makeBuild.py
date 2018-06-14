@@ -8,9 +8,9 @@ from aura import cli, utils
 from aura.exceptions import InvalidInputException
 from aura.transformers.tf_asciidoc import AsciiDocPublicanTransformer
 
-branch = os.system("git symbolic-ref -q --short HEAD")
+#branch = os.system("git symbolic-ref -q --short HEAD")
 
-print(branch)
+#print(branch)
 
 # list of books - CHANGE HERE
 book_list = ['admin_guide', 'apb_devel', 'architecture', 
