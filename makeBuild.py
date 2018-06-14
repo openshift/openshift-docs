@@ -5,6 +5,7 @@ import logging
 from lxml.etree import XMLSyntaxError, XIncludeError
 
 from aura import cli, utils
+from aura.exceptions import InvalidInputException
 from aura.transformers.tf_asciidoc import AsciiDocPublicanTransformer
 
 # branch = os.system("git symbolic-ref -q --short HEAD")
@@ -43,10 +44,10 @@ for book in book_list:
     print("Could not transform book " + book)
     sys.exit(-1)
   
-  transformer._before_xml_parse("build/master.xml")
-
   # Parse the transformed XML
   try:
+            
+    transformer._before_xml_parse("build/master.xml")
     
     # Parse the XML content
     tree = utils.parse_xml("build/master.xml")
@@ -64,9 +65,9 @@ for book in book_list:
     
     os.chdir("../../")
     
-  except (XMLSyntaxError, XIncludeError) as e:
+  except (XMLSyntaxError, XIncludeError, InvalidInputException) as e:
     logging.error(e)
-    logging.error("Unable to parse the AsciiDoc built DocBook XML") 
+    all_validated = False
     print(">>> Finished with " + book + " book <<<")
     print("---------------------------------------")    
     os.chdir("../../")
