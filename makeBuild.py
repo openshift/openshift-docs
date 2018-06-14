@@ -54,7 +54,6 @@ for distro in os.listdir("drupal-build"):
       print(">>> Working on " + book + " book <<<")
       if not transformer._build_docbook_src("master.adoc", "build"):
         print("Could not transform book " + book)
-        sys.exit(-1)
       
       # Parse the transformed XML
       try:
