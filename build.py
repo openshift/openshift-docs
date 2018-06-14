@@ -13,6 +13,10 @@ import sys
 import time
 import yaml
 
+from aura import cli
+
+cli.init_logging(False, False)
+
 CLONE_DIR = "."
 BASE_PORTAL_URL = "https://access.redhat.com/documentation/en-us/"
 ID_RE = re.compile("^\[(?:\[|id=\'|#)(.*?)(\'?,.*?)?(?:\]|\')?\]", re.M | re.DOTALL)
