@@ -7,10 +7,12 @@ from lxml.etree import XMLSyntaxError, XIncludeError
 from aura import cli, utils
 from aura.transformers.tf_asciidoc import AsciiDocPublicanTransformer
 
+# branch = os.system("git symbolic-ref -q --short HEAD")
+
 # list of books - CHANGE HERE
 book_list = ['admin_guide', 'architecture', 'cli_reference', 'dev_guide', 
   'getting_started', 'install_config', 'release_notes', 'scaling_performance', 
-  'security', 'using_images']
+  'security', 'upgrading', 'using_images']
 
 # all validated?
 all_validated = True
@@ -21,6 +23,13 @@ cli.init_logging(False, False)
 for book in book_list:
 
   #print(os.getcwd() + "\n")
+  if not os.path.isdir("drupal-build/" + book):
+    print("---------------------------------------")
+    print(">>> No Book " + book + " in this repo. Skipping <<<")
+    print("---------------------------------------")
+    
+    continue
+    
   os.chdir("drupal-build/" + book)
   #print(os.getcwd() + "\n")
 
@@ -28,6 +37,7 @@ for book in book_list:
   transformer = AsciiDocPublicanTransformer()
 
   # Transform the AsciiDoc to DocBook XML
+  print(">>> Working on " + book + " book <<<")
   if not transformer._build_docbook_src("master.adoc", "build"):
     print("Could not transform book " + book)
     sys.exit(-1)
@@ -44,18 +54,23 @@ for book in book_list:
 
     # Validate the transformed XML
     if not transformer._validate_docbook_idrefs(tree):
-      logging.error(">> Validation of book " + book + " failed <<")
+      logging.error(">>> Validation of book " + book + " failed <<<")
       all_validated = False
       # sys.exit(-1)
+    
+    print(">>> Finished with " + book + " book <<<")
+    print("---------------------------------------")
     
     os.chdir("../../")
     
   except (XMLSyntaxError, XIncludeError) as e:
     logging.error(e)
-    logging.error("Unable to parse the AsciiDoc built DocBook XML")    
+    logging.error("Unable to parse the AsciiDoc built DocBook XML") 
+    print(">>> Finished with " + book + " book <<<")
+    print("---------------------------------------")    
     os.chdir("../../")
 
 if not all_validated:
     sys.exit(-1)
 else: 
-  print("Successful")
+  print("All Successful")
