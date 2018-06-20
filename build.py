@@ -13,13 +13,18 @@ import sys
 import time
 import yaml
 
+from aura import cli
+
+cli.init_logging(False, True)
+
+has_errors = False
 CLONE_DIR = "."
 BASE_PORTAL_URL = "https://access.redhat.com/documentation/en-us/"
 ID_RE = re.compile("^\[(?:\[|id=\'|#)(.*?)(\'?,.*?)?(?:\]|\')?\]", re.M | re.DOTALL)
 LINKS_RE = re.compile("(?:xref|link):([\./\w_-]*/?[\w_.-]*\.(?:html|adoc))?(#[\w_-]*)?(\[.*?\])", re.M | re.DOTALL)
 EXTERNAL_LINK_RE = re.compile("[\./]*([\w_-]+)/[\w_/-]*?([\w_.-]*\.(?:html|adoc))", re.DOTALL)
 INCLUDE_RE = re.compile("include::(.*?)\[(.*?)\]", re.M)
-IFDEF_RE = re.compile(r"^ifdef::(.*?)\[\]", re.M)
+IFDEF_RE = re.compile(r"^if(n?)def::(.*?)\[\]", re.M)
 ENDIF_RE = re.compile(r"^endif::(.*?)\[\]\r?\n", re.M)
 COMMENT_CONTENT_RE = re.compile(r"^^////$.*?^////$", re.M | re.DOTALL)
 TAG_CONTENT_RE = re.compile(r"//\s+tag::(.*?)\[\].*?// end::(.*?)\[\]", re.M | re.DOTALL)
@@ -405,7 +410,8 @@ def copy_file(info, book_src_dir, src_file, dest_dir, dest_file, include_check=T
 
     # Check for any includes
     if include_check:
-        include_iter = INCLUDE_RE.finditer(content)
+        cleaned_content = remove_conditional_content(content, info)
+        include_iter = INCLUDE_RE.finditer(cleaned_content)
         for include in include_iter:
             include_text = include.group(0)
             include_path = include.group(1)
@@ -605,7 +611,8 @@ def _fix_links(content, book_dir, src_file, info, tag=None, cwd=None):
                 fixed_link = link_text
                 if EXTERNAL_LINK_RE.search(link_file) is not None:
                     rel_src_file = src_file.replace(os.path.dirname(book_dir) + "/", "")
-                    log.warning("WARNING (%s): \"%s\" appears to try to reference a file not included in the \"%s\" distro", rel_src_file, link_text.replace("\n", ""), info['distro'])
+                    has_errors = True
+                    log.error("ERROR (%s): \"%s\" appears to try to reference a file not included in the \"%s\" distro", rel_src_file, link_text.replace("\n", ""), info['distro'])
         else:
             fixed_link = "xref:" + link_anchor.replace("#", "") + link_title
 
@@ -621,12 +628,20 @@ def remove_conditional_content(content, info, tag=None):
     # Remove any ifdef content
     ifdef = IFDEF_RE.search(content)
     while ifdef is not None:
-        ifdef_distros = ifdef.group(1).split(",")
+        is_not_def = ifdef.group(1) == "n"
+        ifdef_distros = ifdef.group(2).split(",")
         pos = ifdef.start()
         end = ifdef.end()
 
-        # Distro isn't in the ifdef content, so remove it
-        if info['distro'] not in ifdef_distros:
+        # Determine if we should strip the conditional content, based on the distro
+        strip_content = False
+        if is_not_def and info['distro'] in ifdef_distros:
+            strip_content = True
+        elif not is_not_def and info['distro'] not in ifdef_distros:
+            strip_content = True
+
+        # Remove the conditional content
+        if strip_content:
             # Find the correct endif for the current ifdef
             search_pos = end
             endpos = len(content)
@@ -640,7 +655,7 @@ def remove_conditional_content(content, info, tag=None):
                     endpos = endif.end()
                     break
                 else:
-                    search_pos = next_ifdef.end()
+                    search_pos = endif.end()
 
             # Replace the content and move the end pos to be the same as the start since the content was removed
             ifdef_text = content[pos:endpos]
@@ -926,6 +941,9 @@ def main():
 
     # Copy the original data and reformat for drupal
     reformat_for_drupal(info)
+    
+    if has_errors:
+        sys.exit(1)        
 
     if args.push:
         # Parse the repo urls
