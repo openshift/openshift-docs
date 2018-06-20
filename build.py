@@ -24,7 +24,7 @@ ID_RE = re.compile("^\[(?:\[|id=\'|#)(.*?)(\'?,.*?)?(?:\]|\')?\]", re.M | re.DOT
 LINKS_RE = re.compile("(?:xref|link):([\./\w_-]*/?[\w_.-]*\.(?:html|adoc))?(#[\w_-]*)?(\[.*?\])", re.M | re.DOTALL)
 EXTERNAL_LINK_RE = re.compile("[\./]*([\w_-]+)/[\w_/-]*?([\w_.-]*\.(?:html|adoc))", re.DOTALL)
 INCLUDE_RE = re.compile("include::(.*?)\[(.*?)\]", re.M)
-IFDEF_RE = re.compile(r"^ifdef::(.*?)\[\]", re.M)
+IFDEF_RE = re.compile(r"^if(n?)def::(.*?)\[\]", re.M)
 ENDIF_RE = re.compile(r"^endif::(.*?)\[\]\r?\n", re.M)
 COMMENT_CONTENT_RE = re.compile(r"^^////$.*?^////$", re.M | re.DOTALL)
 TAG_CONTENT_RE = re.compile(r"//\s+tag::(.*?)\[\].*?// end::(.*?)\[\]", re.M | re.DOTALL)
@@ -410,7 +410,7 @@ def copy_file(info, book_src_dir, src_file, dest_dir, dest_file, include_check=T
 
     # Check for any includes
     if include_check:
-        cleaned_content = remove_conditional_content(content, info, tag=tag)
+        cleaned_content = remove_conditional_content(content, info)
         include_iter = INCLUDE_RE.finditer(cleaned_content)
         for include in include_iter:
             include_text = include.group(0)
@@ -628,12 +628,20 @@ def remove_conditional_content(content, info, tag=None):
     # Remove any ifdef content
     ifdef = IFDEF_RE.search(content)
     while ifdef is not None:
-        ifdef_distros = ifdef.group(1).split(",")
+        is_not_def = ifdef.group(1) == "n"
+        ifdef_distros = ifdef.group(2).split(",")
         pos = ifdef.start()
         end = ifdef.end()
 
-        # Distro isn't in the ifdef content, so remove it
-        if info['distro'] not in ifdef_distros:
+        # Determine if we should strip the conditional content, based on the distro
+        strip_content = False
+        if is_not_def and info['distro'] in ifdef_distros:
+            strip_content = True
+        elif not is_not_def and info['distro'] not in ifdef_distros:
+            strip_content = True
+
+        # Remove the conditional content
+        if strip_content:
             # Find the correct endif for the current ifdef
             search_pos = end
             endpos = len(content)
