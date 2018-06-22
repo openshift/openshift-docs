@@ -581,7 +581,7 @@ def _fix_links(content, book_dir, src_file, info, tag=None, cwd=None):
             fixed_link_file = link_file.replace(".html", ".adoc")
             fixed_link_file_abs = os.path.abspath(os.path.join(current_dir, fixed_link_file))
             if fixed_link_file_abs in file_to_id_map:
-                if book_dir in fixed_link_file_abs or fixed_link_file_abs == src_file:
+                if fixed_link_file_abs.startswith(book_dir + os.sep) or fixed_link_file_abs == src_file:
                     # We are dealing with a cross reference within the same book here
                     if link_anchor is None:
                         # Cross reference to the top of a topic, without an id being specified
