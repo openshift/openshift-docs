@@ -1,0 +1,282 @@
+////
+Module included in the following assemblies:
+
+install_config/configuring_gce.adoc
+////
+
+[id='configuring-gce-registry_{context}']
+= Configuring the {product-title} registry for GCP
+
+Google Cloud Platform (GCP) provides object cloud storage that {product-title}
+can use to store container images using the {product-title} container registry.
+
+For more information, see link:https://cloud.google.com/storage/docs/[Cloud Storage in the GCP documentation].
+
+.Prerequisites
+
+You must create the bucket to host the registry images before the installation.
+The following commands create a regional bucket using the configured service
+account:
+
+----
+gsutil mb -c regional -l <region> gs://ocp-registry-bucket
+cat <<EOF > labels.json
+{
+  "ocp-cluster": "mycluster"
+}
+EOF
+gsutil label set labels.json gs://ocp-registry-bucket
+rm -f labels.json
+----
+
+[NOTE]
+====
+A bucket's data is automatically encrypted using a Google-managed key by
+default. To specify a different key to encrypt the data, see the
+https://cloud.google.com/storage/docs/encryption/[Data Encryption Options]
+available in GCP.
+====
+
+See the link:https://cloud.google.com/storage/docs/creating-buckets[Creating storage buckets documentation] for more information.
+
+.Procedure
+
+To configure the xref:../install/configuring_inventory_file.adoc#configuring-ansible[Ansible
+inventory file] for the registry to use a Google Cloud
+Storage (GCS) bucket:
+
+----
+[OSEv3:vars]
+# GCP Provider Configuration
+openshift_hosted_registry_storage_provider=gcs
+openshift_hosted_registry_storage_kind=object
+openshift_hosted_registry_replicas=1 <1>
+openshift_hosted_registry_storage_gcs_bucket=<bucket_name> <2>
+openshift_hosted_registry_storage_gcs_keyfile=<bucket_keyfile> <3>
+openshift_hosted_registry_storage_gcs_rootdirectory=<registry_directory> <4>
+----
+<1> The number of replicas to configure.
+<2> The bucket name to for registry storage.
+<3> The path on the installer host where the bucket's keyfile is located if
+you use a custom key file to encrypt the data.
+<4> Directory used to store the data. `/registry` by default
+
+For more information, see link:https://cloud.google.com/storage/docs/[Cloud Storage in the GCP documentation].
+
+== Manually configuring {product-title} registry for GCP
+
+To use GCP object storage, edit the registry’s configuration file and mount to the registry pod.
+
+See the https://docs.docker.com/registry/storage-drivers/gcs/[Google Cloud Storage Driver documentation] for more information about storage driver configuration files.
+
+.Procedure
+
+. Export the current *_/etc/registry/config.yml_* file:
++
+[source,bash]
+----
+$ oc get secret registry-config \
+    -o jsonpath='{.data.config\.yml}' -n default | base64 -d \
+  >> config.yml.old
+----
+
+. Create a new configuration file from the old *_/etc/registry/config.yml_* file:
++
+[source,bash]
+----
+$ cp config.yml.old config.yml
+----
+
+. Edit the file to include the GCP parameters. Specify the bucket and keyfile in the `storage` section of a registry’s configuration file:
++
+[source,yaml]
+----
+storage:
+  delete:
+    enabled: true
+  cache:
+    blobdescriptor: inmemory
+  gcs:
+    bucket: ocp-registry <1>
+    keyfile: mykeyfile <2>
+----
+<1>	Replace with the GCP bucket name.
+<2> A private service account key file in JSON format. If using the Google Application Default Credentials, do not specify the `keyfile` parameter.
+
+. Delete the `registry-config` secret:
++
+[source,bash]
+----
+$ oc delete secret registry-config -n default
+----
+
+. Recreate the secret to reference the updated configuration file:
++
+[source,bash]
+----
+$ oc create secret generic registry-config \
+    --from-file=config.yml -n default
+----
+
+. Redeploy the registry to read the updated configuration:
++
+[source,bash]
+----
+$ oc rollout latest docker-registry -n default
+----
+
+=== Verify the registry is using GCP object storage
+
+To verify if the registry is using GCP bucket storage:
+
+.Procedure
+
+. After a successful registry deployment using GCP storage, the registry
+`deploymentconfig` does not show any information if the registry is using an
+`emptydir` instead of GCP bucket storage:
++
+[source,bash]
+----
+$ oc describe dc docker-registry -n default
+...
+Mounts:
+  ...
+  /registry from registry-storage (rw)
+Volumes:
+registry-storage:
+Type:       EmptyDir <1>
+...
+----
+<1> The temporary directory that shares a pod's lifetime.
+
+. Check if the *_/registry_* mountpoint is empty. This is the volume GCP storage will use:
++
+[source,bash]
+----
+$ oc exec \
+    $(oc get pod -l deploymentconfig=docker-registry \
+    -o=jsonpath='{.items[0].metadata.name}')  -i -t -- ls -l /registry
+total 0
+----
+
+. If it is empty, it is because the GCP bucket configuration is performed in the
+`registry-config` secret:
++
+[source,bash]
+----
+$ oc describe secret registry-config
+Name:         registry-config
+Namespace:    default
+Labels:       <none>
+Annotations:  <none>
+
+Type:  Opaque
+
+Data
+====
+config.yml:  398 bytes
+----
+
+. The installer creates a *_config.yml_* file with the desired configuration using the
+extended registry capabilities as seen in xref:../install_config/registry/extended_registry_configuration.adoc#docker-registry-configuration-reference-storage[Storage in the installation documentation]. To view the configuration file, including the `storage` section where the storage bucket configuration is stored:
++
+[source,bash]
+----
+$ oc exec \
+    $(oc get pod -l deploymentconfig=docker-registry \
+      -o=jsonpath='{.items[0].metadata.name}') \
+  cat /etc/registry/config.yml
+
+version: 0.1
+log:
+  level: debug
+http:
+  addr: :5000
+storage:
+  delete:
+    enabled: true
+  cache:
+    blobdescriptor: inmemory
+  gcs:
+    bucket: ocp-registry
+auth:
+  openshift:
+    realm: openshift
+middleware:
+  registry:
+  - name: openshift
+  repository:
+  - name: openshift
+    options:
+      pullthrough: True
+      acceptschema2: True
+      enforcequota: False
+  storage:
+  - name: openshift
+----
++
+Or you can view the secret:
++
+[source,bash]
+----
+$ oc get secret registry-config -o jsonpath='{.data.config\.yml}' | base64 -d
+version: 0.1
+log:
+  level: debug
+http:
+  addr: :5000
+storage:
+  delete:
+    enabled: true
+  cache:
+    blobdescriptor: inmemory
+  gcs:
+    bucket: ocp-registry
+auth:
+  openshift:
+    realm: openshift
+middleware:
+  registry:
+  - name: openshift
+  repository:
+  - name: openshift
+    options:
+      pullthrough: True
+      acceptschema2: True
+      enforcequota: False
+  storage:
+  - name: openshift
+----
++
+You can verify that any image push was successful by viewing *Storage* in the GCP console, then clicking *Browser* and selecting the bucket, or by running the `gsutil` command:
++
+[source,bash]
+----
+$ gsutil ls gs://ocp-registry/
+gs://ocp-registry/docker/
+
+$ gsutil du gs://ocp-registry/
+7660385     gs://ocp-registry/docker/registry/v2/blobs/sha256/03/033565e6892e5cc6dd03187d00a4575720a928db111274e0fbf31b410a093c10/data
+7660385     gs://ocp-registry/docker/registry/v2/blobs/sha256/03/033565e6892e5cc6dd03187d00a4575720a928db111274e0fbf31b410a093c10/
+7660385     gs://ocp-registry/docker/registry/v2/blobs/sha256/03/
+...
+----
+
+If using an `emptyDir` volume, the `/registry` mountpoint looks similar to the
+following:
+
+[source,bash]
+----
+$ oc exec \
+    $(oc get pod -l deploymentconfig=docker-registry \
+    -o=jsonpath='{.items[0].metadata.name}')  -i -t -- df -h /registry
+Filesystem      Size  Used Avail Use% Mounted on
+/dev/sdc         30G  226M   30G   1% /registry
+
+
+$ oc exec \
+    $(oc get pod -l deploymentconfig=docker-registry \
+    -o=jsonpath='{.items[0].metadata.name}')  -i -t -- ls -l /registry
+total 0
+drwxr-sr-x. 3 1000000000 1000000000 22 Jun 19 12:24 docker
+----
