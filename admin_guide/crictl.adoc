@@ -1,0 +1,482 @@
+[[Admin-crictl-node-debug-guide]]
+= Admin crictl node debug guide
+{product-author}
+{product-version}
+:data-uri:
+:icons: font
+:experimental:
+:toc: macro
+:toc-title:
+:toclevels: 5
+:prewrap!:
+:context: debugging-crio-containers-using-crictl
+
+toc::[]
+
+== Overview
+
+The *crictl* command line tool offers many powerful methods to debug pods, containers, and images.
+
+This page shows how *crictl* can be used in debugging pods and containers created by *OpenShift* when using *CRI-O* as the runtime.
+
+== Debugging with crictl
+
+Let's create a simple pod called *my-pod* running two containers using the *oc* CLI.
+----
+$ cat pod.yml 
+apiVersion: v1
+kind: Pod
+metadata:
+  name: my-pod
+spec:
+  containers:
+  - name: my-httpd
+    image: docker.io/library/httpd:2.4-alpine
+    ports:
+    - containerPort: 9876
+  - name: shell
+    image: docker.io/library/centos:7
+    tty: true
+    command:
+    - "bin/bash"
+    - "-c"
+    - "top"
+
+$ oc create -f pod.yml
+pod "my-pod" created
+
+$ oc get pods
+NAME      READY     STATUS    RESTARTS   AGE
+my-pod    2/2       Running   0          10s
+----
+
+Ensure that the _runtime-endpoint_ and _image-endpoint_ of *crictl* point to the *CRI-O* socket in the config file */etc/crictl.yaml*.
+----
+$ cat /etc/crictl.yaml 
+runtime-endpoint: unix:///var/run/crio/crio.sock
+image-endpoint: unix:///var/run/crio/crio.sock
+timeout: 5m
+debug: false
+----
+
+Now we can debug the pods and containers we created above using *crictl*.
+
+=== Pods
+
+==== Listing Pods
+We can list the pods using the `*crictl pods*` command.
+----
+# crictl pods
+POD ID              CREATED             STATE               NAME                NAMESPACE           ATTEMPT
+1f1c536a3e819       20 seconds ago      SANDBOX_READY       my-pod              default             0
+----
+
+==== Inspecting Pods
+We can view the configuration and spec of a specific pod using the `*crictl inspectp*` command.
+----
+# crictl inspectp 1f1c536a3e819
+{
+  "status": {
+    "id": "1f1c536a3e819f1e050dfbbd2e6e2a744f0c675bcbb2f943fa8b7d121498c27a",
+    "metadata": {
+      "attempt": 0,
+      "name": "my-pod",
+      "namespace": "default",
+      "uid": "5ab53033-8912-11e8-86f1-54e1ad6c2cf9"
+    },
+    "state": "SANDBOX_READY",
+    "createdAt": "2018-07-16T12:07:36.395770608-04:00",
+    "network": {
+      "ip": "10.88.6.192"
+    },
+    "linux": {
+      "namespaces": {
+        "options": {
+          "ipc": "POD",
+          "network": "POD",
+          "pid": "CONTAINER"
+        }
+      }
+    },
+    "labels": {
+      "io.kubernetes.container.name": "POD",
+      "io.kubernetes.pod.name": "my-pod",
+      "io.kubernetes.pod.namespace": "default",
+      "io.kubernetes.pod.uid": "5ab53033-8912-11e8-86f1-54e1ad6c2cf9"
+    },
+    "annotations": {
+      "kubernetes.io/config.seen": "2018-07-16T12:07:35.90841291-04:00",
+      "kubernetes.io/config.source": "api",
+      "openshift.io/scc": "anyuid"
+    }
+  },
+  "version": {
+    "version": "1.10.7-dev"
+  }
+}
+----
+
+==== Stopping Pods
+We can stop a specific pod using the `*crictl stopp*` command. Since *oc* defaults to restarting a pod when stopped or removed, we can see that a new pod was started below.
+----
+4# crictl pods
+POD ID              CREATED             STATE               NAME                NAMESPACE           ATTEMPT
+1f1c536a3e819       42 minutes ago      SANDBOX_READY       my-pod              default             0
+
+# crictl stopp 1f1c536a3e819
+Stopped sandbox 1f1c536a3e819
+
+# crictl pods
+POD ID              CREATED                  STATE               NAME                NAMESPACE           ATTEMPT
+5832b44f04ba4       Less than a second ago   SANDBOX_READY       my-pod              default             1
+1f1c536a3e819       42 minutes ago           SANDBOX_NOTREADY    my-pod              default             0
+----
+
+==== Deleting Pods
+Stopped pods can be deleted using the `*crictl rmp*` command.
+----
+# crictl rmp 1f1c536a3e819
+Removed sandbox 1f1c536a3e819
+
+# crictl pods
+POD ID              CREATED             STATE               NAME                NAMESPACE           ATTEMPT
+5832b44f04ba4       18 seconds ago      SANDBOX_READY       my-pod              default             1
+----
+
+The `*crictl stopp*` and `*crictl rmp*` commands can be used to clear the state when the kubelet/node is down. They can also be used to prepare for upgrading, draining, and cleaning.
+
+=== Containers
+
+==== Listing Containers
+We can list the containers using the `*crictl ps*` command.
+----
+# crictl ps
+CONTAINER ID        IMAGE                                                              CREATED             STATE               NAME                ATTEMPT
+95b8d9c69dd32       49f7960eb7e4cb46f1a02c1f8174c6fac07ebf1eb6d8deffbcb5c695f1c9edd5   38 seconds ago      CONTAINER_RUNNING   shell               0
+5b110a8344d3a       73a557ff177a50bab42b5e36c9c8ba4c9fa18f2fe7a74f04900856ab1648cb89   38 seconds ago      CONTAINER_RUNNING   my-httpd            0
+----
+
+By default, `*crictl ps*` only lists the running containers, to view all the containers in store use the *--all/-a* flag. As you can see below, a third container that is in the _created_ state showed up.
+----
+# crictl ps -a
+CONTAINER ID        IMAGE                                                              CREATED             STATE               NAME                ATTEMPT
+e578fef6bff53       quay.io/crio/redis:alpine                                          5 seconds ago       CONTAINER_CREATED   podsandbox1-redis   0
+95b8d9c69dd32       49f7960eb7e4cb46f1a02c1f8174c6fac07ebf1eb6d8deffbcb5c695f1c9edd5   6 minutes ago       CONTAINER_RUNNING   shell               0
+5b110a8344d3a       73a557ff177a50bab42b5e36c9c8ba4c9fa18f2fe7a74f04900856ab1648cb89   6 minutes ago       CONTAINER_RUNNING   my-httpd            0
+----
+
+==== Executing Processes within Containers
+We can use the `*crictl exec*` command to run processes inside a running container. This can be used for in-depth inspection of running containers.
+
+If we expect to run a process to completion, we can use the *--sync* flag.
+----
+# crictl exec --sync 5b110a8344d3a ls
+bin
+build
+cgi-bin
+conf
+error
+htdocs
+icons
+include
+logs
+modules
+----
+
+We can also exec into the container with an interactive shell using the *-i* and *-t* flags, which allows us to run multiple proceses inside the container. Use *exit* to exit out of an interactive exec session.
+----
+# crictl exec -i -t 95b8d9c69dd32 /bin/bash
+[root@my-pod /]# ls
+ls
+bin  etc   lib    media  opt   root  sbin  sys  usr
+dev  home  lib64  mnt    proc  run   srv   tmp  var
+[root@my-pod /]# ls var
+ls var
+adm    db     games   kerberos  local  log   nis  preserve  spool  yp
+cache  empty  gopher  lib       lock   mail  opt  run       tmp
+[root@my-pod /]# exit
+----
+
+==== Attaching to Containers
+We can attach to a running container using the `*crictl attach*` command to either view the container's ongoing output or control it interactively. To control the container's output interactively use the *-i* and *-t* flags.
+----
+# crictl attach 95b8d9c69dd32
+top - 16:48:37 up 3 days,  2:06,  0 users,  load average: 0.67, 0.85, 0.90
+
+%Cpu(s):  5.9 us,  3.8 sy,  0.0 ni, 88.3 id,  0.3 wa,  1.2 hi,  0.4 si,  0.0 st
+KiB Mem : 16301372 total,  5117200 free,  5277132 used,  5907040 buff/cache
+KiB Swap:  8220668 total,  8133628 free,    87040 used. 10152004 avail Mem 
+
+
+    1 root      20   0   56140   3684   3180 R   0.0  0.0   0:00.80 top
+----
+
+==== Inspecting Containers
+To view the configuration and specs of a container, we can use the `*crictl inspect*` command. Let's inspect the my-httpd container. We can change the output returned using the *-o/--output* flag - the options are _json_, _yaml_, and _table_.
+----
+# crictl inspect 5b110a8344d3a -o json
+{
+  "status": {
+    "id": "5b110a8344d3a1032f8ea4f233ca58b59c666112dc4fd6aa3940816d767285c1",
+    "metadata": {
+      "attempt": 0,
+      "name": "my-httpd"
+    },
+    "state": "CONTAINER_RUNNING",
+    "createdAt": "2018-07-16T12:07:36.594443574-04:00",
+    "startedAt": "2018-07-16T12:07:36.650127149-04:00",
+    "finishedAt": "1969-12-31T19:00:00-05:00",
+    "exitCode": 0,
+    "image": {
+      "image": "docker.io/library/httpd:2.4-alpine"
+    },
+    "imageRef": "docker.io/library/httpd@sha256:aee15196959ee6553c9e623cb9b78d7579dfd3c3cacf474bffbe9614ff8aaf43",
+    "reason": "",
+    "message": "",
+    "labels": {
+      "io.kubernetes.container.name": "my-httpd",
+      "io.kubernetes.pod.name": "my-pod",
+      "io.kubernetes.pod.namespace": "default",
+      "io.kubernetes.pod.uid": "5ab53033-8912-11e8-86f1-54e1ad6c2cf9"
+    },
+    "annotations": {
+      "io.kubernetes.container.hash": "c54253e1",
+      "io.kubernetes.container.ports": "[{\"containerPort\":9876,\"protocol\":\"TCP\"}]",
+      "io.kubernetes.container.restartCount": "0",
+      "io.kubernetes.container.terminationMessagePath": "/dev/termination-log",
+      "io.kubernetes.container.terminationMessagePolicy": "File",
+      "io.kubernetes.pod.terminationGracePeriod": "30"
+    },
+    "mounts": [
+      {
+        "containerPath": "/var/run/secrets/kubernetes.io/serviceaccount",
+        "hostPath": "/home/umohnani/go/src/github.com/openshift/origin/openshift.local.volumes/pods/5ab53033-8912-11e8-86f1-54e1ad6c2cf9/volumes/kubernetes.io~secret/default-token-9b6pg",
+        "propagation": "PROPAGATION_PRIVATE",
+        "readonly": true,
+        "selinuxRelabel": false
+      },
+      {
+        "containerPath": "/etc/hosts",
+        "hostPath": "/home/umohnani/go/src/github.com/openshift/origin/openshift.local.volumes/pods/5ab53033-8912-11e8-86f1-54e1ad6c2cf9/etc-hosts",
+        "propagation": "PROPAGATION_PRIVATE",
+        "readonly": false,
+        "selinuxRelabel": false
+      },
+      {
+        "containerPath": "/dev/termination-log",
+        "hostPath": "/home/umohnani/go/src/github.com/openshift/origin/openshift.local.volumes/pods/5ab53033-8912-11e8-86f1-54e1ad6c2cf9/containers/my-httpd/717dca23",
+        "propagation": "PROPAGATION_PRIVATE",
+        "readonly": false,
+        "selinuxRelabel": false
+      }
+    ],
+    "logPath": "/var/log/pods/5ab53033-8912-11e8-86f1-54e1ad6c2cf9/my-httpd/0.log"
+  }
+}
+----
+
+==== Viewing Container Logs
+We can also view the logs of a container using the `*crictl logs*` command. Setting the *-f/--follow* flag to true lets you view the logs in real time.
+----
+# crictl logs 5b110a8344d3a
+AH00558: httpd: Could not reliably determine the server's fully qualified domain name, using 10.88.6.192. Set the 'ServerName' directive globally to suppress this message
+AH00558: httpd: Could not reliably determine the server's fully qualified domain name, using 10.88.6.192. Set the 'ServerName' directive globally to suppress this message
+[Mon Jul 16 16:07:36.719060 2018] [mpm_event:notice] [pid 1:tid 140081269734280] AH00489: Apache/2.4.33 (Unix) configured -- resuming normal operations
+[Mon Jul 16 16:07:36.719139 2018] [core:notice] [pid 1:tid 140081269734280] AH00094: Command line: 'httpd -D FOREGROUND'
+----
+
+==== Updating Containers
+We can use the `*crictl update*` command to change various cgroups options such as _cpu-period_, _cpu-quota_, _cpu-share_ etc.
+----
+# crictl exec --sync 95b8d9c69dd32 cat /sys/fs/cgroup/cpu/cpu.cfs_period_us
+100000
+
+# crictl update --cpu-period 150000 95b8d9c69dd32
+95b8d9c69dd32
+
+# crictl exec --sync 95b8d9c69dd32 cat /sys/fs/cgroup/cpu/cpu.cfs_period_us
+150000
+----
+
+==== Viewing Container Stats
+We can view the stats of the containers using the `*crictl stats*` command. By default, `*crictl stats*` will only show stats of running containers.
+----
+# crictl stats
+CONTAINER           CPU %               MEM                 DISK                INODES
+5b110a8344d3a       0.02                8.503MB             0B                  0
+95b8d9c69dd32       0.11                3.727MB             0B                  0
+----
+
+Using the *-a/--all* flag will let you view the stats for all containers regarldess of their state.
+----
+# crictl stats -a
+CONTAINER           CPU %               MEM                 DISK                INODES
+e578fef6bff53       0.00                2.687MB             0B                  0
+5b110a8344d3a       0.02                8.503MB             0B                  0
+95b8d9c69dd32       0.11                3.727MB             0B                  0
+----
+
+We can also see the stats of a specific container using the **--id** flag.
+----
+# crictl stats --id 5b110a8344d3a
+CONTAINER           CPU %               MEM                 DISK                INODES
+5b110a8344d3a       0.01                8.503MB             0B                  0
+----
+
+==== Stopping Containers
+We can stop containers with the `*crictl stop*` command. The my-httpd container is stopped and a new one is started as *oc* defaults to restarting containers when they are stopped or removed.
+----
+# crictl ps
+CONTAINER ID        IMAGE                                                              CREATED             STATE               NAME                ATTEMPT
+95b8d9c69dd32       49f7960eb7e4cb46f1a02c1f8174c6fac07ebf1eb6d8deffbcb5c695f1c9edd5   34 minutes ago      CONTAINER_RUNNING   shell               0
+5b110a8344d3a       73a557ff177a50bab42b5e36c9c8ba4c9fa18f2fe7a74f04900856ab1648cb89   34 minutes ago      CONTAINER_RUNNING   my-httpd            0
+
+
+# crictl stop 5b110a8344d3a
+5b110a8344d3a
+
+# crictl ps
+CONTAINER ID        IMAGE                                                              CREATED             STATE               NAME                ATTEMPT
+e275d94fd5359       73a557ff177a50bab42b5e36c9c8ba4c9fa18f2fe7a74f04900856ab1648cb89   3 seconds ago       CONTAINER_RUNNING   my-httpd            1
+95b8d9c69dd32       49f7960eb7e4cb46f1a02c1f8174c6fac07ebf1eb6d8deffbcb5c695f1c9edd5   34 minutes ago      CONTAINER_RUNNING   shell               0
+----
+
+==== Deleting Containers
+The `*crictl rm*` command is used to remove containers.
+----
+# crictl ps
+CONTAINER ID        IMAGE                                                              CREATED             STATE               NAME                ATTEMPT
+e275d94fd5359       73a557ff177a50bab42b5e36c9c8ba4c9fa18f2fe7a74f04900856ab1648cb89   3 seconds ago       CONTAINER_RUNNING   my-httpd            1
+95b8d9c69dd32       49f7960eb7e4cb46f1a02c1f8174c6fac07ebf1eb6d8deffbcb5c695f1c9edd5   34 minutes ago      CONTAINER_RUNNING   shell               0
+
+# crictl rm 5b110a8344d3a
+5b110a8344d3a
+
+# crictl ps
+CONTAINER ID        IMAGE                                                              CREATED             STATE               NAME                ATTEMPT
+95b8d9c69dd32       49f7960eb7e4cb46f1a02c1f8174c6fac07ebf1eb6d8deffbcb5c695f1c9edd5   34 minutes ago      CONTAINER_RUNNING   shell               0
+----
+
+The `*crictl stop*` and `*crictl rm*` commands can also be used to clear the state when the kubelet/node is down as well as to prepare for upgrading, draining, and cleaning.
+
+=== Images
+
+==== Listing Images
+We can list the images available in the local store using the `*crictl images*` command.
+----
+# crictl images
+IMAGE                        TAG                 IMAGE ID            SIZE
+docker.io/kubernetes/pause   latest              f9d5de0795395       251kB
+docker.io/library/busybox    latest              8c811b4aec35f       1.36MB
+docker.io/library/centos     7                   49f7960eb7e4c       208MB
+docker.io/library/httpd      2.4-alpine          73a557ff177a5       96MB
+----
+
+==== Inspecting Images
+We can also list the images in _json_ or _yaml_ format using the *-o/--output* flag.
+----
+# crictl images -o json
+{
+  "images": [
+    {
+      "id": "f9d5de0795395db6c50cb1ac82ebed1bd8eb3eefcebb1aa724e01239594e937b",
+      "repoTags": [
+        "docker.io/kubernetes/pause:latest"
+      ],
+      "repoDigests": [
+        "docker.io/kubernetes/pause@sha256:2088df8eb02f10aae012e6d4bc212cabb0ada93cb05f09e504af0c9811e0ca14"
+      ],
+      "size": "250665",
+      "username": ""
+    },
+    {
+      "id": "8c811b4aec35f259572d0f79207bc0678df4c736eeec50bc9fec37ed936a472a",
+      "repoTags": [
+        "docker.io/library/busybox:latest"
+      ],
+      "repoDigests": [
+        "docker.io/library/busybox@sha256:74f634b1bc1bd74535d5209589734efbd44a25f4e2dc96d78784576a3eb5b335"
+      ],
+      "size": "1362408",
+      "username": ""
+    },
+    {
+      "id": "49f7960eb7e4cb46f1a02c1f8174c6fac07ebf1eb6d8deffbcb5c695f1c9edd5",
+      "repoTags": [
+        "docker.io/library/centos:7"
+      ],
+      "repoDigests": [
+        "docker.io/library/centos@sha256:eed5b251b615d1e70b10bcec578d64e8aa839d2785c2ffd5424e472818c42755"
+      ],
+      "size": "208242862",
+      "username": ""
+    },
+    {
+      "id": "73a557ff177a50bab42b5e36c9c8ba4c9fa18f2fe7a74f04900856ab1648cb89",
+      "repoTags": [
+        "docker.io/library/httpd:2.4-alpine"
+      ],
+      "repoDigests": [
+        "docker.io/library/httpd@sha256:aee15196959ee6553c9e623cb9b78d7579dfd3c3cacf474bffbe9614ff8aaf43"
+      ],
+      "size": "96002744",
+      "username": ""
+    }
+  ]
+}
+----
+
+==== Pulling Images
+We can pull an image from a registry using the `*crictl pull*` command.
+----
+# crictl pull docker.io/library/fedora:latest
+Image is update to date for docker.io/library/fedora@sha256:c4cc32b09c6ae3f1353e7e33a8dda93dc41676b923d6d89afa996b421cc5aa48
+
+# crictl images
+IMAGE                        TAG                 IMAGE ID            SIZE
+docker.io/kubernetes/pause   latest              f9d5de0795395       251kB
+docker.io/library/busybox    latest              8c811b4aec35f       1.36MB
+docker.io/library/centos     7                   49f7960eb7e4c       208MB
+docker.io/library/httpd      2.4-alpine          73a557ff177a5       96MB
+docker.io/library/fedora     latest              cc510acfcd701       263MB
+----
+
+The `*crictl inspecti*` command lets you view the spec of an image.
+----
+# crictl inspecti docker.io/library/centos:7
+{
+  "status": {
+    "id": "49f7960eb7e4cb46f1a02c1f8174c6fac07ebf1eb6d8deffbcb5c695f1c9edd5",
+    "repoTags": [
+      "docker.io/library/centos:7"
+    ],
+    "repoDigests": [
+      "docker.io/library/centos@sha256:eed5b251b615d1e70b10bcec578d64e8aa839d2785c2ffd5424e472818c42755"
+    ],
+    "size": "208242862",
+    "username": ""
+  }
+}
+----
+
+==== Deleting Images
+We can delete images from the local image store using the `*crictl rmi*` command.
+----
+# crictl images
+IMAGE                        TAG                 IMAGE ID            SIZE
+docker.io/kubernetes/pause   latest              f9d5de0795395       251kB
+docker.io/library/busybox    latest              8c811b4aec35f       1.36MB
+docker.io/library/centos     7                   49f7960eb7e4c       208MB
+docker.io/library/httpd      2.4-alpine          73a557ff177a5       96MB
+docker.io/library/fedora     latest              cc510acfcd701       263MB
+
+# crictl rmi docker.io/library/httpd:2.4-alpine
+Deleted: docker.io/library/httpd:2.4-alpine
+
+# crictl images
+IMAGE                        TAG                 IMAGE ID            SIZE
+docker.io/kubernetes/pause   latest              f9d5de0795395       251kB
+docker.io/library/busybox    latest              8c811b4aec35f       1.36MB
+docker.io/library/centos     7                   49f7960eb7e4c       208MB
+docker.io/library/fedora     latest              cc510acfcd701       263MB
+----
