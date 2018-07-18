@@ -45,68 +45,54 @@ lowest quality of service.
 [[tune-buffer-chunk-limit]]
 === Tune Buffer Chunk Limit
 
-If Fluentd logger is unable to keep up with a high number of logs, you will need
-to increase the compute resource values.
+If Fluentd logger is unable to keep up with a high number of logs, it will need
+to switch to file buffering to reduce memory usage and prevent data loss.
 
-The memory limit is used to calculate the Fluentd `buffer_queue_limit` as follows:
+The Fluentd `buffer_chunk_limit` is determined by the environment variable
+`BUFFER_SIZE_LIMIT`, which has the default value `8m`. The file buffer size per
+output is determined by the environment variable `FILE_BUFFER_LIMIT`, which has
+the default value `256Mi`. The permanent volume size must be larger than
+`FILE_BUFFER_LIMIT` multiplied by the output.
 
-----
-buffer_queue_limit = resource memory limit / (number of output * buffer_chunk_size)
-----
+On the Fluentd and Mux pods, permanent volume */var/lib/fluentd* should be
+prepared by the PVC or hostmount, for example. That area is then used for the
+file buffers.
 
-By default, `buffer_chunk_size` is 1 MB.
-
-The following steps allow you to adjust the available resources.
-
-. Edit the daemonset of Fluentd:
-+
-----
-$ oc edit daemonset logging-fluentd
-
-resources:
-  limits:
-    cpu: 100m
-    memory: 512Mi
-----
-
-. Increase the values according to available resources. For example:
-+
-----
-resources:
-  limits:
-    cpu: 150m
-    memory: 1Gi
-----
-
-If the `mux` server is behind the incoming logs, the same configuration is
-avaialable. The memory limit is used to calculate the `mux` `buffer_queue_limit`
-as follows:
+The `buffer_type` and `buffer_path` are configured in the Fluentd configuration files as
+follows:
 
 ----
-buffer_queue_limit = resource memory limit / (number of output * buffer_chunk_size)
+$ egrep "buffer_type|buffer_path" *.conf
+output-es-config.conf:
+  buffer_type file
+  buffer_path `/var/lib/fluentd/buffer-output-es-config`
+output-es-ops-config.conf:
+  buffer_type file
+  buffer_path `/var/lib/fluentd/buffer-output-es-ops-config`
+filter-pre-mux-client.conf:
+  buffer_type file
+  buffer_path `/var/lib/fluentd/buffer-mux-client`
 ----
 
-By default, `buffer_chunk_size` is 1 MB.
+The Fluentd `buffer_queue_limit` is the value of the variable `BUFFER_QUEUE_LIMIT`. This value is `32` by default.
 
-. Edit the deploymentconfig of `mux`:
-+
-----
-$ oc edit deploymentconfig logging-mux
+The environment variable `BUFFER_QUEUE_LIMIT` is calculated as `(FILE_BUFFER_LIMIT / (number_of_outputs * BUFFER_SIZE_LIMIT))`.
 
-resources:
-  limits:
-    cpu: 500m
-    memory: 2Gi
-----
+If the `BUFFER_QUEUE_LIMIT` variable has the default set of values:
 
-. Increase the values according to available resources. For example:
-+
-----
-resources:
-  limits:
-    cpu: 600m
-    memory: 2.5Gi
-----
+* `FILE_BUFFER_LIMIT = 256Mi`
+* `number_of_outputs = 1`
+* `BUFFER_SIZE_LIMIT = 8Mi`
+
+The value of `buffer_queue_limit` will be `32`. To change the `buffer_queue_limit`, you need to change the value of `FILE_BUFFER_LIMIT`.
+
+In this formula, `number_of_outputs` is `1` if all the logs are sent to a single resource, and it is incremented by `1` for each additional resource. For example, the value of `number_of_outputs` is:
+
+ * `1` - if all logs are sent to a single ElasticSearch pod
+ * `2` - if application logs are sent to an ElasticSearch pod and ops logs are sent to
+another ElasticSearch pod
+ * `4` - if application logs are sent to an ElasticSearch pod, ops logs are sent to
+another ElasticSearch pod, and both of them are forwarded to other Fluentd instances
 
 [[compute-resources]]
 == Compute Resources
@@ -143,6 +129,26 @@ If a container uses less memory than requested, it will not be killed unless
 system tasks or daemons need more memory than was accounted for in the node's
 resource reservation. If a container specifies a limit on memory, it is
 immediately killed if it exceeds the limit amount.
+
+[[overcommit-ephemeral-storage]]
+=== Ephemeral Storage
+
+This applies only if you have enabled the Ephemeral Storage tech
+preview in {product-title} 3.10.  This is disabled by default; to
+enable this feature, please see
+xref:../install_config/configuring_ephemeral.adoc#install-config-configuring-ephemeral-storage[Configuring for
+Ephemeral Storage].
+
+A container is guaranteed the amount of ephemeral storage it
+requests. A container may use more ephemeral storage than requested,
+but once it exceeds its requested amount, it could be killed in if the
+available ephemeral disk space gets too low.
+
+If a container uses less ephemeral storage than requested, it will not
+be killed unless system tasks or daemons need more local ephemeral
+storage than was accounted for in the node's resource reservation. If
+a container specifies a limit on ephemeral storage, it is immediately
+killed if it exceeds the limit amount.
 
 [[qos-classes]]
 == Quality of Service Classes
@@ -216,16 +222,15 @@ if it exists, or introduce absent elements as needed):
 
 ====
 ----
-kubernetesMasterConfig:
   admissionConfig:
     pluginConfig:
-      ClusterResourceOverride:   <1>
+      ClusterResourceOverride: <1>
         configuration:
           apiVersion: v1
           kind: ClusterResourceOverrideConfig
-          memoryRequestToLimitPercent: 25  <2>
-          cpuRequestToLimitPercent: 25     <3>
-          limitCPUToMemoryPercent: 200     <4>
+          memoryRequestToLimitPercent: 25 <2>
+          cpuRequestToLimitPercent: 25 <3>
+          limitCPUToMemoryPercent: 200 <4>
 ----
 <1> This is the plug-in name; case matters and anything but an exact match for a plug-in name is ignored.
 <2> (optional, 1-100) If a container memory limit has been specified or defaulted, the memory request is overridden to this percentage of the limit.
@@ -267,27 +272,11 @@ to provide best system behavior.
 === Reserving Memory Across Quality of Service Tiers
 
 You can use the `experimental-qos-reserved` parameter to specify a percentage of memory to be reserved
-by a pod in a particular QoS level.  This feature attempts to reserve requested resources to exclude pods
+by a pod in a particular QoS level. This feature attempts to reserve requested resources to exclude pods
 from lower OoS classes from using resources requested by pods in higher QoS classes.
 
 By reserving resources for higher QOS levels, pods that don't have resource limits are prevented from encroaching on the resources
 requested by pods at higher QoS levels.
-
-
-[IMPORTANT]
-====
-The `experimental-qos-reserved` parameter is a Technology Preview feature only.
-ifdef::openshift-enterprise[]
-Technology Preview features are not supported with Red Hat production service
-level agreements (SLAs), might not be functionally complete, and Red Hat does
-not recommend to use them for production. These features provide early access to
-upcoming product features, enabling customers to test functionality and provide
-feedback during the development process.
-
-For more information on Red Hat Technology Preview features support scope, see
-https://access.redhat.com/support/offerings/techpreview/.
-endif::[]
-====
 
 To configure `experimental-qos-reserved`, edit the *_/etc/origin/node/node-config.yaml_* file for the node.
 
@@ -410,7 +399,7 @@ xref:../install_config/master_node_configuration.adoc#install-config-master-node
 ----
 kubeletArguments:
   config:
-    - "/etc/origin/node"  <1>
+    - "/etc/origin/node" <1>
 ----
 <1> If `--config=<dir>` is specified, use `<dir>` here.
 ====

@@ -47,7 +47,6 @@ def setPreviewStatus = { String url, String message, String state, String host, 
    setBuildStatus(url, "ci/app-preview/enterprise", message, state, includeLink ? "http://${host}/openshift-enterprise/master/welcome/index.html" : "")
    setBuildStatus(url, "ci/app-preview/online", message, state, includeLink ? "http://${host}/openshift-online/master/welcome/index.html" : "")
    setBuildStatus(url, "ci/app-preview/dedicated", message, state, includeLink ? "http://${host}/openshift-dedicated/master/welcome/index.html" : "")
-   setBuildStatus(url, "ci/app-preview/registry", message, state, includeLink ? "http://${host}/atomic-registry/latest/registry_quickstart/index.html" : "")
 }
 
 try { // Use a try block to perform cleanup in a finally block when the build fails
