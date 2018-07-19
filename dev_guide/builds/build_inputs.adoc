@@ -22,7 +22,7 @@ ifndef::openshift-online[]
 endif::[]
 * xref:image-source[Content extracted from existing images]
 * xref:source-code[Git repositories]
-* xref:binary-source[Binary inputs]
+* xref:binary-source[Binary (Local) inputs]
 * xref:using-secrets-during-build[Input secrets]
 * xref:using-external-artifacts[External artifacts]
 
@@ -40,7 +40,7 @@ As the inline Dockerfile takes
 precedence, it can overwrite any other file named *_Dockerfile_* provided by
 another input.
 endif::[]
-Binary input and Git repositories are mutually exclusive inputs.
+Binary (local) input and Git repositories are mutually exclusive inputs.
 
 Input secrets are useful for when you do not want certain resources or
 credentials used during a build to be available in the final application image
@@ -263,7 +263,7 @@ endif::[]
 For Pipeline strategy builds, given the current restrictions with the Git
 plug-in for Jenkins, any Git operations through the Git plug-in will not
 leverage the HTTP or HTTPS proxy defined in the `BuildConfig`. The Git plug-in
-only will use the the proxy configured in the Jenkins UI at the Plugin Manager
+only will use the proxy configured in the Jenkins UI at the Plugin Manager
 panel. This proxy will then be used for all git interactions within Jenkins,
 across all jobs. You can find instructions on how to configure proxies through
 the Jenkins UI at
@@ -333,14 +333,24 @@ A URI pattern must consist of:
 
 In all of the above, a `*` character is interpreted as a wildcard.
 
-[NOTE]
+[IMPORTANT]
 ====
-URI patterns only match Git source URIs which are conformant to RFC3986. For example,
-https://github.com/openshift/origin.git. They do not match the alternate SSH
-style that Git also uses. For example, git@github.com:openshift/origin.git.
+URI patterns must match Git source URIs which are conformant to
+link:https://www.ietf.org/rfc/rfc3986.txt[RFC3986]. Do not include a
+username (or password) component in a URI pattern.
 
-It is not valid to attempt to express a URI pattern in the alternate style, or
-to include a username/password component in a URI pattern.
+For example, if you use
+`ssh://git@bitbucket.atlassian.com:7999/ATLASSIAN/jira.git` for a git repository
+URL, the source secret must be specified as
+`pass:c[ssh://bitbucket.atlassian.com:7999/*]` (and not
+`pass:c[ssh://git@bitbucket.atlassian.com:7999/*]`).
+
+[source, bash]
+----
+$ oc annotate secret mysecret \
+    'build.openshift.io/source-secret-match-uri-1=ssh://bitbucket.atlassian.com:7999/*'
+----
+
 ====
 
 If multiple `Secrets` match the Git URI of a particular `BuildConfig`,
@@ -425,7 +435,7 @@ $ oc set build-secret --source bc/sample-build basicsecret
 xref:using-secrets-in-the-buildconfig[Defining Secrets in the BuildConfig] provides more information on this topic.
 
 [[source-secrets-gitconfig-file]]
-==== .Gitconfig File
+==== .gitconfig File
 
 If the cloning of your application is dependent on a *_.gitconfig_* file,
 then you can create a secret that contains it, and then add
@@ -446,6 +456,54 @@ section in your *_.gitconfig_* file:
 [http]
         sslVerify=false
 ----
+====
+
+[[source-secrets-gitconfig-file-secured]]
+==== .gitconfig File for Secured Git
+
+If your Git server is secured with 2-way SSL and user name with password
+you must add the certificate files to your source build and add references to
+the certificate files in the *_.gitconfig_* file:
+
+. Add the *_client.crt_*, *_cacert.crt_*, and *_client.key_* files to the 
+*_/var/run/secrets/openshift.io/source/_* folder in the
+xref:../../dev_guide/application_lifecycle/new_app.adoc#specifying-source-code[application
+source code].
+
+. In the *_.gitconfig_* file for the server, add the `[http]` section
+shown in the following example:
++
+----
+# cat .gitconfig
+[user]
+        name = <name>
+        email = <email>
+[http]
+        sslVerify = false
+        sslCert = /var/run/secrets/openshift.io/source/client.crt
+        sslKey = /var/run/secrets/openshift.io/source/client.key
+        sslCaInfo = /var/run/secrets/openshift.io/source/cacert.crt
+----
+
+. Create the secret:
++        
+----
+$ oc create secret generic <secret_name> \
+--from-literal=username=<user_name> \ <1>
+--from-literal=password=<password> \ <2>
+--from-file=.gitconfig=.gitconfig \
+--from-file=client.crt=/var/run/secrets/openshift.io/source/client.crt \
+--from-file=cacert.crt=/var/run/secrets/openshift.io/source/cacert.crt \
+--from-file=client.key=/var/run/secrets/openshift.io/source/client.key
+----
+<1> The user's Git user name.
+<2> The password for this user.
+
+[IMPORTANT]
+====
+To avoid having to enter your password again, be sure to specify the S2I image in 
+your builds. However, if you cannot clone the repository, you still need to 
+specify your user name and password to promote the build.
 ====
 
 [[source-secrets-basic-authentication]]
@@ -512,24 +570,33 @@ $ oc create secret generic <secret_name> \
 The set of TLS certificate authorities that are trusted during a `git clone`
 operation are built into the {product-title} infrastructure images. If your Git
 server uses a self-signed certificate or one signed by an authority not trusted
-by the image, you have several options.
+by the image, you can create a secret that contains the certificate or disable
+TLS verification.
 
-. Create a secret with a CA certificate file (recommended).
-+
-A secret containing a `CA certificate` in a key named `ca.crt` will
-automatically be used by Git to trust your self-signed or otherwise un-trusted
-TLS certificate during the `git clone` operation. Using this method is
+If you create a secret for the `CA certificate`, {product-title} uses it to access 
+your Git server during the `git clone` operation. Using this method is 
 significantly more secure than disabling Git's SSL verification, which accepts
 any TLS certificate that is presented.
+
+Complete one of the following processes:
+
+* Create a secret with a CA certificate file (recommended).
+.. If your CA uses Intermediate Certificate Authorities, combine the 
+certificates for all CAs in a *_ca.crt_* file. Run the following command:
++
+----
+$ cat intermediateCA.crt intermediateCA.crt rootCA.crt > ca.crt
+----
+
+.. Create the secret:
 +
 ----
 $ oc create secret generic mycert --from-file=ca.crt=</path/to/file> <1>
 ----
-<1> The key name *_ca.crt_* must be used.
-
-. Disable Git TLS verification.
+<1> You must use the key name *_ca.crt_*.
+* Disable Git TLS verification.
 +
-You can disable Git's TLS verification by setting the `GIT_SSL_NO_VERIFY`
+Set the `GIT_SSL_NO_VERIFY`
 environment variable to `true` in the appropriate strategy section of your build
 configuration. You can use the
 xref:../../dev_guide/environment_variables.adoc#dev-guide-environment-variables[`oc set env`] command to
@@ -591,9 +658,9 @@ $ oc create secret generic <secret_name> \
 
 
 [[binary-source]]
-== Binary Source
+== Binary (Local) Source
 
-Streaming content in binary format from a local file system to the builder is
+Streaming content from a local file system to the builder is
 called a `Binary` type build. The corresponding value of
 `BuildConfig.spec.source.type` is `Binary` for such builds.
 
