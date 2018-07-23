@@ -110,18 +110,6 @@ a|This variable sets which INFO messages are logged to the `systemd-journald.ser
 
 For more information on debug log levels, see xref:../install_config/master_node_configuration.adoc#master-node-config-logging-levels[Configuring Logging Levels].
 
-|`containerized`
-|If set to `true`, containerized {product-title} services are run on all target master
-and node hosts in the cluster instead of installed using RPM packages. If set to
-`false` or unset, the default RPM method is used. RHEL Atomic Host requires the
-containerized method, and is automatically selected for you based on the
-detection of the *_/run/ostree-booted_* file. See
-xref:index.adoc#planning-installation-types[Installing on
-Containerized Hosts] for more details.
-ifdef::openshift-enterprise[]
-Containerized installations are supported starting in {product-title} 3.1.1.
-endif::[]
-
 |`openshift_clock_enabled`
 a| Whether to enable Network Time Protocol (NTP) on cluster nodes. `true` by default.
 
@@ -286,7 +274,7 @@ after the cluster is set up, then an upgrade can be triggered, resulting in
 downtime.
 
 * If `openshift_image_tag` is set, its value is used for all hosts in
-containerized environments, even those that have another version installed. If
+system container environments, even those that have another version installed. If
 * `openshift_pkg_version` is set, its value is used for all hosts in RPM-based
 environments, even those that have another version installed.
 ====
@@ -422,21 +410,10 @@ route.`openshift_ip` can be used for etcd.
 installations, or for hosts on networks using a network address translation
 (NAT).
 
-|`containerized`
-|If set to *true*, containerized {product-title} services are run on the target master and
-node hosts instead of installed using RPM packages. If set to *false* or unset,
-the default RPM method is used. RHEL Atomic Host requires the containerized
-method, and is automatically selected for you based on the detection of the
-*_/run/ostree-booted_* file. See
-xref:index.adoc#planning-installation-types[Installing on Containerized Hosts] for more details.
-ifdef::openshift-enterprise[]
-Containerized installations are supported starting in {product-title} 3.1.1.
-endif::[]
-
 |`openshift_node_labels`
-|This variable adds labels to nodes during installation. See
-xref:configuring-node-host-labels[Configuring Node Host Labels] for more
-details.
+|This variable is deprecated; see
+xref:configuring-inventory-defining-node-group-and-host-mappings[Defining Node
+Groups and Host Mappings] for the current method of setting node labels.
 
 |`openshift_node_kubelet_args`
 |This variable is used to configure `kubeletArguments` on nodes, such as
@@ -472,6 +449,261 @@ xref:marking-masters-as-unschedulable-nodes[Configuring Schedulability on Master
 |This variable is used to activate the xref:../admin_guide/node_problem_detector.adoc#admin-guide-node-problem-detector[Node Problem Detector].
 If set to `false, the default`, the Node Problem Detector is not installed or started.
 |===
+
+[[configuring-inventory-defining-node-group-and-host-mappings]]
+== Defining Node Groups and Host Mappings
+
+Starting in {product-title} 3.10, node configurations are now
+xref:../architecture/infrastructure_components/kubernetes_infrastructure.adoc#node-bootstrapping[bootstrapped]
+from the master. When the node boos and services are started, the node checks if
+a *_kubeconfig_* and other node configuration files exist before joining the
+cluster. If they do not, the node pulls the configuration from the master, then
+joins the cluster.
+
+This process replaces administrators having to manually maintain the node
+configuration uniquely on each node host. Instead, the contents of a node host's
+*_/etc/origin/node/node-config.yaml_* file are now provided by ConfigMaps
+sourced from the master.
+
+[[configuring-inventory--node-group-configmaps]]
+=== Node ConfigMaps
+
+The Configmaps for defining the node configurations must be available in the
+*openshift-node* project. ConfigMaps are also now the authoritative definition
+for node labels; the old `openshift_node_labels` value is effectively ignored.
+
+By default during a cluster installation, the installer creates the following
+default ConfigMaps:
+
+- `node-config-master`
+- `node-config-infra`
+- `node-config-compute`
+
+The following ConfigMaps are also created, which label nodes into multiple roles:
+
+- `node-config-all-in-one`
+- `node-config-master-infra`
+
+[IMPORTANT]
+====
+Changes should not be made to a node host's
+*_/etc/origin/node/node-config.yaml_* file. They will be overwritten by the
+configuration defined in the ConfigMap used by the node.
+====
+
+[[configuring-inventory-node-group-definitions]]
+=== Node Group Definitions
+
+After installing the latest *openshift-ansible* package, you can view what the
+default set of node group definitions looks like in YAML format in the
+*_{pb-prefix}roles/openshift_facts/defaults/main.yml_* file:
+
+----
+openshift_node_groups:
+  - name: node-config-master <1>
+    labels:
+      - 'node-role.kubernetes.io/master=true' <2>
+    edits: [] <3>
+  - name: node-config-infra
+    labels:
+      - 'node-role.kubernetes.io/infra=true'
+    edits: []
+  - name: node-config-compute
+    labels:
+      - 'node-role.kubernetes.io/compute=true'
+    edits: []
+  - name: node-config-master-infra
+    labels:
+      - 'node-role.kubernetes.io/infra=true,node-role.kubernetes.io/master=true'
+    edits: []
+  - name: node-config-all-in-one
+    labels:
+      - 'node-role.kubernetes.io/infra=true,node-role.kubernetes.io/master=true,node-role.kubernetes.io/compute=true'
+    edits: []
+----
+<1> Node group name.
+<2> List of node labels associated with the node group. See
+xref:configuring-node-host-labels[Node Host Labels] for details.
+<3> Any edits to the node group's configuration.
+
+If you do not set the `openshift_node_groups` variable in your inventory file's
+`[OSEv3:vars]` group, the defaults defined above will be used. However, if you
+want to deviate from these defaults, you must define the entire
+`openshift_node_groups` structure (including all desired node groups) in your
+inventory file.
+
+The `openshift_node_groups` value is not merged with the defaults, and the YAML
+definition must first be translated into a Python dictionary. You can then use
+the `edits` field to modify any node configuration variables as desired by
+specifying the key-value pairs.
+
+[NOTE]
+====
+See
+xref:../install_config/master_node_configuration.adoc#node-configuration-files[Master
+and Node Configuration Files] for reference on configurable node variables.
+====
+
+For example, the following entry in an inventory file defines groups named
+`node-config-master`, `node-config-infra`, and `node-config-compute`, and edits
+the ConfigMap for `node-config-compute` to set `kubeletArguments.pods-per-core`
+to `20`:
+
+----
+openshift_node_groups=[{'name': 'node-config-master', 'labels': ['node-role.kubernetes.io/master=true']}, {'name': 'node-config-infra', 'labels': ['node-role.kubernetes.io/infra=true',]}, {'name': 'node-config-compute', 'labels': ['node-role.kubernetes.io/compute=true'], 'edits': [{ 'key': 'kubeletArguments.pods-per-core','value': ['20']}]}]
+----
+
+Whenever the *_openshift_node_group.yml_* playbook is run, the changes defined
+in the `edits` field will update the related ConfigMap (`node-config-compute` in
+this example), which will ultimately affect the node's configuration file on the
+host.
+
+[[configuring-inventory-mapping-hosts-to-node-groups]]
+=== Mapping Hosts to Node Groups
+
+To map which ConfigMap to use for which node host, all hosts defined in the
+`[nodes]` group of your inventory must be assigned to a _node group_ using the
+`openshift_node_group_name` variable.
+
+[IMPORTANT]
+====
+Setting `openshift_node_group_name` per host to a node group is required for all
+cluster installations whether you are using the default node group definitions
+and ConfigMaps or are customizing your own.
+====
+
+The value of `openshift_node_group_name` is used to select the ConfigMap that
+configures each node. For example:
+
+----
+[nodes]
+master[1:3].example.com openshift_node_group_name='node-config-master'
+infra-node1.example.com openshift_node_group_name='node-config-infra'
+infra-node2.example.com openshift_node_group_name='node-config-infra'
+node1.example.com openshift_node_group_name='node-config-compute'
+node2.example.com openshift_node_group_name='node-config-compute'
+----
+
+[[configuring-node-host-labels]]
+=== Node Host Labels
+
+xref:../architecture/core_concepts/pods_and_services.adoc#labels[Labels] can be
+assigned to node hosts during cluster installation, which are useful for
+determining the placement of pods onto nodes using the
+xref:../admin_guide/scheduling/scheduler.adoc#configurable-predicates[scheduler].
+While previously node labels could be set using the `openshift_node_labels`
+variable, starting in {product-title} 3.10 you must instead create your own
+custom node groups if you want to modify the default labels that are assigned to
+node hosts. See xref:configuring-inventory-node-group-definitions[Node Group Definitions]
+for details on modifying the default node groups.
+
+Other than `node-role.kubernetes.io/infra=true` (hosts using this group are also referred to as
+_dedicated infrastructure nodes_ and discussed further in
+xref:configuring-dedicated-infrastructure-nodes[Configuring Dedicated
+Infrastructure Nodes]), the actual label names and values are arbitrary and can
+be assigned however you see fit per your cluster's requirements.
+
+[[marking-masters-as-unschedulable-nodes]]
+==== Pod Schedulability on Masters
+
+Any hosts you designate as masters during the installation process should also
+be configured as nodes so that the masters are configured as part of the
+xref:../architecture/networking/network_plugins.adoc#openshift-sdn[OpenShift SDN].
+You must do so by adding entries for these hosts to the `[nodes]` section:
+
+----
+[nodes]
+master[1:3].example.com openshift_node_group_name='node-config-master'
+----
+
+If you want to change the schedulability of a host post-installation, see
+xref:../admin_guide/manage_nodes.adoc#marking-nodes-as-unschedulable-or-schedulable[Marking Nodes as Unschedulable or Schedulable].
+
+
+[[configuring-node-host-labels-pod-schedulability-nodes]]
+==== Pod Schedulability on Nodes
+
+Masters are marked as schedulable nodes by default, so the default node selector
+is set by default during cluster installations. The default node selector is
+defined in the master configuration file's `projectConfig.defaultNodeSelector`
+field to determine which node projects will use by default when placing pods. It
+is set to `node-role.kubernetes.io/compute=true` unless overridden using the
+`osm_default_node_selector` variable.
+
+[IMPORTANT]
+====
+If you accept the default node selector of
+`node-role.kubernetes.io/compute=true` during installation, ensure that you do
+not only have dedicated infrastructure nodes as the non-master nodes defined in
+your cluster. In that scenario, application pods would fail to deploy because no
+nodes with the `node-role.kubernetes.io/compute=true` label would be available
+to match the default node selector when scheduling pods for projects.
+====
+
+See
+xref:../admin_guide/managing_projects.adoc#setting-the-cluster-wide-default-node-selector[Setting the Cluster-wide Default Node Selector]
+for steps on adjusting this setting post-installation if needed.
+
+[[configuring-dedicated-infrastructure-nodes]]
+==== Configuring Dedicated Infrastructure Nodes
+
+It is recommended for production environments that you maintain dedicated
+infrastructure nodes where the registry and router pods can run separately from
+pods used for user applications.
+
+The `openshift_router_selector` and `openshift_registry_selector` Ansible
+settings determine the label selectors used when placing registry and router
+pods. They are set to `node-role.kubernetes.io/infra=true` by default:
+
+----
+# default selectors for router and registry services
+# openshift_router_selector='node-role.kubernetes.io/infra=true'
+# openshift_registry_selector='node-role.kubernetes.io/infra=true'
+----
+
+The registry and router are only able to run on node hosts with the
+`node-role.kubernetes.io/infra=true` label, which are then considered dedicated
+infrastructure nodes. Ensure that at least one node host in your {product-title}
+environment has the `node-role.kubernetes.io/infra=true` label; you can use the
+default *node-config-infra*, which sets this label:
+
+----
+[nodes]
+infra-node1.example.com openshift_node_group_name='node-config-infra'
+----
+
+[IMPORTANT]
+====
+If there is not a node in the `[nodes]` section that matches the selector
+settings, the default router and registry will be deployed as failed with
+`Pending` status.
+====
+
+If you do not intend to use {product-title} to manage the registry and router,
+configure the following Ansible settings:
+
+----
+openshift_hosted_manage_registry=false
+openshift_hosted_manage_router=false
+----
+
+If you are using an image registry other than the default
+`registry.access.redhat.com`, you must
+xref:advanced-install-configuring-registry-location[specify the desired registry]
+in the  *_/etc/ansible/hosts_* file.
+
+As described in xref:marking-masters-as-unschedulable-nodes[Configuring Schedulability on Masters],
+master hosts are marked schedulable by default. If
+you label a master host with `region=infra` and have no other dedicated
+infrastructure nodes, the master hosts must also be marked as schedulable.
+Otherwise, the registry and router pods cannot be placed anywhere.
+
+You can use the default *node-config-master-infra* node group to achieve this:
+
+----
+[nodes]
+master.example.com openshift_node_group_name='node-config-master-infra'
+----
 
 [[configuring-host-port]]
 == Configuring Master API Port
@@ -536,8 +768,8 @@ requirements may be set by setting `openshift_check_min_host_disk_gb` cluster
 variable in your inventory file.
 
 |`docker_storage`
-|Only runs on hosts that depend on the *docker* daemon (nodes and containerized
-installations). Checks that *docker*'s total usage does not exceed a
+|Only runs on hosts that depend on the *docker* daemon (nodes and system
+container installations). Checks that *docker*'s total usage does not exceed a
 user-defined limit. If no user-defined limit is set, *docker*'s maximum usage
 threshold defaults to 90% of the total size available. The threshold limit for
 total percent usage can be set with a variable in your inventory file:
@@ -567,7 +799,7 @@ to installation problems. This check is skipped if the `openshift_release`
 variable is not defined in the inventory file.
 
 |`package_availability`
-|Runs prior to non-containerized installations of {product-title}. Ensures that
+|Runs prior to RPM installations of {product-title}. Ensures that
 RPM packages required for the current installation are available.
 
 |`package_update`
@@ -591,59 +823,6 @@ xref:../admin_guide/diagnostics_tool.adoc#admin-guide-health-checks-via-ansible-
 found in
 xref:../install_config/redeploying_certificates.adoc#install-config-redeploying-certificates[Redeploying Certificates].
 ====
-
-[[advanced-install-configuring-system-containers]]
-== Configuring System Containers
-
-System containers provide a way to containerize services that need to run before
-the `docker` daemon is running. They are Docker-formatted containers that use:
-
-- link:https://access.redhat.com/documentation/en-us/red_hat_satellite/6.2/html/content_management_guide/managing_ostree_content[OSTree] for storage,
-- link:https://access.redhat.com/documentation/en-us/red_hat_enterprise_linux_atomic_host/7/html-single/managing_containers/#running_containers_with_runc[runC] for the runtime,
-- link:https://access.redhat.com/documentation/en-us/red_hat_enterprise_linux_atomic_host/7/html-single/managing_containers/#using_systemd_with_containers[systemd] for service management, and
-- link:https://access.redhat.com/documentation/en-us/red_hat_enterprise_linux_atomic_host/7/html-single/managing_containers/#using_skopeo_to_work_with_container_registries[skopeo] for searching.
-
-System containers are therefore stored and run outside of the traditional
-`docker` service. For more details on system container technology, see
-link:https://access.redhat.com/documentation/en-us/red_hat_enterprise_linux_atomic_host/7/html/managing_containers/running_system_containers[Running System Containers] in the _Red Hat Enterprise Linux Atomic Host: Managing Containers_ documentation.
-
-You can configure your {product-title} installation to run certain components as
-system containers instead of their RPM or standard containerized methods.
-Currently, the `docker` and etcd components can be run as system containers in
-{product-title}.
-
-[WARNING]
-====
-System containers are currently OS-specific because they require specific
-versions of `atomic` and systemd. For example, different system containers are
-created for RHEL, Fedora, or CentOS. Ensure that the system containers you are
-using match the OS of the host they will run on.
-ifdef::openshift-enterprise[]
-{product-title} only supports RHEL and RHEL Atomic as the host OS, so by default
-system containers built for RHEL are used.
-endif::[]
-====
-
-[[advanced-install-etcd-system-container]]
-=== Running etcd as a System Container
-
-When using the RPM-based installation method for {product-title}, etcd is
-installed using RPM packages on any RHEL systems. When using the containerized
-installation method, the `rhel7/etcd` image is used instead for RHEL or RHEL
-Atomic Hosts.
-
-However, you can configure your {product-title} installation to alternatively
-run etcd as a system container. Whereas the standard containerized method uses
-a systemd service named `etcd_container`, the system container method uses the
-service name etcd, same as the RPM-based method. The data directory for etcd
-using this method is *_/var/lib/etcd_*.
-
-To run etcd as a system container, set the following cluster variable in your
-inventory file in the `[OSEv3:vars]` section:
-
-----
-openshift_use_etcd_system_container=True
-----
 
 [[advanced-install-configuring-registry-location]]
 == Configuring a Registry Location
@@ -750,7 +929,7 @@ ifdef::openshift-origin[]
 The default value is `kubernetes`, so the value is `cockpit/kubernetes:latest`. This differs from several other images that have the `origin-` prefix.
 endif::[]
 ifdef::openshift-enterprise[]
-The value for the path must end in `/openshift3` rather than `ose-`, which is the standard for other images. 
+The value for the path must end in `/openshift3` rather than `ose-`, which is the standard for other images.
 endif::[]
 
 |`openshift_cockpit_deployer_version`
@@ -1129,144 +1308,6 @@ on must be in the default zone.
 ====
 
 endif::[]
-
-[[marking-masters-as-unschedulable-nodes]]
-== Configuring Schedulability on Masters
-
-Any hosts you designate as masters during the installation process should also
-be configured as nodes so that the masters are configured as part of the
-xref:../architecture/networking/network_plugins.adoc#openshift-sdn[OpenShift SDN]. You must do so by adding entries for these hosts to the `[nodes]` section:
-
-----
-[nodes]
-master.example.com
-----
-
-In previous versions of {product-title}, master hosts were marked as
-unschedulable nodes by default by the installer, meaning that new pods could not
-be placed on the hosts. Starting with {product-title} 3.9, however, masters are
-marked schedulable automatically during installation. This change is mainly so
-that the web console, which used to run as part of the master itself, can
-instead be run as a pod deployed to the master.
-
-If you want to change the schedulability of a host post-installation, see
-xref:../admin_guide/manage_nodes.adoc#marking-nodes-as-unschedulable-or-schedulable[Marking Nodes as Unschedulable or Schedulable].
-
-[[configuring-node-host-labels]]
-== Configuring Node Host Labels
-
-You can assign
-xref:../architecture/core_concepts/pods_and_services.adoc#labels[labels] to
-node hosts during the Ansible install by configuring the *_/etc/ansible/hosts_*
-file. Labels are useful for determining the placement of pods onto nodes using
-the
-xref:../admin_guide/scheduling/scheduler.adoc#configurable-predicates[scheduler].
-Other than `region=infra` (referred to as _dedicated infrastructure nodes_ and
-discussed further in xref:configuring-dedicated-infrastructure-nodes[Configuring
-Dedicated Infrastructure Nodes]), the actual label names and values are
-arbitrary and can be assigned however you see fit per your cluster's
-requirements.
-
-To assign labels to a node host during an Ansible install, use the
-`openshift_node_labels` variable with the desired labels added to the desired
-node host entry in the `[nodes]` section. In the following example, labels are
-set for a region called `primary` and a zone called `east`:
-
-----
-[nodes]
-node1.example.com openshift_node_labels="{'region': 'primary', 'zone': 'east'}"
-----
-
-Starting in {product-title} 3.9, masters are now marked as schedulable nodes by
-default. As a result, the default node selector (defined in the master
-configuration file's `projectConfig.defaultNodeSelector` field to determine
-which node that projects will use by default when placing pods, and previously
-left blank by default) is now set by default during cluster installations. It is
-set to `node-role.kubernetes.io/compute=true` unless overridden using the
-`osm_default_node_selector` Ansible variable.
-
-In addition, whether `osm_default_node_selector` is set or not, the following
-automatic labeling occurs for hosts defined in your inventory file during
-installation:
-
-- non-master, non-dedicated infrastructure nodes hosts (for example, the
-`node1.example.com` host shown above) are labeled with
-`node-role.kubernetes.io/compute=true`
-- master nodes are labeled `node-role.kubernetes.io/master=true`
-
-This ensures that the default node selector has available nodes to choose from
-when determining pod placement.
-
-[IMPORTANT]
-====
-If you accept the default node selector of
-`node-role.kubernetes.io/compute=true` during installation, ensure that you do
-not only have dedicated infrastructure nodes as the non-master nodes defined in
-your cluster. In that scenario, application pods would fail to deploy because no
-nodes with the `node-role.kubernetes.io/compute=true` label would be available
-to match the default node selector when scheduling pods for projects.
-====
-
-See
-xref:../admin_guide/managing_projects.adoc#setting-the-cluster-wide-default-node-selector[Setting the Cluster-wide Default Node Selector] for steps on adjusting this setting
-post-installation if needed.
-
-[[configuring-dedicated-infrastructure-nodes]]
-=== Configuring Dedicated Infrastructure Nodes
-
-It is recommended for production environments that you maintain dedicated
-infrastructure nodes where the registry and router pods can run separately from
-pods used for user applications.
-
-The `openshift_router_selector` and `openshift_registry_selector` Ansible
-settings determine the label selectors used when placing registry and router
-pods. They are set to `region=infra` by default:
-
-----
-# default selectors for router and registry services
-# openshift_router_selector='region=infra'
-# openshift_registry_selector='region=infra'
-----
-
-The registry and router are only able to run on node hosts with the
-`region=infra` label, which are then considered dedicated infrastructure nodes.
-Ensure that at least one node host in your {product-title} environment has the
-`region=infra` label. For example:
-
-----
-[nodes]
-infra-node1.example.com openshift_node_labels="{'region': 'infra','zone': 'default'}"
-----
-
-[IMPORTANT]
-====
-If there is not a node in the `[nodes]` section that matches the selector
-settings, the default router and registry will be deployed as failed with
-`Pending` status.
-====
-
-If you do not intend to use {product-title} to manage the registry and router,
-configure the following Ansible settings:
-
-----
-openshift_hosted_manage_registry=false
-openshift_hosted_manage_router=false
-----
-
-If you are using an image registry other than the default `registry.access.redhat.com`,
-you need to xref:advanced-install-configuring-registry-location[specify the desired registry]
-in the  *_/etc/ansible/hosts_* file.
-
-As described in xref:marking-masters-as-unschedulable-nodes[Configuring
-Schedulability on Masters], master hosts are marked schedulable by default. If
-you label a master host with `region=infra` and have no other dedicated
-infrastructure nodes, the master hosts must also be marked as schedulable.
-Otherwise, the registry and router pods cannot be placed anywhere:
-
-----
-[nodes]
-master.example.com openshift_node_labels="{'region': 'infra','zone': 'default'}" openshift_schedulable=true
-----
 
 [[advanced-install-session-options]]
 == Configuring Session Options
