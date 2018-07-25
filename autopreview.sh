@@ -11,7 +11,7 @@ if [ "$TRAVIS_PULL_REQUEST" != "false" ] ; then #to make sure it only runs on PR
         if [ "${TRAVIS_PULL_REQUEST_BRANCH}" != "master" ] ; then # to make sure it does not run for direct master changes
             if [[ " ${FILES_CHANGED[*]} " = *".adoc"* ]]; then # to make sure this doesn't run for genreal modifications
                 echo "{\"PR_BRANCH\":\"${TRAVIS_PULL_REQUEST_BRANCH}\",\"BASE_REPO\":\"${TRAVIS_REPO_SLUG}\",\"PR_NUMBER\":\"${TRAVIS_PULL_REQUEST}\",\"USER_NAME\":\"${USERNAME}\",\"BASE_REF\":\"${TRAVIS_BRANCH}\",\"REPO_NAME\":\"${TRAVIS_PULL_REQUEST_SLUG}\"}" > buildset.json
-                curl -H 'Content-Type: application/json' --request POST --data @buildset.json "https://hooks.zapier.com/hooks/catch/3022285/wik1iz/"
+                curl -H 'Content-Type: application/json' --request POST --data @buildset.json "https://preview-receiver.glitch.me/"
                 echo -e "\\n\\033[0;32m[✓] Sent request for building a preview.\\033[0m"
             else
                 echo -e "\\n\\033[1;33m[!] No .adoc files modified, not building a preview.\\033[0m"
