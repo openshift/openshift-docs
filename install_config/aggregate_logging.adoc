@@ -1260,7 +1260,11 @@ to perform actions daily based on its configuration. Only one Curator pod is
 recommended per Elasticsearch cluster. Curator is configured via a YAML
 configuration file with the following structure:
 
+[NOTE]
 ====
+The time zone is set based on the {product-title} master node.
+====
+
 ----
 $PROJECT_NAME:
   $ACTION:
@@ -1272,7 +1276,6 @@ $PROJECT_NAME:
  ...
 
 ----
-====
 
 The available parameters are:
 
@@ -1305,9 +1308,6 @@ use with `.defaults`.
 |`runminute`
 |(Number) the minute of the hour at which to run the Curator jobs. For use with `.defaults`.
 
-|`timezone`
-|(String) the tring in tzselect(8) or timedatectl(1) format. The default timezone is UTC.
-
 |`.regex`
 |The list of regular expressions that match project names.
 
@@ -1319,11 +1319,13 @@ quotation marks.
 
 For example, to configure Curator to:
 
-- delete indices in the *myapp-dev* project older than `1 day`
-- delete indices in the *myapp-qe* project older than `1 week`
-- delete *operations* logs older than `8 weeks`
-- delete all other projects indices after they are `31 days` old
-- run the Curator jobs at midnight every day
+- Delete indices in the *myapp-dev* project older than `1 day`
+- Delete indices in the *myapp-qe* project older than `1 week`
+- Delete *operations* logs older than `8 weeks`
+- Delete all other projects indices after they are `31 days` old
+- Run the Curator jobs at midnight every day
+- Delete indices older than 1 day that are matched by the '^project\..+\-dev.*$' regex
+- Delete indices older than 2 days that are matched by the '^project\..+\-test.*$' regex
 
 Use:
 
@@ -1344,23 +1346,19 @@ config.yaml: |
   .defaults:
     delete:
       days: 31
-    runhour: 0
-    runminute: 0
-    timezone: America/New_York
 
   .regex:
     - pattern: '^project\..+\-dev\..*$'
       delete:
-        days: 15
+        days: 1
     - pattern: '^project\..+\-test\..*$'
       delete:
-        days: 30
+        days: 2
 ----
-
 
 [IMPORTANT]
 ====
-When you use `month` as the `$UNIT` for an operation, Curator starts counting at
+When you use `months` as the `$UNIT` for an operation, Curator starts counting at
 the first day of the current month, not the current day of the current month.
 For example, if today is April 15, and you want to delete indices that are 2 months
 older than today (delete: months: 2), Curator does not delete indices that are dated
@@ -1369,6 +1367,75 @@ goes back to the first day of the current month, then goes back two whole months
 from that date. If you want to be exact with Curator, it is best to use days
 (for example, `delete: days: 30`).
 ====
+
+[[aggregate-logging-using-curator-actions-file]]
+==== Using the Curator Actions File
+
+Setting the {product-title} custom configuration file format ensures internal
+indices are not mistakenly deleted.
+
+To use the *actions file*, add an exclude rule to your Curator configuration to
+retain these indices. You must manually add all of the required patterns.
+
+----
+actions.yaml: |
+actions:
+
+    action: delete_indices
+    description: be careful!
+    filters:
+    - exclude: false
+      kind: regex
+      filtertype: pattern
+      value: '^project\.myapp\..*$'
+    - direction: older
+      filtertype: age
+      source: name
+      timestring: '%Y.%m.%d'
+      unit_count: 7
+      unit: days
+    options:
+      continue_if_exception: false
+      timeout_override: '300'
+      ignore_empty_list: true
+
+    action: delete_indices
+    description: be careful!
+    filters:
+    - exclude: false
+      kind: regex
+      filtertype: pattern
+      value: '^\.operations\..*$'
+    - direction: older
+      filtertype: age
+      source: name
+      timestring: '%Y.%m.%d'
+      unit_count: 56
+      unit: days
+    options:
+      continue_if_exception: false
+      timeout_override: '300'
+      ignore_empty_list: true
+
+    action: delete_indices
+    description: be careful!
+    filters:
+    - exclude: true
+      kind: regex
+      filtertype: pattern
+      value: '^project\.myapp\..*$|^\.operations\..*$|^\.searchguard\..*$|^\.kibana$'
+    - direction: older
+      filtertype: age
+      source: name
+      timestring: '%Y.%m.%d'
+      unit_count: 30
+      unit: days
+    options:
+      continue_if_exception: false
+      timeout_override: '300'
+      ignore_empty_list: true
+----
+
 
 [[aggregate-logging-creating-the-curator-configuration]]
 ==== Creating the Curator Configuration
@@ -1379,27 +1446,41 @@ Curator. Currently the `logging-curator` ConfigMap is used to configure both
 your ops and non-ops Curator instances. Any `.operations` configurations are
 in the same location as your application logs configurations.
 
-. To edit the provided ConfigMap to configure your Curator instances:
+. To create the Curator configuration, edit the configuration in the deployed
+ConfigMap:
 +
 ----
 $ oc edit configmap/logging-curator
 ----
 
-. To replace the provided ConfigMap instead:
+.. For scripted deployments, copy the configuration file that was created by the
+installer and create your new {product-title} custom configuration:
 +
 ----
-$ create /path/to/mycuratorconfig.yaml
-$ oc create configmap logging-curator -o yaml \
-  --from-file=config.yaml=/path/to/mycuratorconfig.yaml | \
-  oc replace -f -
+$ oc extract configmap/logging-curator --keys=curator5.yaml,config.yaml --to=/my/config
+  edit /my/config/curator5.yaml
+  edit /my/config/config.yaml
+$ oc delete configmap logging-curator ; sleep 1
+$ oc create configmap logging-curator \
+    --from-file=curator5.yaml=/my/config/curator5.yaml \
+    --from-file=config.yaml=/my/config/config.yaml \
+    ; sleep 1
 ----
 
-. After you make your changes, redeploy Curator:
+.. Alternatively, if you are using the *actions file*:
 +
 ----
-$ oc rollout latest dc/logging-curator
-$ oc rollout latest dc/logging-curator-ops
+$ oc extract configmap/logging-curator --keys=curator5.yaml,actions.yaml --to=/my/config
+  edit /my/config/curator5.yaml
+  edit /my/config/actions.yaml
+$ oc delete configmap logging-curator ; sleep 1
+$ oc create configmap logging-curator \
+    --from-file=curator5.yaml=/my/config/curator5.yaml \
+    --from-file=actions.yaml=/my/config/actions.yaml \
+    ; sleep 1
 ----
+
+The next scheduled job use this configuration.
 
 [[aggregate-logging-cleanup]]
 == Cleanup
