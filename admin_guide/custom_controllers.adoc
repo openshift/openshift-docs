@@ -1,0 +1,304 @@
+[[admin-guide-custom-controllers]]
+= Creating Custom Controllers
+{product-author}
+{product-version}
+:data-uri:
+:icons:
+:experimental:
+:toc: macro
+:toc-title:
+
+toc::[]
+
+
+
+In the Kubernetes API, a controller is a code loop that watches the state of a cluster 
+through the API server and makes changes in an attempt to move the current state towards the desired state. 
+Examples of controllers that ship with {product-title} today are:
+
+* xref:../dev_guide/daemonsets.adoc#dev-guide-daemonsets[DaemonSets] make sure that a pod is running on each node.
+* The xref:../admin_guide/scheduling/scheduler.adoc#admin-guide-scheduler[scheduler] makes sure that every pod is assigned to a node.
+* The endpoint controller makes sure that for every pod that belongs to a service, the pod IP address is in the endpoints of the service.
+* The physical volume controller makes sure that for every Persistent Volume Claim there is an actual volume created with the cloud provider.
+
+xref:../architecture/core_concepts/deployments.adoc#replication-controllers[replication controllers].
+
+You can create custom controllers using the `oc observe` command. The commmand allows you to run scripts against a 
+cluster that react to changes in the cluster. The command is available as an image named `openshift/observe:latest`.
+
+//from man page
+On startup, `oc observe` lists all of the resources of a particular type and executes the provided script on each one. 
+The command watches the server for changes, and will re-execute the script for each update.
+
+The `oc observe` command works best for problems of the form _for every resource X, make sure Y is true_. Some
+examples of ways observe can be used include: 
+
+  * Ensuring every namespace has a quota or limit range object  
+  * Ensuring every service is registered in DNS by making calls to a DNS API  
+  * Sending an email alert whenever a node reports 'NotReady'  
+  * Watching for the 'FailedScheduling' event and write an IRC message  
+  * Dynamically provisioning persistent volumes when a new PVC is created  
+  * Deleting pods that have reached successful completion after a period of time.  
+
+=== Installing `oc observe`
+
+To obtain and run the `oc observe` command:
+
+. Run the following command to bind mount a kubeconfig as a volume:
++
+----
+docker run -u root -v /etc/origin/master/admin.kubeconfig:/kubeconfig -e KUBECONFIG=/kubeconfig openshift/observe:latest services
+----
++
+This command pulls the `openshift/observe:latest` image, launches a container, and opens a bash shell to the container. The  `-u` 
+flag overrides the user to be root so that it can access the kubeconfig file. 
+The config file can be mounted anywhere in the container as long as KUBECONFIG is made to match it.
+
+. Run the following command from the prompt in the container to verify that `oc observe` is working:
++
+----
+$ oc observe -h
+----
+
+=== Using the `oc observe` command
+
+The following sections provide a few examples of how you can use the `oc observe` command.
+
+==== Using the command to maintain an invariant
+
+The simplest pattern is maintaining an invariant on an object - for example, _every project
+should have an annotation that indicates its owner_. 
+
+This simple script ensures that any project without the _owner_ annotation is assigned `onwer=bob`: 
+
+----
+$ cat set_owner.sh
+
+#!/bin/bash
+if [[ "$(oc get namespace "$1" --template='{{ .metadata.annotations.owner }}')" == "" ]]; then
+  oc annotate namespace "$1" owner=bob
+fi
+----
+
+Then run `oc observe`:
+
+----
+$ oc observe namespaces -- ./set_owner.sh
+----
+
+A variation on that pattern is creating another object: _every namespace should have a
+quota object based on the resources allowed for an owner_. 
+
+==== Provisioning
+
+The next common form of controller pattern is provisioning - making changes in an external system to
+match the state of another resource. 
+
+These scripts need to account for deletions that may take place while the `oc observe` command is not running. 
+You can provide the list of known objects via the
+--names command, which should return a newline-delimited list of names or namespace/name pairs. Your
+command will be invoked whenever observe checks the latest state on the server - any resources
+returned by --names that are not found on the server will be passed to your --delete command. 
+
+//https://lists.openshift.redhat.com/openshift-archives/dev/2016-September/msg00002.html
+
+For example, you may wish to ensure that every node that is added to cluster is added to your
+cluster inventory along with its IP: 
+
+----
+$ cat add_to_inventory.sh
+#!/bin/sh
+echo "$1 $2" >> inventory
+sort -u inventory -o inventory
+
+$ cat remove_from_inventory.sh
+#!/bin/sh
+grep -vE "^$1 " inventory > /tmp/newinventory
+mv -f /tmp/newinventory inventory
+  
+$ cat known_nodes.sh
+#!/bin/sh
+touch inventory
+cut -f 1-1 -d ' ' inventory
+----
+
+Then run `oc observe`:
+
+----
+$ oc observe nodes -a '{ .status.addresses[0].address }' \
+  --names ./known_nodes.sh \
+  --delete ./remove_from_inventory.sh \
+  -- ./add_to_inventory.sh\
+----
+
+==== Listing services
+
+Run the following command to list every service, and any time a service changes, print out info:
+
+----
+$ oc observe --all-namespaces services
+----
+
+For exanple, the command prints out the project and name for each service as arguments 1 and 2.  
+
+----
+$ oc observe --all-namespaces services
+# 2017-11-01T18:21:44-04:00 Sync started
+# 2017-11-01T18:21:44-04:00 Sync 1068	"" default <1> docker-registry <2>
+# 2017-11-01T18:21:44-04:00 Sync 433	"" default kubernetes
+# 2017-11-01T18:21:44-04:00 Sync 36694	"" default proxy
+# 2017-11-01T18:21:44-04:00 Sync 1162	"" default registry-console
+# 2017-11-01T18:21:44-04:00 Sync 998	"" default router
+# 2017-11-01T18:21:44-04:00 Sync 20817	"" jenkins-project jenkins
+# 2017-11-01T18:21:44-04:00 Sync 20814	"" jenkins-project jenkins-jnlp
+# 2017-11-01T18:21:44-04:00 Sync 161454	"" python-project python-app
+----
+
+If you create or delete a service in the background, you'll see it show up in this list:.
+
+----
+# 2017-11-01T18:28:36-04:00 Sync ended
+# 2017-11-01T18:28:36-04:00 Added 249342	"" imagestream my-ruby-app
+----
+
+Run the following command to list every service, and any time a service changes, echo:
+
+----
+$ oc observe --all-namespaces services -- echo
+----
+
+For example The command prints out project and name for each service as arguments 1 and 2.  
+
+----
+$ oc observe --all-namespaces services -- echo
+# 2017-11-01T18:20:03-04:00 Sync started
+# 2017-11-01T18:20:03-04:00 Sync 1068	echo default docker-registry
+default docker-registry
+# 2017-11-01T18:20:03-04:00 Sync 433	echo default kubernetes
+default kubernetes
+# 2017-11-01T18:20:03-04:00 Sync 36694	echo default proxy
+default proxy
+# 2017-11-01T18:20:03-04:00 Sync 1162	echo default registry-console
+default registry-console
+# 2017-11-01T18:20:03-04:00 Sync 998	echo default router
+default router
+# 2017-11-01T19:04:16-04:00 Sync 20817	echo jenkins-project jenkins
+imagestream jenkins
+# 2017-11-01T19:04:16-04:00 Sync 20814	echo jenkins-project jenkins-jnlp
+imagestream jenkins-jnlp
+# 2017-11-01T19:04:16-04:00 Sync 161454	echo python-project python2
+imagestream python2
+----
+
+After creating a service:
+
+----
+# 2017-11-01T18:34:24-04:00 Sync ended
+# 2017-11-01T18:34:24-04:00 Added 249524	echo php mp-php-app
+php mp-php-app
+----
+
+
+==== Using the command to display service IPs
+
+----
+$ oc observe --all-namespaces services -a '{ .spec.clusterIP }'
+# 2017-11-01T18:40:39-04:00 Sync started
+# 2017-11-01T18:40:39-04:00 Sync 1068	"" default docker-registry 172.30.203.179
+# 2017-11-01T18:40:39-04:00 Sync 433	"" default kubernetes 172.30.0.1
+# 2017-11-01T18:40:39-04:00 Sync 36694	"" default proxy 172.30.197.68
+# 2017-11-01T18:40:39-04:00 Sync 1162	"" default registry-console 172.30.138.84
+# 2017-11-01T18:40:39-04:00 Sync 998	"" default router 172.30.143.207
+# 2017-11-01T18:40:39-04:00 Sync 20817	"" imagestream jenkins 172.30.125.105
+# 2017-11-01T18:40:39-04:00 Sync 20814	"" imagestream jenkins-jnlp 172.30.207.60
+# 2017-11-01T18:40:39-04:00 Sync 249342	"" imagestream my-ruby-app 172.30.253.90
+# 2017-11-01T18:40:39-04:00 Sync 161454	"" imagestream python2 172.30.109.9
+# 2017-11-01T18:40:39-04:00 Sync 249524	"" php mp-php-app 172.30.48.220
+----
+
+Use `-a` to print a JSONPath style template for each object, which becomes the last argument of the command.   
+
+==== Creating a file with services and IPs
+
+You could create a script to collect all of the services, their project, and IP addresses:
+
+----
+$ cat record.sh
+#!/bin/sh
+echo $1 $2 $3 >> services
+----
+
+$1 is the project.
+$2 is the service name.
+$3 is the service IP.
+
+Then, run the following command:
+
+----
+$ oc observe --all-namespaces services -a '{ .spec.clusterIP }' -- ./record.sh
+----
+
+All services and their IPs will be recorded in the local file specified in the script, here `services`. 
+
+----
+vi services
+
+default docker-registry 172.30.203.179
+default kubernetes 172.30.0.1
+default proxy 172.30.197.68
+default registry-console 172.30.138.84
+default router 172.30.143.207
+imagestream jenkins 172.30.125.105
+imagestream jenkins-jnlp 172.30.207.60
+imagestream my-ruby-app 172.30.253.90
+imagestream python2 172.30.109.9
+php mp-php-app 172.30.48.220
+----
+
+You can extend that to anything you can do with bash.
+
+==== Deleting objects
+
+A more complex case is handling deletions.  For example, you could create an ingress for every service, and delete the ingress if the service gets deleted.  
+To properly cleanup, we need to know the ingresses that were created this way.
+
+. Create the following scripts:
++
+----
+$ cat create.sh
+#!/bin/sh
+echo "{\"kind\":\"Ingress\": \"apiVersion\": \"extensions/v1beta1\",\"metadata\":{\"name\":\"$2\"}, ...}' | kubectl create -f - --namespace $1}"
+kubectl annotate ingress/"$2" fromservice=true
+----
++
+This script creates an ingress with the same name as the service and sets an annotation.
++
+----
+$ cat names.sh
+#!/bin/sh
+kubectl get ingress --all-namespaces --template '{{ range .items }}{{ if eq (or .metadata.annotation.fromservice "") "true" }}{{ .metadata.namespace }}/{{ .metadata.name }}{{"\n"}}{{ end }}{{ end }}'
+----
++
+This script walks every ingress and outputs namespace/name for any that have the annotation `fromservice=true`.
++
+----
+$ cat delete.sh
+#!/bin/sh
+kubectl delete ingress $2 --namespace=$1
+----
+
+. Then, run the follwing command:
++
+----
+$ oc observe --all-namespaces services --delete ./delete.sh --names=./names.sh -- ./create.sh
+----
++
+The combination of those allows the observer to detect that a service has been deleted while it was not running - any ingress that has the annotation was created by a service, and since they match names, that must mean that a service was deleted.  If a user deletes a service directly, we'll get the watch notification - but not if we crashed, or on initial sync.
++
+[IMPORTANT] 
+====
+When handling deletes, the previous state of the object may not be available and only the
+name/namespace of the object will be passed to   your --delete command as arguments (all custom
+arguments are omitted). 
+====
+
