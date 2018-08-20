@@ -924,6 +924,89 @@ existing `journald` log driver configuration. It is recommended to use the
 Logging Driver] for instructions to change your existing log driver
 configuration to `json-file`.
 
+*Configuring Fluentd to Aggregate Multiline Logs*
+
+Some container logs might have messages that spread over multiple lines.
+It is possible to have Fluentd aggregate those lines, such that they are
+output as a single message.
+
+To perform the aggregation, you will need to add an entry named
+`filter-events-multiline.conf` to the Fluentd configmap, e.g. using `oc edit`
+as follows:
+
+----
+$ oc edit configmap/logging-fluentd
+----
+
+The entry needs to have the following structure:
+
+----
+<filter kubernetes.**> <1>
+  @type record_transformer
+  enable_ruby
+  <record>
+    containerid "${record['docker']['container_id']}"
+    containername "${record['kubernetes']['container_name']}"
+  </record>
+</filter>
+
+<match kubernetes.**> <2>
+  @type rewrite_tag_filter
+  rewriterule1 containername (.+) kubernetes-multiline.$1
+</match>
+
+# The following two stanzas need to be added for each application needing
+# multiline log aggregation
+<filter kubernetes-multiline.test-container-name> <3>
+  @type concat
+  key message
+  multiline_start_regexp /^\d{4}\-\d{2}\-\d{2}/ <4>
+  flush_interval 5 <5>
+  stream_identity_key containerid <6>
+  timeout_label @MULTILINE <7>
+</filter>
+
+<match kubernetes-multiline.test-container-name> <8>
+  @type rewrite_tag_filter
+  rewriterule1 message .* kubernetes-aggregated.test-container-name
+</match>
+----
+<1> The first stanza extracts the Docker unique container ID and the Kubernetes
+    container name into the `containerid` and `containername` fields,
+    respectively (due to a
+    link:https://github.com/fluent/fluent-plugin-rewrite-tag-filter/pull/42#issuecomment-337088353[Fluentd 0.12 limitation],
+    it is impossible to use nested fields to perform record filtering).
+    Those fields are removed automatically after the parsing is complete by
+    another built-in filter.
+<2> The second stanza rewrites the tag Fluentd uses to process records to
+    `kubernetes-multiline.` followed by the container name.
+<3> For each container needing multiline log aggregation, we need to
+    insert a stanza starting with `<filter kubernetes-multiline.` followed by
+    the Kubernetes container name. This structure enables you to perform
+    different kinds of aggregations depending on the application.
+<4> We use a
+    link:https://ruby-doc.org/core-2.0.0/Regexp.html[Ruby regular expression]
+    to specify a pattern matching the start of a new multiline message.
+    Should a log row match it, any buffered log lines belonging to a previous
+    message are flushed and the new row is buffered as the start row of a new
+    log message; otherwise, the new log row is aggregated with the previous
+    ones.
+<5> If an application running in a container stops emitting logs and Fluentd is
+    already buffering a previous message, it could remain in the buffer
+    indefinitely. To avoid this scenario, Fluentd flushes the buffer after the
+    specified number of seconds if it does not receive any new log rows.
+<6> The `stream_identity_key containerid` directive keeps separate buffers for
+    each container, to prevent messages belonging to the same application from
+    being aggregated across multiple instances.
+<7> The `timeout_label @MULTILINE` directive instructs Fluentd to send any
+    messages to the `MULTILINE` queue (it is defined in the Fluentd
+    configuration file and applies any outstanding filters).
+<8> This stanza prevents any other multiline aggregations located after this
+    section from being performed on the already aggregated message.
+
+For further details, see the
+link:https://github.com/fluent-plugins-nursery/fluent-plugin-concat/tree/fluentd-v0.12[`fluent-plugin-concat` documentation].
+
 [[fluentd-external-log-aggregator]]
 *Configuring Fluentd to Send Logs to an External Log Aggregator*
 
