@@ -1,0 +1,175 @@
+// Module included in the following assemblies:
+//
+// * admin_guide/cluster-autoscaler.adoc
+
+[id='manually-adding-AWS-cluster-auto-scaler_{context}']
+= Manually adding an auto-scaler to a cluster in AWS
+
+If you did not use an Ansible playbook to deploy your cluster in Amazon Web
+Services (AWS), you can still manually deploy the auto-scaler in your cluster.
+To do so, you must create the Auto Scaling group (ASC), Launch Configuration
+(LC), and {product-title} primed image and then run an Ansible playbook to
+deploy the auto-scaler components.
+
+
+.Procedure
+
+. Create a {product-title} primed image from a compute node in your cluster:
+.. Save the state <OF WHAT?>:
++
+[source,bash]
+----
+$ TIMESTAMP=$(date --utc +%FT%T.%3NZ | sed 's/:/-/g')
+$ CLUSTER_ID=mycluster
+----
+
+.. Clone an existing compute node image
++
+[source,bash]
+----
+# i-0cbf60ad3a93777ef is our existing compute node.
+
+$ aws ec2 create-image \
+      --instance-id i-0cbf60ad3a93777ef \
+      --name "${CLUSTER_ID}-base-image-${TIMESTAMP}"
+{
+    "ImageId": "ami-0e1768c1e1329ce9f"
+}
+----
+
+.. Launch an instance based on the newly cloned image
++
+[source,bash]
+----
+$ aws ec2 describe-instances --instance-id i-0cbf60ad3a93777ef | grep GroupId
+      "GroupId": "sg-7e73221a"
+
+$ aws ec2 describe-instances --instance-id i-0cbf60ad3a93777ef | grep Subnet
+      "SubnetId": "subnet-cf57c596",
+
+# ami-0e1768c1e1329ce9f is the AMI we just created.
+
+$ aws ec2 run-instances \
+      --image-id ami-0e1768c1e1329ce9f \
+      --count 1 \
+      --instance-type t2.micro \
+      --key-name libra \
+      --security-group-ids sg-7e73221a \
+      --subnet-id subnet-cf57c596 \
+      --tag-specifications "ResourceType=instance,Tags=[{Key=Name,Value=$CLUSTER_ID-temp-instance-$TIMESTAMP}]"
+----
+
+.. Remove the node's identity
++
+[source,bash]
+----
+# Find the IP address of the instance we just ran in the EC2 console.
+$ ssh ec2-54-174-243-105.compute-1.amazonaws.com
+
+# Remove the node's identity
+$ sudo bash
+# rm -rf /etc/origin/node/certificates /etc/origin/openvswitch/*
+----
+
+.. Create a new image, having "purified" it
++
+[source,bash]
+----
+# i-012b060e213821a70 is the Instance ID of our temporary instance.
+
+$ aws ec2 create-image \
+    --instance-id i-012b060e213821a70 \
+    --name "${CLUSTER_ID}-ASG-golden-image-${TIMESTAMP}"
+{
+    "ImageId": "ami-01785f295539e6441"
+}
+----
+
+. Create the LC:
++
+[source,bash]
+----
+$ aws autoscaling create-launch-configuration
+      --launch-configuration-name ${CLUSTER_ID}-LC \
+      --image-id ami-01785f295539e6441 \ <1>
+      --instance-type m4.large \
+      --key-name libra
+----
+<1> Provide the AMI of an {product-title} primed image.
+
+. Create the ASG:
++
+[source,bash]
+----
+$ aws autoscaling create-auto-scaling-group \
+      --auto-scaling-group-name ${CLUSTER_ID}-ASG \
+      --launch-configuration-name ${CLUSTER_ID}-LC \
+      --min-size 0 \ 
+      --max-size 6 \ 
+      --vpc-zone-identifier subnet-cf57c596 \
+      --tags ResourceId=${CLUSTER_ID}-ASG,ResourceType=auto-scaling-group,Key=Name,Value=${CLUSTER_ID}-ASG-node,PropagateAtLaunch=true ResourceId=${CLUSTER_ID}-ASG,ResourceType=auto-scaling-group,Key=kubernetes.io/cluster/${CLUSTER_ID},Value=true,PropagateAtLaunch=true
+----
+
+. Add the following parameters and values to your Ansible inventory file, which
+is located at *_/etc/ansible/hosts_* by default: 
++
+----
+openshift_cluster_autoscaler_node_groups:
+- min: 0
+  max: 6
+  name: mycluster-ASG <1>
+
+openshift_master_bootstrap_auto_approve: true <2>
+
+openshift_cluster_autoscaler_install: True <3>
+----
+<1> # We need to specify the ASG by name so the deployment can reference it.
+<2> # We want new nodes to be automatically approved
+<3> # We want to install the cluster-autoscaler components
+
+. Install the auto-scaller by running the `openshift-cluster-autoscaler` playbook:
++
+----
+# ansible-playbook -i <inventory_file> \
+ifdef::openshift-enterprise[]
+    /usr/share/openshift-ansible/playbooks/openshift-cluster-autoscaler/config.yml \
+endif::[]
+ifdef::openshift-origin[]
+    ~/openshift-ansible/playbooks/openshift-cluster-autoscaler/config.yml \
+endif::[]
+    -e @asg-vars.yaml
+----
+
+. After the playbook runs, confirm that the `cluster-autoscaler` deployment is
+running:
++
+[source,bash]
+----
+$ oc get deployment -n openshift-autoscaler
+NAME                 DESIRED   CURRENT   UP-TO-DATE   AVAILABLE   AGE
+cluster-autoscaler   1         1         1            1           1d
+----
+
+////
+==== Cleaning up the ASG and LC
+
+When you no longer need auto-scaling capability you can delete the
+deployment on the cluster:
+
+[source,bash]
+----
+$ oc delete deployment cluster-autoscaler -n openshift-autoscaler
+----
+
+And the AWS resources can be deleted as long as there are no
+outstanding nodes provisioned through the ASG:
+
+[source,bash]
+----
+$ aws autoscaling delete-auto-scaling-group \
+      --auto-scaling-group-name ${CLUSTER_ID}-ASG
+
+$ aws autoscaling delete-launch-configuration \
+      --launch-configuration-name ${CLUSTER_ID}-LC
+----
+////
