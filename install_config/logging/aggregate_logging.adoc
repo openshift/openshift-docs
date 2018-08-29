@@ -1,0 +1,2304 @@
+[[install-config-aggregate-logging]]
+= Aggregating Container Logs
+{product-author}
+{product-version}
+ifdef::openshift-enterprise[]
+:latest-tag: v3.10.14
+endif::[]
+ifdef::openshift-origin[]
+:latest-tag: v3.10.14
+endif::[]
+:data-uri:
+:icons:
+:experimental:
+:toc: macro
+:toc-title:
+:prewrap!:
+
+toc::[]
+{nbsp} +
+
+As an {product-title} cluster administrator, you can deploy the EFK stack to
+aggregate logs for a range of {product-title} services. Application developers
+can view the logs of the projects for which they have view access. The EFK stack
+aggregates logs from hosts and applications, whether coming from multiple
+containers or even deleted pods.
+
+The EFK stack is a modified version of the
+https://www.elastic.co/videos/introduction-to-the-elk-stack[ELK stack] and is
+comprised of:
+
+* https://www.elastic.co/products/elasticsearch[Elasticsearch (ES)]: An object store where all logs are stored.
+* http://www.fluentd.org/architecture[Fluentd]: Gathers logs from nodes and feeds them to Elasticsearch.
+* https://www.elastic.co/guide/en/kibana/current/introduction.html[Kibana]: A web UI for Elasticsearch.
+ifdef::openshift-origin[]
+* https://www.elastic.co/guide/en/elasticsearch/client/curator/current/about.html[Curator]: Removes old logs from Elasticsearch.
+endif::openshift-origin[]
+
+Once deployed in a cluster, the stack aggregates logs from all nodes and
+projects into Elasticsearch, and provides a Kibana UI to view any logs. Cluster
+administrators can view all logs, but application developers can only view logs
+for projects they have permission to view. The stack components communicate
+securely.
+
+[NOTE]
+====
+xref:../install/host_preparation.adoc#managing-docker-container-logs[Managing
+Docker Container Logs] discusses the use of `json-file` logging driver options
+to manage container logs and prevent filling node disks.
+====
+
+
+
+[[aggregate-logging-cleanup]]
+== Cleanup
+
+Remove everything generated during the deployment.
+
+ifdef::openshift-origin[]
+----
+$ ansible-playbook playbooks/openshift-logging/config.yml \
+    -e openshift_logging_install_logging=False
+----
+endif::openshift-origin[]
+
+ifdef::openshift-enterprise[]
+----
+$ ansible-playbook [-i </path/to/inventory>] \
+    /usr/share/ansible/openshift-ansible/playbooks/openshift-logging/config.yml \
+    -e openshift_logging_install_logging=False
+----
+endif::openshift-enterprise[]
+
+[[troubleshooting-kibana]]
+== Troubleshooting Kibana
+
+Using the Kibana console with {product-title} can cause problems that are easily
+solved, but are not accompanied with useful error messages. Check the following
+troubleshooting sections if you are experiencing any problems when deploying
+Kibana on {product-title}:
+
+*Login Loop*
+
+The OAuth2 proxy on the Kibana console must share a secret with the master
+host's OAuth2 server. If the secret is not identical on both servers, it can
+cause a login loop where you are continuously redirected back to the Kibana
+login page.
+
+To fix this issue, delete the current OAuthClient, and use `openshift-ansible`
+to re-run the `openshift_logging` role:
+
+====
+----
+$ oc delete oauthclient/kibana-proxy
+$ ansible-playbook [-i </path/to/inventory>] \
+    /usr/share/ansible/openshift-ansible/playbooks/openshift-logging/config.yml
+----
+====
+
+*Cryptic Error When Viewing the Console*
+
+When attempting to visit the Kibana console, you may receive a browser
+error instead:
+
+====
+----
+{"error":"invalid_request","error_description":"The request is missing a required parameter,
+ includes an invalid parameter value, includes a parameter more than once, or is otherwise malformed."}
+----
+====
+
+This can be caused by a mismatch between the OAuth2 client and server. The
+return address for the client must be in a whitelist so the server can securely
+redirect back after logging in.
+
+Fix this issue by replacing the OAuthClient entry:
+
+====
+----
+$ oc delete oauthclient/kibana-proxy
+$ ansible-playbook [-i </path/to/inventory>] \
+    /usr/share/ansible/openshift-ansible/playbooks/openshift-logging/config.yml
+----
+====
+
+If the problem persists, check that you are accessing Kibana at a URL listed in
+the OAuth client. This issue can be caused by accessing the URL at a forwarded
+port, such as 1443 instead of the standard 443 HTTPS port. You can adjust the
+server whitelist by editing the OAuth client:
+
+====
+----
+$ oc edit oauthclient/kibana-proxy
+----
+====
+
+*503 Error When Viewing the Console*
+
+If you receive a proxy error when viewing the Kibana console, it could be caused
+by one of two issues.
+
+First, Kibana may not be recognizing pods. If Elasticsearch is slow in starting
+up, Kibana may timeout trying to reach it. Check whether the relevant service
+has any endpoints:
+
+====
+----
+$ oc describe service logging-kibana
+Name:                   logging-kibana
+[...]
+Endpoints:              <none>
+----
+====
+
+If any Kibana pods are live, endpoints are listed. If they are not, check
+the state of the Kibana pods and deployment. You may need to scale the
+deployment down and back up again.
+
+The second possible issue may be caused if the route for accessing the Kibana
+service is masked. This can happen if you perform a test deployment in one
+project, then deploy in a different project without completely removing the
+first deployment. When multiple routes are sent to the same destination, the
+default router will only route to the first created. Check the problematic route
+to see if it is defined in multiple places:
+
+====
+----
+$ oc get route  --all-namespaces --selector logging-infra=support
+----
+====
+
+*F-5 Load Balancer and X-Forwarded-For Enabled*
+
+If you are attempting to use a F-5 load balancer in front of Kibana with
+`X-Forwarded-For` enabled, this can cause an issue in which the Elasticsearch
+`Searchguard` plug-in is unable to correctly accept connections from Kibana.
+
+.Example Kibana Error Message
+----
+Kibana: Unknown error while connecting to Elasticsearch
+
+Error: Unknown error while connecting to Elasticsearch
+Error: UnknownHostException[No trusted proxies]
+----
+
+To configure Searchguard to ignore the extra header:
+
+. Scale down all Fluentd pods.
+. Scale down Elasticsearch after the Fluentd pods have terminated.
+. Add `searchguard.http.xforwardedfor.header: DUMMY` to the Elasticsearch
+configuration section.
++
+
+----
+$ oc edit configmap/logging-elasticsearch <1>
+----
+<1> This approach requires that Elasticsearch's configurations are within a ConfigMap.
++
+. Scale Elasticsearch back up.
+. Scale up all Fluentd pods.
+
+[[sending-logs-to-an-external-elasticsearch-instance]]
+== Sending Logs to an External Elasticsearch Instance
+
+Fluentd sends logs to the value of the `ES_HOST`, `ES_PORT`, `OPS_HOST`,
+and `OPS_PORT` environment variables of the Elasticsearch deployment
+configuration. The application logs are directed to the `ES_HOST` destination,
+and operations logs to `OPS_HOST`.
+
+[NOTE]
+====
+Sending logs directly to an AWS Elasticsearch instance is not supported. Use
+xref:fluentd-external-log-aggregator[Fluentd Secure Forward] to direct logs to
+an instance of Fluentd that you control and that is configured with the
+`fluent-plugin-aws-elasticsearch-service` plug-in.
+====
+
+To direct logs to a specific Elasticsearch instance, edit the deployment
+configuration and replace the value of the above variables with the desired
+instance:
+
+----
+$ oc edit dc/<deployment_configuration>
+----
+
+For an external Elasticsearch instance to contain both application and
+operations logs, you can set `ES_HOST` and `OPS_HOST` to the same destination,
+while ensuring that `ES_PORT` and `OPS_PORT` also have the same value.
+
+If your externally hosted Elasticsearch instance does not use TLS, update the
+`_CLIENT_CERT`, `_CLIENT_KEY`, and `_CA` variables to be empty. If it does
+use TLS, but not mutual TLS, update the `_CLIENT_CERT` and `_CLIENT_KEY`
+variables to be empty and patch or recreate the *logging-fluentd* secret with
+the appropriate `_CA` value for communicating with your Elasticsearch instance.
+If it uses Mutual TLS as the provided Elasticsearch instance does, patch or
+recreate the *logging-fluentd* secret with your client key, client cert, and CA.
+
+
+[NOTE]
+====
+If you are not using the provided Kibana and Elasticsearch images, you will not
+have the same multi-tenant capabilities and your data will not be restricted by
+user access to a particular project.
+====
+
+[[sending-logs-to-external-rsyslog]]
+== Sending Logs to an External Syslog Server
+
+Use the `fluent-plugin-remote-syslog` plug-in on the host to send logs to an
+external syslog server.
+
+Set environment variables in the `logging-fluentd` or `logging-mux` deployment
+configurations:
+
+[source,yaml]
+----
+- name: REMOTE_SYSLOG_HOST <1>
+  value: host1
+- name: REMOTE_SYSLOG_HOST_BACKUP
+  value: host2
+- name: REMOTE_SYSLOG_PORT_BACKUP
+  value: 5555
+----
+<1> The desired remote syslog host. Required for each host.
+
+This will build two destinations. The syslog server on `host1` will be
+receiving messages on the default port of `514`, while `host2` will be receiving
+the same messages on port `5555`.
+
+Alternatively, you can configure your own custom *_fluent.conf_* in the
+`logging-fluentd` or `logging-mux` ConfigMaps.
+
+**Fluentd Environment Variables**
+
+[cols="3,7",options="header"]
+|===
+|Parameter |Description
+
+|`USE_REMOTE_SYSLOG`
+|Defaults to `false`. Set to `true` to enable use of the
+`fluent-plugin-remote-syslog` gem
+
+|`REMOTE_SYSLOG_HOST`
+|(Required) Hostname or IP address of the remote syslog server.
+
+|`REMOTE_SYSLOG_PORT`
+|Port number to connect on. Defaults to `514`.
+
+|`REMOTE_SYSLOG_SEVERITY`
+|Set the syslog severity level. Defaults to `debug`.
+
+|`REMOTE_SYSLOG_FACILITY`
+|Set the syslog facility. Defaults to `local0`.
+
+|`REMOTE_SYSLOG_USE_RECORD`
+|Defaults to `false`. Set to `true` to use the record's severity and facility fields to set on the syslog message.
+
+|`REMOTE_SYSLOG_REMOVE_TAG_PREFIX`
+|Removes the prefix from the tag, defaults to `''` (empty).
+
+|`REMOTE_SYSLOG_TAG_KEY`
+|If specified, uses this field as the key to look on the record, to set the tag on the syslog message.
+
+|`REMOTE_SYSLOG_PAYLOAD_KEY`
+|If specified, uses this field as the key to look on the record, to set the payload on the syslog message.
+
+|===
+
+[WARNING]
+====
+This implementation is insecure, and should only be used in environments
+where you can guarantee no snooping on the connection.
+====
+
+**Fluentd Logging Ansible Variables**
+
+[cols="3,7",options="header"]
+|===
+|Parameter |Description
+
+|`openshift_logging_fluentd_remote_syslog`
+|The default is set to `false`. Set to `true` to enable use of the
+fluent-plugin-remote-syslog gem.
+
+|`openshift_logging_fluentd_remote_syslog_host`
+|Hostname or IP address of the remote syslog server, this is mandatory.
+
+|`openshift_logging_fluentd_remote_syslog_port`
+|Port number to connect on, defaults to `514`.
+
+|`openshift_logging_fluentd_remote_syslog_severity`
+|Set the syslog severity level, defaults to `debug`.
+
+|`openshift_logging_fluentd_remote_syslog_facility`
+|Set the syslog facility, defaults to `local0`.
+
+|`openshift_logging_fluentd_remote_syslog_use_record`
+|The default is set to `false`. Set to `true` to use the record's severity
+and facility fields to set on the syslog message.
+
+|`openshift_logging_fluentd_remote_syslog_remove_tag_prefix`
+|Removes the prefix from the tag, defaults to `''` (empty).
+
+|`openshift_logging_fluentd_remote_syslog_tag_key`
+|If string is specified, uses this field as the key to look on the record, to
+set the tag on the syslog message.
+
+|`openshift_logging_fluentd_remote_syslog_payload_key`
+|If string is specified, uses this field as the key to look on the record, to
+set the payload on the syslog message.
+|===
+
+**Mux Logging Ansible Variables**
+
+[cols="3,7",options="header"]
+|===
+|Parameter |Description
+
+|`openshift_logging_mux_remote_syslog`
+|The default is set to `false`. Set to `true` to enable use of the
+fluent-plugin-remote-syslog gem.
+
+|`openshift_logging_mux_remote_syslog_host`
+|Hostname or IP address of the remote syslog server, this is mandatory.
+
+|`openshift_logging_mux_remote_syslog_port`
+|Port number to connect on, defaults to `514`.
+
+|`openshift_logging_mux_remote_syslog_severity`
+|Set the syslog severity level, defaults to `debug`.
+
+|`openshift_logging_mux_remote_syslog_facility`
+|Set the syslog facility, defaults to `local0`.
+
+|`openshift_logging_mux_remote_syslog_use_record`
+|The default is set to `false`. Set to `true` to use the record's severity
+and facility fields to set on the syslog message.
+
+|`openshift_logging_mux_remote_syslog_remove_tag_prefix`
+|Removes the prefix from the tag, defaults to `''` (empty).
+
+|`openshift_logging_mux_remote_syslog_tag_key`
+|If string is specified, uses this field as the key to look on the record, to
+set the tag on the syslog message.
+
+|`openshift_logging_mux_remote_syslog_payload_key`
+|If string is specified, uses this field as the key to look on the record, to
+set the payload on the syslog message.
+|===
+
+[[aggregate-logging-performing-elasticsearch-maintenance-operations]]
+== Performing Administrative Elasticsearch Operations
+
+As of logging version
+ifdef::openshift-origin[]
+1.2.0,
+endif::openshift-origin[]
+ifdef::openshift-enterprise[]
+3.2.0,
+endif::openshift-enterprise[]
+an administrator certificate, key, and CA that can be used to communicate with and perform
+administrative operations on Elasticsearch are provided within the
+*logging-elasticsearch* secret.
+
+[NOTE]
+====
+To confirm whether or not your EFK installation provides these, run:
+----
+$ oc describe secret logging-elasticsearch
+----
+====
+
+. Connect to an Elasticsearch pod that is in the cluster on which you are
+attempting to perform maintenance.
+
+. To find a pod in a cluster use either:
++
+----
+$ oc get pods -l component=es -o name | head -1
+$ oc get pods -l component=es-ops -o name | head -1
+----
+
+. Connect to a pod:
++
+----
+$ oc rsh <your_Elasticsearch_pod>
+----
+
+. Once connected to an Elasticsearch container, you can use the certificates
+mounted from the secret to communicate with Elasticsearch per its
+link:https://www.elastic.co/guide/en/elasticsearch/reference/2.3/indices.html[Indices APIs documentation].
++
+Fluentd sends its logs to Elasticsearch using the index format *project.{project_name}.{project_uuid}.YYYY.MM.DD*
+where YYYY.MM.DD is the date of the log record.
++
+For example, to delete all logs for the *logging* project with uuid *3b3594fa-2ccd-11e6-acb7-0eb6b35eaee3*
+from June 15, 2016, we can run:
++
+----
+$ curl --key /etc/elasticsearch/secret/admin-key \
+  --cert /etc/elasticsearch/secret/admin-cert \
+  --cacert /etc/elasticsearch/secret/admin-ca -XDELETE \
+  "https://localhost:9200/project.logging.3b3594fa-2ccd-11e6-acb7-0eb6b35eaee3.2016.06.15"
+----
+
+[[fluentd-update-source]]
+== Changing the Aggregated Logging Driver
+
+For aggregated logging, it is recommended to use the `json-file` log driver.
+
+[IMPORTANT]
+====
+When using the `json-file` driver, ensure that you are using Docker
+version *docker-1.12.6-55.gitc4618fb.el7_4 now* or later.
+====
+
+Fluentd determines the driver Docker is using by checking the
+*_/etc/docker/daemon.json_* and *_/etc/sysconfig/docker_* files.
+
+You can determine which driver Docker is using with the `docker info` command:
+
+----
+# docker info | grep Logging
+
+Logging Driver: journald
+----
+
+To change to `json-file`:
+
+. Modify either the *_/etc/sysconfig/docker_* or *_/etc/docker/daemon.json_* files.
++
+For example:
++
+[source,json]
+----
+# cat /etc/sysconfig/docker
+OPTIONS=' --selinux-enabled --log-driver=json-file --log-opt max-size=1M --log-opt max-file=3 --signature-verification=False'
+
+cat /etc/docker/daemon.json
+{
+"log-driver": "json-file",
+"log-opts": {
+"max-size": "1M",
+"max-file": "1"
+}
+}
+----
+
+. Restart the Docker service:
++
+----
+systemctl restart docker
+----
+
+. Restart Fluentd.
++
+[WARNING]
+====
+Restarting Fluentd on more than a dozen nodes at once will create a large load
+on the Kubernetes scheduler. Exercise caution when using the following the
+directions to restart Fluentd.
+====
++
+There are two methods for restarting Fluentd. You can restart the Fluentd on one
+node or a set of nodes, or on all nodes.
++
+.. The following steps demonstrate how to restart Fluentd on one node or a set of
+nodes.
+
+... List the nodes where Fluentd is running:
++
+----
+$ oc get nodes -l logging-infra-fluentd=true
+----
++
+... For each node, remove the label and turn off Fluentd:
++
+----
+$ oc label node $node logging-infra-fluentd-
+----
++
+... Verify Fluentd is off:
++
+----
+$ oc get pods -l component=fluentd
+----
++
+... For each node, restart Fluentd:
++
+----
+$ oc label node $node logging-infra-fluentd=true
+----
++
+.. The following steps demonstrate how to restart the Fluentd all nodes.
+
+... Turn off Fluentd on all nodes:
++
+----
+$ oc label node -l logging-infra-fluentd=true --overwrite logging-infra-fluentd=false
+----
++
+... Verify Fluentd is off:
++
+----
+$ oc get pods -l component=fluentd
+----
++
+... Restart Fluentd on all nodes:
++
+----
+$ oc label node -l logging-infra-fluentd=false --overwrite logging-infra-fluentd=true
+----
++
+... Verify Fluentd is on:
++
+----
+$ oc get pods -l component=fluentd
+----
+
+ifdef::openshift-origin[]
+[[exported-fields]]
+== Exported Fields
+
+These are the fields exported by the logging system and available for searching
+from Elasticsearch and Kibana. Use the full, dotted field name when searching.
+For example, for an Elasticsearch */_search URL*, to look for a Kubernetes pod name,
+use `/_search/q=kubernetes.pod_name:name-of-my-pod`.
+The following sections describe fields that may not be present in your logging store.
+Not all of these fields are present in every record.
+The fields are grouped in the following categories:
+
+* `exported-fields-Default`
+* `exported-fields-rsyslog`
+* `exported-fields-systemd`
+* `exported-fields-kubernetes`
+* `exported-fields-docker`
+* `exported-fields-pipeline_metadata`
+* `exported-fields-ovirt`
+* `exported-fields-aushape`
+* `exported-fields-tlog`
+
+[discrete]
+[[exported-fields-Default]]
+=== Top Level Fields
+
+The top level fields are common to every application, and may be present in
+every record. For the Elasticsearch template, top level fields populate the actual
+mappings of `default` in the template's mapping section.
+
+[cols="3,7",options="header"]
+|===
+|Parameter
+|Description
+
+| `@timestamp`
+| The UTC value marking when the log payload was created, or when the log payload
+was first collected if the creation time is not known. This is the log
+processing pipeline’s best effort determination of when the log payload was
+generated. Add the `@` prefix convention to note a field as being reserved for a
+particular use. With Elasticsearch, most tools look for `@timestamp` by default.
+For example, the format would be 2015-01-24 14:06:05.071000.
+
+| `geoip`
+|This is geo-ip of the machine.
+
+| `hostname`
+|The `hostname` is the fully qualified domain name (FQDN) of the entity
+generating the original payload. This field is an attempt to derive this
+context. Sometimes the entity generating it knows the context. While other times
+that entity has a restricted namespace itself, which is known by the collector
+or normalizer.
+
+| `ipaddr4`
+|The IP address V4 of the source server, which can be an array.
+
+| `ipaddr6`
+|The IP address V6 of the source server, if available.
+
+| `level`
+|The logging level as provided by `rsyslog` (severitytext property), python's
+logging module. Possible values are as listed at
+link:http://sourceware.org/git/?p=glibc.git;a=blob;f=misc/sys/syslog.h;h=ee01478c4b19a954426a96448577c5a76e6647c0;hb=HEAD#l74[`misc/sys/syslog.h`]
+plus `trace` and `unknown`. For example, "alert crit debug emerg err info notice
+trace unknown warning". Note that `trace` is not in the `syslog.h` list but many
+applications use it.
+
+. You should only use `unknown` when the logging system gets a value it does not
+understand, and note that it is the highest level.
+. Consider `trace` as higher or more verbose, than `debug`.
+. `error` is deprecated, use `err`.
+. Convert `panic` to `emerg`.
+. Convert `warn` to `warning`.
+
+Numeric values from `syslog/journal PRIORITY` can usually be mapped using the
+priority values as listed at
+link:http://sourceware.org/git/?p=glibc.git;a=blob;f=misc/sys/syslog.h;h=ee01478c4b19a954426a96448577c5a76e6647c0;hb=HEAD#l51[misc/sys/syslog.h].
+
+Log levels and priorities from other logging systems should be mapped to the
+nearest match. See
+link:https://docs.python.org/2.7/library/logging.html#logging-levels[python
+logging] for an example.
+
+| `message`
+|A typical log entry message, or payload. It can be stripped of metadata pulled
+out of it by the collector or normalizer, that is UTF-8 encoded.
+
+| `pid`
+|This is the process ID of the logging entity, if available.
+
+| `service`
+|The name of the service associated with the logging entity, if available. For
+example, the `syslog APP-NAME` and `rsyslog programname` property are mapped to
+the service field.
+
+| `tags`
+|Optionally provided operator defined list of tags placed on each log by the
+collector or normalizer. The payload can be a string with whitespace-delimited
+string tokens, or a JSON list of string tokens.
+
+| `file`
+|Optional path to the file containing the log entry local to the collector `TODO`
+analyzer for file paths.
+
+| `offset`
+|The offset value can represent bytes to the start of the log line in the file
+(zero or one based), or log line numbers (zero or one based), as long as the
+values are strictly monotonically increasing in the context of a single log
+file. The values are allowed to wrap, representing a new version of the log file
+(rotation).
+
+| `namespace_name`
+|Associate this record with the `namespace` that shares it's name. This value
+will not be stored, but it is used to associate the record with the appropriate
+`namespace` for access control and visualization. Normally this value will be
+given in the tag, but if the protocol does not support sending a tag, this field
+can be used. If this field is present, it will override the `namespace` given in
+the tag or in `kubernetes.namespace_name`.
+
+| `namespace_uuid`
+|This is the `uuid` associated with the `namespace_name`. This value will not be
+stored, but is used to associate the record with the appropriate namespace for
+access control and visualization. If this field is present, it will override the
+`uuid` given in `kubernetes.namespace_uuid`. This will also cause the Kubernetes
+metadata lookup to be skipped for this log record.
+|===
+
+[discrete]
+[[exported-fields-collectd]]
+=== `collectd` Fields
+
+The following fields represent namespace metrics metadata.
+
+[cols="3,7",options="header"]
+|===
+|Parameter
+|Description
+
+| `collectd.interval`
+|type: float
+
+The `collectd` interval.
+
+| `collectd.plugin`
+|type: string
+
+The `collectd` plug-in.
+
+| `collectd.plugin_instance`
+|type: string
+
+The `collectd` plugin_instance.
+
+| `collectd.type_instance`
+|type: string
+
+The `collectd` `type_instance`.
+
+| `collectd.type`
+|type: string
+
+The `collectd` type.
+
+| `collectd.dstypes`
+|type: string
+
+The `collectd` dstypes.
+|===
+
+[discrete]
+[[exported-fields-collectd.processes]]
+=== `collectd.processes` Fields
+
+The following field corresponds to the `collectd` processes plug-in.
+
+[cols="3,7",options="header"]
+|===
+|Parameter
+|Description
+
+| `collectd.processes.ps_state`
+|type: integer
+The `collectd ps_state` type of processes plug-in.
+|===
+
+[discrete]
+[[exported-fields-collectd.processes.ps_disk_ops]]
+=== `collectd.processes.ps_disk_ops` Fields
+
+The `collectd` `ps_disk_ops` type of processes plug-in.
+
+[cols="3,7",options="header"]
+|===
+|Parameter
+|Description
+
+| `collectd.processes.ps_disk_ops.read`
+|type: float
+
+`TODO`
+
+| `collectd.processes.ps_disk_ops.write`
+|type: float
+
+`TODO`
+
+| `collectd.processes.ps_vm`
+|type: integer
+
+The `collectd` `ps_vm` type of processes plug-in.
+
+| `collectd.processes.ps_rss`
+|type: integer
+
+The `collectd` `ps_rss` type of processes plug-in.
+
+| `collectd.processes.ps_data`
+|type: integer
+
+The `collectd` `ps_data` type of processes plug-in.
+
+| `collectd.processes.ps_code`
+|type: integer
+
+The `collectd` `ps_code` type of processes plug-in.
+
+| `collectd.processes.ps_stacksize`
+| type: integer
+
+The `collectd` `ps_stacksize` type of processes plug-in.
+|===
+
+[discrete]
+[[exported-fields-collectd.processes.ps_cputime]]
+=== `collectd.processes.ps_cputime` Fields
+
+The `collectd` `ps_cputime` type of processes plug-in.
+
+[cols="3,7",options="header"]
+|===
+|Parameter
+|Description
+
+| `collectd.processes.ps_cputime.user`
+|type: float
+
+`TODO`
+
+| `collectd.processes.ps_cputime.syst`
+|type: float
+
+`TODO`
+|===
+
+[discrete]
+[[exported-fields-collectd.processes.ps_count]]
+=== `collectd.processes.ps_count` Fields
+
+The `collectd` `ps_count` type of processes plug-in.
+
+[cols="3,7",options="header"]
+|===
+|Parameter
+|Description
+
+| `collectd.processes.ps_count.processes`
+|type: integer
+
+`TODO`
+
+| `collectd.processes.ps_count.threads`
+|type: integer
+
+`TODO`
+|===
+
+[discrete]
+[[exported-fields-collectd.processes.ps_pagefaults]]
+=== `collectd.processes.ps_pagefaults` Fields
+
+The `collectd` `ps_pagefaults` type of processes plug-in.
+
+[cols="3,7",options="header"]
+|===
+|Parameter
+|Description
+
+| `collectd.processes.ps_pagefaults.majflt`
+|type: float
+
+`TODO`
+
+| `collectd.processes.ps_pagefaults.minflt`
+|type: float
+
+`TODO`
+|===
+
+[discrete]
+[[exported-fields-collectd.processes.ps_disk_octets]]
+=== `collectd.processes.ps_disk_octets` Fields
+
+The `collectd ps_disk_octets` type of processes plug-in.
+
+[cols="3,7",options="header"]
+|===
+|Parameter
+|Description
+
+| `collectd.processes.ps_disk_octets.read`
+|type: float
+
+`TODO`
+
+| `collectd.processes.ps_disk_octets.write`
+|type: float
+
+`TODO`
+
+| `collectd.processes.fork_rate`
+|type: float
+
+The `collectd` `fork_rate` type of processes plug-in.
+|===
+
+[discrete]
+[[exported-fields-collectd.disk]]
+=== `collectd.disk` Fields
+
+Corresponds to `collectd` disk plug-in.
+
+[discrete]
+[[exported-fields-collectd.disk.disk_merged]]
+=== `collectd.disk.disk_merged` Fields
+
+The `collectd` `disk_merged` type of disk plug-in.
+
+[cols="3,7",options="header"]
+|===
+|Parameter
+|Description
+
+| `collectd.disk.disk_merged.read`
+|type: float
+
+`TODO`
+
+| `collectd.disk.disk_merged.write`
+|type: float
+
+`TODO`
+|===
+
+[discrete]
+[[exported-fields-collectd.disk.disk_octets]]
+=== `collectd.disk.disk_octets` Fields
+
+The `collectd` `disk_octets` type of disk plug-in.
+
+[cols="3,7",options="header"]
+|===
+|Parameter
+|Description
+
+| `collectd.disk.disk_octets.read`
+|type: float
+
+`TODO`
+
+| `collectd.disk.disk_octets.write`
+|type: float
+
+`TODO`
+|===
+
+[discrete]
+[[exported-fields-collectd.disk.disk_time]]
+=== `collectd.disk.disk_time` Fields
+
+The `collectd` `disk_time` type of disk plug-in.
+
+[cols="3,7",options="header"]
+|===
+|Parameter
+|Description
+
+| `collectd.disk.disk_time.read`
+|type: float
+
+`TODO`
+
+| `collectd.disk.disk_time.write`
+|type: float
+
+`TODO`
+|===
+
+[discrete]
+[[exported-fields-collectd.disk.disk_ops]]
+=== `collectd.disk.disk_ops` Fields
+
+The `collectd` `disk_ops` type of disk plug-in.
+
+[cols="3,7",options="header"]
+|===
+|Parameter
+|Description
+
+| `collectd.disk.disk_ops.read`
+|type: float
+
+`TODO`
+
+| `collectd.disk.disk_ops.write`
+|type: float
+
+`TODO`
+
+| `collectd.disk.pending_operations`
+|type: integer
+
+The `collectd` `pending_operations` type of disk plug-in.
+|===
+
+[discrete]
+[[exported-fields-collectd.disk.disk_io_time]]
+=== `collectd.disk.disk_io_time` Fields
+
+The `collectd disk_io_time` type of disk plug-in.
+
+[cols="3,7",options="header"]
+|===
+|Parameter
+|Description
+
+| `collectd.disk.disk_io_time.io_time`
+|type: float
+
+`TODO`
+
+| `collectd.disk.disk_io_time.weighted_io_time`
+|type: float
+
+`TODO`
+|===
+
+[discrete]
+[[exported-fields-collectd.interface]]
+=== `collectd.interface` Fields
+
+Corresponds to the `collectd` interface plug-in.
+
+[discrete]
+[[exported-fields-collectd.interface.if_octets]]
+=== `collectd.interface.if_octets` Fields
+
+The `collectd` `if_octets` type of interface plug-in.
+
+[cols="3,7",options="header"]
+|===
+|Parameter
+|Description
+
+| `collectd.interface.if_octets.rx`
+|type: float
+
+`TODO`
+
+| `collectd.interface.if_octets.tx`
+|type: float
+
+`TODO`
+|===
+
+[discrete]
+[[exported-fields-collectd.interface.if_packets]]
+=== `collectd.interface.if_packets` Fields
+
+The `collectd` `if_packets` type of interface plug-in.
+
+[cols="3,7",options="header"]
+|===
+|Parameter
+|Description
+
+| `collectd.interface.if_packets.rx`
+|type: float
+
+`TODO`
+
+| `collectd.interface.if_packets.tx`
+|type: float
+
+`TODO`
+|===
+
+[discrete]
+[[exported-fields-collectd.interface.if_errors]]
+=== `collectd.interface.if_errors` Fields
+
+The `collectd` `if_errors` type of interface plug-in.
+
+[cols="3,7",options="header"]
+|===
+|Parameter
+|Description
+
+| `collectd.interface.if_errors.rx`
+|type: float
+
+`TODO`
+
+| `collectd.interface.if_errors.tx`
+|type: float
+
+`TODO`
+|===
+
+[discrete]
+[[exported-fields-collectd.interface.if_dropped]]
+=== collectd.interface.if_dropped Fields
+
+The `collectd` `if_dropped` type of interface plug-in.
+
+[cols="3,7",options="header"]
+|===
+|Parameter
+|Description
+
+| `collectd.interface.if_dropped.rx`
+|type: float
+
+`TODO`
+
+| `collectd.interface.if_dropped.tx`
+|type: float
+
+`TODO`
+|===
+
+[discrete]
+[[exported-fields-collectd.virt]]
+=== `collectd.virt` Fields
+
+Corresponds to `collectd` virt plug-in.
+
+[discrete]
+[[exported-fields-collectd.virt.if_octets]]
+=== `collectd.virt.if_octets` Fields
+
+The `collectd if_octets` type of virt plug-in.
+
+[cols="3,7",options="header"]
+|===
+|Parameter
+|Description
+
+| `collectd.virt.if_octets.rx`
+|type: float
+
+`TODO`
+
+| `collectd.virt.if_octets.tx`
+|type: float
+
+`TODO`
+|===
+
+[discrete]
+[[exported-fields-collectd.virt.if_packets]]
+=== `collectd.virt.if_packets` Fields
+
+The `collectd` `if_packets` type of virt plug-in.
+
+[cols="3,7",options="header"]
+|===
+|Parameter
+|Description
+
+| `collectd.virt.if_packets.rx`
+|type: float
+
+`TODO`
+
+| `collectd.virt.if_packets.tx`
+|type: float
+
+`TODO`
+|===
+
+[discrete]
+[[exported-fields-collectd.virt.if_errors]]
+=== `collectd.virt.if_errors` Fields
+
+The `collectd` `if_errors` type of virt plug-in.
+
+[cols="3,7",options="header"]
+|===
+|Parameter
+|Description
+
+| `collectd.virt.if_errors.rx`
+|type: float
+
+`TODO`
+
+| `collectd.virt.if_errors.tx`
+|type: float
+
+`TODO`
+|===
+
+[discrete]
+[[exported-fields-collectd.virt.if_dropped]]
+=== `collectd.virt.if_dropped` Fields
+
+The `collectd` `if_dropped` type of virt plug-in.
+
+[cols="3,7",options="header"]
+|===
+|Parameter
+|Description
+
+| `collectd.virt.if_dropped.rx`
+|type: float
+
+`TODO`
+
+| `collectd.virt.if_dropped.tx`
+|type: float
+
+`TODO`
+|===
+
+[discrete]
+[[exported-fields-collectd.virt.disk_ops]]
+=== `collectd.virt.disk_ops` Fields
+
+The `collectd` `disk_ops` type of virt plug-in.
+
+[cols="3,7",options="header"]
+|===
+|Parameter
+|Description
+
+| collectd.virt.disk_ops.read
+|type: float
+
+`TODO`
+
+| `collectd.virt.disk_ops.write`
+|type: float
+
+`TODO`
+|===
+
+[discrete]
+[[exported-fields-collectd.virt.disk_octets]]
+=== `collectd.virt.disk_octets` Fields
+
+The `collectd` `disk_octets` type of virt plug-in.
+
+[cols="3,7",options="header"]
+|===
+|Parameter
+|Description
+
+| `collectd.virt.disk_octets.read`
+|type: float
+
+`TODO`
+
+| `collectd.virt.disk_octets.write`
+|type: float
+
+`TODO`
+
+| `collectd.virt.memory`
+|type: float
+
+The `collectd` memory type of virt plug-in.
+
+| `collectd.virt.virt_vcpu`
+|type: float
+
+The `collectd` `virt_vcpu` type of virt plug-in.
+
+| `collectd.virt.virt_cpu_total`
+|type: float
+
+The `collectd` `virt_cpu_total` type of virt plug-in.
+|===
+
+[discrete]
+[[exported-fields-collectd.CPU]]
+=== `collectd.CPU` Fields
+
+Corresponds to the `collectd` CPU plug-in.
+
+[cols="3,7",options="header"]
+|===
+|Parameter
+|Description
+
+| `collectd.CPU.percent`
+|type: float
+
+The `collectd` type percent of plug-in CPU.
+|===
+
+[discrete]
+[[exported-fields-collectd.df]]
+=== collectd.df Fields
+
+Corresponds to the `collectd` `df` plug-in.
+
+[cols="3,7",options="header"]
+|===
+|Parameter
+|Description
+
+| `collectd.df.df_complex`
+|type: float
+
+The `collectd` type `df_complex` of plug-in `df`.
+
+| `collectd.df.percent_bytes`
+|type: float
+
+The `collectd` type `percent_bytes` of plug-in `df`.
+|===
+
+[discrete]
+[[exported-fields-collectd.entropy]]
+=== `collectd.entropy` Fields
+
+Corresponds to the `collectd` entropy plug-in.
+
+[cols="3,7",options="header"]
+|===
+|Parameter
+|Description
+
+| `collectd.entropy.entropy`
+|type: integer
+
+The `collectd` entropy type of entropy plug-in.
+|===
+
+[discrete]
+[[exported-fields-collectd.nfs]]
+=== `collectd.nfs` Fields
+
+Corresponds to the `collectd` NFS plug-in.
+
+[cols="3,7",options="header"]
+|===
+|Parameter
+|Description
+
+| `collectd.nfs.nfs_procedure`
+|type: integer
+
+The `collectd` `nfs_procedure` type of nfs plug-in.
+|===
+
+[discrete]
+[[exported-fields-collectd.memory]]
+=== `collectd.memory` Fields
+
+Corresponds to the `collectd` memory plug-in.
+
+[cols="3,7",options="header"]
+|===
+|Parameter
+|Description
+
+| `collectd.memory.memory`
+|type: float
+
+The `collectd` memory type of memory plug-in.
+
+| `collectd.memory.percent`
+|type: float
+
+The `collectd` percent type of memory plug-in.
+|===
+
+[discrete]
+[[exported-fields-collectd.swap]]
+=== `collectd.swap` Fields
+
+Corresponds to the `collectd` swap plug-in.
+
+[cols="3,7",options="header"]
+|===
+|Parameter
+|Description
+
+| `collectd.swap.swap`
+|type: integer
+
+The `collectd` swap type of swap plug-in.
+
+| `collectd.swap.swap_io`
+|type: integer
+
+The `collectd swap_io` type of swap plug-in.
+|===
+
+[discrete]
+[[exported-fields-collectd.load]]
+=== `collectd.load` Fields
+
+Corresponds to the `collectd` load plug-in.
+
+[discrete]
+[[exported-fields-collectd.load.load]]
+=== `collectd.load.load` Fields
+
+The `collectd` load type of load plug-in
+
+[cols="3,7",options="header"]
+|===
+|Parameter
+|Description
+
+| `collectd.load.load.shortterm`
+|type: float
+
+`TODO`
+
+| `collectd.load.load.midterm`
+|type: float
+
+`TODO`
+
+| `collectd.load.load.longterm`
+|type: float
+
+`TODO`
+|===
+
+[discrete]
+[[exported-fields-collectd.aggregation]]
+=== `collectd.aggregation` Fields
+
+Corresponds to `collectd` aggregation plug-in.
+
+[cols="3,7",options="header"]
+|===
+|Parameter
+|Description
+
+| `collectd.aggregation.percent`
+|type: float
+
+`TODO`
+|===
+
+[discrete]
+[[exported-fields-collectd.statsd]]
+=== `collectd.statsd` Fields
+
+Corresponds to `collectd` `statsd` plug-in.
+
+[cols="3,7",options="header"]
+|===
+|Parameter
+|Description
+
+| `collectd.statsd.host_cpu`
+|type: integer
+
+The `collectd` CPU type of `statsd` plug-in.
+
+| `collectd.statsd.host_elapsed_time`
+|type: integer
+
+The `collectd` `elapsed_time` type of `statsd` plug-in.
+
+| `collectd.statsd.host_memory`
+|type: integer
+
+The `collectd` memory type of `statsd` plug-in.
+
+| `collectd.statsd.host_nic_speed`
+|type: integer
+
+The `collectd` `nic_speed` type of `statsd` plug-in.
+
+| `collectd.statsd.host_nic_rx`
+|type: integer
+
+The `collectd` `nic_rx` type of `statsd` plug-in.
+
+| `collectd.statsd.host_nic_tx`
+|type: integer
+
+The `collectd` `nic_tx` type of `statsd` plug-in.
+
+| `collectd.statsd.host_nic_rx_dropped`
+|type: integer
+
+The `collectd` `nic_rx_dropped` type of `statsd` plug-in.
+
+| `collectd.statsd.host_nic_tx_dropped`
+|type: integer
+
+The `collectd` `nic_tx_dropped` type of `statsd` plug-in.
+
+| `collectd.statsd.host_nic_rx_errors`
+|type: integer
+
+The `collectd` `nic_rx_errors` type of `statsd` plug-in.
+
+| `collectd.statsd.host_nic_tx_errors`
+|type: integer
+
+The `collectd` `nic_tx_errors` type of `statsd` plug-in.
+
+| `collectd.statsd.host_storage`
+|type: integer
+
+The `collectd` storage type of `statsd` plug-in.
+
+| `collectd.statsd.host_swap`
+|type: integer
+
+The `collectd` swap type of `statsd` plug-in.
+
+| `collectd.statsd.host_vdsm`
+|type: integer
+
+The `collectd` VDSM type of `statsd` plug-in.
+
+| `collectd.statsd.host_vms`
+|type: integer
+
+The `collectd` VMS type of `statsd` plug-in.
+
+| `collectd.statsd.vm_nic_tx_dropped`
+|type: integer
+
+The `collectd` `nic_tx_dropped` type of `statsd` plug-in.
+
+| `collectd.statsd.vm_nic_rx_bytes`
+|type: integer
+
+The `collectd` `nic_rx_bytes` type of `statsd` plug-in.
+
+| `collectd.statsd.vm_nic_tx_bytes`
+|type: integer
+
+The `collectd` `nic_tx_bytes` type of `statsd` plug-in.
+
+| `collectd.statsd.vm_balloon_min`
+|type: integer
+
+The `collectd` `balloon_min` type of `statsd` plug-in.
+
+| `collectd.statsd.vm_balloon_max`
+|type: integer
+
+The `collectd` `balloon_max` type of `statsd` plug-in.
+
+| `collectd.statsd.vm_balloon_target`
+|type: integer
+
+The `collectd` `balloon_target` type of `statsd` plug-in.
+
+| `collectd.statsd.vm_balloon_cur`
+| type: integer
+
+The `collectd` `balloon_cur` type of `statsd` plug-in.
+
+| `collectd.statsd.vm_cpu_sys`
+|type: integer
+
+The `collectd` `cpu_sys` type of `statsd` plug-in.
+
+| `collectd.statsd.vm_cpu_usage`
+|type: integer
+
+The `collectd` `cpu_usage` type of `statsd` plug-in.
+
+| `collectd.statsd.vm_disk_read_ops`
+|type: integer
+
+The `collectd` `disk_read_ops` type of `statsd` plug-in.
+
+| `collectd.statsd.vm_disk_write_ops`
+|type: integer
+
+The collectd` `disk_write_ops` type of `statsd` plug-in.
+
+| `collectd.statsd.vm_disk_flush_latency`
+|type: integer
+
+The `collectd` `disk_flush_latency` type of `statsd` plug-in.
+
+| `collectd.statsd.vm_disk_apparent_size`
+|type: integer
+
+The `collectd` `disk_apparent_size` type of `statsd` plug-in.
+
+| `collectd.statsd.vm_disk_write_bytes`
+|type: integer
+
+The `collectd` `disk_write_bytes` type of `statsd` plug-in.
+
+| `collectd.statsd.vm_disk_write_rate`
+|type: integer
+
+The `collectd` `disk_write_rate` type of `statsd` plug-in.
+
+| `collectd.statsd.vm_disk_true_size`
+|type: integer
+
+The `collectd` `disk_true_size` type of `statsd` plug-in.
+
+| `collectd.statsd.vm_disk_read_rate`
+|type: integer
+
+The `collectd` `disk_read_rate` type of `statsd` plug-in.
+
+| `collectd.statsd.vm_disk_write_latency`
+|type: integer
+
+The `collectd` `disk_write_latency` type of `statsd` plug-in.
+
+| `collectd.statsd.vm_disk_read_latency`
+|type: integer
+
+The `collectd` `disk_read_latency` type of `statsd` plug-in.
+
+| `collectd.statsd.vm_disk_read_bytes`
+|type: integer
+
+The `collectd` `disk_read_bytes` type of `statsd` plug-in.
+
+| `collectd.statsd.vm_nic_rx_dropped`
+|type: integer
+
+The `collectd` `nic_rx_dropped` type of `statsd` plug-in.
+
+| `collectd.statsd.vm_cpu_user`
+|type: integer
+
+The `collectd` `cpu_user` type of `statsd` plug-in.
+
+| `collectd.statsd.vm_nic_rx_errors`
+|type: integer
+
+The `collectd` `nic_rx_errors` type of `statsd` plug-in.
+
+| `collectd.statsd.vm_nic_tx_errors`
+|type: integer
+
+The `collectd` `nic_tx_errors` type of `statsd` plug-in.
+
+| `collectd.statsd.vm_nic_speed`
+|type: integer
+
+The `collectd` `nic_speed` type of `statsd` plug-in.
+|===
+
+[discrete]
+[[exported-fields-collectd.postgresql]]
+=== `collectd.postgresql Fields`
+
+Corresponds to `collectd` `postgresql` plug-in.
+
+[cols="3,7",options="header"]
+|===
+|Parameter
+|Description
+
+| `collectd.postgresql.pg_n_tup_g`
+|type: integer
+
+The `collectd` type `pg_n_tup_g` of plug-in postgresql.
+
+| `collectd.postgresql.pg_n_tup_c`
+|type: integer
+
+The `collectd` type `pg_n_tup_c` of plug-in postgresql.
+
+| `collectd.postgresql.pg_numbackends`
+|type: integer
+
+The `collectd` type `pg_numbackends` of plug-in postgresql.
+
+| `collectd.postgresql.pg_xact`
+|type: integer
+
+The `collectd` type `pg_xact` of plug-in postgresql.
+
+| `collectd.postgresql.pg_db_size`
+|type: integer
+
+The `collectd` type `pg_db_size` of plug-in postgresql.
+
+| `collectd.postgresql.pg_blks`
+|type: integer
+
+The `collectd` type `pg_blks` of plug-in postgresql.
+|===
+
+[discrete]
+[[exported-fields-rsyslog]]
+=== `rsyslog` Fields
+
+The following fields are RFC5424 based metadata.
+
+[cols="3,7",options="header"]
+|===
+|Parameter
+|Description
+
+| `rsyslog.facility`
+|See `syslog` specification for more information on `rsyslog`.
+
+| `rsyslog.protocol-version`
+|This is the `rsyslog` protocol version.
+
+| `rsyslog.structured-data`
+|See `syslog` specification for more information on `syslog` structured-data.
+
+| `rsyslog.msgid`
+|This is the `syslog` msgid field.
+
+| `rsyslog.appname`
+|If `app-name` is the same as `programname`, then only fill top-level field `service`.
+If `app-name` is not equal to `programname`, this field will hold `app-name`.
+See syslog specifications for more information.
+|===
+
+[discrete]
+[[exported-fields-systemd]]
+=== `systemd` Fields
+
+Contains common fields specific to `systemd` journal.
+link:https://www.freedesktop.org/software/systemd/man/systemd.journal-fields.html[Applications]
+may write their own fields to the journal. These will be available under the
+`systemd.u` namespace. `RESULT` and `UNIT` are two such fields.
+
+[discrete]
+[[exported-fields-systemd.k]]
+=== `systemd.k` Fields
+
+The following table contains `systemd` kernel-specific metadata.
+
+[cols="3,7",options="header"]
+|===
+|Parameter
+|Description
+
+| `systemd.k.KERNEL_DEVICE`
+|link:https://www.freedesktop.org/software/systemd/man/systemd.journal-fields.html#_KERNEL_DEVICE=[`systemd.k.KERNEL_DEVICE`]
+is the kernel device name.
+
+| `systemd.k.KERNEL_SUBSYSTEM`
+|link:https://www.freedesktop.org/software/systemd/man/systemd.journal-fields.html#_KERNEL_SUBSYSTEM=[`systemd.k.KERNEL_SUBSYSTEM`]
+is the kernel subsystem name.
+
+| `systemd.k.UDEV_DEVLINK`
+|link:https://www.freedesktop.org/software/systemd/man/systemd.journal-fields.html#_UDEV_DEVLINK=[`systemd.k.UDEV_DEVLINK`]
+includes additional symlink names that point to the node.
+
+| `systemd.k.UDEV_DEVNODE`
+|link:https://www.freedesktop.org/software/systemd/man/systemd.journal-fields.html#_UDEV_DEVNODE=[`systemd.k.UDEV_DEVNODE`]
+is the node path of the device.
+
+| `systemd.k.UDEV_SYSNAME`
+|link:https://www.freedesktop.org/software/systemd/man/systemd.journal-fields.html#_UDEV_SYSNAME=[ `systemd.k.UDEV_SYSNAME`]
+is the kernel device name.
+
+|===
+
+[discrete]
+[[exported-fields-systemd.t]]
+=== `systemd.t` Fields
+
+`systemd.t Fields` are trusted journal fields, fields that are implicitly added
+by the journal, and cannot be altered by client code.
+
+[cols="3,7",options="header"]
+|===
+|Parameter
+|Description
+
+| `systemd.t.AUDIT_LOGINUID`
+|link:https://www.freedesktop.org/software/systemd/man/systemd.journal-fields.html#_AUDIT_SESSION=[`systemd.t.AUDIT_LOGINUID`]
+is the user ID for the journal entry process.
+
+| `systemd.t.BOOT_ID`
+|link:https://www.freedesktop.org/software/systemd/man/systemd.journal-fields.html#_BOOT_ID=[`systemd.t.BOOT_ID`]
+is the kernel boot ID.
+
+| `systemd.t.AUDIT_SESSION`
+|link:https://www.freedesktop.org/software/systemd/man/systemd.journal-fields.html#_AUDIT_SESSION=[`systemd.t.AUDIT_SESSION`]
+is the session for the journal entry process.
+
+| `systemd.t.CAP_EFFECTIVE`
+|link:https://www.freedesktop.org/software/systemd/man/systemd.journal-fields.html#_CAP_EFFECTIVE=[`systemd.t.CAP_EFFECTIVE`]
+represents the capabilities of the journal entry process.
+
+| `systemd.t.CMDLINE`
+|link:https://www.freedesktop.org/software/systemd/man/systemd.journal-fields.html#_COMM=[`systemd.t.CMDLINE`]
+is the command line of the journal entry process.
+
+| `systemd.t.COMM`
+|link:https://www.freedesktop.org/software/systemd/man/systemd.journal-fields.html#_COMM=[`systemd.t.COMM`]
+is the name of the journal entry process.
+
+| `systemd.t.EXE`
+|link:https://www.freedesktop.org/software/systemd/man/systemd.journal-fields.html#_COMM=[`systemd.t.EXE`]
+is the executable path of the journal entry process.
+
+| `systemd.t.GID`
+|link:https://www.freedesktop.org/software/systemd/man/systemd.journal-fields.html#_PID=[`systemd.t.GID`]
+is the group ID for the journal entry process.
+
+| `systemd.t.HOSTNAME`
+|link:https://www.freedesktop.org/software/systemd/man/systemd.journal-fields.html#_HOSTNAME=[`systemd.t.HOSTNAME`]
+is the name of the host.
+
+| `systemd.t.MACHINE_ID`
+|link:https://www.freedesktop.org/software/systemd/man/systemd.journal-fields.html#_MACHINE_ID=[`systemd.t.MACHINE_ID`]
+is the machine ID of the host.
+
+| `systemd.t.PID`
+|link:https://www.freedesktop.org/software/systemd/man/systemd.journal-fields.html#_PID=[`systemd.t.PID`]
+is the process ID for the journal entry process.
+
+| `systemd.t.SELINUX_CONTEXT`
+|link:https://www.freedesktop.org/software/systemd/man/systemd.journal-fields.html#_SELINUX_CONTEXT=[`systemd.t.SELINUX_CONTEXT`]
+is the security context, or label, for the journal entry process.
+
+| `systemd.t.SOURCE_REALTIME_TIMESTAMP`
+|link:https://www.freedesktop.org/software/systemd/man/systemd.journal-fields.html#_SOURCE_REALTIME_TIMESTAMP=[`systemd.t.SOURCE_REALTIME_TIMESTAMP`]
+is the earliest and most reliable timestamp of the message. This is converted to RFC 3339 NS format.
+
+| `systemd.t.SYSTEMD_CGROUP`
+|link:https://www.freedesktop.org/software/systemd/man/systemd.journal-fields.html#_SYSTEMD_CGROUP=[`systemd.t.SYSTEMD_CGROUP`]
+is the `systemd` control group path.
+
+| `systemd.t.SYSTEMD_OWNER_UID`
+|link:https://www.freedesktop.org/software/systemd/man/systemd.journal-fields.html#_SYSTEMD_CGROUP=[`systemd.t.SYSTEMD_OWNER_UID`]
+is the owner ID of the session.
+
+| `systemd.t.SYSTEMD_SESSION`
+|link:https://www.freedesktop.org/software/systemd/man/systemd.journal-fields.html#_SYSTEMD_CGROUP=[`systemd.t.SYSTEMD_SESSION`],
+if applicable, is the `systemd` session ID.
+
+| `systemd.t.SYSTEMD_SLICE`
+|link:https://www.freedesktop.org/software/systemd/man/systemd.journal-fields.html#_SYSTEMD_CGROUP=[`systemd.t.SYSTEMD_SLICE`]
+is the slice unit of the journal entry process.
+
+| `systemd.t.SYSTEMD_UNIT`
+|link:https://www.freedesktop.org/software/systemd/man/systemd.journal-fields.html#_SYSTEMD_CGROUP=[`systemd.t.SYSTEMD_UNIT`]
+is the unit name for a session.
+
+| `systemd.t.SYSTEMD_USER_UNIT`
+|link:https://www.freedesktop.org/software/systemd/man/systemd.journal-fields.html#_SYSTEMD_CGROUP=[`systemd.t.SYSTEMD_USER_UNIT`],
+if applicable, is the user unit name for a session.
+
+| `systemd.t.TRANSPORT`
+|link:https://www.freedesktop.org/software/systemd/man/systemd.journal-fields.html#_TRANSPORT=[`systemd.t.TRANSPORT`]
+is the method of entry by the journal service. This includes, `audit`, `driver`,
+`syslog`, `journal`, `stdout`, and `kernel`.
+
+| `systemd.t.UID`
+|link:https://www.freedesktop.org/software/systemd/man/systemd.journal-fields.html#_PID=[`systemd.t.UID`]
+is the user ID for the journal entry process.
+
+| `systemd.t.SYSLOG_FACILITY`
+|link:https://www.freedesktop.org/software/systemd/man/systemd.journal-fields.html#SYSLOG_FACILITY=[`systemd.t.SYSLOG_FACILITY`]
+is the field containing the facility, formatted as a decimal string, for `syslog`.
+
+| `systemd.t.SYSLOG_IDENTIFIER`
+|link:https://www.freedesktop.org/software/systemd/man/systemd.journal-fields.html#SYSLOG_FACILITY=[`systemd.t.systemd.t.SYSLOG_IDENTIFIER`]
+is the identifier for `syslog`.
+
+| `systemd.t.SYSLOG_PID`
+|link:https://www.freedesktop.org/software/systemd/man/systemd.journal-fields.html#SYSLOG_FACILITY=[`SYSLOG_PID`]
+is the client process ID for `syslog`.
+|===
+
+[discrete]
+[[exported-fields-systemd.u]]
+=== `systemd.u` Fields
+
+`systemd.u Fields` are directly passed from clients and stored in the journal.
+
+[cols="3,7",options="header"]
+|===
+|Parameter
+|Description
+
+| `systemd.u.CODE_FILE`
+|link:https://www.freedesktop.org/software/systemd/man/systemd.journal-fields.html#CODE_FILE=[`systemd.u.CODE_FILE`]
+is the code location containing the filename of the source.
+
+| `systemd.u.CODE_FUNCTION`
+|link:https://www.freedesktop.org/software/systemd/man/systemd.journal-fields.html#CODE_FILE=[`systemd.u.CODE_FUNCTION`]
+is the code location containing the function of the source.
+
+| `systemd.u.CODE_LINE`
+|link:https://www.freedesktop.org/software/systemd/man/systemd.journal-fields.html#CODE_FILE=[`systemd.u.CODE_LINE`]
+is the code location containing the line number of the source.
+
+| `systemd.u.ERRNO`
+|link:https://www.freedesktop.org/software/systemd/man/systemd.journal-fields.html#ERRNO=[`systemd.u.ERRNO`],
+if present, is the low-level error number formatted in numeric value, as a decimal string.
+
+| `systemd.u.MESSAGE_ID`
+|link:https://www.freedesktop.org/software/systemd/man/systemd.journal-fields.html#MESSAGE_ID=[`systemd.u.MESSAGE_ID`]
+is the message identifier ID for recognizing message types.
+
+| `systemd.u.RESULT`
+|For private use only.
+
+| `systemd.u.UNIT`
+|For private use only.
+|===
+
+[discrete]
+[[exported-fields-kubernetes]]
+=== Kubernetes Fields
+
+The namespace for Kubernetes-specific metadata. The `kubernetes.pod_name` is the
+name of the pod.
+
+[discrete]
+[[exported-fields-kubernetes.labels]]
+=== `kubernetes.labels` Fields
+
+Labels attached to the OpenShift object are `kubernetes.labels`. Each label name
+is a subfield of labels field. Each label name is de-dotted, meaning dots in the
+name are replaced with underscores.
+
+[cols="3,7",options="header"]
+|===
+|Parameter
+|Description
+
+| `kubernetes.pod_id`
+|Kubernetes ID of the pod.
+
+| `kubernetes.namespace_name`
+|The name of the namespace in Kubernetes.
+
+| `kubernetes.namespace_id`
+|ID of the namespace in Kubernetes.
+
+| `kubernetes.host`
+|Kubernetes node name.
+
+| `kubernetes.container_name`
+|The name of the container in Kubernetes.
+
+| `kubernetes.labels.deployment`
+||The deployment associated with the Kubernetes object.
+
+| `kubernetes.labels.deploymentconfig`
+|The deploymentconfig associated with the Kubernetes object.
+
+| `kubernetes.labels.component`
+|The component associated with the Kubernetes object.
+
+| `kubernetes.labels.provider`
+|The provider associated with the Kubernetes object.
+|===
+
+[discrete]
+[[exported-fields-kubernetes.annotations]]
+=== `kubernetes.annotations` Fields
+
+Annotations associated with the OpenShift object are `kubernetes.annotations`
+fields.
+
+[discrete]
+[[exported-fields-docker]]
+=== Docker Fields
+
+Namespace for docker container-specific metadata. The `docker.container_id` is
+the Docker container ID.
+
+[discrete]
+[[exported-fields-pipeline_metadata]]
+=== `pipeline_metadata` Fields
+
+This includes metadata related to ViaQ log collection pipeline. Everything
+related to log collector, normalizers, and mappings goes here. Data in this
+subgroup is stored for troubleshooting and other purposes. The
+`pipeline_metadata.@version` field is the version of `com.redhat.viaq` mapping
+the document is intended to adhere by the normalizer. It must be set by the
+normalizer. The value must correspond to the [_meta][version]. For example,
+`class` with the description `TODO`, and `region` with the description region
+mapping.
+
+[discrete]
+[[exported-fields-pipeline_metadata.collector]]
+=== `pipeline_metadata.collector` Fields
+
+This section contains metadata specific to the collector.
+
+[cols="3,7",options="header"]
+|===
+|Parameter
+|Description
+
+| `pipeline_metadata.collector.hostname`
+|FQDN of the collector. It might be different from the FQDN of the actual emitter
+of the logs.
+
+| `pipeline_metadata.collector.name`
+|Name of the collector.
+
+| `pipeline_metadata.collector.version`
+|Version of the collector.
+
+| `pipeline_metadata.collector.ipaddr4`
+|IP address v4 of the collector server, can be an array.
+
+| `pipeline_metadata.collector.ipaddr6`
+|IP address v6 of the collector server, can be an array.
+
+| `pipeline_metadata.collector.inputname`
+|How the log message was received by the collector whether it was TCP/UDP, or
+imjournal/imfile.
+
+| `pipeline_metadata.collector.received_at`
+|Time when the message was received by the collector.
+
+| `pipeline_metadata.collector.original_raw_message`
+|The original non-parsed log message, collected by the collector or as close to the
+source as possible.
+|===
+
+[discrete]
+[[exported-fields-pipeline_metadata.normalizer]]
+=== `pipeline_metadata.normalizer` Fields
+
+This section contains metadata specific to the normalizer.
+
+[cols="3,7",options="header"]
+|===
+|Parameter
+|Description
+
+| `pipeline_metadata.normalizer.hostname`
+|FQDN of the normalizer.
+
+| `pipeline_metadata.normalizer.name`
+|Name of the normalizer.
+
+| `pipeline_metadata.normalizer.version`
+|Version of the normalizer.
+
+| `pipeline_metadata.normalizer.ipaddr4`
+|IP address v4 of the normalizer server, can be an array.
+
+| `pipeline_metadata.normalizer.ipaddr6`
+|IP address v6 of the normalizer server, can be an array.
+
+| `pipeline_metadata.normalizer.inputname`
+|how the log message was received by the normalizer whether it was TCP/UDP.
+
+| `pipeline_metadata.normalizer.received_at`
+|Time when the message was received by the normalizer.
+
+| `pipeline_metadata.normalizer.original_raw_message`
+|The original non-parsed log message as it is received by the normalizer.
+
+| `pipeline_metadata.trace`
+|The field records the trace of the message. Each collector and normalizer appends
+information about itself and the date and time when the message was processed.
+|===
+
+[discrete]
+[[exported-fields-ovirt]]
+=== oVirt Fields
+
+Namespace for oVirt metadata.
+
+[cols="3,7",options="header"]
+|===
+|Parameter
+|Description
+
+| `ovirt.entity`
+|The type of the data source, hosts, VMS, and engine.
+
+| `ovirt.host_id`
+|The oVirt host UUID.
+|===
+
+[discrete]
+[[exported-fields-ovirt.engine]]
+=== `ovirt.engine` Fields
+
+Namespace for oVirt engine related metadata. The FQDN of the oVirt engine is
+`ovirt.engine.fqdn`
+
+[discrete]
+[[exported-fields-aushape]]
+=== Aushape Fields
+
+Audit events converted with Aushape. For more information, see
+link:https://github.com/Scribery/aushape[Aushape].
+
+[cols="3,7",options="header"]
+|===
+|Parameter
+|Description
+
+| `aushape.serial`
+|Audit event serial number.
+
+| `aushape.node`
+|Name of the host where the audit event occurred.
+
+| `aushape.error`
+|The error aushape encountered while converting the event.
+
+| `aushape.trimmed`
+|An array of JSONPath expressions relative to the event object, specifying
+objects or arrays with the content removed as the result of event size limiting.
+An empty string means the event removed the content, and an empty array means
+the trimming occurred by unspecified objects and arrays.
+
+| `aushape.text`
+|An array log record strings representing the original audit event.
+|===
+
+[discrete]
+[[exported-fields-aushape.data]]
+=== `aushape.data` Fields
+
+Parsed audit event data related to Aushape.
+
+[cols="3,7",options="header"]
+|===
+|Parameter
+|Description
+
+| `aushape.data.avc`
+|type: nested
+
+| `aushape.data.execve`
+|type: string
+
+| `aushape.data.netfilter_cfg`
+|type: nested
+
+| `aushape.data.obj_pid`
+|type: nested
+
+| `aushape.data.path`
+|type: nested
+|===
+
+[discrete]
+[[exported-fields-tlog]]
+=== Tlog Fields
+
+Tlog terminal I/O recording messages. For more information see
+link:https://github.com/Scribery/tlog[Tlog].
+
+[cols="3,7",options="header"]
+|===
+|Parameter
+|Description
+
+| `tlog.ver`
+|Message format version number.
+
+| `tlog.user`
+|Recorded user name.
+
+| `tlog.term`
+|Terminal type name.
+
+| `tlog.session`
+|Audit session ID of the recorded session.
+
+| `tlog.id`
+|ID of the message within the session.
+
+| `tlog.pos`
+|Message position in the session, milliseconds.
+
+| `tlog.timing`
+|Distribution of this message's events in time.
+
+| `tlog.in_txt`
+|Input text with invalid characters scrubbed.
+
+| `tlog.in_bin`
+|Scrubbed invalid input characters as bytes.
+
+| `tlog.out_txt`
+|Output text with invalid characters scrubbed.
+
+| `tlog.out_bin`
+|Scrubbed invalid output characters as bytes.
+|===
+endif::openshift-origin[]
+
+[[manual-elasticsearch-rollouts]]
+== Manual Elasticsearch Rollouts
+
+As of {product-title} 3.7 the Aggregated Logging stack updated the Elasticsearch
+Deployment Config object so that it no longer has a Config Change Trigger, meaning
+any changes to the `dc` will not result in an automatic rollout. This was to prevent
+unintended restarts happening in the ES cluster, which could create excessive shard
+rebalancing as cluster members restart.
+
+This section presents two restart procedures: xref:elasticsearch-rolling-restart[rolling-restart]
+and xref:elasticsearch-full-restart[full-restart]. Where a rolling restart
+applies appropriate changes to the Elasticsearch cluster without down time
+(provided three masters are configured) and a full restart safely applies major
+changes without risk to existing data.
+
+[[elasticsearch-rolling-restart]]
+=== Performing an Elasticsearch Rolling Cluster Restart
+
+A rolling restart is recommended, when any of the following changes are made:
+
+* nodes on which Elasticsearch pods run require a reboot
+* logging-elasticsearch configmap
+* logging-es-* deployment configuration
+* new image deployment, or upgrade
+
+This will be the recommended restart policy going forward.
+
+[NOTE]
+====
+Any action you do for an ES cluster will need to be repeated for the ops cluster
+if `openshift_logging_use_ops` was configured to be `True`.
+====
+
+. Prevent shard balancing when purposely bringing down nodes:
++
+----
+$ oc exec -c elasticsearch <any_es_pod_in_the_cluster> --
+          curl -s
+          --cacert /etc/elasticsearch/secret/admin-ca \
+          --cert /etc/elasticsearch/secret/admin-cert \
+          --key /etc/elasticsearch/secret/admin-key \
+          -XPUT 'https://localhost:9200/_cluster/settings' \
+          -d '{ "transient": { "cluster.routing.allocation.enable" : "none" } }'
+----
+
+. Once complete, for each `dc` you have for an ES cluster, run `oc rollout latest`
+to deploy the latest version of the `dc` object:
++
+----
+$ oc rollout latest <dc_name>
+----
++
+You will see a new pod deployed. Once the pod has two ready containers, you can
+move on to the next `dc`.
+
+. Once all `dc`s for the cluster have been rolled out, re-enable shard balancing:
++
+----
+$ oc exec -c elasticsearch <any_es_pod_in_the_cluster> --
+          curl -s
+          --cacert /etc/elasticsearch/secret/admin-ca \
+          --cert /etc/elasticsearch/secret/admin-cert \
+          --key /etc/elasticsearch/secret/admin-key \
+          -XPUT 'https://localhost:9200/_cluster/settings' \
+          -d '{ "transient": { "cluster.routing.allocation.enable" : "all" } }'
+----
+
+[[elasticsearch-full-restart]]
+=== Performing an Elasticsearch Full Cluster Restart
+
+A full restart is recommended when changing major versions of Elasticsearch or
+other changes which might put data integrity a risk during the change process.
+
+[NOTE]
+====
+Any action you do for an ES cluster will need to be repeated for the ops cluster
+if `openshift_logging_use_ops` was configured to be `True`.
+====
+
+[NOTE]
+====
+When making changes to the `logging-es-ops` service use components
+"es-ops-blocked" and "es-ops" instead in the patch
+====
+
+. Disable all external communications to the ES cluster while it is down. Edit
+your non-cluster logging service (for example, `logging-es`, `logging-es-ops`)
+to no longer match the ES pods running:
++
+----
+$  oc patch svc/logging-es -p '{"spec":{"selector":{"component":"es-blocked","provider":"openshift"}}}'
+----
+
+. Perform a shard synced flush to ensure there are no pending operations waiting
+to be written to disk prior to shutting down:
++
+----
+$ oc exec -c elasticsearch <any_es_pod_in_the_cluster> --
+          curl -s
+          --cacert /etc/elasticsearch/secret/admin-ca \
+          --cert /etc/elasticsearch/secret/admin-cert \
+          --key /etc/elasticsearch/secret/admin-key \
+          -XPOST 'https://localhost:9200/_flush/synced'
+----
+
+. Prevent shard balancing when purposely bringing down nodes:
++
+----
+$ oc exec -c elasticsearch <any_es_pod_in_the_cluster> --
+          curl -s
+          --cacert /etc/elasticsearch/secret/admin-ca \
+          --cert /etc/elasticsearch/secret/admin-cert \
+          --key /etc/elasticsearch/secret/admin-key \
+          -XPUT 'https://localhost:9200/_cluster/settings' \
+          -d '{ "transient": { "cluster.routing.allocation.enable" : "none" } }'
+----
+
+. Once complete, for each `dc` you have for an ES cluster, run `oc rollout latest`
+to deploy the latest version of the `dc` object:
++
+----
+$ oc rollout latest <dc_name>
+----
++
+You will see a new pod deployed. Once the pod has two ready containers, you can
+move on to the next `dc`.
+
+. Once the restart is complete, enable all external communications to the ES
+cluster. Edit your non-cluster logging service (for example, `logging-es`,
+`logging-es-ops`) to match the ES pods running again:
++
+----
+$ oc patch svc/logging-es -p '{"spec":{"selector":{"component":"es","provider":"openshift"}}}'
+----
