@@ -4,12 +4,12 @@ set -ev
 #download build log
 wget https://api.travis-ci.org/v3/job/"${TRAVIS_JOB_ID}"/log.txt
 
-# since all errors are Red (\033[0;31m), grep gets them and then sed
-# removes all color information.
-ERROR_LIST=$(grep '31m' travis-log-408052641.txt | sed -r "s/[[:cntrl:]]\[[0-9]{1,3}m//g")
+# since all errors are Red, `grep` gets them
+# then `sed` removes all color information.
+ERROR_LIST=$(awk '/\[31/{print}' log.txt | head -n -2 | sed -r "s/[[:cntrl:]]\[[0-9]{1,3}m//g")
 echo "" > errors.txt
 
-ALLOWED_USERS=("gaurav-nelson" "tmorriso-rh" "mburke5678" "vikram-redhat" "ahardin-rh" "kalexand-rh" "adellape" "bfallonf" "bmcelvee" "ousleyp" "rh-max")
+ALLOWED_USERS=("gaurav-nelson" "tmorriso-rh" "mburke5678" "vikram-redhat" "ahardin-rh" "kalexand-rh" "adellape" "bfallonf" "bmcelvee" "ousleyp" "jhoyt-rh" "JStickler" "geekspertise" "rh-max")
 USERNAME=${TRAVIS_PULL_REQUEST_SLUG::-15}
 
 if [ "$TRAVIS_PULL_REQUEST" != "false" ] ; then #to make sure it only runs on PRs and not all merges
