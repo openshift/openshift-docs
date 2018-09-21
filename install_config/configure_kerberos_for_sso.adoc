@@ -1,0 +1,177 @@
+==== Configuring an Apache proxy or Single Sign On authentication via Kerberos
+
+Configuring SSO authentication makes life much easier for users that are
+enrolled in a Windows Active Directory domain or a Linux IPA domain. Both
+these enterprise authentication systems use Kerberos and that allows a
+seamless experience where the user doesn't need to use additional passwords
+to authenticate to systems and services.
+
+The key challenge in getting this setup to work properly is correct
+configuration of domain names and time sync. Kerberos relies on correct DNS
+resolution and fully qualified domain names to resolve how to acquire the
+proper token to authenticate to a network service. Naming errors are the
+leading cause of unsuccessful deployments. Time is also a common source of
+failures. All hosts need to have they clock synced within 5 minutes skew.
+
+===== Installation prerequisites
+
+First establish the (public) DNS name that you are going to assign to the
+Apache Authentication Proxy. This DNS name will be used in your domain
+controller (AD, IPA, or other Kerberos Distribution Center) to create a new
+Kerberos Principal and Keys associated with the proxy. These keys will be
+then stored into a keytab that will be used by Apache to authenticate users.
+No other name or alias will work, so make sure to always reference and use the
+fully qualified DNS name you choose for this proxy and all relevant cluster
+configurations.
+
+Create a Service Principal Name (SPN) for the service, it must conform to this
+template: `HTTP/hostname@REALM` Where the string `HTTP` is all capitals, the
+`hostname` part is the fully qualified host name (the chosen DNS name for the
+proxy) and the realm is generally the uppercase name of the domain controlled
+by your KDC. Obtain a keytab file for the SPN that you created.
+
+Assuming a domain named krb.example.com where the KDC resides, we choose a DNS
+name like auth-proxy.krb.example.com. The resulting SPN we need to create in
+the kerberos realm is: `HTTP/auth-proxy.krb.example.com@KRB.EXAMPLE.COM`
+
+Once the SPN is created assign a random key to it and extract a keytab, export
+it to a file and securely transfer it to the proxy server.
+[IMPORTANT]
+====
+The keytab contains the secret key of the service and must be transfered
+securely to the target system without leaving copies in files accessible by
+other users. Access to those keys allows a complete authentication bypass
+and jeopardizes the security of your installation.
+====
+
+We assume the cluster uses the public name: `cluster.krb.example.com`
+
+We also need a TLS certificate for serving content for the chosen DNS
+name. The certificate must have a SAN for the name: `auth-proxy.krb.example.com`
+or a wildcard name for the whole domain.
+
+Finally we also need a 'client' certificate that the proxy uses to proxy to the
+openshift cluster. A client certificate is a certificate with extended key
+usage property set to `TLS Web client authentication`.
+[IMPORTANT]
+====
+This certificate is critical as it will be fully trusted by the cluster to
+provide user identity data. A compromise of this certificate will allow an
+attacker to impersonate any user in the cluster.
+====
+In our example we create a certificate with the subject: `CN=oauth-proxy-client`
+
+===== Configuring Apache
+
+Two modules are required for a successful configuration: mod_request and
+mod_auth_gssapi, make sure the following configuration lines are uncommented
+in the proper configuration file, usually something like:
+
+----
+LoadModule request_module modules/mod_request.so
+LoadModule auth_gssapi_module modules/mod_auth_gssapi.so
+----
+
+The next step is to add virtual host directives to allow Apache to respond to
+queries made to the DNS name we chose earlier:
+
+----
+# Nothing needs to be served over HTTP.  This virtual host simply redirects to
+# HTTPS.
+<VirtualHost *:80>
+  DocumentRoot /var/www/html
+  RewriteEngine              On
+  RewriteRule     ^(.*)$     https://%{HTTP_HOST}$1 [R,L]
+</VirtualHost>
+
+<VirtualHost *:443>
+  # ServerName needs to match the DNS name we chose and the SAN of the serving
+  # certificate that was generated as well as the hostname of the Service
+  # Principal Name created to obtain the keys in the keytab.
+  ServerName auth-proxy.krb.example.com
+
+  DocumentRoot /var/www/html
+  SSLEngine On
+  SSLCertificateFile /etc/pki/tls/certs/auth-proxy.krb.example.com.crt
+  SSLCertificateKeyFile /etc/pki/tls/private/auth-proxy.krb.example.com.key
+  SSLCACertificateFile /etc/pki/CA/certs/ca.crt
+
+  SSLProxyEngine On
+  SSLProxyCACertificateFile /etc/pki/CA/certs/ca.crt
+  # It's critical to enforce client certificates on the Master.  Otherwise
+  # requests could spoof the X-Remote-User header by accessing the Master's
+  # /oauth/authorize endpoint directly.
+  SSLProxyMachineCertificateFile /etc/pki/tls/certs/auth-proxy-client.crt
+
+  # Send all requests to the console
+  RewriteEngine On
+  RewriteRule   ^/console(.*)$   https://%{HTTP_HOST}:8443/console$1 [R,L]
+
+  # In order to using the challenging-proxy an X-Csrf-Token must be present.
+  RewriteCond %{REQUEST_URI} ^/challenging-proxy/?
+  RewriteCond %{HTTP:X-Csrf-Token} ^$ [NC]
+  RewriteRule ^.* - [F,L]
+
+  <Location /challenging-proxy/oauth/authorize>
+    # NOTE: this is the name of the cluster API Servers
+    ProxyPass https://cluster.krb.example.com:8443/oauth/authorize
+    AuthName "SSO Login"
+    AuthType GSSAPI
+    Require valid-user
+    RequestHeader set X-Remote-User %{REMOTE_USER}s
+
+    GssapiCredStore keytab:/etc/httpd/protected/auth-proxy.keytab
+    # Enable the following if you want to allow users to fallback
+    # to password based authntication when they do not have a client
+    # configured to perform kerberos authentication
+    GssapiBasicAuth On
+  </Location>
+
+  <Location /login-proxy/oauth/authorize>
+    # NOTE: this is the name of the cluster API Servers
+    ProxyPass https://cluster.krb.example.com:8443/oauth/authorize
+
+    AuthName "SSO Login"
+    AuthType GSSAPI
+    Require valid-user
+    RequestHeader set X-Remote-User %{REMOTE_USER}s env=REMOTE_USER
+
+    GssapiCredStore keytab:/etc/httpd/protected/auth-proxy.keytab
+    # Enable the following if you want to allow users to fallback
+    # to password based authntication when they do not have a client
+    # configured to perform kerberos authentication
+    GssapiBasicAuth On
+
+    ErrorDocument 401 /login.html
+  </Location>
+</VirtualHost>
+
+RequestHeader unset X-Remote-User
+----
+
+===== Configuring the cluster
+
+The OAuth config for the cluster needs to be set to use our proxy for
+user authentication.
+The following yaml config snippet for the identityProviders section
+follows our example:
+
+----
+oauthConfig:
+  - name: sso
+    challenge: true
+    login: true
+    provider:
+      apiVersion: v1
+      # The proxy protected URLs
+      challengeURL: "https://auth-proxy.krb.example.com/challenging-proxy/oauth/authorize?${query}"
+      loginURL: "https://auth-proxy.krb.example.com/login-proxy/oauth/authorize?${query}"
+      kind: RequestHeaderIdentityProvider
+      # This is the CA that signed the proxy client certificate
+      clientCA: /etc/origin/master/proxyca.crt
+      # This must match the CN element of the client certificate subject
+      clientCommonNames: oauth-proxy-client
+      headers:
+      - X-Remote-User
+----
+
