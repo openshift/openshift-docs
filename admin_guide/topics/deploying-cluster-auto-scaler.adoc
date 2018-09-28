@@ -1,0 +1,279 @@
+// Module included in the following assemblies:
+//
+// * admin_guide/cluster-autoscaler.adoc
+
+[id='deploying-cluster-auto-scaler-{context}']
+= Deploying the auto-scaler components on your cluster
+
+After you create the Launch Configuration and Auto Scaling group, you can deploy
+the auto-scaler components onto the cluster.
+
+.Prerequisites
+
+* Install a {product-title} cluster in AWS.
+* Create a primed image.
+* Create a Launch Configuration and Auto Scaling group that reference the primed
+image.
+
+.Procedure
+To deploy the auto-scaler:
+
+. Update your cluster to run the auto-scaler:
+.. Add the following parameter to the inventory file that you used to create the
+cluster, by default *_/etc/ansible/hosts_*:
++
+----
+openshift_master_bootstrap_auto_approve=true
+----
+
+.. To obtain the auto-scaler components, run the playbook again:
++
+----
+$ ansible-playbook -i </path/to/inventory/file> \
+    /usr/share/ansible/openshift-ansible/playbooks/deploy_cluster.yml
+----
+
+.. Confirm that the `bootstrap-autoapprover` pod is running:
++
+----
+$ oc get pods --all-namespaces | grep bootstrap-autoapprover
+NAMESPACE               NAME                                             READY     STATUS    RESTARTS   AGE
+openshift-infra         bootstrap-autoapprover-0                         1/1       Running   0  
+----
+
+. Create a namespace for the auto-scaler:
++
+[source,bash]
+----
+$ oc apply -f - <<EOF
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: cluster-autoscaler
+  annotations:
+    openshift.io/node-selector: ""
+EOF
+----
+
+. Create a service account for the auto-scaler:
++
+[source,shell]
+----
+$ oc apply -f - <<EOF
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  labels:
+    k8s-addon: cluster-autoscaler.addons.k8s.io
+    k8s-app: cluster-autoscaler
+  name: cluster-autoscaler
+  namespace: cluster-autoscaler
+EOF
+----
+
+. Create a cluster role to grant the required permissions to the service
+account:
++
+[source,shell]
+----
+$ oc apply -n cluster-autoscaler -f - <<EOF
+apiVersion: v1
+kind: ClusterRole
+metadata:
+  name: cluster-autoscaler
+rules:
+- apiGroups:
+  - ""
+  resources:
+  - persistentvolumeclaims
+  - persistentvolumes
+  - pods
+  - replicationcontrollers
+  - services
+  verbs:
+  - get
+  - list
+  - watch
+  attributeRestrictions: null
+- apiGroups:
+  - ""
+  resources:
+  - events
+  verbs:
+  - get
+  - list
+  - watch
+  - patch
+  - create
+  attributeRestrictions: null
+- apiGroups:
+  - ""
+  resources:
+  - nodes
+  verbs:
+  - get
+  - list
+  - watch
+  - patch
+  - update
+  attributeRestrictions: null
+- apiGroups:
+  - extensions
+  - apps
+  resources:
+  - daemonsets
+  - replicasets
+  - statefulsets
+  verbs:
+  - get
+  - list
+  - watch
+  attributeRestrictions: null
+- apiGroups:
+  - policy
+  resources:
+  - poddisruptionbudgets
+  verbs:
+  - get
+  - list
+  - watch
+  attributeRestrictions: null
+EOF
+----
+
+. Create a role for the deployment auto-scaler:
++
+[source,shell]
+----
+$ oc apply -n cluster-autoscaler -f - <<EOF
+apiVersion: v1
+kind: Role
+metadata:
+  name: cluster-autoscaler
+rules:
+- apiGroups:
+  - ""
+  resources:
+  - configmaps
+  resourceNames:
+  - cluster-autoscaler
+  - cluster-autoscaler-status
+  verbs:
+  - create
+  - get
+  - patch
+  - update
+  attributeRestrictions: null
+- apiGroups:
+  - ""
+  resources:
+  - configmaps
+  verbs:
+  - create
+  attributeRestrictions: null
+- apiGroups:
+  - ""
+  resources:
+  - events
+  verbs:
+  - create
+  attributeRestrictions: null
+EOF
+----
+
+. Create a *_creds_* file to store AWS credentials for the auto-scaler:
++
+[source,shell]
+----
+cat <<EOF > creds
+[default]
+aws_access_key_id = your-aws-access-key-id
+aws_secret_access_key = your-aws-secret-access-key
+EOF
+----
++
+The auto-scaler uses these credentials to launch new instances.
+
+. Create the a secret that contains the AWS credentials:
++
+[source,shell]
+----
+$ oc create secret -n cluster-autoscaler generic autoscaler-credentials --from-file=creds
+----
++
+The auto-scaler uses this secret to launch instances within AWS.
+
+. Create and grant cluster-reader role to the `cluster-autoscaler` 
+service account that you created:
++
+[source,shell]
+----
+$ oc adm policy add-cluster-role-to-user cluster-autoscaler system:serviceaccount:cluster-autoscaler:cluster-autoscaler -n cluster-autoscaler
+
+$ oc adm policy add-role-to-user cluster-autoscaler system:serviceaccount:cluster-autoscaler:cluster-autoscaler --role-namespace cluster-autoscaler -n cluster-autoscaler
+
+$ oc adm policy add-cluster-role-to-user cluster-reader system:serviceaccount:cluster-autoscaler:cluster-autoscaler -n cluster-autoscaler
+----
+
+. Deploy the cluster auto-scaler:
++
+[source,shell]
+----
+$ oc apply -n cluster-autoscaler -f - <<EOF
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  labels:
+    app: cluster-autoscaler
+  name: cluster-autoscaler
+  namespace: cluster-autoscaler
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: cluster-autoscaler
+      role: infra
+  template:
+    metadata:
+      labels:
+	app: cluster-autoscaler
+	role: infra
+    spec:
+      containers:
+      - args:
+	- /bin/cluster-autoscaler
+	- --alsologtostderr
+	- --v=4
+	- --skip-nodes-with-local-storage=False
+	- --leader-elect-resource-lock=configmaps
+	- --namespace=cluster-autoscaler
+	- --cloud-provider=aws
+	- --nodes=0:6:mycluster-ASG
+	env:
+	- name: AWS_REGION
+	  value: us-east-1
+	- name: AWS_SHARED_CREDENTIALS_FILE
+	  value: /var/run/secrets/aws-creds/creds
+ifdef::openshift-enterprise[]
+	image: registry.redhat.io/openshift3/ose-cluster-autoscaler:v3.11.0
+endif::[]
+ifdef::openshift-origin[]
+	image: docker.io/openshift/origin-cluster-autoscaler:v3.11.0
+endif::[]
+	name: autoscaler
+	volumeMounts:
+	- mountPath: /var/run/secrets/aws-creds
+	  name: aws-creds
+	  readOnly: true
+      dnsPolicy: ClusterFirst
+      nodeSelector:
+	node-role.kubernetes.io/infra: "true"
+      serviceAccountName: cluster-autoscaler
+      terminationGracePeriodSeconds: 30
+      volumes:
+      - name: aws-creds
+	secret:
+	  defaultMode: 420
+	  secretName: autoscaler-credentials
+EOF
+----
