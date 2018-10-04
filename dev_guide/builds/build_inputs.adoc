@@ -23,7 +23,7 @@ endif::[]
 * xref:image-source[Content extracted from existing images]
 * xref:source-code[Git repositories]
 * xref:binary-source[Binary (Local) inputs]
-* xref:using-secrets-during-build[Input secrets]
+* xref:using-secrets-during-build[Input secrets and ConfigMaps]
 * xref:using-external-artifacts[External artifacts]
 
 ifdef::openshift-online[]
@@ -731,73 +731,101 @@ archive, and, if valid, the builder changes into that subdirectory before
 executing the build.
 
 [[using-secrets-during-build]]
-== Input Secrets
+== Input Secrets and ConfigMaps
 
-In some scenarios, build operations require credentials to access dependent
-resources, but it is undesirable for those credentials to be available in the
-final application image produced by the build. You can define _input secrets_
-for this purpose.
+In some scenarios, build operations require credentials or other configuration 
+data to access dependent resources, but it is undesirable for that information 
+to be placed in source control. You can define _input secrets_ and _input 
+ConfigMaps_ for this purpose.
 
-For example, when building a Node.js application, you can set up your private
-mirror for Node.js modules. In order to download modules from that private
-mirror, you have to supply a custom *_.npmrc_* file for the build that contains
-a URL, user name, and password. For security reasons, you do not want to expose
-your credentials in the application image.
+For example, when building a Java application via Maven, you can set up a 
+private mirror of Maven Central or JCenter that is accessed via private keys.
+In order to download libraries from that private mirror, you have to supply the
+following:
 
-This example describes Node.js, but you can use the same approach for adding SSL
-certificates into the *_/etc/ssl/certs_* directory, API keys or tokens, license
-files, and more.
+. A  *_settings.xml_* file configured with the mirror's URL and connection 
+settings.
+. A private key referenced in the settings file, such as *_~/.ssh/id_rsa_*.
+
+For security reasons, you do not want to expose your credentials in the 
+application image.
+
+This example describes a Java application, but you can use the same approach 
+for adding SSL certificates into the *_/etc/ssl/certs_* directory, API keys or 
+tokens, license files, and more.
 
 [[using-secrets-in-the-buildconfig]]
-=== Adding Input Secrets
+=== Adding Input Secrets and ConfigMaps
 
-To add an input secret to an existing `BuildConfig`:
+To add an input secret and/or ConfigMap to an existing `BuildConfig`:
+
+. Create the ConfigMap, if it does not exist:
++
+----
+$ oc create configmap settings-mvn \
+    --from-file=settings.xml=<path/to/settings.xml>
+----
++
+This creates a new ConfigMap named *_settings-mvn_*, which contains the
+plain text content of the *_settings.xml_* file.
 
 . Create the secret, if it does not exist:
 +
 ----
-$ oc create secret generic secret-npmrc \
-    --from-file=.npmrc=<path/to/.npmrc>
+$ oc create secret generic secret-mvn \
+    --from-file=id_rsa=<path/to/.ssh/id_rsa>
 ----
 +
-This creates a new secret named *_secret-npmrc_*, which contains the base64
-encoded content of the *_~/.npmrc_* file.
+This creates a new secret named *_secret-mvn_*, which contains the base64
+encoded content of the *_id_rsa_* private key.
 
-. Add the secret to the `source` section in the existing `BuildConfig`:
+. Add the ConfigMap and secret to the `source` section in the existing 
+`BuildConfig`:
 +
 [source,yaml]
 ----
 source:
   git:
-    uri: https://github.com/openshift/nodejs-ex.git
+    uri: https://github.com/wildfly/quickstart.git
+  contextDir: helloworld
+  configMaps:
+    - configMap:
+        name: settings-mvn
   secrets:
     - secret:
-        name: secret-npmrc
+        name: secret-mvn
 ----
 
-To include the secret in a new `BuildConfig`, run the following command:
+To include the secret and ConfigMap in a new `BuildConfig`, run the following 
+command:
 
 ----
 $ oc new-build \
-    openshift/nodejs-010-centos7~https://github.com/openshift/nodejs-ex.git \
-    --build-secret secret-npmrc
+    openshift/wildfly-101-centos7~https://github.com/wildfly/quickstart.git \
+    --context-dir helloworld --build-secret “secret-mvn” \
+    --build-config-map "settings-mvn"
 ----
 
-During the build, the *_.npmrc_* file is copied into the directory where the
-source code is located. In {product-title} S2I builder images, this
-is the image working directory, which is set using the `WORKDIR` instruction
-in the *_Dockerfile_*. If you want to specify another directory, add a
-`destinationDir` to the secret definition:
+During the build, the *_settings.xml_* and *_id_rsa_* files are copied into the
+directory where the source code is located. In {product-title} S2I builder 
+images, this is the image working directory, which is set using the `WORKDIR` 
+instruction in the *_Dockerfile_*. If you want to specify another directory, 
+add a `destinationDir` to the definition:
 
 [source,yaml]
 ----
 source:
   git:
-    uri: https://github.com/openshift/nodejs-ex.git
+    uri: https://github.com/wildfly/quickstart.git
+  contextDir: helloworld
+  configMaps:
+    - configMap:
+        name: settings-mvn
+      destinationDir: ".m2"
   secrets:
     - secret:
-        name: secret-npmrc
-      destinationDir: /etc
+        name: secret-mvn
+      destinationDir: ".ssh"
 ----
 
 You can also specify the destination directory when creating a new
@@ -805,12 +833,13 @@ You can also specify the destination directory when creating a new
 
 ----
 $ oc new-build \
-    openshift/nodejs-010-centos7~https://github.com/openshift/nodejs-ex.git \
-    --build-secret “secret-npmrc:/etc”
+    openshift/wildfly-101-centos7~https://github.com/wildfly/quickstart.git \
+    --context-dir helloworld --build-secret “secret-mvn:.ssh” \
+    --build-config-map "settings-mvn:.m2"
 ----
 
-In both cases, the *_.npmrc_* file is added to the *_/etc_* directory of the
-build environment.
+In both cases, the *_settings.xml_* file is added to the *_./.m2_* directory of the
+build environment, and the *_id_rsa_* key is added to the *_./.ssh_* directory.
 ifndef::openshift-online[]
 Note that for a
 xref:../../architecture/core_concepts/builds_and_image_streams.adoc#docker-build[Docker strategy] the destination directory must be a relative path.
@@ -830,10 +859,12 @@ All preceding directories in the `destinationDir` must exist, or an error will o
 
 [NOTE]
 ====
-Currently, any files with these secrets are world-writable (have `0666`
-permissions) and will be truncated to size zero after executing the *_assemble_*
-script. This means that the secret files will exist in the resulting image, but
-they will be empty for security reasons.
+Input secrets are added as world-writable (have `0666` permissions) and will
+be truncated to size zero after executing the *_assemble_* script. This means 
+that the secret files will exist in the resulting image, but they will be empty 
+for security reasons.
+
+Input ConfigMaps are not truncated after the *_assemble_* script completes.
 ====
 
 ifndef::openshift-online[]
@@ -853,22 +884,22 @@ into that directory, relative to your *_Dockerfile_* location. This makes the
 secret files available to the Docker build operation as part of the context
 directory used during the build.
 
-.Example of a Dockerfile referencing secret data
+.Example of a Dockerfile referencing secret and ConfigMap data
 ====
 ----
 FROM centos/ruby-22-centos7
 
 USER root
-ADD ./secret-dir /secrets
-COPY ./secret2 /
+COPY ./secret-dir /secrets
+COPY ./config /
 
-# Create a shell script that will output secrets when the image is run
-RUN echo '#!/bin/sh' > /secret_report.sh
-RUN echo '(test -f /secrets/secret1 && echo -n "secret1=" && cat /secrets/secret1)' >> /secret_report.sh
-RUN echo '(test -f /secret2 && echo -n "relative-secret2=" && cat /secret2)' >> /secret_report.sh
-RUN chmod 755 /secret_report.sh
+# Create a shell script that will output secrets and ConfigMaps when the image is run
+RUN echo '#!/bin/sh' > /input_report.sh
+RUN echo '(test -f /secrets/secret1 && echo -n "secret1=" && cat /secrets/secret1)' >> /input_report.sh
+RUN echo '(test -f /config && echo -n "relative-configMap=" && cat /config)' >> /input_report.sh
+RUN chmod 755 /input_report.sh
 
-CMD ["/bin/sh", "-c", "/secret_report.sh"]
+CMD ["/bin/sh", "-c", "/input_report.sh"]
 ----
 ====
 
@@ -883,11 +914,11 @@ they were added. This removal should be part of the *_Dockerfile_* itself.
 [[using-secrets-custom-strategy]]
 === Custom Strategy
 
-When using a `Custom` strategy, all the defined input secrets are available
-inside the builder container in the *_/var/run/secrets/openshift.io/build_*
-directory. The custom build image is responsible for using these secrets
-appropriately. The `Custom` strategy also allows secrets to be defined as
-described in xref:build_strategies.adoc#custom-secrets[Custom Strategy Options].
+When using a `Custom` strategy, all the defined input secrets and ConfigMaps 
+are available inside the builder container in the *_/var/run/secrets/openshift.io/build_*
+directory. The custom build image is responsible for using these secrets 
+and ConfigMaps appropriately. The `Custom` strategy also allows secrets to be 
+defined as described in xref:build_strategies.adoc#custom-secrets[Custom Strategy Options].
 
 There is no technical difference between existing strategy secrets and the input
 secrets. However, your builder image might distinguish between them and use them
