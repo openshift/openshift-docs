@@ -21,7 +21,7 @@ function versionSelector(list) {
   // alert(fileRequested);
 
   // in 3.3 and above, we changed to container-platform
-  if(newVersion == 3.10 || newVersion >= 3.3) {
+  if(newVersion == 3.11 || newVersion == 3.10 || newVersion >= 3.3) {
     newLink = "https://docs.openshift.com/container-platform/" +
       newVersion +
       fileRequested;
