@@ -2,8 +2,8 @@
 = Performing Manual In-place Cluster Upgrades
 {product-author}
 {product-version}
-:latest-tag: v3.9.30
-:latest-int-tag: v3.9.30
+:latest-tag: v3.9.43
+:latest-int-tag: v3.9.43
 :data-uri:
 :icons:
 :experimental:
@@ -41,6 +41,14 @@ upgrade.
 If you are using GlusterFS, see
 xref:../upgrading/automated_upgrades.adoc#special-considerations-for-glusterfs[Special
 Considerations When Using Containerized GlusterFS] before proceeding.
+
+The day before the upgrade, validate {product-title} storage migration to ensure
+potential issues are resolved prior to the outage window:
+
+----
+$ oc adm migrate storage --include=* --loglevel=2 --confirm --config /etc/origin/master/admin.kubeconfig
+----
+
 ====
 
 [[preparing-for-a-manual-upgrade]]
@@ -247,8 +255,99 @@ configured as part of the OpenShift SDN, restart the *origin-node* and
 # journalctl -r -u openvswitch
 # journalctl -r -u origin-node
 ----
-
 endif::[]
+
+. Configure Dnsmasq. You must perform the following steps to configure dnsmasq
+as part of the upgrade.
++
+.. Create a *_/etc/origin/node/node-dnsmasq.conf_*  node configuration file.
++
+----
+server=/in-addr.arpa/127.0.0.1
+server=/cluster.local/127.0.0.1
+----
+
+.. Edit the *_/etc/dnsmasq.d/origin-dns.conf_* file as follows:
++
+----
+no-resolv
+domain-needed
+no-negcache
+max-cache-ttl=1
+enable-dbus
+dns-forward-max=5000
+cache-size=5000
+bind-dynamic
+except-interface=lo
+----
+
+.. Edit the *_/etc/dnsmasq.d/origin-upstream-dns.conf_* file as follows:
++
+----
+server=<dns_server1_ip_address>
+server=<dns_server2_ip_address>
+----
+
+.. Edit the *_/etc/origin/node/node-config.yaml_* as follows:
++
+----
+dnsBindAddress: 127.0.0.1:53
+dnsRecursiveResolvConf: /etc/origin/node/resolv.conf
+dnsDomain: cluster.local
+dnsIP: <node_ip_address> <1>
+----
++
+<1> This is the IP address of the node host.
+
+.. Update the *_/etc/systemd/system/atomic-openshift-node.service_* node systemd unit file:
++
+----
+[Unit]
+Description=OpenShift Node
+After=docker.service
+Wants=openvswitch.service
+After=ovsdb-server.service
+After=ovs-vswitchd.service
+Wants=docker.service
+Documentation=https://github.com/openshift/origin
+Requires=dnsmasq.service
+After=dnsmasq.service
+
+[Service]
+Type=notify
+EnvironmentFile=/etc/sysconfig/atomic-openshift-node
+Environment=GOTRACEBACK=crash
+ExecStartPre=/usr/bin/cp /etc/origin/node/node-dnsmasq.conf /etc/dnsmasq.d/
+ExecStartPre=/usr/bin/dbus-send --system --dest=uk.org.thekelleys.dnsmasq /uk/org/thekelleys/dnsmasq uk.org.thekelleys.SetDomainServers array:string:/in-addr.arpa/127.0.0.1,/cluster.local/127.0.0.1
+ExecStopPost=/usr/bin/rm /etc/dnsmasq.d/node-dnsmasq.conf
+ExecStopPost=/usr/bin/dbus-send --system --dest=uk.org.thekelleys.dnsmasq /uk/org/thekelleys/dnsmasq uk.org.thekelleys.SetDomainServers array:string:
+ExecStart=/usr/bin/openshift start node --config=${CONFIG_FILE} $OPTIONS
+LimitNOFILE=65536
+LimitCORE=infinity
+WorkingDirectory=/var/lib/origin/
+SyslogIdentifier=atomic-openshift-node
+Restart=always
+RestartSec=5s
+TimeoutStartSec=300
+OOMScoreAdjust=-999
+
+[Install]
+WantedBy=multi-user.target
+----
++
+.. Reload systemd and restart node service.
++
+----
+# systemctl daemon-reload
+# systemctl restart atomic-openshift-node dnsmaq
+----
+
+.. Restart dnsmasq:
++
+----
+# systemctl restart dnsmasq
+----
+
 ifdef::openshift-enterprise[]
 . On each master host, upgrade the *atomic-openshift* packages or related images.
 
@@ -278,14 +377,16 @@ IMAGE_VERSION=<tag>
 +
 Replace `<tag>` with `{latest-tag}` for the latest version.
 
-. In previous versions of {product-title}, master hosts were marked unschedulable
+. Modify host labels and parameters.
++
+In previous versions of {product-title}, master hosts were marked unschedulable
 by default by the installer, meaning that no pods could be placed on the hosts.
 Starting with {product-title} 3.9, however, the web console is removed from the
 master services and deployed as a pod on the masters, requiring that masters be
-marked schedulable. This also requires adding labels to certain hosts, which
-assigns _node roles_ (either `master` or `compute`).
+marked schedulable. This change also requires hosts to have _node role_ labels,
+either `master` or `compute`.
+
 ifdef::openshift-enterprise[]
-+
 [NOTE]
 ====
 You can see the {product-title} 3.9 Release Notes for more information on how
@@ -296,7 +397,7 @@ upgrades:
 - xref:../release_notes/ocp_3_9_release_notes.adoc#ocp-39-default-node-selector[Default Node Selector Set By Default and Automatic Node Labeling]
 ====
 endif::[]
-+
+
 If you are upgrading from {product-title} 3.7 to 3.9:
 
 .. Add the following label to each master host:
@@ -422,80 +523,42 @@ updated.
 [[updating-policy-definitions]]
 == Updating Policy Definitions
 
-After a cluster upgrade, the default roles
+During a cluster upgrade, and on every restart of any master, the
 xref:../architecture/additional_concepts/authorization.adoc#roles[default
-cluster roles] are automatically updated. To check if all defaults are set as
-recommended for your environment, run:
+cluster roles] are automatically reconciled to restore any missing permissions.
 
+. If you customized default cluster roles and want to ensure a role reconciliation
+does not modify them, protect each role from reconciliation:
++
 ----
-# oc adm policy reconcile-cluster-roles
+$ oc annotate clusterrole.rbac <role_name> --overwrite rbac.authorization.kubernetes.io/autoupdate=false
 ----
-
++
 [WARNING]
 ====
-If you have customized default cluster roles and want to ensure a role reconciliation
-does not modify those customized roles, annotate them with `openshift.io/reconcile-protect`
-set to `true` when using the old Openshift policy format. When using the new RBAC
-roles, use `rbac.authorization.kubernetes.io/autoupdate` set to `false` instead.
-In doing so, you are responsible for manually updating those roles with any new
-or required permissions during upgrades.
+You must manually update the roles that contain this setting to include any new
+or required permissions after upgrading.
 ====
 
-This command outputs a list of roles that are out of date and their new proposed
-values. For example:
-
+. Generate a default bootstrap policy template file:
++
 ----
-# oc adm policy reconcile-cluster-roles
-apiVersion: v1
-items:
-- apiVersion: v1
-  kind: ClusterRole
-  metadata:
-    creationTimestamp: null
-    name: admin
-  rules:
-  - attributeRestrictions: null
-    resources:
-    - builds/custom
-...
+$ oc adm create-bootstrap-policy-file --filename=policy.json
 ----
-
++
 [NOTE]
 ====
-Your output will vary based on the OpenShift version and any local
-customizations you have made. Review the proposed policy carefully.
+The contents of the file vary based on the {product-title} version, but the file
+contains only the default policies.
 ====
 
-You can either modify this output to re-apply any local policy changes you have
-made, or you can automatically apply the new policy using the following process:
+. Update the *_policy.json_* file to include any cluster role customizations.
 
-. Reconcile the cluster roles:
+. Use the policy file to automatically reconcile roles and role bindings that
+are not reconcile protected:
 +
 ----
-# oc adm policy reconcile-cluster-roles \
-    --additive-only=true \
-    --confirm
-----
-
-. Reconcile the cluster role bindings:
-+
-----
-# oc adm policy reconcile-cluster-role-bindings \
-    --exclude-groups=system:authenticated \
-    --exclude-groups=system:authenticated:oauth \
-    --exclude-groups=system:unauthenticated \
-    --exclude-users=system:anonymous \
-    --additive-only=true \
-    --confirm
-----
-+
-Also run:
-+
-----
-# oc adm policy reconcile-cluster-role-bindings \
-    system:build-strategy-jenkinspipeline \
-    --confirm \
-    -o name
+$ oc process --local -f policy.json | oc auth reconcile -f policy.json
 ----
 
 . Reconcile security context constraints:
@@ -919,14 +982,14 @@ Enterprise Linux 7 system where you can run the CLI as a user with
 To persist *_/usr/share/openshift/examples/_* on the first master:
 
 ----
-$ scp -R /usr/share/ansible/openshift-ansible/roles/openshift_examples/files/examples/v3.7/* user@master1:/usr/share/openshift/examples/
+$ scp -R /usr/share/ansible/openshift-ansible/roles/openshift_examples/files/examples/v3.9/* user@master1:/usr/share/openshift/examples/
 ----
 
 To persist *_/usr/share/openshift/examples/_* on all masters:
 
 ----
 $ mkdir /usr/share/openshift/examples
-$ scp -R /usr/share/ansible/openshift-ansible/roles/openshift_examples/files/examples/v3.7/* user@masterx:/usr/share/openshift/examples
+$ scp -R /usr/share/ansible/openshift-ansible/roles/openshift_examples/files/examples/v3.9/* user@masterx:/usr/share/openshift/examples
 ----
 
 The *openshift-ansible-roles* package provides the latest example JSON files.
@@ -936,11 +999,11 @@ endif::[]
 *openshift-ansible-roles*:
 +
 ----
-# rpm -ql openshift-ansible-roles | grep examples | grep v3.7
+# rpm -ql openshift-ansible-roles | grep examples | grep v3.9
 ----
 +
 In this example,
-*_/usr/share/ansible/openshift-ansible/roles/openshift_examples/files/examples/v3.7/image-streams/image-streams-rhel7.json_*
+*_/usr/share/ansible/openshift-ansible/roles/openshift_examples/files/examples/v3.9/image-streams/image-streams-rhel7.json_*
 is the latest file that you want in the latest *openshift-ansible-roles* package.
 +
 *_/usr/share/openshift/examples/image-streams/image-streams-rhel7.json_* is not
@@ -950,39 +1013,39 @@ running `oc`, which can run anywhere that has access to the master.
 
 . Install *atomic-openshift-utils* and its dependencies to install the new content
 into
-*_/usr/share/ansible/openshift-ansible/roles/openshift_examples/files/examples/v3.7/_*.:
+*_/usr/share/ansible/openshift-ansible/roles/openshift_examples/files/examples/v3.9/_*.:
 +
 ----
-$ oc create -n openshift -f  /usr/share/ansible/openshift-ansible/roles/openshift_examples/files/examples/v3.7/image-streams/image-streams-rhel7.json
-$ oc create -n openshift -f  /usr/share/ansible/openshift-ansible/roles/openshift_examples/files/examples/v3.7/image-streams/dotnet_imagestreams.json
-$ oc replace -n openshift -f  /usr/share/ansible/openshift-ansible/roles/openshift_examples/files/examples/v3.7/image-streams/image-streams-rhel7.json
-$ oc replace -n openshift -f  /usr/share/ansible/openshift-ansible/roles/openshift_examples/files/examples/v3.7/image-streams/dotnet_imagestreams.json
+$ oc create -n openshift -f  /usr/share/ansible/openshift-ansible/roles/openshift_examples/files/examples/v3.9/image-streams/image-streams-rhel7.json
+$ oc create -n openshift -f  /usr/share/ansible/openshift-ansible/roles/openshift_examples/files/examples/v3.9/image-streams/dotnet_imagestreams.json
+$ oc replace -n openshift -f  /usr/share/ansible/openshift-ansible/roles/openshift_examples/files/examples/v3.9/image-streams/image-streams-rhel7.json
+$ oc replace -n openshift -f  /usr/share/ansible/openshift-ansible/roles/openshift_examples/files/examples/v3.9/image-streams/dotnet_imagestreams.json
 ----
 
 . Update the templates:
 +
 ----
-$ oc create -n openshift -f /usr/share/ansible/openshift-ansible/roles/openshift_examples/files/examples/v3.7/quickstart-templates/
-$ oc create -n openshift -f /usr/share/ansible/openshift-ansible/roles/openshift_examples/files/examples/v3.7/db-templates/
-$ oc create -n openshift -f /usr/share/ansible/openshift-ansible/roles/openshift_examples/files/examples/v3.7/infrastructure-templates/
-$ oc create -n openshift -f /usr/share/ansible/openshift-ansible/roles/openshift_examples/files/examples/v3.7/xpaas-templates/
-$ oc create -n openshift -f /usr/share/ansible/openshift-ansible/roles/openshift_examples/files/examples/v3.7/xpaas-streams/
-$ oc replace -n openshift -f /usr/share/ansible/openshift-ansible/roles/openshift_examples/files/examples/v3.7/quickstart-templates/
-$ oc replace -n openshift -f /usr/share/ansible/openshift-ansible/roles/openshift_examples/files/examples/v3.7/db-templates/
-$ oc replace -n openshift -f /usr/share/ansible/openshift-ansible/roles/openshift_examples/files/examples/v3.7/infrastructure-templates/
-$ oc replace -n openshift -f /usr/share/ansible/openshift-ansible/roles/openshift_examples/files/examples/v3.7/xpaas-templates/
-$ oc replace -n openshift -f /usr/share/ansible/openshift-ansible/roles/openshift_examples/files/examples/v3.7/xpaas-streams/
+$ oc create -n openshift -f /usr/share/ansible/openshift-ansible/roles/openshift_examples/files/examples/v3.9/quickstart-templates/
+$ oc create -n openshift -f /usr/share/ansible/openshift-ansible/roles/openshift_examples/files/examples/v3.9/db-templates/
+$ oc create -n openshift -f /usr/share/ansible/openshift-ansible/roles/openshift_examples/files/examples/v3.9/infrastructure-templates/
+$ oc create -n openshift -f /usr/share/ansible/openshift-ansible/roles/openshift_examples/files/examples/v3.9/xpaas-templates/
+$ oc create -n openshift -f /usr/share/ansible/openshift-ansible/roles/openshift_examples/files/examples/v3.9/xpaas-streams/
+$ oc replace -n openshift -f /usr/share/ansible/openshift-ansible/roles/openshift_examples/files/examples/v3.9/quickstart-templates/
+$ oc replace -n openshift -f /usr/share/ansible/openshift-ansible/roles/openshift_examples/files/examples/v3.9/db-templates/
+$ oc replace -n openshift -f /usr/share/ansible/openshift-ansible/roles/openshift_examples/files/examples/v3.9/infrastructure-templates/
+$ oc replace -n openshift -f /usr/share/ansible/openshift-ansible/roles/openshift_examples/files/examples/v3.9/xpaas-templates/
+$ oc replace -n openshift -f /usr/share/ansible/openshift-ansible/roles/openshift_examples/files/examples/v3.9/xpaas-streams/
 ----
 +
 Errors are generated for items that already exist. This is expected behavior:
 +
 ----
-# oc create -n openshift -f /usr/share/ansible/openshift-ansible/roles/openshift_examples/files/examples/v3.7/quickstart-templates/
-Error from server: error when creating "/usr/share/ansible/openshift-ansible/roles/openshift_examples/files/examples/v3.7/quickstart-templates/cakephp-mysql.json": templates "cakephp-mysql-example" already exists
-Error from server: error when creating "/usr/share/ansible/openshift-ansible/roles/openshift_examples/files/examples/v3.7/quickstart-templates/cakephp.json": templates "cakephp-example" already exists
-Error from server: error when creating "/usr/share/ansible/openshift-ansible/roles/openshift_examples/files/examples/v3.7/quickstart-templates/dancer-mysql.json": templates "dancer-mysql-example" already exists
-Error from server: error when creating "/usr/share/ansible/openshift-ansible/roles/openshift_examples/files/examples/v3.7/quickstart-templates/dancer.json": templates "dancer-example" already exists
-Error from server: error when creating "/usr/share/ansible/openshift-ansible/roles/openshift_examples/files/examples/v3.7/quickstart-templates/django-postgresql.json": templates "django-psql-example" already exists
+# oc create -n openshift -f /usr/share/ansible/openshift-ansible/roles/openshift_examples/files/examples/v3.9/quickstart-templates/
+Error from server: error when creating "/usr/share/ansible/openshift-ansible/roles/openshift_examples/files/examples/v3.9/quickstart-templates/cakephp-mysql.json": templates "cakephp-mysql-example" already exists
+Error from server: error when creating "/usr/share/ansible/openshift-ansible/roles/openshift_examples/files/examples/v3.9/quickstart-templates/cakephp.json": templates "cakephp-example" already exists
+Error from server: error when creating "/usr/share/ansible/openshift-ansible/roles/openshift_examples/files/examples/v3.9/quickstart-templates/dancer-mysql.json": templates "dancer-mysql-example" already exists
+Error from server: error when creating "/usr/share/ansible/openshift-ansible/roles/openshift_examples/files/examples/v3.9/quickstart-templates/dancer.json": templates "dancer-example" already exists
+Error from server: error when creating "/usr/share/ansible/openshift-ansible/roles/openshift_examples/files/examples/v3.9/quickstart-templates/django-postgresql.json": templates "django-psql-example" already exists
 ----
 
 Now, content can be updated. Without running the automated upgrade playbooks,
@@ -1363,34 +1426,7 @@ ifdef::openshift-origin[]
 endif::[]
 ====
 
-To upgrade an existing EFK logging stack deployment, you must use the provided
-*_/usr/share/ansible/openshift-ansible/playbooks/openshift-logging/config.yml_*
-Ansible playbook. This is the playbook to use if you were deploying logging for
-the first time on an existing cluster, but is also used to upgrade existing
-logging deployments.
-
-. If you have not already done so, see
-xref:../install_config/aggregate_logging.adoc#aggregate-logging-ansible-variables[Specifying Logging Ansible Variables] in the
-xref:../install_config/aggregate_logging.adoc#install-config-aggregate-logging[Aggregating Container Logs] topic and update your Ansible inventory file to at least set the
-following required variable within the `[OSEv3:vars]` section:
-+
-----
-[OSEv3:vars]
-
-openshift_logging_install_logging=true <1>
-openshift_logging_image_version=<tag> <2>
-----
-<1> Enables the ability to upgrade the logging stack.
-<2> Replace `<tag>` with `{latest-int-tag}` for the latest version.
-
-. Add any other `openshift_logging_*` variables that you want to specify to
-override the defaults, as described in
-xref:../install_config/aggregate_logging.adoc#aggregate-logging-ansible-variables[Specifying Logging Ansible Variables].
-
-. When you have finished updating your inventory file, follow the instructions in
-xref:../install_config/aggregate_logging.adoc#deploying-the-efk-stack[Deploying
-the EFK Stack] to run the *_openshift-logging/config.yml_* playbook and complete
-the logging deployment upgrade.
+include::upgrading/automated_upgrades.adoc[tag=automated-logging-upgrade-steps]
 
 [[manual-upgrading-cluster-metrics]]
 == Upgrading Cluster Metrics
@@ -1407,44 +1443,7 @@ ifdef::openshift-origin[]
 endif::[]
 ====
 
-To upgrade an existing cluster metrics deployment, you must use the provided
-*_/usr/share/ansible/openshift-ansible/playbooks/openshift-metrics/config.yml_*
-Ansible playbook. This is the playbook to use if you were deploying metrics for
-the first time on an existing cluster, but is also used to upgrade existing
-metrics deployments.
-
-. If you have not already done so, see
-xref:../install_config/cluster_metrics.adoc#metrics-ansible-variables[Specifying
-Metrics Ansible Variables] in the
-xref:../install_config/cluster_metrics.adoc#install-config-cluster-metrics[Enabling
-Cluster Metrics] topic and update your Ansible inventory file to at least set
-the following required variables within the `[OSEv3:vars]` section:
-+
-----
-[OSEv3:vars]
-
-openshift_metrics_install_metrics=true <1>
-openshift_metrics_image_version=<tag> <2>
-openshift_metrics_hawkular_hostname=<fqdn> <3>
-openshift_metrics_cassandra_storage_type=(emptydir|pv|dynamic) <4>
-----
-<1> Enables the ability to upgrade the metrics deployment.
-<2> Replace `<tag>` with `{latest-int-tag}` for the latest version.
-<3> Used for the Hawkular Metrics route. Should correspond to a fully qualified
-domain name.
-<4> Choose a type that is consistent with the previous deployment.
-
-. Add any other `openshift_metrics_*` variables that you want to specify to
-override the defaults, as described in
-xref:../install_config/cluster_metrics.adoc#metrics-ansible-variables[Specifying
-Metrics Ansible Variables].
-
-. When you have finished updating your inventory file, follow the instructions
-in
-xref:../install_config/cluster_metrics.adoc#deploying-the-metrics-components[Deploying
-the Metrics Deployment] to run the *_openshift-metrics/config.yml_* playbook and
-complete the metrics deployment upgrade.
-
+include::upgrading/automated_upgrades.adoc[tag=automated-metrics-upgrade-steps]
 
 [[additional-instructions-per-release]]
 == Additional Manual Steps Per Release
