@@ -12,7 +12,7 @@ Module included in the following assemblies:
 = Restoring etcd
 
 The restore procedure for etcd configuration files replaces the appropriate
-files, then restarts the service.
+files, then restarts the service or static pod.
 
 If an etcd host has become corrupted and the `/etc/etcd/etcd.conf` file is lost,
 restore it using:
@@ -21,13 +21,23 @@ restore it using:
 $ ssh master-0
 # cp /backup/yesterday/master-0-files/etcd.conf /etc/etcd/etcd.conf
 # restorecon -Rv /etc/etcd/etcd.conf
+ifeval::["{context}" != "downgrade"]
 # systemctl restart etcd.service
+endif::[]
 ----
 
 In this example, the backup file is stored in the
 `/backup/yesterday/master-0-files/etcd.conf` path where it can be used as an
 external NFS share, S3 bucket, or other storage solution.
 
+[NOTE]
+====
+If you run etcd as a static pod, follow only the steps in that section. If you
+run etcd as a separate service on either master or standalone nodes, follow the
+steps to restore v2 and v3 data as required.
+====
+
+ifeval::["{context}" != "downgrade"]
 == Restoring etcd v2 & v3 data
 
 The following process restores healthy data files and starts the etcd cluster as
@@ -36,10 +46,13 @@ a single node, then adds the rest of the nodes if an etcd cluster is required.
 [discrete]
 === Procedure
 
-. Stop all etcd services:
+. Stop all etcd services by 
+removing the etcd pod definition and rebooting the host:
 +
 ----
-# systemctl stop etcd.service
+# mkdir -p /etc/origin/node/pods-stopped
+# mv /etc/origin/node/pods/* /etc/origin/node/pods-stopped/
+# reboot
 ----
 
 . To ensure the proper backup is restored, delete the etcd directories:
@@ -89,13 +102,13 @@ command adding the `--force-new-cluster` option:
     >> /etc/systemd/system/etcd.service.d/temp.conf
 
 # systemctl daemon-reload
-# systemctl restart etcd
+# master-restart etcd
 ----
 
 . Check for error messages:
 +
 ----
-$ journalctl -fu etcd.service
+$ master-logs etcd etcd
 ----
 
 . Check for health status:
@@ -111,7 +124,7 @@ cluster is healthy
 ----
 # rm -f /etc/systemd/system/etcd.service.d/temp.conf
 # systemctl daemon-reload
-# systemctl restart etcd
+# master-restart etcd
 ----
 
 . Check for health status and member list:
@@ -165,11 +178,14 @@ Updated member with ID 5ee217d17301 in cluster
 $ etcdctl2 member list
 5ee217d17301: name=master-0.example.com peerURLs=https://*192.168.55.8*:2380 clientURLs=https://192.168.55.8:2379 isLeader=true
 ----
+endif::[]
 
-== Restoring etcd for v3
+== Restoring etcd v3 snapshot
 
+ifeval::["{context}" != "downgrade"]
 The restore procedure for v3 data is similar to the restore procedure for the v2
 data.
+endif::[]
 
 Snapshot integrity may be optionally verified at restore time. If the snapshot
 is taken with `etcdctl snapshot save`, it will have an integrity hash that is
@@ -186,10 +202,21 @@ host. You can then add the rest of the nodes to the cluster.
 [discrete]
 === Procedure
 
-. Stop all etcd services:
+ifeval::["{context}" == "downgrade"]
+. Unmask the etcd service:
 +
 ----
-# systemctl stop etcd.service
+# systemctl unmask etcd
+----
+endif::[]
+
+. Stop all etcd services by 
+removing the etcd pod definition and rebooting the host:
++
+----
+# mkdir -p /etc/origin/node/pods-stopped
+# mv /etc/origin/node/pods/* /etc/origin/node/pods-stopped/
+# reboot
 ----
 
 . Clear all old data, because `etcdctl` recreates it in the node where the
@@ -206,8 +233,10 @@ restore procedure is going to be performed:
 # etcdctl3 snapshot restore /backup/etcd-xxxxxx/backup.db \
   --data-dir /var/lib/etcd \
   --name master-0.example.com \
-  --initial-cluster "master-0.example.com=https://192.168.55.8:2380" \ --initial-cluster-token "etcd-cluster-1" \
-  --initial-advertise-peer-urls https://192.168.55.8:2380
+  --initial-cluster "master-0.example.com=https://192.168.55.8:2380" \
+  --initial-cluster-token "etcd-cluster-1" \
+  --initial-advertise-peer-urls https://192.168.55.8:2380 \
+  --skip-hash-check=true
 
 2017-10-03 08:55:32.440779 I | mvcc: restore compact to 1041269
 2017-10-03 08:55:32.468244 I | etcdserver/membership: added member 40bef1f6c79b3163 [https://192.168.55.8:2380] to cluster 26841ebcf610583c
@@ -229,5 +258,72 @@ restore procedure is going to be performed:
 . Check for any error messages:
 +
 ----
-$ journalctl -fu etcd.service
+ifeval::["{context}" != "downgrade"]
+# master-logs etcd etcd
+endif::[]
+ifeval::["{context}" == "downgrade"]
+# journalctl -fu etcd.service
+endif::[]
+----
+
+== Restoring etcd on a static pod
+
+Before restoring etcd on a static pod:
+
+* `etcdctl` binaries must be available or, in containerized installations,
+the `rhel7/etcd` container must be available.
++
+You can obtain etcd by running the following commands:
++
+----
+$ git clone https://github.com/coreos/etcd.git
+$ cd etcd
+$ ./build
+----
+
+
+To restore etcd on a static pod:
+
+. If the pod is running, stop the etcd pod by moving the pod manifest YAML file
+to another directory:
++
+----
+$ mv /etc/origin/node/pods/etcd.yaml .
+----
+
+. Clear all old data:
++
+----
+$ rm -rf /var/lib/etcd
+----
++
+You use the etcdctl to recreate the data in the node where you restore the pod.
+
+. Restore the etcd snapshot to the mount path for the etcd pod:
++
+----
+$ export ETCDCTL_API=3
+$ etcdctl snapshot restore /etc/etcd/backup/etcd/snapshot.db 
+	 --data-dir /var/lib/etcd/ 
+	 --name ip-172-18-3-48.ec2.internal 
+	 --initial-cluster "ip-172-18-3-48.ec2.internal=https://172.18.3.48:2380" 
+	 --initial-cluster-token "etcd-cluster-1" 
+	 --initial-advertise-peer-urls https://172.18.3.48:2380 
+	 --skip-hash-check=true
+----
++
+Obtain the values for your cluster from the *_$/backup_files/etcd.conf_* file.
+
+. Set required permissions and selinux context on the data directory:
++
+----
+$ chown -R etcd.etcd /var/lib/etcd/
+$ restorecon -Rv /var/lib/etcd/
+----
+
+. Restart the etcd pod by moving the pod manifest YAML file to the required
+directory:
++
+----
+$ mv etcd.yaml /etc/origin/node/pods/.
 ----

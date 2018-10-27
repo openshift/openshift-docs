@@ -1,0 +1,289 @@
+////
+Module included in the following assemblies:
+
+install_config/configuring_azure.adoc
+////
+
+[id='configuring-azure-registry_{context}']
+= Configuring the {product-title} registry for Microsoft Azure
+
+Microsoft Azure provides object cloud storage that {product-title}
+can use to store container images using the {product-title} container registry.
+
+For more information, see link:https://azure.microsoft.com/en-us/services/storage/blobs/[Cloud Storage in the Azure documentation].
+
+You can configure the registry either using Ansible or manually by configuring the registry configuration file.
+
+.Prerequisites
+
+You must create a storage account to host the registry images before
+installation. The following command creates a storage account which is used
+during installation for image storage:
+
+You can use Microsoft Azure blob storage for storing container images. The
+{product-title} registry uses blob storage to allow for the registry to grow
+dynamically in size without the need for intervention from an administrator. 
+
+. Create an Azure storage account:
++
+----
+az storage account create 
+--name <account_name> \
+--resource-group <resource_group> \
+--location <location> \
+--sku Standard_LRS
+----
++
+This creates an account key. To view the account key:
++
+----
+az storage account keys list \
+    --account-name <account-name> \
+    --resource-group <resource-group> \
+    --output table
+
+KeyName    Permissions    Value
+key1       Full           <account-key>
+key2       Full           <extra-account-key>
+----
+
+Only one account key value is required for the configuration of the
+{product-title} registry.
+
+
+*Option 1: Configuring the {product-title} registry for Azure using Ansible*
+
+.Procedure
+
+. Configure the Ansible inventory for the registry to use the storage
+account:
++
+[source,yaml]
+----
+[OSEv3:vars]
+# Azure Registry Configuration
+openshift_hosted_registry_replicas=1 <1>
+openshift_hosted_registry_storage_kind=object
+openshift_hosted_registry_storage_azure_blob_accountkey=<account_key> <2>
+openshift_hosted_registry_storage_provider=azure_blob
+openshift_hosted_registry_storage_azure_blob_accountname=<account_name> <3>
+openshift_hosted_registry_storage_azure_blob_container=<registry> <4>
+openshift_hosted_registry_storage_azure_blob_realm=core.windows.net
+----
+<1> The number of replicas to configure.
+<2> The account key associated with the <account-name>.
+<3> The storage account name.
+<4> Directory used to store the data. `registry` by default
+
+
+*Option 2: Manually configuring {product-title} registry for Microsoft Azure*
+
+To use Microsoft Azure object storage, edit the registry’s configuration file and mount to the registry pod.
+
+.Procedure
+
+. Export the current *_config.yml_*:
++
+[source,bash]
+----
+$ oc get secret registry-config \
+    -o jsonpath='{.data.config\.yml}' -n default | base64 -d \
+  >> config.yml.old
+----
+
+. Create a new configuration file from the old *_config.yml_*:
++
+[source,bash]
+----
+$ cp config.yml.old config.yml
+----
+
+. Edit the file to include the Azure parameters:
++
+[source,yaml]
+----
+storage:
+  delete:
+    enabled: true
+  cache:
+    blobdescriptor: inmemory
+  azure:
+    accountname: <account-name> <1>
+    accountkey: <account-key> <2>
+    container: registry <3>
+    realm: core.windows.net <4>
+----
+<1>	Replace with the storage account name.
+<2> The account key associated to the <account-name>.
+<3> Directory used to store the data. `registry` by default
+<4> Storage realm `core.windows.net` by default
+
+. Delete the `registry-config` secret:
++
+[source,bash]
+----
+$ oc delete secret registry-config -n default
+----
+
+. Recreate the secret to reference the updated configuration file:
++
+[source,bash]
+----
+$ oc create secret generic registry-config \
+    --from-file=config.yml -n default
+----
+
+. Redeploy the registry to read the updated configuration:
++
+[source,bash]
+----
+$ oc rollout latest docker-registry -n default
+----
+
+*Verifying the registry is using blob object storage*
+
+To verify if the registry is using Microsoft Azure blob storage:
+
+.Procedure
+
+. After a successful registry deployment, the registry `deploymentconfig` will always show that the registry is using an `emptydir` instead of Microsoft Azure blob storage:
++
+[source,bash]
+----
+$ oc describe dc docker-registry -n default
+...
+Mounts:
+  ...
+  /registry from registry-storage (rw)
+Volumes:
+registry-storage:
+Type:       EmptyDir <1>
+...
+----
+<1> The temporary directory that shares a pod's lifetime.
+
+. Check if the *_/registry_* mount point is empty. This is the volume Microsoft Azure storage will use:
++
+[source,bash]
+----
+$ oc exec \
+    $(oc get pod -l deploymentconfig=docker-registry \
+    -o=jsonpath='{.items[0].metadata.name}')  -i -t -- ls -l /registry
+total 0
+----
+
+. If it is empty, it is because the Microsoft Azure blob configuration is
+performed in the `registry-config` secret:
++
+[source,bash]
+----
+$ oc describe secret registry-config
+Name:         registry-config
+Namespace:    default
+Labels:       <none>
+Annotations:  <none>
+
+Type:  Opaque
+
+Data
+====
+config.yml:  398 bytes
+----
+
+. The installer creates a *_config.yml_* file with the desired configuration using the
+extended registry capabilities as seen in xref:../install_config/registry/extended_registry_configuration.html#docker-registry-configuration-reference-storage[Storage in the installation documentation]. To view the configuration file, including the `storage` section where the storage bucket configuration is stored:
++
+[source,bash]
+----
+$ oc exec \
+    $(oc get pod -l deploymentconfig=docker-registry \
+      -o=jsonpath='{.items[0].metadata.name}') \
+  cat /etc/registry/config.yml
+
+  version: 0.1
+  log:
+    level: debug
+  http:
+    addr: :5000
+  storage:
+    delete:
+      enabled: true
+    cache:
+      blobdescriptor: inmemory
+    azure:
+      accountname: registry
+      accountkey: uZekVBJBa6xzwAqK8EDz15/hoHUoc8I6cPfP31ZS+QOSxLfo7WT7CLrVPKaqvtNTMgztxH7CGjYfpFRNUhvMiA==
+      container: registry
+      realm: core.windows.net
+  auth:
+    openshift:
+      realm: openshift
+  middleware:
+    registry:
+    - name: openshift
+    repository:
+    - name: openshift
+      options:
+        pullthrough: True
+        acceptschema2: True
+        enforcequota: False
+    storage:
+    - name: openshift
+
+----
++
+Or you can view the secret:
++
+[subs=+quotes]
+----
+$ oc get secret registry-config -o jsonpath='{.data.config\.yml}' | base64 -d
+version: 0.1
+log:
+  level: debug
+http:
+  addr: :5000
+storage:
+  delete:
+    enabled: true
+  cache:
+    blobdescriptor: inmemory
+  azure:
+    accountname: registry
+    accountkey: uZekVBJBa6xzwAqK8EDz15/hoHUoc8I6cPfP31ZS+QOSxLfo7WT7CLrVPKaqvtNTMgztxH7CGjYfpFRNUhvMiA==
+    container: registry
+    realm: core.windows.net
+auth:
+  openshift:
+    realm: openshift
+middleware:
+  registry:
+  - name: openshift
+  repository:
+  - name: openshift
+    options:
+      pullthrough: True
+      acceptschema2: True
+      enforcequota: False
+  storage:
+  - name: openshift
+----
+
+
+If using an `emptyDir` volume, the `/registry` mountpoint looks like the
+following:
+
+[subs=+quotes]
+----
+$ oc exec \
+    $(oc get pod -l deploymentconfig=docker-registry \
+    -o=jsonpath='{.items[0].metadata.name}')  -i -t -- df -h /registry
+Filesystem      Size  Used Avail Use% Mounted on
+/dev/sdc         30G  226M   30G   1% /registry
+
+
+$ oc exec \
+    $(oc get pod -l deploymentconfig=docker-registry \
+    -o=jsonpath='{.items[0].metadata.name}')  -i -t -- ls -l /registry
+total 0
+drwxr-sr-x. 3 1000000000 1000000000 22 Jun 19 12:24 docker
+----
