@@ -1102,7 +1102,7 @@ xref:../install_config/router/index.adoc#install-config-router-overview[running 
 on the master, port 443 would not be available.
 
 It is also important to note that while this reference configuration uses
-Apache's *mod_auth_form*, it is by no means required and other proxies can
+Apache's *mod_auth_gssapi*, it is by no means required and other proxies can
 easily be used if the following requirements are met:
 
 1. Block the `X-Remote-User` header from client requests to prevent spoofing.
@@ -1119,12 +1119,12 @@ location.
 [discrete]
 ===== Installing the prerequisites
 
-. The *mod_auth_form* module is shipped as part of the *mod_session* package that
-is found in the link:https://access.redhat.com/solutions/392003[Optional channel].
+. Obtain the *mod_auth_gssapi* module from the
+link:https://access.redhat.com/solutions/392003[Optional channel].
 Install the following packages:
 +
 ----
-# yum install -y httpd mod_ssl mod_session apr-util-openssl
+# yum install -y httpd mod_ssl mod_session apr-util-openssl mod_auth_gssapi
 ----
 
 . Generate a CA for validating requests that submit the trusted header. This CA
@@ -1206,9 +1206,11 @@ client cert that is used to authenticate the proxy to the server. It must use
 . Configure Apache per the following:
 
 ----
-LoadModule auth_form_module modules/mod_auth_form.so
-LoadModule session_module modules/mod_session.so
 LoadModule request_module modules/mod_request.so
+LoadModule auth_gssapi_module modules/mod_auth_gssapi.so
+# Some Apache configurations might require these modules.
+# LoadModule auth_form_module modules/mod_auth_form.so
+# LoadModule session_module modules/mod_session.so
 
 # Nothing needs to be served over HTTP.  This virtual host simply redirects to
 # HTTPS.
@@ -1247,69 +1249,51 @@ LoadModule request_module modules/mod_request.so
   RewriteRule ^.* - [F,L]
 
   <Location /challenging-proxy/oauth/authorize>
+      # Insert your backend server name/ip here.
+      ProxyPass https://[MASTER]:8443/oauth/authorize
+      AuthName "SSO Login"
+      # For Kerberos
+      AuthType GSSAPI
+      Require valid-user
+      RequestHeader set X-Remote-User %{REMOTE_USER}s
+
+      GssapiCredStore keytab:/etc/httpd/protected/auth-proxy.keytab
+      # Enable the following if you want to allow users to fallback
+      # to password based authntication when they do not have a client
+      # configured to perform kerberos authentication
+      GssapiBasicAuth On
+      
+      # For ldap:
+      # AuthBasicProvider ldap
+      # AuthLDAPURL "ldap://ldap.example.com:389/ou=People,dc=my-domain,dc=com?uid?sub?(objectClass=*)"
+
+      # It's possible to remove the mod_auth_form usage and replace it with
+      # something like mod_auth_kerb, mod_auth_gssapi or even mod_auth_mellon.
+      # The former would be able to support both the login and challenge flows
+      # from the Master.  Mellon would likely only support the login flow.
+    </Location>
+
+    <Location /login-proxy/oauth/authorize>
     # Insert your backend server name/ip here.
     ProxyPass https://[MASTER]:8443/oauth/authorize
-    AuthType basic
-  </Location>
 
-  <Location /login-proxy/oauth/authorize>
-    # Insert your backend server name/ip here.
-    ProxyPass https://[MASTER]:8443/oauth/authorize
+      AuthName "SSO Login"
+      AuthType GSSAPI
+      Require valid-user
+      RequestHeader set X-Remote-User %{REMOTE_USER}s env=REMOTE_USER
 
-    # mod_auth_form providers are implemented by mod_authn_dbm, mod_authn_file,
-    # mod_authn_dbd, mod_authnz_ldap and mod_authn_socache.
-    AuthFormProvider file
-    AuthType form
-    AuthName openshift
-    ErrorDocument 401 /login.html
-  </Location>
+      GssapiCredStore keytab:/etc/httpd/protected/auth-proxy.keytab
+      # Enable the following if you want to allow users to fallback
+      # to password based authntication when they do not have a client
+      # configured to perform kerberos authentication
+      GssapiBasicAuth On
 
-  <ProxyMatch /oauth/authorize>
-    AuthUserFile /etc/origin/master/htpasswd
-    AuthName openshift
-    Require valid-user
-    RewriteCond %{LA-U:REMOTE_USER} ^(.*)$
-    RewriteRule ^(.*)$ - [L,P,E=REMOTE_USER:%1]
-    RequestHeader set X-Remote-User %{REMOTE_USER}s
-
-    # For ldap:
-    # AuthBasicProvider ldap
-    # AuthLDAPURL "ldap://ldap.example.com:389/ou=People,dc=my-domain,dc=com?uid?sub?(objectClass=*)"
-
-    # It's possible to remove the mod_auth_form usage and replace it with
-    # something like mod_auth_kerb, mod_auth_gssapi or even mod_auth_mellon.
-    # The former would be able to support both the login and challenge flows
-    # from the Master.  Mellon would likely only support the login flow.
-
-    # For Kerberos
-    # yum install mod_auth_gssapi
-    # AuthType GSSAPI
-    # GssapiCredStore keytab:/etc/httpd.keytab
-  </ProxyMatch>
+      ErrorDocument 401 /login.html
+    </Location>
 
 </VirtualHost>
 
 RequestHeader unset X-Remote-User
-----
-
-[discrete]
-===== Additional mod_auth_form requirements
-
-A sample login page is available from the
-link:https://github.com/openshift/openshift-extras/tree/master/misc/form_auth[openshift_extras]
-repository. This file should be placed in the `DocumentRoot` location
-(*_/var/www/html_* by default).
-
-[discrete]
-===== Creating users
-
-At this point, you can create the users in the system Apache is using to store
-accounts information. In this example, file-backed authentication is used:
-
-----
-# yum -y install httpd-tools
-# touch /etc/origin/master/htpasswd
-# htpasswd /etc/origin/master/htpasswd <user_name>
 ----
 
 [discrete]
@@ -1377,13 +1361,6 @@ additional query parameters):
 ----
 #  curl -k -v -H 'X-Csrf-Token: 1' \
     '<redirected challengeURL from step 3 +query>'
-----
-
-. This should show a redirect with an access token:
-+
-----
-#  curl -k -v -u <your_user>:<your_password> \
-    -H 'X-Csrf-Token: 1' '<redirected_challengeURL_from_step_3 +query>'
 ----
 
 [[GitHub]]
