@@ -1,0 +1,393 @@
+[[install-config-persistent-storage-persistent-storage-ceph-rbd]]
+= Persistent Storage Using Ceph Filesystem (FS)
+{product-author}
+{product-version}
+:data-uri:
+:icons:
+:experimental:
+:toc: macro
+:toc-title:
+:prewrap!:
+
+toc::[]
+
+== Overview
+
+{product-title} clusters can be provisioned with
+xref:../../architecture/additional_concepts/storage.adoc#architecture-additional-concepts-storage[persistent storage]
+using CephFS.
+
+Persistent volumes (PVs) and
+xref:../../dev_guide/persistent_volumes.adoc#dev-guide-persistent-volumes[persistent volume claims (PVCs)]
+can share volumes across a single project. While the CephFS-specific
+information contained in a PV definition could also be defined directly in a pod
+definition, doing so does not create the volume as a distinct cluster resource,
+making the volume more susceptible to conflicts.
+
+This topic presumes some familiarity with {product-title} and
+https://access.redhat.com/products/red-hat-ceph-storage[Ceph FS].
+See the xref:../../architecture/additional_concepts/storage.adoc#architecture-additional-concepts-storage[Persistent
+Storage] concept topic for details on the {product-title} persistent volume (PV)
+framework in general.
+
+[NOTE]
+====
+_Project_ and _namespace_ are used interchangeably throughout this document. See
+xref:../../architecture/core_concepts/projects_and_users.adoc#namespaces[Projects
+and Users] for details on the relationship.
+====
+
+[IMPORTANT]
+====
+High-availability of storage in the infrastructure is left to the underlying
+storage provider.
+====
+
+[[ceph-provisioning]]
+== Provisioning
+
+To provision Ceph volumes, the following are required:
+
+- An existing storage device in your underlying infrastructure.
+- The Ceph key to be used in an {product-title} secret object.
+- The Ceph image name.
+- The file system type on top of the block storage (e.g., ext4).
+- *ceph-common* installed on each schedulable {product-title} node in your cluster:
++
+----
+# yum install ceph-common
+----
+
+[[creating-ceph-secret]]
+=== Creating the Ceph Secret
+
+Define the authorization key in a secret configuration, which is then converted to base64 for use by {product-title}.
+
+[NOTE]
+====
+In order to use Ceph storage to back a persistent volume, the secret must be created in the same project as the PVC and pod. The secret cannot simply be in the default project.
+====
+
+. Run `ceph auth get-key` on a Ceph MON node to display the key value for the
+`client.admin` user:
++
+====
+[source,yaml]
+----
+apiVersion: v1
+kind: Secret
+metadata:
+  name: ceph-secret
+data:
+  key: QVFBOFF2SlZheUJQRVJBQWgvS2cwT1laQUhPQno3akZwekxxdGc9PQ==
+
+----
+====
+
+. Save the secret definition to a file, for example *_ceph-secret.yaml_*, then
+create the secret:
++
+====
+----
+$ oc create -f ceph-secret.yaml
+----
+====
+
+. Verify that the secret was created:
++
+====
+----
+# oc get secret ceph-secret
+NAME          TYPE      DATA      AGE
+ceph-secret   Opaque    1         23d
+----
+====
+
+[[ceph-creating-pv]]
+=== Granting 'anyuid' SCC permission
+
+. Use the template and grant 'anyuid' SCC permission to the 'ceph-provisioner' service account
+----
+# oc adm policy add-scc-to-user anyuid -z cephfs-provisioner
+----
+----
+kind: List
+apiVersion: v1
+items:
+- kind: ClusterRole
+  apiVersion: v1
+  metadata:
+    name: cephfs-provisioner-runner <1>
+    labels:
+      cephfs: provisioner-runner-clusterrole
+  rules:
+    - apiGroups: [""]
+      resources: ["persistentvolumes"]
+      verbs: ["get", "list", "watch", "create", "delete"]
+    - apiGroups: [""]
+      resources: ["persistentvolumeclaims"]
+      verbs: ["get", "list", "watch", "update"]
+    - apiGroups: ["storage.k8s.io"]
+      resources: ["storageclasses"]
+      verbs: ["get", "list", "watch"]
+    - apiGroups: [""]
+      resources: ["events"]
+      verbs: ["list", "watch", "create", "update", "patch"]
+    - apiGroups: [""]
+      resources: ["secrets"]
+      verbs: ["get", "create", "delete", "list"]
+- apiVersion: v1
+  kind: ServiceAccount
+  metadata:
+    name: cephfs-provisioner
+    labels:
+      cephfs: provisioner-sa
+- apiVersion: v1
+  kind: ClusterRoleBinding
+  metadata:
+    name: cephfs-provisioner
+  roleRef:
+    name: cephfs-provisioner-runner
+  subjects:
+  - kind: ServiceAccount
+    name: cephfs-provisioner
+    namespace: default
+- kind: DeploymentConfig
+  apiVersion: v1
+  metadata:
+    name: cephfs-provisioner-dc
+    labels:
+      cephfs: cephfs-dc
+    annotations:
+      description: Defines how to deploy the cephfs provisioner pod.
+  spec:
+    replicas: 1
+    selector:
+      cephfs: cephfs-provisioner
+    triggers:
+    - type: ConfigChange
+    strategy:
+      type: Recreate
+    template:
+      metadata:
+        name: cephfs-provisioner
+        labels:
+          cephfs: cephfs-provisioner
+      spec:
+        serviceAccountName: cephfs-provisioner
+        containers:
+        - name: cephfs-provisioner
+          image: openshift3/cephfs-provisioner:v0.0.2-2
+          imagePullPolicy: IfNotPresent
+          env:
+          - name: PROVISIONER_NAME
+            value: ceph.com/cephfs
+          args:
+          - "-id=cephfs-provisioner-1"
+          - "-disable-ceph-namespace=true"
+----
+
+[[ceph-creating-pv]]
+=== Creating the Persistent Volume
+
+Developers request CephFS storage by referencing either a PVC, or the Gluster
+volume plug-in directly in the `*volumes*` section of a pod specification. A PVC
+exists only in the user's namespace and can be referenced only by pods within
+that same namespace. Any attempt to access a PV from a different namespace
+causes the pod to fail.
+
+. Define the PV in an object definition before creating it in {product-title}:
++
+.Persistent Volume Object Definition Using CephFS
+====
+[source,yaml]
+----
+  ---
+  kind: List
+  apiVersion: v1
+  items:
+  - kind: ClusterRole
+    apiVersion: v1
+    metadata:
+      name: cephfs-provisioner-runner
+      labels:
+        cephfs: provisioner-runner-clusterrole
+    rules:
+      - apiGroups: [""]
+        resources: ["persistentvolumes"]
+        verbs: ["get", "list", "watch", "create", "delete"]
+      - apiGroups: [""]
+        resources: ["persistentvolumeclaims"]
+        verbs: ["get", "list", "watch", "update"]
+      - apiGroups: ["storage.k8s.io"]
+        resources: ["storageclasses"]
+        verbs: ["get", "list", "watch"]
+      - apiGroups: [""]
+        resources: ["events"]
+        verbs: ["list", "watch", "create", "update", "patch"]
+      - apiGroups: [""]
+        resources: ["secrets"]
+        verbs: ["get", "create", "delete", "list"]
+  - apiVersion: v1
+    kind: ServiceAccount
+    metadata:
+      name: cephfs-provisioner
+      labels:
+        cephfs: provisioner-sa
+  - apiVersion: v1
+    kind: ClusterRoleBinding
+    metadata:
+      name: cephfs-provisioner
+    roleRef:
+      name: cephfs-provisioner-runner
+    subjects:
+    - kind: ServiceAccount
+      name: cephfs-provisioner
+      namespace: default
+  - kind: DeploymentConfig
+    apiVersion: v1
+    metadata:
+      name: cephfs-provisioner-dc
+      labels:
+        cephfs: cephfs-dc
+      annotations:
+        description: Defines how to deploy the cephfs provisioner pod.
+    spec:
+      replicas: 1
+      selector:
+        cephfs: cephfs-provisioner
+      triggers:
+      - type: ConfigChange
+      strategy:
+        type: Recreate
+      template:
+        metadata:
+          name: cephfs-provisioner
+          labels:
+            cephfs: cephfs-provisioner
+        spec:
+          serviceAccountName: cephfs-provisioner
+          containers:
+          - name: cephfs-provisioner
+            image: openshift3/cephfs-provisioner:v0.0.2-2
+            imagePullPolicy: IfNotPresent
+            env:
+            - name: PROVISIONER_NAME
+              value: ceph.com/cephfs
+            args:
+            - "-id=cephfs-provisioner-1"
+            - "-disable-ceph-namespace=true"
+----
+<1> The name of the PV that is referenced in pod definitions or displayed in
+various `oc` volume commands.
+<2> The amount of storage allocated to this volume.
+<3> `accessModes` are used as labels to match a PV and a PVC. They currently
+do not define any form of access control. All block storage is defined to be
+single user (non-shared storage).
+<4> The volume type being used, in this case the *rbd* plug-in.
+<5> An array of Ceph monitor IP addresses and ports.
+<6> The Ceph secret used to create a secure connection from {product-title} to the Ceph server.
+<7> The file system type mounted on the Ceph RBD block device.
+====
++
+[IMPORTANT]
+====
+Changing the value of the `*fstype*` parameter after the volume has been
+formatted and provisioned can result in data loss and pod failure.
+====
+
+. Save your definition to a file, for example *_ceph-pv.yaml_*, and create the
+PV:
++
+====
+----
+# oc create -f ceph-pv.yaml
+----
+====
+
+. Verify that the persistent volume was created:
++
+====
+----
+# oc get pv
+NAME                     LABELS    CAPACITY     ACCESSMODES   STATUS      CLAIM     REASON    AGE
+ceph-pv                  <none>    2147483648   RWO           Available                       2s
+----
+====
+
+. Create a PVC that will bind to the new PV:
++
+.PVC Object Definition
+====
+[source,yaml]
+----
+kind: PersistentVolumeClaim
+apiVersion: v1
+metadata:
+  name: ceph-claim
+spec:
+  accessModes: <1>
+    - ReadWriteOnce
+  resources:
+    requests:
+      storage: 2Gi <2>
+
+----
+<1> The `*accessModes*` do not enforce access right, but instead act as labels to match a PV to a PVC.
+<2> This claim looks for PVs offering `*2Gi*` or greater capacity.
+====
+
+. Save the definition to a file, for example *_ceph-claim.yaml_*, and create the
+PVC:
++
+====
+----
+# oc create -f ceph-claim.yaml
+----
+====
+
+[[ceph-volume-security]]
+== Ceph Volume Security
+
+[NOTE]
+====
+See the full
+xref:../../install_config/persistent_storage/pod_security_context.adoc#install-config-persistent-storage-pod-security-context[Volume
+Security] topic before implementing Ceph RBD volumes.
+====
+
+A significant difference between shared volumes (NFS and GlusterFS) and block
+volumes (Ceph RBD, iSCSI, and most cloud storage), is that the user and group
+IDs defined in the pod definition or container image are applied to the target
+physical storage. This is referred to as managing ownership of the block device.
+For example, if the Ceph RBD mount has its owner set to *123* and its group ID
+set to *567*, and if the pod defines its `runAsUser` set to *222* and its
+`fsGroup` to be *7777*, then the Ceph RBD physical mount's ownership will be
+changed to *222:7777*.
+
+[NOTE]
+====
+Even if the user and group IDs are not defined in the pod specification, the
+resulting pod may have defaults defined for these IDs based on its matching SCC,
+or its project. See the full
+xref:../../install_config/persistent_storage/pod_security_context.adoc#install-config-persistent-storage-pod-security-context[Volume
+Security] topic which covers storage aspects of SCCs and defaults in greater
+detail.
+====
+
+A pod defines the group ownership of a Ceph RBD volume using the `*fsGroup*`
+stanza under the pod's `securityContext` definition:
+
+====
+[source,yaml]
+----
+spec:
+  containers:
+    - name:
+    ...
+  securityContext: <1>
+    fsGroup: 7777 <2>
+----
+<1> The `securityContext` must be defined at the pod level, not under a specific container.
+<2> All containers in the pod will have the same fsGroup ID.
+====
