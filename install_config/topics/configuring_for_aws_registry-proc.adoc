@@ -1,0 +1,316 @@
+////
+Module included in the following assemblies:
+
+install_config/configuring_aws.adoc
+////
+
+== Configuring the {product-title} registry for Amazon Web Services (AWS)
+
+Amazon Web Services (AWS) provides object cloud storage that {product-title}
+can use to store container images using the {product-title} container registry.
+
+For more information, see link:https://aws.amazon.com/s3/[Amazon S3].
+
+.Prerequisites
+
+{product-title} uses S3 for image storage. A S3 bucket, IAM policy, and IAM user with
+`Programmatic Access` should be created to allow for the installer to configure the registry.
+
+The example below uses awscli to create a bucket with the name of `openshift-registry-storage`
+in the region of `us-east-1`.
+
+[source,yaml]
+----
+# aws s3api create-bucket \
+     --bucket openshift-registry-storage \
+     --region us-east-1
+----
+
+The default policy
+[source,yaml]
+----
+
+----
+
+
+=== Configuring {product-title} the inventory to use S3
+
+.Procedure
+
+To configure the Ansible inventory for the registry to use the S3 bucket and IAM user:
+
+[source,yaml]
+----
+[OSEv3:vars]
+# AWS Registry Configuration
+openshift_hosted_manage_registry=true
+openshift_hosted_registry_storage_kind=object
+openshift_hosted_registry_storage_provider=s3
+openshift_hosted_registry_storage_s3_accesskey=AKIAJ6VLREDHATSPBUA <1>
+openshift_hosted_registry_storage_s3_secretkey=g/8PmTYDQVGssFWWFvfawHpDbZyGkjGNZhbWQpjH <2>
+openshift_hosted_registry_storage_s3_bucket=openshift-registry-storage <3>
+openshift_hosted_registry_storage_s3_region=us-east-1 <4>
+openshift_hosted_registry_storage_s3_chunksize=26214400
+openshift_hosted_registry_storage_s3_rootdirectory=/registry
+openshift_hosted_registry_pullthrough=true
+openshift_hosted_registry_acceptschema2=true
+openshift_hosted_registry_enforcequota=true
+openshift_hosted_registry_replicas=3
+----
+<1> The access key for the IAM user.
+<2> The secret key for the IAM user.
+<3> The S3 storage bucket name.
+<4> The region in which the bucket exists.
+
+
+=== Manually configuring {product-title} registry to use S3
+
+To use Amazon Web Services (AWS) S3 object storage, edit the registry’s configuration file and mount to the registry pod.
+
+.Procedure
+
+. Export the current *_config.yml_*:
++
+[source,bash]
+----
+$ oc get secret registry-config \
+    -o jsonpath='{.data.config\.yml}' -n default | base64 -d \
+  >> config.yml.old
+----
+
+. Create a new configuration file from the old *_config.yml_*:
++
+[source,bash]
+----
+$ cp config.yml.old config.yml
+----
+
+. Edit the file to include the S3 parameters. Specify the accountname, accountkey,
+container, and realm in the `storage` section of a registry’s configuration file:
++
+[source,yaml]
+----
+storage:
+  delete:
+    enabled: true
+  cache:
+    blobdescriptor: inmemory
+  s3:
+    accesskey: AKIAJ6VLREDHATSPBUA <1>
+    secretkey: g/8PmTYDQVGssFWWFvfawHpDbZyGkjGNZhbWQpjH <2>
+    region: us-east-1 <3>
+    bucket: openshift-registry-storage <4>
+    encrypt: False
+    secure: true
+    v4auth: true
+    rootdirectory: /registry <5>
+    chunksize: "26214400"
+----
+<1> Replace with an AWS access key that is authorized to access the S3 bucket.
+<2> The secret key that corresponds to the defined AWS access key.
+<3> The name of the S3 bucket to be used as the registry.
+<4> The location in which the registry will store images and metadata. (Default is /registry)
+
+. Delete the `registry-config` secret:
++
+[source,bash]
+----
+$ oc delete secret registry-config -n default
+----
+
+. Recreate the secret to reference the updated configuration file:
++
+[source,bash]
+----
+$ oc create secret generic registry-config \
+    --from-file=config.yml -n default
+----
+
+. Redeploy the registry to read the updated configuration:
++
+[source,bash]
+----
+$ oc rollout latest docker-registry -n default
+----
+
+=== Verify the registry is using S3 storage
+
+To verify if the registry is using Amazon S3 storage:
+
+.Procedure
+
+. After a successful registry deployment, the registry `deploymentconfig` describes 
+registry-storage as `emptydir` instead of AWS S3 but the configuration for the AWS S3 
+bucket resides in the secret `docker-config`. The `docker-config` secret mounts to 
+`REGISTRY_CONFIGURATION_PATH` which provides all of the paramaters when using AWS S3 for the 
+registry object storage.
+
++
+[source,bash]
+----
+$ oc describe dc docker-registry -n default
+...
+    Environment:
+      REGISTRY_HTTP_ADDR:					:5000
+      REGISTRY_HTTP_NET:					tcp
+      REGISTRY_HTTP_SECRET:					SPLR83SDsPaGbGuwSMDfnDwrDRvGf6YXl4h9JQrToQU=
+      REGISTRY_MIDDLEWARE_REPOSITORY_OPENSHIFT_ENFORCEQUOTA:	false
+      REGISTRY_HTTP_TLS_KEY:					/etc/secrets/registry.key
+      OPENSHIFT_DEFAULT_REGISTRY:				docker-registry.default.svc:5000
+      REGISTRY_CONFIGURATION_PATH:				/etc/registry/config.yml
+      REGISTRY_OPENSHIFT_SERVER_ADDR:				docker-registry.default.svc:5000
+      REGISTRY_HTTP_TLS_CERTIFICATE:				/etc/secrets/registry.crt
+    Mounts:
+      /etc/registry from docker-config (rw)
+      /etc/secrets from registry-certificates (rw)
+      /registry from registry-storage (rw)
+  Volumes:
+   registry-storage:
+    Type:	EmptyDir (a temporary directory that shares a pod's lifetime)
+    Medium:	
+   registry-certificates:
+    Type:	Secret (a volume populated by a Secret)
+    SecretName:	registry-certificates
+    Optional:	false
+   docker-config:
+    Type:	Secret (a volume populated by a Secret)
+    SecretName:	registry-config
+    Optional:	false
+....
+----
+<1> The temporary directory that shares a pod's lifetime.
+
+. Ensure that the *_/registry_* mountpoint is empty:
++
+[source,bash]
+----
+$ oc exec \
+    $(oc get pod -l deploymentconfig=docker-registry \
+    -o=jsonpath='{.items[0].metadata.name}')  -i -t -- ls -l /registry
+total 0
+----
++
+If it is empty, it is because the S3 configuration is defined in the
+`registry-config` secret:
++
+[source,bash]
+----
+$ oc describe secret registry-config
+Name:         registry-config
+Namespace:    default
+Labels:       <none>
+Annotations:  <none>
+
+Type:  Opaque
+
+Data
+====
+config.yml:  398 bytes
+----
+
+. The installer creates a *_config.yml_* file with the desired configuration using the
+extended registry capabilities as seen in xref:../install_config/registry/extended_registry_configuration.adoc#docker-registry-configuration-reference-storage[Storage in the installation documentation]. To view the configuration file, including the `storage` section where the storage bucket configuration is stored:
++
+[source,bash]
+----
+$ oc exec \
+    $(oc get pod -l deploymentconfig=docker-registry \
+      -o=jsonpath='{.items[0].metadata.name}') \
+  cat /etc/registry/config.yml
+
+  version: 0.1
+  log:
+    level: debug
+  http:
+    addr: :5000
+  storage:
+    delete:
+      enabled: true
+    cache:
+      blobdescriptor: inmemory
+    s3:
+      accesskey: AKIAJ6VLREDHATSPBUA
+      secretkey: g/8PmTYDQVGssFWWFvfawHpDbZyGkjGNZhbWQpjH
+      region: us-east-1
+      bucket: openshift-registry-storage
+      encrypt: False
+      secure: true
+      v4auth: true
+      rootdirectory: /registry
+      chunksize: "26214400"
+  auth:
+    openshift:
+      realm: openshift
+  middleware:
+    registry:
+    - name: openshift
+    repository:
+    - name: openshift
+      options:
+        pullthrough: true
+        acceptschema2: true
+        enforcequota: true
+    storage:
+    - name: openshift
+----
++
+Alternatively, you can view the secret:
++
+[subs=+quotes]
+----
+$ oc get secret registry-config -o jsonpath='{.data.config\.yml}' | base64 -d
+version: 0.1
+log:
+  level: debug
+http:
+  addr: :5000
+  storage:
+    delete:
+      enabled: true
+    cache:
+      blobdescriptor: inmemory
+    s3:
+      accesskey: AKIAJ6VLREDHATSPBUA
+      secretkey: g/8PmTYDQVGssFWWFvfawHpDbZyGkjGNZhbWQpjH
+      region: us-east-1
+      bucket: openshift-registry-storage
+      encrypt: False
+      secure: true
+      v4auth: true
+      rootdirectory: /registry
+      chunksize: "26214400"
+auth:
+  openshift:
+    realm: openshift
+middleware:
+  registry:
+  - name: openshift
+  repository:
+  - name: openshift
+  options:
+    pullthrough: true
+    acceptschema2: true
+    enforcequota: true
+  storage:
+  - name: openshift
+----
+
+
+If using an `emptyDir` volume, the `/registry` mountpoint looks like the
+following:
+
+[subs=+quotes]
+----
+$ oc exec \
+    $(oc get pod -l deploymentconfig=docker-registry \
+    -o=jsonpath='{.items[0].metadata.name}')  -i -t -- df -h /registry
+Filesystem      Size  Used Avail Use% Mounted on
+/dev/sdc         100G  226M   30G   1% /registry
+
+
+$ oc exec \
+    $(oc get pod -l deploymentconfig=docker-registry \
+    -o=jsonpath='{.items[0].metadata.name}')  -i -t -- ls -l /registry
+total 0
+drwxr-sr-x. 3 1000000000 1000000000 22 Jun 19 12:24 docker
+----
