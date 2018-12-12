@@ -73,14 +73,14 @@ to a value higher than `1`. High availability also requires at least three Elast
 each on a different host. See xref:../install_config/aggregate_logging.adoc#aggregated-elasticsearch[Elasticsearch] for more information.
 . Choose a project. Once deployed, the EFK stack collects logs for every
 project within your {product-title} cluster. The examples in this section use the
-default project *logging*. The Ansible playbook creates the project for you
+default project *openshift-logging*. The Ansible playbook creates the project for you
 if it does not already exist. You will only need to create a project if you want
 to specify a node-selector on it. Otherwise, the `openshift-logging` role will
 create a project.
 +
 ----
-$ oc adm new-project logging --node-selector=""
-$ oc project logging
+$ oc adm new-project openshift-logging --node-selector=""
+$ oc project openshift-logging
 ----
 +
 [NOTE]
@@ -135,9 +135,6 @@ https://<PRIVATE-MASTER-URL>:8443.
 |The public facing URL for the Kubernetes master. This is used for Authentication
 redirection by the Kibana proxy. For example,
 https://<CONSOLE-PUBLIC-URL-MASTER>:8443.
-
-|`openshift_logging`
-|The namespace where Aggregated Logging is deployed.
 
 |`openshift_logging_install_logging`
 |Set to `true` to install logging. Set to `false` to uninstall logging.
@@ -447,7 +444,10 @@ openshift_logging_es_pvc_dynamic value.
 |`openshift_logging_es_pvc_size`
 |Size of the persistent volume claim to
 create per Elasticsearch instance. For example, 100G. If omitted, no PVCs are
-created and ephemeral volumes are used instead.
+created and ephemeral volumes are used instead. If you set this parameter, the logging installer sets `openshift_logging_elasticsearch_storage_type` to `pvc`.
+
+|`openshift_logging_elasticsearch_storage_type`
+|Sets the Elasticsearch storage type. If you are using xref:aggregated-logging-persistent-storage[Persistent Elasticsearch Storage], the logging installer sets this to `pvc`.
 
 |`openshift_logging_es_pvc_prefix`
 a|Prefix for the names of persistent volume claims to be used as storage for
@@ -597,6 +597,8 @@ for the browser facing Kibana certs.
 for the browser facing ops Kibana certs.
 |===
 
+If you need to redeploy these certificates, see xref:fluentd-redeploy-certs[Redeploy EFK Certificates].
+
 [[deploying-the-efk-stack]]
 == Deploying the EFK Stack
 
@@ -619,14 +621,37 @@ $ ansible-playbook [-i </path/to/inventory>] \
 endif::openshift-enterprise[]
 
 Running the playbook deploys all resources needed to support the stack; such as
-Secrets, ServiceAccounts, and DeploymentConfigs. The playbook waits to deploy
-the component pods until the stack is running. If the wait steps fail, the
+Secrets, ServiceAccounts, DeploymentConfigs, deployed to the project `openshift-logging`. 
+The playbook waits to deploy the component pods until the stack is running. If the wait steps fail, the
 deployment could still be successful; it may be retrieving the component images
 from the registry which can take up to a few minutes. You can watch the
 process with:
 
 ----
 $ oc get pods -w
+
+logging-curator-1541129400-l5h77           0/1       Running   0          11h  <1>
+logging-es-data-master-ecu30lr4-1-deploy   0/1       Running   0          11h  <2>
+logging-fluentd-2lgwn                      1/1       Running   0          11h  <3>
+logging-fluentd-lmvms                      1/1       Running   0          11h
+logging-fluentd-p9nd7                      1/1       Running   0          11h
+logging-kibana-1-zk94k                     2/2       Running   0          11h  <4>
+----
+
+<1> The Curator pod. Only one pod is needed for Curator.
+<2> The Elasticsearch pod on this host. 
+<3> The Fliuentd pods. There is one pod for each node in the cluster.
+<4> The Kibana pods.
+
+You can use the `oc get pods -o wide command to see the nodes where the Fluentd pod are deployed:
+
+----
+oc get pods -o wide
+NAME                                       READY     STATUS    RESTARTS   AGE       IP             NODE                         NOMINATED NODE
+logging-es-data-master-5av030lk-1-2x494    2/2       Running   0          38m       154.128.0.80   ip-153-12-8-6.wef.internal   <none>
+logging-fluentd-lqdxg                      1/1       Running   0          2m        154.128.0.85   ip-153-12-8-6.wef.internal   <none>
+logging-kibana-1-gj5kc                     2/2       Running   0          39m       154.128.0.77   ip-153-12-8-6.wef.internal   <none>
+
 ----
 
 They will eventually enter *Running* status. For additional details about the status of the pods during deployment by retrieving
@@ -774,23 +799,61 @@ specified as a python compatible dict. For example, `{"node-type":"infra",
 *Persistent Elasticsearch Storage*
 
 By default, the `openshift_logging` Ansible role creates an ephemeral
-deployment in which all of a pod's data is lost upon restart. For production
-usage, specify a persistent storage volume for each Elasticsearch deployment
-configuration. You can create the necessary
-xref:../architecture/additional_concepts/storage.adoc#persistent-volume-claims[persistent
-volume claims] before deploying or have them created for you. The PVCs must be
-named to match the `openshift_logging_es_pvc_prefix` setting, which defaults to
-`logging-es`; each PVC name will have a sequence number added to it: `logging-es-0`,
-`logging-es-1`, `logging-es-2`, and so on. If a PVC needed for the deployment
-exists already, it is used; if not, and `openshift_logging_es_pvc_size` has been
-specified, it is created with a request for that size.
+deployment in which all data in a pod is lost upon pod restart. 
+
+For production environments, each Elasticsearch deployment configuration requires a persistent storage volume. You can specify an existing xref:../architecture/additional_concepts/storage.adoc#persistent-volume-claims[persistent
+volume claim] or allow {product-title} to create one. 
+
+* *Use existing PVCs.* If you create your own PVCs for the deployment, {product-title} uses those PVCs. 
++
+Name the PVCs to match the `openshift_logging_es_pvc_prefix` setting, which defaults to
+`logging-es`. Assign each PVC a name with a sequence number added to it: `logging-es-0`,
+`logging-es-1`, `logging-es-2`, and so on. 
+
+* *Allow {product-title} to create a PVC.* If a PVC for Elsaticsearch does not exist, {product-title} creates the PVC based on parameters 
+in the xref:../install/configuring_inventory_file.adoc#configuring-ansible[Ansible inventory file]. 
++
+[cols="3,7",options="header"]
+|===
+|Parameter
+|Description
+
+|`openshift_logging_es_pvc_size`
+| Specify the size of the PVC request.
+
+|`openshift_logging_elasticsearch_storage_type`
+a|Specify the storage type as `pvc`. 
+[NOTE]
+====
+This is an optional parameter. If you set the `openshift_logging_es_pvc_size` parameter to a value greater than 0, the logging installer automatically sets this parameter to `pvc` by default. 
+====
+
+|`openshift_logging_es_pvc_prefix`
+|Optionally, specify a custom prefix for the PVC.
+|===
++
+For example:
++
+[source,bash]
+----
+openshift_logging_elasticsearch_storage_type=pvc 
+openshift_logging_es_pvc_size=104802308Ki 
+openshift_logging_es_pvc_prefix=es-logging
+----
+
+If using xref:../install_config/persistent_storage/dynamically_provisioning_pvs.adoc#install-config-persistent-storage-dynamically-provisioning-pvs[dynamically provisioned PVs], the {product-title} logging installer creates PVCs that use the default storage class or the PVC specified with the `openshift_logging_elasticsearch_pvc_storage_class_name` parameter.
+
+If using NFS storage, the {product-title} installer creates the persistent volumes, based on the `openshift_logging_storage_*` parameters 
+and the xref:#deploying-the-efk-stack[{product-title} logging installer] creates PVCs, using the `openshift_logging_es_pvc_` paramters.
+Make sure you specify the correct parameters in order to use persistent volumes with EFK.
+Also set the `openshift_enable_unsupported_configurations=true` parameter in the Ansible inventory file, as the logging installer blocks the installation of NFS with core infrastructure by default.
 
 [WARNING]
 ====
 Using NFS storage as a volume or a persistent volume, or using NAS such as
 Gluster, is not supported for Elasticsearch storage, as Lucene relies on file
 system behavior that NFS does not supply. Data corruption and other problems can
-occur. If NFS storage is a requirement, you can allocate a large file on a
+occur. If you must use NFS storage, allocate a large file on a
 volume to serve as a storage device and mount it locally on one host.
 For example, if your NFS storage volume is mounted at *_/nfs/storage_*:
 
@@ -992,6 +1055,103 @@ existing `journald` log driver configuration. It is recommended to use the
 `json-file` log driver. See xref:fluentd-update-source[Changing the Aggregated
 Logging Driver] for instructions to change your existing log driver
 configuration to `json-file`.
+
+[[fluentd-view-logs]]
+*Viewing Fluentd Logs*
+
+How you view logs depends upon the xref:fluentd-file[`LOGGING_FILE_PATH` setting].
+
+* If `LOGGING_FILE_PATH` points to a file, use the *logs* utility to print out the contents of Fluentd log files:
++
+----
+oc exec <pod> logs <1>
+----
+<1> Specify the name of the Fluentd pod.
++
+For example:
++
+----
+oc exec logging-fluentd-lmvms logs
+----
++
+The contents of log files are printed out, starting with the oldest log.  Use `-f` option to follow what is being written into the logs.
+
+* If you are using `LOGGING_FILE_PATH=console`, fluentd to write logs to STDOUT. You can retrieve the logs with the `oc logs -f <pod_name>` command.
++
+For example
++
+----
+oc logs -f /var/log/fluentd/fluentd.log
+----
+
+[[fluentd-file]]
+*Configuring Fluentd Log Location*
+
+Fluentd writes logs to a specified file, by default `/var/log/fluentd/fluentd.log`, or to the console, based on the `LOGGING_FILE_PATH` environment variable.  
+
+To change the default output location for the Fluentd logs, use the `LOGGING_FILE_PATH` parameter 
+in the xref:../install/configuring_inventory_file.html#configuring-ansible[default inventory file]. 
+You can specify a particular file or to STDOUT:
+
+----
+LOGGING_FILE_PATH=console <1>
+LOGGING_FILE_PATH=<path-to-log/fluentd.log> <2>
+----
+
+<1> Sends the log output to STDOUT.
+<2> Sends the log output to the specified file.
+ 
+After changing these parameters, re-run the xref:../install_config/aggregate_logging.adoc#deploying-the-efk-stack[logging installer playbook]:
+
+----
+$ cd /usr/share/ansible/openshift-ansible
+$ ansible-playbook [-i </path/to/inventory>] \
+    playbooks/openshift-logging/config.yml
+----
+
+[NOTE]
+====
+How you xref:fluentd-view-logs[view log data] depends on the `LOGGING_FILE_PATH` setting, either`console` or file.
+====
+
+[[fluentd-rotation]]
+*Configuring Fluentd Log Rotation*
+
+When the current Fluentd log file reaches a specified size, {product-title} automatically renames the *fluentd.log* log file so that new logging data can be collected.
+Log rotation is enabled by default.  
+
+The following example shows logs in a cluster where the maximum log size is 1Mb and four logs should be retained. When the *fluentd.log* reaches 1Mb, {product-title} 
+deletes the current *fluentd.log.4*, renames the each of the Fluentd logs in turn, and creates a new *fluentd.log*.  
+
+----
+fluentd.log     0b
+fluentd.log.1  1Mb
+fluentd.log.2  1Mb
+fluentd.log.3  1Mb
+fluentd.log.4  1Mb
+----
+
+You can control the size of the Fluentd log files and how many of the renamed files that {product-title} retains using 
+environment variables. 
+
+.Parameters for configuring Fluentd log rotation
+[cols="3,7",options="header"]
+|===
+|Parameter
+|Description
+
+| `LOGGING_FILE_SIZE` | The maximum size of a single Fluentd log file in Bytes. If the size of the *flientd.log* file exceeds this value, {product-title} renames the *fluentd.log.** files and creates a new *fluentd.log*. The default is 1024000 (1MB).
+| `LOGGING_FILE_AGE` | The number of logs that Fluentd retains before deleting. The default value is `10`. 
+|===
+
+For example:
+
+----
+$ oc set env ds/logging-fluentd LOGGING_FILE_AGE=30 LOGGING_FILE_SIZE=1024000"
+----
+
+Turn off log rotation by setting LOGGING_FILE_PATH=console. 
+This causes Fluentd to write logs to STDOUT where they can be retrieved using the `oc logs -f <pod_name>` command.
 
 [[fluentd-external-log-aggregator]]
 *Configuring Fluentd to Send Logs to an External Log Aggregator*
@@ -1230,7 +1390,7 @@ $ oc scale --replicas=0 dc/<ELASTICSEARCH_DC>
 
 Change nodeSelector in the daemonset configuration to match zero:
 
-.Get the fluentd node selector:
+.Get the Fluentd node selector:
 ----
 $ oc get ds logging-fluentd -o yaml |grep -A 1 Selector
      nodeSelector:
@@ -1242,7 +1402,7 @@ $ oc get ds logging-fluentd -o yaml |grep -A 1 Selector
 $ oc patch ds logging-fluentd -p '{"spec":{"template":{"spec":{"nodeSelector":{"nonexistlabel":"true"}}}}}'
 ----
 
-.Get the fluentd node selector:
+.Get the Fluentd node selector:
 ----
 $ oc get ds logging-fluentd -o yaml |grep -A 1 Selector
      nodeSelector:
@@ -1599,6 +1759,7 @@ $ ansible-playbook [-i </path/to/inventory>] \
 ----
 endif::openshift-enterprise[]
 
+////
 [[troubleshooting-kibana]]
 == Troubleshooting Kibana
 
@@ -1729,6 +1890,8 @@ $ oc edit configmap/logging-elasticsearch <1>
 +
 . Scale Elasticsearch back up.
 . Scale up all Fluentd pods.
+////
+
 
 [[sending-logs-to-an-external-elasticsearch-instance]]
 == Sending Logs to an External Elasticsearch Instance
@@ -1964,7 +2127,7 @@ link:https://www.elastic.co/guide/en/elasticsearch/reference/2.3/indices.html[In
 Fluentd sends its logs to Elasticsearch using the index format *project.{project_name}.{project_uuid}.YYYY.MM.DD*
 where YYYY.MM.DD is the date of the log record.
 +
-For example, to delete all logs for the *logging* project with uuid *3b3594fa-2ccd-11e6-acb7-0eb6b35eaee3*
+For example, to delete all logs for the *openshift-logging* project with uuid *3b3594fa-2ccd-11e6-acb7-0eb6b35eaee3*
 from June 15, 2016, we can run:
 +
 ----
@@ -1972,6 +2135,51 @@ $ curl --key /etc/elasticsearch/secret/admin-key \
   --cert /etc/elasticsearch/secret/admin-cert \
   --cacert /etc/elasticsearch/secret/admin-ca -XDELETE \
   "https://localhost:9200/project.logging.3b3594fa-2ccd-11e6-acb7-0eb6b35eaee3.2016.06.15"
+----
+
+[[fluentd-redeploy-certs]]
+== Redeploying EFK Certificates
+
+You can redeploy EFK certificates, if needed.  
+
+To redeploy EFK certificates:
+
+. Run the following command to delete the all certificate files:
++
+----
+$ rm /etc/origin/logging
+----
+
+. Verify that the xref:logging-custom-certificates[Custom Certificate] parameters are set 
+in your xref:../install/configuring_inventory_file.adoc#configuring-ansible[inventory host file].
+
+. Use the Ansible playbook to redeploy the EFK stack:
++
+----
+$ cd /usr/share/ansible/openshift-ansible
+$ ansible-playbook [-i </path/to/inventory>] \
+    playbooks/openshift-logging/config.yml
+----
++
+The command fails with an error message similar to the following:
++
+----
+RUNNING HANDLER [openshift_logging_elasticsearch : Checking current health for {{ _es_node }} cluster] ***
+Friday 14 December 2018 07:53:44 +0000 (0:00:01.571) 0:05:01.710 *******
+[WARNING]: Consider using the get_url or uri module rather than running curl.
+If you need to use command because get_url or uri is insufficient you can add
+warn=False to this command task or set command_warnings=False in ansible.cfg to
+get rid of this message.
+
+fatal: [ec2-34-207-171-49.compute-1.amazonaws.com]: FAILED! => {"changed": true, "cmd": ["curl", "-s", "-k", "--cert", "/tmp/openshift-logging-ansible-3v1NOI/admin-cert", "--key", "/tmp/openshift-logging-ansible-3v1NOI/admin-key", "https://logging-es.openshift-logging.svc:9200/_cluster/health?pretty"], "delta": "0:00:01.024054", "end": "2018-12-14 02:53:33.467642", "msg": "non-zero return code", "rc": 7, "start": "2018-12-14 02:53:32.443588", "stderr": "", "stderr_lines": [], "stdout": "", "stdout_lines": []}
+RUNNING HANDLER [openshift_logging_elasticsearch : Set Logging message to manually restart] ***
+Friday 14 December 2018 07:53:46 +0000 (0:00:01.557) 0:05:03.268 *******    
+----
+
+. Run the following command to delete all pods to refresh the secret:
++
+----
+$ oc delete pod --all -n openshift-logging
 ----
 
 [[fluentd-update-source]]
@@ -3847,3 +4055,231 @@ cluster. Edit your non-cluster logging service (for example, `logging-es`,
 ----
 $ oc patch svc/logging-es -p '{"spec":{"selector":{"component":"es","provider":"openshift"}}}'
 ----
+
+[[logging-troubleshooting]]
+== Troubleshooting EFK
+
+The following is troubleshooting information for a number of commonly identified issues with cluster logging deployments:
+
+===  Troubleshooting related to all EFK components
+
+The following troubleshooting issues apply to the EFK stack in general.
+
+*Deployment fails, ReplicationControllers scaled to 0*
+
+If you perform a deployment that does not successfully bring up an
+instance before a ten-minute timeout, {product-title} considers the deployment as failed 
+and scales down to zero instances. The `oc get pods` command shows a deployer pod
+with a non-zero exit code and no deployed pods.
+
+In the following example, the deployer pod name for an Elasticsearch deployment is shown;
+this is from ReplicationController `logging-es-2e7ut0iq-1`, which is a deployment
+of DeploymentConfig `logging-es-2e7ut0iq`.
+
+----
+NAME                           READY     STATUS             RESTARTS   AGE
+logging-es-2e7ut0iq-1-deploy   1/1       ExitCode:255       0          1m
+----
+
+Deployment failure can happen for a number of transitory reasons, such as
+the image pull taking too long or nodes being unresponsive. 
+
+Examine the deployer pod logs for possible reasons or attempt to redeploy:
+
+----
+$ oc deploy --latest logging-es-2e7ut0iq
+----
+
+Alternatively, attempt to scale up the existing deployment:
+
+----
+$ oc scale --replicas=1 logging-es-2e7ut0iq-1
+----
+
+If the problem persists, examine the pod, events, and systemd unit
+logs to determine the source of the problem.
+
+*Image pull fails*
+
+If you specify an `openshift_logging_image_prefix` that results in images being defined 
+that do not exist, you will receive a corresponding error message, similar to the following,
+typically after creating the deployer.
+
+----
+$oc get pods
+
+NAME                     READY     STATUS                                                                                       RESTARTS   AGE
+logging-fluentd-1ub9k    0/1       Error: image registry.access.redhat.com:5000/openshift3logging-fluentd:latest not found      0          1m
+----
+
+In this example, for the intended image name
+`registry.access.redhat.com:5000/openshift3logging-fluentd:latest` needs a trailing `/`.
+
+Update the inventory file and follow the `openshift-ansible` instructions
+to re-run the `openshift_logging` role.
+
+*Cannot resolve kubernetes.default.svc.cluster.local*
+
+This internal alias for the master must be resolvable by the included DNS server on the master. 
+Depending on your platform, you can run the `dig` command (for example, in a container) against the master to check whether this is the case:
+
+----
+$ dig kubernetes.default.svc.cluster.local @localhost
+[...]
+;; QUESTION SECTION:
+;kubernetes.default.svc.cluster.local. IN A
+
+;; ANSWER SECTION:
+kubernetes.default.svc.cluster.local. 30 IN A   172.30.0.1
+----
+
+Older versions of cluster logging did not automatically define this internal
+alias for the master. You might need to upgrade your cluster in order to
+use aggregated logging. If your cluster is up to date, there might be
+a problem with your pods reaching the SkyDNS resolver at the master
+or the pod could have been blocked from running. You must resolve this
+problem before deploying again.
+
+*Cannot connect to the master or services*
+
+If DNS resolution does not return at all or the address cannot be
+connected to from within a pod (such as the *fluentd* pod), this could be an
+indication of a system firewall/network problem. You must debug this problem.
+
+=== Troubleshooting related to ElasticSearch
+
+The following troubleshooting issues apply to the ElasticSearch components of the EFK stack.
+
+*Elasticsearch deployments never succeed and rollback to previous version*
+
+This situation typically occurs itself on {product-title} with cluster logging deployed on AWS. Describing the Elasticsearch pods typically reveals issues re-attaching the pods
+storage:
+
+----
+$ oc describe pod <elasticsearch-pod>
+----
+
+Consider patching each Elasticsearch deployment configuration to allow more time for AWS to make the storage available:
+
+----
+$ oc patch dc <elasticsearch-deployment-config> -p '{"spec":{"strategy":{"recreateParams": {"timeoutSeconds":1800}}}}'
+----
+
+*Searchguard index remains red*
+
+This is a known issue related to upgrading and moving to a single SearchGuard index per
+cluster instead of one index per deployment configuration.  The Elasticsearch Explain API is used to discover the reason and removing the index to node assignment is required:
+
+----
+$ oc -c elasticsearch exec ${pod} -- es_util --query=".searchguard/_settings" -XPUT -d "{\"index.routing.allocation.include._name\": \"\"}"
+----
+
+*Elasticsearch pods never become ready*
+
+This is known issue when the initialization and seeding process fails, which
+can be from a red `.searchguard` index.
+
+----
+for p in $(oc get pods -l component=es -o jsonpath={.items[*].metadata.name}); do \
+  oc exec -c elasticsearch $ES_POD -- touch /opt/app-root/src/init_failures;  \
+done
+----
+
+=== Kibana
+
+The following troubleshooting issues apply to the Kibana components of the EFK stack.
+
+*Looping log in on Kibana*
+
+If you launch the Kibana console and login successfully, you are incorrectly redirected back to Kibana,
+which immediately redirects back to the login screen.
+
+The likely cause for this issue is that the OAuth2 proxy in front of Kibana
+must share a secret with the master's OAuth2 server in order
+to identify it as a valid client. This problem could indicate that
+the secrets do not match. Nothing reports this problem in a way that can be exposed. 
+
+This can happen when you deploy logging more than once. For example, if you fix the initial deployment and the `secret`
+used by Kibana is replaced while the matching master `oauthclient` entry to match is not replaced.
+
+You can do the following:
+
+----
+$ oc delete oauthclient/kibana-proxy
+----
+
+Follow the `openshift-ansible` instructions to re-run the `openshift_logging` role.
+This replaces the oauthclient and your next successful login should not loop.
+
+----
+*"error":"invalid\_request" on login*
+----
+
+*Login error on Kibana*
+
+When attempting to visit the Kibana console, you might receive a browser error instead:
+
+----
+{"error":"invalid_request","error_description":"The request is missing a required parameter,
+ includes an invalid parameter value, includes a parameter more than once, or is otherwise malformed."}
+----
+
+This problem can be caused by a mismatch between the OAuth2 client and server. 
+The return address for the client must be in a whitelist so the server can
+securely redirect back after logging in. If there is a mismatch, the
+error message is shown.
+
+This can be caused by an `oauthclient` entry lingering from a
+previous deployment, in which case you can replace it:
+
+----
+$ oc delete oauthclient/kibana-proxy
+----
+
+Follow the `openshift-ansible` instructions to re-run the `openshift_logging` role,
+which replaces the `oauthclient` entry. Return to the Kibana console and log in again.  
+
+If the problem persists, check that you are accessing Kibana at a URL listed in the OAuth client. 
+This issue can be caused by accessing the URL at a forwarded port, such as 1443 instead of the standard 443 HTTPS port. 
+
+You can adjust the server whitelist by editing its `oauthclient`:
+
+----
+$ oc edit oauthclient/kibana-proxy
+----
+
+Edit the list of redirect URIs accepted to include the address you are actually using. After you save and exit, this should resolve the error.
+
+*Kibana access shows 503 error*
+
+If you receive a proxy error when viewing the Kibana console, it could be caused by one of two issues.
+
+* Kibana might not be recognizing pods. If ElasticSearch is slow in starting up, Kibana might
+error out trying to reach ElasticSearch and Kibana does not consider it alive. You can
+check whether the relevant service has any endpoints:
++
+----
+$ oc describe service logging-kibana
+Name:                   logging-kibana
+[...]
+Endpoints:              <none>
+----
++
+If any Kibana pods are live, endpoints should be listed. If they are
+not, check the state of the Kibana pod(s) and deployment.
+
+* The named route for accessing the Kibana service might be masked.
++
+This can happen if you perform a test deployment in one project, then deploy in a different project without completely removing the first deployment.
+When multiple routes are sent to the same destination, the default router only routes to the first destination created. 
+Check the problematic route to see if it is defined in multiple places:
++
+----
+$ oc get route  --all-namespaces --selector logging-infra=support
+NAMESPACE   NAME         HOST/PORT                 PATH      SERVICE
+logging     kibana       kibana.example.com                  logging-kibana
+logging     kibana-ops   kibana-ops.example.com              logging-kibana-ops
+----
++
+In this example there are no overlapping routes.
+
