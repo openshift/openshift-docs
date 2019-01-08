@@ -1,0 +1,111 @@
+[[service-mesh-application-requirements]]
+= Requirements for deploying applications on {ProductName}
+
+When deploying an application into the {ProductShortName} there are several differences between the behavior of the upstream community version of Istio and the behavior within a {ProductName} installation.
+
+== Configuring security constraints for application service accounts
+
+When deploying an application into a {ProductShortName} running in an OpenShift environment, it is currently necessary to relax the security constraints placed on the application by its service account to ensure the application can function correctly. Each service account must be granted permissions with the `anyuid` and `privileged` Security Context Constraints (SCC) to enable the sidecars to run correctly.
+
+The `privileged` SCC is required to ensure changes to the pod's networking configuration is updated successfully with the `istio-init` initialization container and the `anyuid` SCC is required to enable the sidecar container to run with its required user id of `1337`.
+
+To configure the correct permissions it is necessary to identify the service accounts being used by your application's pods. For most applications, this will be the `default` service account, however your Deployment/DeploymentConfig may override this within the pod specification by providing the `serviceAccountName`.
+
+For each identified service account you must update the cluster configuration to ensure they are granted access to the `anyuid` and `privileged` SCCs by executing the following commands from an account with cluster admin privileges. Replace `<service account>` and `<namespace>` with values specific to your application.
+
+```
+oc adm policy add-scc-to-user anyuid -z <service account> -n <namespace>
+oc adm policy add-scc-to-user privileged -z <service account> -n <namespace>
+```
+
+[NOTE]
+====
+The relaxing of security constraints is only necessary during the {ProductName} Tech Preview.
+====
+
+[[updating-master-configuration]]
+== Updating the master configuration
+
+{ProductShortName} relies on the existence of a proxy sidecar within the application's pod to provide service mesh capabilities to the application. You can enable automatic sidecar injection or manage it manually. We recommend automatic injection by using the annotation, with no need to label namespaces, to ensure your application contains the appropriate configuration for your service mesh upon deployment. This method requires fewer privileges and does not conflict with other OpenShift capabilities such as builder pods.
+
+[NOTE]
+====
+ The upstream community version of Istio injects the sidecar by default if you have labeled the namespace. You are not required to label the namespace with {ProductName}. However, {ProductName} requires you to opt in to having the sidecar automatically injected to a deployment. This avoids injecting a sidecar where it is not wanted (for example, build or deploy pods). The webhook checks the configuration of pods deploying into all namespaces to see if they are opting in to injection with the appropriate annotation.
+====
+
+To enable the automatic injection of the {ProductShortName} sidecar you must first modify the master configuration on each master to include support for webhooks and signing of Certificate Signing Requests (CSRs).
+
+Make the following changes on each master within your {product-title} installation:
+
+. Change to the directory containing the master configuration file (for example, /etc/origin/master/master-config.yaml).
+. Create a file named `master-config.patch` with the following contents:
++
+```
+admissionConfig:
+  pluginConfig:
+    MutatingAdmissionWebhook:
+      configuration:
+        apiVersion: apiserver.config.k8s.io/v1alpha1
+        kubeConfigFile: /dev/null
+        kind: WebhookAdmission
+    ValidatingAdmissionWebhook:
+      configuration:
+        apiVersion: apiserver.config.k8s.io/v1alpha1
+        kubeConfigFile: /dev/null
+        kind: WebhookAdmission
+```
++
+. In the same directory, issue the following commands to apply the patch to the `master-config.yaml` file:
++
+```
+$ cp -p master-config.yaml master-config.yaml.prepatch
+$ oc ex config patch master-config.yaml.prepatch -p "$(cat master-config.patch)" > master-config.yaml
+$ /usr/local/bin/master-restart api && /usr/local/bin/master-restart controllers
+```
+
+[[automatic-sidecar-injection]]
+=== Automatic sidecar injection
+
+When deploying an application into the {ProductName} you must opt in to injection by specifying the `sidecar.istio.io/inject` annotation with a value of `true`. The decision to opt in is required to ensure the sidecar injection does not interfere with other OpenShift features such as builder pods used by numerous frameworks within the OpenShift ecosystem.
+
+This example shows the annotation used within the sleep test application. The additional sidecar containers are included when this configuration is deployed within an {ProductName} installation.
+
+[source,yaml]
+----
+apiVersion: extensions/v1beta1
+kind: Deployment
+metadata:
+  name: sleep
+spec:
+  replicas: 1
+  template:
+    metadata:
+      annotations:
+        sidecar.istio.io/inject: "true"
+      labels:
+        app: sleep
+    spec:
+      containers:
+      - name: sleep
+        image: tutum/curl
+        command: ["/bin/sleep","infinity"]
+        imagePullPolicy: IfNotPresent
+----
+
+[[manual-sidecar-injection]]
+=== Manual sidecar injection
+
+[NOTE]
+When you use manual sidecar injection, ensure you have access to a running cluster so the correct configuration can be obtained from the istio-sidecar-injector configmap within the istio-system namespace.
+
+Manual injection of the sidecar is supported by using the upstream `istioctl` command. To obtain the executable and deploy an application with manual injection:
+
+- Download the appropriate https://github.com/istio/istio/releases/tag/1.0.5[installation] for your OS
+- Unpack the installation into a directory and include the bin directory in your PATH
+
+After installation, you can inject the sidecar into your application by executing the following command:
+
+```
+istioctl kube-inject -f app.yaml | oc create -f -
+```
+This command injects the containers into the application's yaml configuration and pipes the modified configuration to the `oc` command to create the deployments.
