@@ -1,0 +1,313 @@
+// Module included in the following assemblies:
+//
+// * orphaned
+
+[id='identity-provider-configuring-apache-request-header-{context}']
+= Configuring Apache authentication using request header
+
+This example configures an authentication proxy on the same host as the master.
+Having the proxy and master on the same host is merely a convenience and may not
+be suitable for your environment. For example, if you were already
+running a router
+on the master, port 443 would not be available.
+
+It is also important to note that while this reference configuration uses
+Apache's `mod_auth_gssapi`, it is by no means required and other proxies can
+easily be used if the following requirements are met:
+
+1. Block the `X-Remote-User` header from client requests to prevent spoofing.
+2. Enforce client certificate authentication in the `RequestHeaderIdentityProvider` configuration.
+3. Require the `X-Csrf-Token` header be set for all authentication request using the challenge flow.
+4. Only the `/oauth/authorize` endpoint and its subpaths should be proxied,
+and redirects should not be rewritten to allow the backend server to send the client to the correct
+location.
+5. The URL that proxies to `\https://<master>/oauth/authorize` must end with `/authorize` (with no trailing slash). For example:
+  * `\https://proxy.example.com/login-proxy/authorize?...` -> `\https://<master>/oauth/authorize?...`
+6. Subpaths of the URL that proxies to `\https://<master>/oauth/authorize` must proxy to subpaths of `\https://<master>/oauth/authorize`. For example:
+  * `\https://proxy.example.com/login-proxy/authorize/approve?...` -> `\https://<master>/oauth/authorize/approve?...`
+
+. Obtain the `mod_auth_gssapi` module from the
+link:https://access.redhat.com/solutions/392003[Optional channel].
+Install the following packages:
++
+[source,bash]
+----
+# yum install -y httpd mod_ssl mod_session apr-util-openssl mod_auth_gssapi
+----
+
+. Generate a CA for validating requests that submit the trusted header. Use this CA
+as the file name for `clientCA` in the identity provider configuration.
++
+----
+# oc adm ca create-signer-cert \
+  --cert='/etc/origin/master/proxyca.crt' \
+  --key='/etc/origin/master/proxyca.key' \
+  --name='openshift-proxy-signer@1432232228' \
+  --serial='/etc/origin/master/proxyca.serial.txt'
+----
++
+[NOTE]
+====
+The `oc adm ca create-signer-cert` command generates a certificate that is valid
+for five years. This can be altered with the `--expire-days` option, but for
+security reasons, it is recommended to not make it greater than this
+value.
+
+// Run `oc adm` commands only from the first master listed in the Ansible host inventory file,
+// by default *_/etc/ansible/hosts_*.
+====
+
+. Generate a client certificate for the proxy. You can generate this certificate
+by using any x509 certificate tooling, including the `oc adm` CLI:
++
+----
+# oc adm create-api-client-config \
+  --certificate-authority='/etc/origin/master/proxyca.crt' \
+  --client-dir='/etc/origin/master/proxy' \
+  --signer-cert='/etc/origin/master/proxyca.crt' \
+  --signer-key='/etc/origin/master/proxyca.key' \
+  --signer-serial='/etc/origin/master/proxyca.serial.txt' \
+  --user='system:proxy' <1>
+
+# pushd /etc/origin/master
+# cp master.server.crt /etc/pki/tls/certs/localhost.crt <2>
+# cp master.server.key /etc/pki/tls/private/localhost.key
+# cp ca.crt /etc/pki/CA/certs/ca.crt
+# cat proxy/system\:proxy.crt \
+  proxy/system\:proxy.key > \
+  /etc/pki/tls/certs/authproxy.pem
+# popd
+----
+<1> The user name can be anything, however it is useful to give it a descriptive
+name as it will appear in logs.
+<2> When running the authentication proxy on a different host name than the
+master, it is important to generate a certificate that matches the host name
+instead of using the default master certificate as shown above. The value for
+`masterPublicURL` in the *_/etc/origin/master/master-config.yaml_* file
+must be included in the `X509v3 Subject Alternative Name` in the certificate
+that is specified for `SSLCertificateFile`. If a new certificate needs to be
+created, the `oc adm ca create-server-cert` command can be used.
++
+[NOTE]
+====
+The `oc adm create-api-client-config` command generates a certificate that is
+valid for two years. This can be altered with the `--expire-days` option, but
+for security reasons, it is recommended to not make it greater than
+this value.
+Run `oc adm` commands only from the first master listed in the Ansible host inventory file,
+by default *_/etc/ansible/hosts_*.
+====
+
+[discrete]
+===== Configuring Apache
+
+This proxy does not need to reside on the same
+host as the master. It uses a client certificate to connect to the master, which
+is configured to trust the `X-Remote-User` header.
+
+. Create the certificate for the Apache configuration. The certificate that you
+specify as the `SSLProxyMachineCertificateFile` parameter value is the proxy's
+client cert that is used to authenticate the proxy to the server. It must use
+`TLS Web Client Authentication` as the extended key type.
+
+
+. Create the Apache configuration. Use the following template to provide your
+required settings and values:
++
+[IMPORTANT]
+====
+Carefully review the template and customize its contents to fit your 
+environment.
+====
++
+----
+LoadModule request_module modules/mod_request.so
+LoadModule auth_gssapi_module modules/mod_auth_gssapi.so
+# Some Apache configurations might require these modules.
+# LoadModule auth_form_module modules/mod_auth_form.so
+# LoadModule session_module modules/mod_session.so
+
+# Nothing needs to be served over HTTP.  This virtual host simply redirects to
+# HTTPS.
+<VirtualHost *:80>
+  DocumentRoot /var/www/html
+  RewriteEngine              On
+  RewriteRule     ^(.*)$     https://%{HTTP_HOST}$1 [R,L]
+</VirtualHost>
+
+<VirtualHost *:443>
+  # This needs to match the certificates you generated.  See the CN and X509v3
+  # Subject Alternative Name in the output of:
+  # openssl x509 -text -in /etc/pki/tls/certs/localhost.crt
+  ServerName www.example.com
+
+  DocumentRoot /var/www/html
+  SSLEngine on
+  SSLCertificateFile /etc/pki/tls/certs/localhost.crt
+  SSLCertificateKeyFile /etc/pki/tls/private/localhost.key
+  SSLCACertificateFile /etc/pki/CA/certs/ca.crt
+
+  SSLProxyEngine on
+  SSLProxyCACertificateFile /etc/pki/CA/certs/ca.crt
+  # It's critical to enforce client certificates on the Master.  Otherwise
+  # requests could spoof the X-Remote-User header by accessing the Master's
+  # /oauth/authorize endpoint directly.
+  SSLProxyMachineCertificateFile /etc/pki/tls/certs/authproxy.pem
+
+  # Send all requests to the console
+  RewriteEngine              On
+  RewriteRule     ^/console(.*)$     https://%{HTTP_HOST}:8443/console$1 [R,L]
+
+  # In order to using the challenging-proxy an X-Csrf-Token must be present.
+  RewriteCond %{REQUEST_URI} ^/challenging-proxy
+  RewriteCond %{HTTP:X-Csrf-Token} ^$ [NC]
+  RewriteRule ^.* - [F,L]
+
+  <Location /challenging-proxy/oauth/authorize>
+      # Insert your backend server name/ip here.
+      ProxyPass https://[MASTER]:8443/oauth/authorize
+      AuthName "SSO Login"
+      # For Kerberos
+      AuthType GSSAPI
+      Require valid-user
+      RequestHeader set X-Remote-User %{REMOTE_USER}s
+
+      GssapiCredStore keytab:/etc/httpd/protected/auth-proxy.keytab
+      # Enable the following if you want to allow users to fallback
+      # to password based authntication when they do not have a client
+      # configured to perform kerberos authentication
+      GssapiBasicAuth On
+      
+      # For ldap:
+      # AuthBasicProvider ldap
+      # AuthLDAPURL "ldap://ldap.example.com:389/ou=People,dc=my-domain,dc=com?uid?sub?(objectClass=*)"
+
+      # It's possible to remove the mod_auth_gssapi usage and replace it with
+      # something like mod_auth_mellon, which only supports the login flow.
+    </Location>
+
+    <Location /login-proxy/oauth/authorize>
+    # Insert your backend server name/ip here.
+    ProxyPass https://[MASTER]:8443/oauth/authorize
+
+      AuthName "SSO Login"
+      AuthType GSSAPI
+      Require valid-user
+      RequestHeader set X-Remote-User %{REMOTE_USER}s env=REMOTE_USER
+
+      GssapiCredStore keytab:/etc/httpd/protected/auth-proxy.keytab
+      # Enable the following if you want to allow users to fallback
+      # to password based authntication when they do not have a client
+      # configured to perform kerberos authentication
+      GssapiBasicAuth On
+
+      ErrorDocument 401 /login.html
+    </Location>
+
+</VirtualHost>
+
+RequestHeader unset X-Remote-User
+----
+
+[discrete]
+===== Configuring the master
+
+[[requestheader-master-ca-config]]
+The `identityProviders` stanza in the
+*_/etc/origin/master/master-config.yaml_* file must be updated as well:
+
+----
+  identityProviders:
+  - name: requestheader
+    challenge: true
+    login: true
+    provider:
+      apiVersion: v1
+      kind: RequestHeaderIdentityProvider
+      challengeURL: "https://[MASTER]/challenging-proxy/oauth/authorize?${query}"
+      loginURL: "https://[MASTER]/login-proxy/oauth/authorize?${query}"
+      clientCA: /etc/origin/master/proxyca.crt
+      headers:
+      - X-Remote-User
+----
+
+[discrete]
+===== Restarting services
+
+Finally, restart the following services:
+
+----
+# systemctl restart httpd
+# master-restart api
+# master-restart controllers
+----
+
+[discrete]
+===== Verifying the configuration
+
+. Test by bypassing the proxy. You should be able to request a token if you
+supply the correct client certificate and header:
++
+----
+# curl -L -k -H "X-Remote-User: joe" \
+   --cert /etc/pki/tls/certs/authproxy.pem \
+   https://[MASTER]:8443/oauth/token/request
+----
+
+. If you do not supply the client certificate, the request should be denied:
++
+----
+# curl -L -k -H "X-Remote-User: joe" \
+   https://[MASTER]:8443/oauth/token/request
+----
+
+. This should show a redirect to the configured `challengeURL` (with
+additional query parameters):
++
+----
+# curl -k -v -H 'X-Csrf-Token: 1' \
+   '<masterPublicURL>/oauth/authorize?client_id=openshift-challenging-client&response_type=token'
+----
+
+. This should show a 401 response with a `WWW-Authenticate` basic challenge, a
+negotiate challenge, or both challenges:
++
+----
+#  curl -k -v -H 'X-Csrf-Token: 1' \
+    '<redirected challengeURL from step 3 +query>'
+----
+
+. Test logging into the `oc` command line with and without using a Kerberos ticket:
+.. If you generated a Kerberos ticket by using `kinit`, destroy it:
++
+----
+# kdestroy -c cache_name <1>
+----
+<1> Provide the name of your Kerberos cache.
+.. Log in to the `oc` command line by using your Kerberos credentials:
++
+----
+# oc login
+----
++
+Enter your Kerberos user name and password at the prompt. 
+.. Log out of the `oc` command line:
++
+----
+# oc logout
+----
+.. Use your Kerberos credentials to get a ticket:
++
+----
+# kinit
+----
++
+Enter your Kerberos user name and password at the prompt. 
+.. Confirm that you can log in to the `oc` command line:
++
+----
+# oc login
+----
++
+If your configuration is correct, you are logged in without entering separate
+credentials.
