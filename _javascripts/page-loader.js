@@ -38,6 +38,9 @@ function versionSelector(list) {
 }
 
 function selectVersion(currentVersion) {
-  document.getElementById("version-selector").value = currentVersion;
+  var el = document.getElementById("version-selector");
+  if(el) {
+    $el.value = currentVersion;
+  }
   // alert(currentVersion);
 }
