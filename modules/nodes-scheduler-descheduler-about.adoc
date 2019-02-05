@@ -1,0 +1,141 @@
+// Module included in the following assemblies:
+//
+// * nodes/nodes-scheduler-descheduler.adoc
+
+[id='nodes-scheduler-descheduling-about_{context}']
+= Understanding how to evict pods in {product-title}
+
+Because {product-title} clusters are highly dynamic and their state changes over time. 
+Your cluster can benefit from descheduling pods from one node and rescheduling onto a more appropriate node for various reasons:
+
+* Nodes are under- or over-utilized.
+* Pod and node affinity requirements, such as taints or labels, have changed and the original scheduling decisions are longer appropriate for certain nodes.
+* Node failure requires pods to be moved.
+* New nodes are added to clusters.
+
+The descheduler does not schedule replacement of evicted pods. The scheduler automatically performs this task for the evicted pods.
+
+It is important to note that there are a number of core components, such as Heapster and DNS, that are critical to a fully functional cluster,
+but, run on a regular cluster node rather than the master. A cluster may stop working properly if the component is evicted. To prevent the
+descheduler from removing these pods, configure the pod as a critical pod by adding a priority class to the pod specification.
+
+[NOTE]
+====
+The descheduler job is considered a critical pod, which prevents the descheduler pod from being evicted by the descheduler.
+====
+
+The descheduler job and descheduler pod are created in the `kube-system` project, which is created by default.
+
+[IMPORTANT]
+====
+The descheduler is a Technology Preview feature only.
+ifdef::openshift-enterprise[]
+Technology Preview features are not supported with Red Hat production service
+level agreements (SLAs), might not be functionally complete, and Red Hat does
+not recommend to use them for production. These features provide early access to
+upcoming product features, enabling customers to test functionality and provide
+feedback during the development process.
+
+For more information on Red Hat Technology Preview features support scope, see
+https://access.redhat.com/support/offerings/techpreview/.
+endif::[]
+====
+
+The descheduler does not evict the following types of pods:
+
+* Critical pods (with an appropriate priority class).
+* Pods (link:https://kubernetes.io/docs/tasks/administer-cluster/static-pod/[static and mirror pods] or pods in standalone mode) not associated with a Replica Set, Replication Controller, Deployment, or Job (because these pods are not recreated).
+* Pods associated with DaemonSets.
+* Pods with local storage.
+* Pods subject to Pod Disruption Budget (PDB) are not evicted if descheduling violates the PDB. The pods can be evicted using
+an eviction policy.
+
+[NOTE]
+====
+Best efforts pods are evicted before Burstable and Guaranteed pods.
+====
+
+The following sections describe the process to configure and run the descheduler:
+
+* Create a role with the needed permissions. 
+
+* Define the descheduling behavior in a policy file. 
+
+* Create a configuration map to reference the policy file.
+
+* Create the descheduler job configuration.
+
+* Run the descheduler job.
+
+== Understanding descheduler policies
+
+There are three default strategies that can be used with the descheduler.
+
+Move pods to underutilized nodes::
+
+The `LowNodeUtilization` strategy finds nodes that are underutilized and evicts pods from other nodes so that the evicted pods can be scheduled on these underutilized nodes.
+
+The underutilization of nodes is determined by a configurable threshold, `thresholds`, for CPU, memory, or number of pods (based on percentage). If a node usage is below all these thresholds, the node is considered underutilized and the descheduler can evict pods from other nodes. Pods request resource requirements are considered when computing node resource utilization.
+
+A high threshold value, `targetThresholds` is used to determine properly utilized nodes. Any node that is between the _thresholds_ and _targetThresholds_ is considered properly utilized and is not considered for eviction. The threshold, `targetThresholds`, can be configured for CPU, memory, and number of pods (based on percentage).
+
+These thresholds could be tuned for your cluster requirements.
+
+The `numberOfNodes` parameter can be configured to activate the strategy only when number of underutilized nodes is above the configured value. Set this parameter if it is acceptable for a few nodes to go underutilized. By default, `numberOfNodes` is set to zero.
+
+[source,yaml]
+----
+apiVersion: "descheduler/v1alpha1"
+kind: "DeschedulerPolicy"
+strategies:
+  "LowNodeUtilization":
+     enabled: true
+     params:
+       nodeResourceUtilizationThresholds:
+         thresholds: <1>
+           "cpu" : 20
+           "memory": 20
+           "pods": 20
+         targetThresholds: <2>
+           "cpu" : 50
+           "memory": 50
+           "pods": 50
+         numberOfNodes: 3 <3>
+----
+<1> Set the low-end threshold. If the node is below all three values, the descheduler considers the node underutilized.
+<2> Set the high-end threshold. If the node is below these values and above the `threshold` values, the descheduler considers the node  properly utilized.
+<3> Set the number of nodes that can be underutilized before the descheduler will evict pods from underutilized nodes.
+
+Remove Duplicate Pods::
+The `RemoveDuplicates` strategy ensures that there is only one pod associated with a Replica Set, Replication Controller, Deployment Configuration, or Job running on same node.
+If there are other pods associated with those objects, the duplicate pods are evicted. Removing duplicate pods results in better spreading of pods in a cluster.
+
+For example, duplicate pods could happen if a node fails and the pods on the node are moved to another node, leading to more than one pod associated with an Replica Set or Replication Controller, running on same node. After the failed node is ready again, this strategy could be used to evict those duplicate pods.
+
+There are no parameters associated with this strategy.
+
+[source,yaml]
+----
+apiVersion: "descheduler/v1alpha1"
+kind: "DeschedulerPolicy"
+strategies:
+  "RemoveDuplicates":
+     enabled: false <1>
+----
+<1> Set this value to `enabled: true` to use this policy. Set to `false` to disable this policy.
+
+Remove Pods Violating Inter-Pod Anti-Affinity::
+The `RemovePodsViolatingInterPodAntiAffinity` strategy ensures that pods violating inter-pod anti-affinity are removed from nodes.
+
+For example, *Node1* has *podA*, *podB*, and *podC*. *podB* and *podC* have anti-affinity rules that prohibit them from running on the same node as *podA*. *podA* will be evicted from the node so that *podB* and *podC* can run on that node. This situation could happen if the anti-affinity rule was applied when *podB* and *podC* were running on the node.
+
+[source,yaml]
+----
+apiVersion: "descheduler/v1alpha1"
+kind: "DeschedulerPolicy"
+strategies:
+  "RemovePodsViolatingInterPodAntiAffinity": <1>
+     enabled: true
+----
+<1> Set this value to `enabled: true` to use this policy. Set to `false` to disable this policy.
+
