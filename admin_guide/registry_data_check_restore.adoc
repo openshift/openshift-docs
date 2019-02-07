@@ -1,0 +1,189 @@
+[[admin-guide-registry-data-check-restore]]
+= Image Registry Data Check and Restore
+{product-author}
+{product-version}
+:data-uri:
+:icons:
+:experimental:
+:toc: macro
+:toc-title:
+
+toc::[]
+
+[IMPORTANT]
+====
+This section describes functionality that is experimental and may change
+in the future.
+====
+
+[[registry-data-check-restore-overview]]
+== Overview
+
+The data stored in the {product-title} may differ
+from the data in the {product-title} cluster's etcd. It means that either
+the {product-title} cluster's database contains references to data that
+does not exist on the {product-title}'s storage, or the
+{product-title} storage has data that is not referenced in
+the {product-title} cluster's database. This situation may occur as a result
+of an error or accidental deletion.
+
+There are two classes of problems:
+
+. The {product-title} cluster's database contains references to
+non-existent blobs. This usually happens due to storage damage. In this
+case, imagestreams and images are not usable and any pull will
+end with an error. The way to fix these images is to push them onto the
+{product-title} again to restore the blobs. The problem is understanding which imagestreams were damaged.
+
+. Necessary images were removed from the {product-title} cluster's
+database, but remained in the {product-title} storage. This
+may occur due to incorrect pruning settings or due to accidental manual
+removal. In this case, the problem is to restore the references in the
+{product-title} cluster's database in order to prevent blobs from being
+deleted during the xref:#hard-pruning-registry[hard pruning] process.
+
+[[registry-data-check-restore-prerequisites]]
+== Prerequisites
+
+Before starting, you must give the registry's service account permissions to
+change the {product-title} cluster's database:
+
+----
+$ service_account=$(oc get -n default \
+    -o jsonpath=$'system:serviceaccount:{.metadata.namespace}:{.spec.template.spec.serviceAccountName}\n' \
+    dc/docker-registry)
+$ oc adm policy add-cluster-role-to-user cluster-admin ${service_account}
+----
+
+[NOTE]
+====
+After completion of the process of restoring the database and storage
+consistency, do not forget to revoke the granted privileges.
+====
+
+[[registry-data-check-restore-find-broken-objects]]
+== Find broken objects
+
+To list broken imagestream tags and images run:
+
+----
+$ oc -n default \
+    exec -i -t "$(oc -n default get pods -l deploymentconfig=docker-registry \
+    -o jsonpath=$'{.items[0].metadata.name}\n')" \
+    -- /usr/bin/dockerregistry -experimental -restore-mode=check
+----
+
+[NOTE]
+====
+No changes are made by running this command.
+====
+
+If the {product-title} cluster's database is too big and you do not want make
+full check, then you can limit the scan and check only the database or only the storage:
+
+----
+$ oc -n default \
+    exec -i -t "$(oc -n default get pods -l deploymentconfig=docker-registry \
+    -o jsonpath=$'{.items[0].metadata.name}\n')" \
+    -- /usr/bin/dockerregistry -experimental -restore-mode=check-database
+$ oc -n default \
+    exec -i -t "$(oc -n default get pods -l deploymentconfig=docker-registry \
+    -o jsonpath=$'{.items[0].metadata.name}\n')" \
+    -- /usr/bin/dockerregistry -experimental -restore-mode=check-storage
+----
+
+You can also limit the namespace you want to scan:
+
+----
+$ oc -n default \
+    exec -i -t "$(oc -n default get pods -l deploymentconfig=docker-registry \
+    -o jsonpath=$'{.items[0].metadata.name}\n')" \
+    -- /usr/bin/dockerregistry -experimental -restore-mode=check -restore-namespace=myproject
+----
+
+If the image manifest does not exist on the {product-title}'s
+storage, then you will see a message similar to the following:
+
+----
+Broken imagestream tag "myproject/ubuntu:latest" in position 0: image "sha256:be159ff0e12a38fd2208022484bee14412680727ec992680b66cdead1ba76d19": unknown blob
+----
+
+Or if blob does not exist:
+
+----
+Broken imagestream tag "myproject/ubuntu:latest" in position 0: image blob "sha256:d42beb8ded595df5627ad4ef31bf528a6fdbfbd11d82f9023152738d6b05a7fa": unknown blob
+----
+
+If you have images that references a non-existent blob, but are not
+in any imagestream, then you will see a message similar to the following:
+
+----
+Broken image "sha256:be159ff0e12a38fd2208022484bee14412680727ec992680b66cdead1ba76d19": unknown blob
+----
+
+If the storage has an image that is not in an imagestream, then you will see a message similar to the following:
+
+----
+Would add image "sha256:be159ff0e12a38fd2208022484bee14412680727ec992680b66cdead1ba76d19" to imagestream "myproject/ubuntu" with tag "lost-found-be159ff0e12a38fd2208022484bee14412680727ec992680b66cdead1ba76d19"
+----
+
+[[registry-data-check-restore-restore]]
+== Restore
+
+Some data can be recovered, but in some cases the data is lost and must
+be restored from an external copy.
+
+[[registry-data-check-restore-restore-imagestreams]]
+=== Restore imagestreams
+
+To recreate lost imagestream tags based on the state of the storage, use the following command:
+
+----
+$ oc -n default \
+    exec -i -t "$(oc -n default get pods -l deploymentconfig=docker-registry \
+    -o jsonpath=$'{.items[0].metadata.name}\n')" \
+    -- /usr/bin/dockerregistry -experimental -restore-mode=recover
+----
+
+[IMPORTANT]
+====
+Imagestream tag names are not stored on the storage.
+Therefore, they can not be restored. Also, if the imagestream tag had a
+history, then it also could not be restored. Tag creation time will also
+be lost. All images from the history will be restored as separate tags.
+The recovered tag names will have the form: `lost-found-<DIGEST>`.
+====
+
+[[registry-data-check-restore-restore-data]]
+=== Restore data on storage
+
+The only way to restore data that was lost from the {product-name} registry's storage is to re-push the content.
+
+For example, if the database check generated any of following messages:
+
+----
+Broken imagestream tag "myproject/ubuntu:latest" in position 0: image "sha256:be159ff0e12a38fd2208022484bee14412680727ec992680b66cdead1ba76d19": unknown blob
+Broken imagestream tag "myproject/ubuntu:latest" in position 0: image blob "sha256:d42beb8ded595df5627ad4ef31bf528a6fdbfbd11d82f9023152738d6b05a7fa": unknown blob
+Broken image "sha256:be159ff0e12a38fd2208022484bee14412680727ec992680b66cdead1ba76d19": unknown blob
+----
+
+Then you need to locate a copy of image
+`sha256:be159ff0e12a38fd2208022484bee14412680727ec992680b66cdead1ba76d19`
+and push it to the {product-name} registry as `myproject/ubuntu:latest`.
+The same image can be in the {product-name} Registry's storage under different names.
+
+You can use any one to re-push it. You can get the reference for the image
+or the imagestream tag by the following commands:
+
+----
+$ oc get -n myproject istag/ubuntu:latest -o 'jsonpath={.image.dockerImageReference}'
+172.30.1.1:5000/myproject/ubuntu@sha256:be159ff0e12a38fd2208022484bee14412680727ec992680b66cdead1ba76d19
+
+$ oc get images sha256:be159ff0e12a38fd2208022484bee14412680727ec992680b66cdead1ba76d19 -o 'jsonpath={.dockerImageReference}'
+172.30.1.1:5000/myproject/ubuntu@sha256:be159ff0e12a38fd2208022484bee14412680727ec992680b66cdead1ba76d19
+----
+
+[IMPORTANT]
+====
+Before you re-push the images you need to restart all the {product-title}'s pods to reset all the caches.
+====
