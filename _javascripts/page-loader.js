@@ -40,7 +40,7 @@ function versionSelector(list) {
 function selectVersion(currentVersion) {
   var el = document.getElementById("version-selector");
   if(el) {
-    $el.value = currentVersion;
+    el.value = currentVersion;
   }
   // alert(currentVersion);
 }
