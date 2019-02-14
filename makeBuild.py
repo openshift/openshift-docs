@@ -1,6 +1,8 @@
 import sys
 import os
 import logging
+reload(sys)
+sys.setdefaultencoding('utf8')
 
 from lxml.etree import XMLSyntaxError, XIncludeError
 
