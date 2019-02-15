@@ -1,0 +1,163 @@
+// admin_guide/multinetwork.adoc
+ifdef::context[:parent-context: {context}]
+
+[id='multinetwork-creating-first-attachments-{context}']
+= Creating additional network interfaces for the first time
+
+This procedure is provided as an outline for all the steps involved in creating additional network interfaces attached to pods. While this configuration may not apply to all production environments, it runs through an example which you can expand upon when using other CNI plugins.
+
+== Create a CNI configuration as a custom resource
+
+Example creation of a configuration to be used as an additional interface:
+
+[source,bash]
+----
+cat <<EOF | oc create -f -
+| apiVersion: "k8s.cni.cncf.io/v1"
+kind: NetworkAttachmentDefinition <2>
+metadata:
+  name: macvlan-conf <1>
+spec:
+  config: '{ <3>
+      "cniVersion": "0.3.0",
+      "type": "macvlan",
+      "master": "eth0",
+      "mode": "bridge",
+      "ipam": {
+        "type": "host-local",
+        "subnet": "192.168.1.0/24",
+        "rangeStart": "192.168.1.200",
+        "rangeEnd": "192.168.1.216",
+        "routes": [
+          { "dst": "0.0.0.0/0" }
+        ],
+        "gateway": "192.168.1.1"
+      }
+    }'
+EOF
+----
+<1> `name` maps to the annotation which will be used in the next step.
+<2> `kind: NetworkAttachmentDefinition`. This is the name for the custom resource where we store this configuration -- it's a custom extension of Kubernetes that defines how we attach networks to our pods.
+<3> This is a CNI configuration packaged into the `config` field, this may contain any valid CNI configuration.
+
+This particular configuration is specific to a plugin which enables macvlan (note the “type” line in the CNI configuration portion) -- aside from the IPAM (IP address management) parameters for networking, in this particular example the “master” field must reference a network interface that resides on the node(s) hosting the pod(s).
+
+[NOTE]
+====
+This example is based on a `macvlan` CNI plugin. Please note that in AWS environments macvlan traffic may be filtered (that is, macvlan traffic may not make it to the desired destination).
+====
+
+[NOTE]
+====
+This custom resource is created local to your current project (namespace), in order for pods to use these custom resources to define additional networks the custom resources must be created in the same project (namespace) as the pods for which you desire to attach additional interfaces.
+====
+
+These configurations can be managed using the `oc` tool, in order to list them execute:
+
+[source,bash]
+----
+oc get network-attachment-definitions.k8s.cni.cncf.io
+----
+
+The custom resources can be deleted with:
+
+[source,bash]
+----
+oc delete network-attachment-definitions.k8s.cni.cncf.io macvlan-conf
+----
+
+== Create an annotated pod referencing the custom resource
+
+To create a pod which utilizes this additional interface, you will create an annotation which refers to it, here’s an example pod with an annotation that does just that:
+
+[source,bash]
+----
+cat <<EOF | oc create -f -
+| apiVersion: v1
+kind: Pod
+metadata:
+  name: samplepod
+  annotations:
+    k8s.v1.cni.cncf.io/networks: macvlan-conf <1>
+spec:
+  containers:
+    name: samplepod
+    command: ["/bin/bash", "-c", "sleep 2000000000000"]
+    image: centos/tools
+EOF
+----
+
+<1> the annotations field contains `k8s.v1.cni.cncf.io/networks: macvlan-conf`, which correlates to the `name` field in the custom resource we created earlier.
+
+After executing this, you can verify that an additional network interface has been created, attached to the pod with:
+
+[source,bash]
+----
+oc exec -it samplepod -- ip a
+----
+
+You should note in the output that there's 3 interfaces:
+
+* `lo`: a loopback interface
+* `eth0`: the cluster-wide default network
+* `net1`: the new interface we created with the macvlan configuration.
+
+To attach more than one additional interface to a pod, you may specify multiple names in a comma-delimited fashion, such as adding an annotation like:
+
+[source,yaml]
+----
+  annotations:
+    k8s.v1.cni.cncf.io/networks: macvlan-conf, tertiary-conf, quaternary-conf
+----
+
+You may also specify the same configuration multiple times, such as `k8s.v1.cni.cncf.io/networks: macvlan-conf, macvlan-conf`.
+
+== Review attachment results using status annotation
+
+Once the pod is up and running, we can review the results of what's happened with each of the additional interfaces created. Such as which IP addresses have been assigned to a pod.
+
+If you're to describe a pod, you'll note that in the metadata section there is a list of annotations, one of which is named `k8s.v1.cni.cncf.io/networks-status`.
+
+If we describe the sample pod that we created earlier with:
+
+[source,bash]
+----
+oc describe pod samplepod
+----
+
+We'll find a section which looks like:
+
+[source,yaml]
+----
+Annotations:
+  k8s.v1.cni.cncf.io/networks: macvlan-conf
+  k8s.v1.cni.cncf.io/networks-status:
+    [{
+        "name": "openshift-sdn", <1>
+        "ips": [
+            "10.131.0.10"
+        ],
+        "default": true,
+        "dns": {}
+    },{
+        "name": "macvlan-conf",
+        "interface": "net1", <2>
+        "ips": [ <3>
+            "192.168.1.200"
+        ],
+        "mac": "72:00:53:b4:48:c4", <4>
+        "dns": {} <5>
+    }]
+----
+<1> `name` refers to the custom resource name, `macvlan-conf`
+<2> `interface` refers to the name of the interface in the pod, here it's `net1`
+<3> `ips` is a list of IP addresses as assigned to the pod
+<4> `mac` is the MAC address of the interface
+<5> `dns` refers DNS for the interface.
+
+The first annotation is the one as specified when we first created the pod, the `k8s.v1.cni.cncf.io/networks: macvlan-conf` annotation which refers to the custom resource we created.
+
+Here we can see that there's two interfaces listed under `k8s.v1.cni.cncf.io/networks-status` here in JSON format. The first item in the list is `openshift-sdn` which refers to the default network -- this is created as `eth0` and is how the pod communicates with other pods across the cluster.
+
+The second interface is the additional interface that we have created. Here we can see a number of keys that refer to the results of how the interface was created.
+
