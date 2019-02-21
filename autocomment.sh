@@ -9,14 +9,14 @@ wget https://api.travis-ci.org/v3/job/"${TRAVIS_JOB_ID}"/log.txt
 ERROR_LIST=$(grep '31m' travis-log-408052641.txt | sed -r "s/[[:cntrl:]]\[[0-9]{1,3}m//g")
 echo "" > errors.txt
 
-ALLOWED_USERS=("gaurav-nelson" "tmorriso-rh" "mburke5678" "vikram-redhat" "ahardin-rh" "kalexand-rh" "adellape" "bfallonf" "bmcelvee" "ousleyp" "rh-max")
+ALLOWED_USERS=("mburke5678" "vikram-redhat" "ariordan-redhat" "ahardin-rh" "kalexand-rh" "adellape" "bmcelvee" "ousleyp" "jhoyt-rh" "JStickler" "geekspertise" "rh-max" "bergerhoffer" "huffmanca" "sheriff-rh" "jboxman")
 USERNAME=${TRAVIS_PULL_REQUEST_SLUG::-15}
 
 if [ "$TRAVIS_PULL_REQUEST" != "false" ] ; then #to make sure it only runs on PRs and not all merges
     if [[ " ${ALLOWED_USERS[*]} " =~ " ${USERNAME} " ]]; then # to make sure it only runs on PRs from @openshift/team-documentation
         if [ "${TRAVIS_PULL_REQUEST_BRANCH}" != "master" ] ; then # to make sure it does not run for direct master changes
           echo "$ERROR_LIST" >> errors.txt
-          
+
           #add metadta for errors (required for adding GH comment)
           {
           echo -e "USERNAME:${USERNAME}"
