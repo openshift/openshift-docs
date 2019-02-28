@@ -1,0 +1,278 @@
+////
+Module included in the following assemblies:
+install_config/configuring_for_rhv.adoc
+////
+[id="installing-with-bastion-vm_{context}"]
+= Installing {product-title} with the bastion virtual machine
+
+Install {product-title} by using the bastion virtual machine in Red Hat Virtualization.
+
+.Procedure
+
+. Log in to *_rhel-bastion_*.
+. Create an *_install_ocp.yaml_* file that contains the following content:
++
+[source,yml]
+----
+---
+- name: Openshift on RHV
+  hosts: localhost
+  connection: local
+  gather_facts: false
+
+  vars_files:
+    - vars.yaml
+    - secure_vars.yaml
+
+  pre_tasks:
+    - ovirt_auth:
+        url:      "{{ engine_url }}"
+        username: "{{ engine_user }}"
+        password: "{{ engine_password }}"
+        insecure: "{{ engine_insecure }}"
+        ca_file:  "{{ engine_cafile | default(omit) }}"
+
+  roles:
+    - role: openshift_ovirt
+
+- import_playbook: setup_dns.yaml
+- import_playbook: /usr/share/ansible/openshift-ansible/playbooks/prerequisites.yml
+- import_playbook: /usr/share/ansible/openshift-ansible/playbooks/openshift-node/network_manager.yml
+- import_playbook: /usr/share/ansible/openshift-ansible/playbooks/deploy_cluster.yml
+----
+
+. Create a *_setup_dns.yaml_* file that contains the following content:
++
+[source,yml]
+----
+- hosts: masters
+  strategy: free
+  tasks:
+    - shell: "echo {{ ansible_default_ipv4.address }} {{ inventory_hostname }} etcd.{{ inventory_hostname.split('.', 1)[1] }} openshift-master.{{ inventory_hostname.split('.', 1)[1] }} openshift-public-master.{{ inventory_hostname.split('.', 1)[1] }} docker-registry-default.apps.{{ inventory_hostname.split('.', 1)[1] }} webconsole.openshift-web-console.svc registry-console-default.apps.{{ inventory_hostname.split('.', 1)[1] }} >> /etc/hosts"
+      when: openshift_ovirt_all_in_one is defined | ternary((openshift_ovirt_all_in_one | bool), false)
+----
+
+. Create an *_/etc/ansible/openshift_3_11.hosts_* Ansible inventory file that contains the following content:
++
+[source,yaml]
+----
+[workstation]
+localhost ansible_connection=local
+
+[all:vars]
+openshift_ovirt_dns_zone="{{ public_hosted_zone }}"
+openshift_web_console_install=true
+openshift_master_overwrite_named_certificates=true
+openshift_master_cluster_hostname="openshift-master.{{ public_hosted_zone }}"
+openshift_master_cluster_public_hostname="openshift-public-master.{{ public_hosted_zone }}"
+openshift_master_default_subdomain="{{ public_hosted_zone }}"
+openshift_public_hostname="{{openshift_master_cluster_public_hostname}}"
+openshift_deployment_type=openshift-enterprise
+openshift_service_catalog_image_version="{{ openshift_image_tag }}"
+
+[OSEv3:vars]
+# General variables
+debug_level=1
+containerized=false
+ansible_ssh_user=root
+os_firewall_use_firewalld=true
+openshift_enable_excluders=false
+openshift_install_examples=false
+openshift_clock_enabled=true
+openshift_debug_level="{{ debug_level }}"
+openshift_node_debug_level="{{ node_debug_level | default(debug_level,true) }}"
+osn_storage_plugin_deps=[]
+openshift_master_bootstrap_auto_approve=true
+openshift_master_bootstrap_auto_approver_node_selector={"node-role.kubernetes.io/master":"true"}
+osm_controller_args={"experimental-cluster-signing-duration": ["20m"]}
+osm_default_node_selector="node-role.kubernetes.io/compute=true"
+openshift_enable_service_catalog=false
+
+# Docker
+container_runtime_docker_storage_type=overlay2
+openshift_docker_use_system_container=false
+
+[OSEv3:children]
+nodes
+masters
+etcd
+lb
+
+[masters]
+[nodes]
+[etcd]
+[lb]
+----
+
+. Obtain the *_Red Hat Enterprise Linux KVM Guest Image_* download link:
+
+.. Navigate to link:https://access.redhat.com/downloads/content/69/ver=/rhel---7/latest/x86_64/product-software[Red Hat Customer Portal: Download Red Hat Enterprise Linux].
+.. In the *Product Software* tab, locate the *_Red Hat Enterprise Linux KVM Guest Image_*.
+.. Right-click *Download Now*, copy the link, and save it.
++
+Do not use the link that you copied when you created the bastion virtual machine. The download link is time-sensitive and must be copied just before you run the installation playbook.
+
+. Create the *_vars.yaml_* file with the following content and update its parameter values:
++
+[source,yml]
+----
+---
+# For detailed documentation of variables, see
+# openshift_ovirt: https://github.com/openshift/openshift-ansible/tree/master/roles/openshift_ovirt#role-variables
+# openshift installation: https://github.com/openshift/openshift-ansible/tree/master/inventory
+engine_url: https://<Manager_FQDN>/ovirt-engine/api <1>
+engine_user: admin@internal
+engine_password: "{{ engine_password }}"
+engine_insecure: false
+engine_cafile: /etc/pki/ovirt-engine/ca.pem
+
+openshift_ovirt_vm_manifest:
+  - name: 'master'
+    count: 1
+    profile: 'master_vm'
+  - name: 'compute'
+    count: 0
+    profile: 'node_vm'
+  - name: 'lb'
+    count: 0
+    profile: 'node_vm'
+  - name: 'etcd'
+    count: 0
+    profile: 'node_vm'
+  - name: infra
+    count: 0
+    profile: node_vm
+
+# Currently, only all-in-one installation (`openshift_ovirt_all_in_one: true`) is supported.
+# Multi-node installation (master and node VMs installed separately) will be supported in a future release.
+openshift_ovirt_all_in_one: true
+openshift_ovirt_cluster: Default
+openshift_ovirt_data_store: data
+openshift_ovirt_ssh_key: "{{ lookup('file', '/root/.ssh/id_rsa_ssh_ocp_admin.pub') }}"
+
+public_hosted_zone:
+# Uncomment to disable install-time checks, for smaller scale installations
+#openshift_disable_check: memory_availability,disk_availability,docker_image_availability
+
+qcow_url: <RHEL_KVM_guest_image_download_link> <2>
+image_path: /var/tmp
+template_name: rhelguest7
+template_cluster: "{{ openshift_ovirt_cluster }}"
+template_memory: 4GiB
+template_cpu: 1
+template_disk_storage: "{{ openshift_ovirt_data_store }}"
+template_disk_size: 100GiB
+template_nics:
+  - name: nic1
+    profile_name: ovirtmgmt
+    interface: virtio
+
+debug_vm_create: false
+wait_for_ip: true
+vm_infra_wait_for_ip_retries: 30
+vm_infra_wait_for_ip_delay: 20
+
+node_item: &node_item
+  cluster: "{{ openshift_ovirt_cluster }}"
+  template: "{{ template_name }}"
+  memory: "8GiB"
+  cores: "2"
+  high_availability: true
+  disks:
+    - name: docker
+      size: 15GiB
+      interface: virtio
+      storage_domain: "{{ openshift_ovirt_data_store }}"
+    - name: openshift
+      size: 30GiB
+      interface: virtio
+      storage_domain: "{{ openshift_ovirt_data_store }}"
+  state: running
+  cloud_init:
+    root_password: "{{ root_password }}"
+    authorized_ssh_keys: "{{ openshift_ovirt_ssh_key }}"
+    custom_script: "{{ cloud_init_script_node | to_nice_yaml }}"
+
+openshift_ovirt_vm_profile:
+  master_vm:
+    <<: *node_item
+    memory: 16GiB
+    cores: "{{ vm_cores | default(4) }}"
+    disks:
+      - name: docker
+        size: 15GiB
+        interface: virtio
+        storage_domain: "{{ openshift_ovirt_data_store }}"
+      - name: openshift_local
+        size: 30GiB
+        interface: virtio
+        storage_domain: "{{ openshift_ovirt_data_store }}"
+      - name: etcd
+        size: 25GiB
+        interface: virtio
+        storage_domain: "{{ openshift_ovirt_data_store }}"
+    cloud_init:
+      root_password: "{{ root_password }}"
+      authorized_ssh_keys: "{{ openshift_ovirt_ssh_key }}"
+      custom_script: "{{ cloud_init_script_master | to_nice_yaml }}"
+  node_vm:
+    <<: *node_item
+  etcd_vm:
+    <<: *node_item
+  lb_vm:
+    <<: *node_item
+
+cloud_init_script_node: &cloud_init_script_node
+  packages:
+    - ovirt-guest-agent
+  runcmd:
+    - sed -i 's/# ignored_nics =.*/ignored_nics = docker0 tun0 /' /etc/ovirt-guest-agent.conf
+    - systemctl enable ovirt-guest-agent
+    - systemctl start ovirt-guest-agent
+    - mkdir -p /var/lib/docker
+    - mkdir -p /var/lib/origin/openshift.local.volumes
+    - /usr/sbin/mkfs.xfs -L dockerlv /dev/vdb
+    - /usr/sbin/mkfs.xfs -L ocplv /dev/vdc
+  mounts:
+    - [ '/dev/vdb', '/var/lib/docker', 'xfs', 'defaults,gquota' ]
+    - [ '/dev/vdc', '/var/lib/origin/openshift.local.volumes', 'xfs', 'defaults,gquota' ]
+  power_state:
+    mode: reboot
+    message: cloud init finished - boot and install openshift
+    condition: True
+cloud_init_script_master:
+  <<: *cloud_init_script_node
+  runcmd:
+    - sed -i 's/# ignored_nics =.*/ignored_nics = docker0 tun0 /' /etc/ovirt-guest-agent.conf
+    - systemctl enable ovirt-guest-agent
+    - systemctl start ovirt-guest-agent
+    - mkdir -p /var/lib/docker
+    - mkdir -p /var/lib/origin/openshift.local.volumes
+    - mkdir -p /var/lib/etcd
+    - /usr/sbin/mkfs.xfs -L dockerlv /dev/vdb
+    - /usr/sbin/mkfs.xfs -L ocplv /dev/vdc
+    - /usr/sbin/mkfs.xfs -L etcdlv /dev/vdd
+  mounts:
+    - [ '/dev/vdb', '/var/lib/docker', 'xfs', 'defaults,gquota' ]
+    - [ '/dev/vdc', '/var/lib/origin/openshift.local.volumes', 'xfs', 'defaults,gquota' ]
+    - [ '/dev/vdd', '/var/lib/etcd', 'xfs', 'defaults,gquota' ]
+----
+<1> FQDN of the Manager machine.
+<2> `<qcow_url>` is the download link of the *_Red Hat Enterprise Linux KVM Guest Image_*. The *_Red Hat Enterprise Linux KVM Guest Image_* includes the `cloud-init` package, which is required by this playbook. If you are not using Red Hat Enterprise Linux, download the link:https://access.redhat.com/downloads/content/69/ver=/rhel---7/7.7/x86_64/packages[`cloud-init` package] and install it manually before running this playbook.
+
+. Install {product-title}:
++
+[options="nowrap" subs="+quotes,verbatim"]
+----
+# export ANSIBLE_ROLES_PATH="/usr/share/ansible/roles/:/usr/share/ansible/openshift-ansible/roles"
+# export ANSIBLE_JINJA2_EXTENSIONS="jinja2.ext.do"
+# ansible-playbook -i /etc/ansible/openshift_3_11.hosts install_ocp.yaml -e @vars.yaml -e @secure_vars.yaml --ask-vault-pass
+----
+
+. Create DNS entries for the routers, for each infrastructure instance.
+
+. Configure round-robin routing so that the router can pass traffic to the applications.
+
+. Create a DNS entry for the {product-title} web console.
+
+. Specify the IP address of the load balancer node.
