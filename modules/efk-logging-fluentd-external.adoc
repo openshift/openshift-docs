@@ -2,7 +2,7 @@
 //
 // * logging/efk-logging-external.adoc
 
-[id='efk-logging-fluentd-external.adoc_{context}']
+[id='efk-logging-fluentd-external_{context}']
 = Configuring Fluentd to send logs to an external log aggregator
 
 You can configure Fluentd to send a copy of its logs to an external log
@@ -17,81 +17,108 @@ endif::openshift-origin[]
 The logging deployment provides a `secure-forward.conf` section in the Fluentd configmap
 for configuring the external aggregator:
 
+.Prerequisite
+
+Set cluster logging to the unmanaged state.
+
+.Procedure
+
+To send a copy of Fluentd logs to an external log aggregator:
+
+. Edit the Fluentd configuration map:
++
 ----
+$ oc edit configmap/fluentd
+----
++
+----
+https://docs.fluentd.org/v1.0/articles/in_forward
 <store>
-@type secure_forward
-self_hostname pod-${HOSTNAME}
-shared_key thisisasharedkey
-secure yes
-enable_strict_verification yes
-ca_cert_path /etc/fluent/keys/your_ca_cert
-ca_private_key_path /etc/fluent/keys/your_private_key
-ca_private_key_passphrase passphrase
-<server>
-  host ose1.example.com
-  port 24284
-</server>
-<server>
-  host ose2.example.com
-  port 24284
-  standby
-</server>
-<server>
-  host ose3.example.com
-  port 24284
-  standby
-</server>
+  @type forward
+  <security>
+    self_hostname ${hostname} # ${hostname} is a placeholder.
+    shared_key <shared_key_between_forwarder_and_forwardee>
+  </security>
+  transport tls
+  tls_verify_hostname true           # Set false to ignore server cert hostname.
+
+  tls_cert_path /path/for/certificate/ca_cert.pem
+  <buffer>
+    @type file
+    path '/var/lib/fluentd/forward'
+    queued_chunks_limit_size "#{ENV['BUFFER_QUEUE_LIMIT'] || '1024' }"
+    chunk_limit_size "#{ENV['BUFFER_SIZE_LIMIT'] || '1m' }"
+    flush_interval "#{ENV['FORWARD_FLUSH_INTERVAL'] || '5s'}"
+    flush_at_shutdown "#{ENV['FLUSH_AT_SHUTDOWN'] || 'false'}"
+    retry_max_interval "#{ENV['FORWARD_RETRY_WAIT'] || '300'}"
+    retry_forever true
+    # the systemd journald 0.0.8 input plugin will just throw away records if the buffer
+    # queue limit is hit - 'block' will halt further reads and keep retrying to flush the
+    # buffer to the remote - default is 'exception' because in_tail handles that case
+    overflow_action "#{ENV['BUFFER_QUEUE_FULL_ACTION'] || 'exception'}"
+  </buffer>
+  <server>
+    host server.fqdn.example.com  # or IP
+    port 24284
+  </server>
+  <server>
+    host 203.0.113.8 # ip address to connect
+    name server.fqdn.example.com # The name of the server. Used for logging and certificate verification in TLS transport (when host is address).
+  </server>
 </store>
 ----
 
-This can be updated using the `oc edit` command:
-
-----
-$ oc edit configmap/logging-fluentd
-----
-
-Certificates to be used in `secure-forward.conf` can be added to the existing
+. Add certificates to be used in `secure-forward.conf` to the existing
 secret that is mounted on the Fluentd pods. The `your_ca_cert` and
 `your_private_key` values must match what is specified in `secure-forward.conf`
 in `configmap/logging-fluentd`:
-
++
 ----
 $ oc patch secrets/logging-fluentd --type=json \
   --patch "[{'op':'add','path':'/data/your_ca_cert','value':'$(base64 /path/to/your_ca_cert.pem)'}]"
 $ oc patch secrets/logging-fluentd --type=json \
   --patch "[{'op':'add','path':'/data/your_private_key','value':'$(base64 /path/to/your_private_key.pem)'}]"
 ----
-
++
 [NOTE]
 ====
 Replace `your_private_key` with a generic name. This is a link to the JSON path,
 not a path on your host system.
 ====
-
++
 When configuring the external aggregator, it must be able to accept messages
 securely from Fluentd.
++
+* If using Fluentd 1.0 or later, configure the built-in *in_forward* plug-in with the appropriate security parameters. 
++
+In Fluentd 1.0 and later, *in_forward* implements the server (receiving) side, and *out_forward* implements the client (sending) side.
++
+For Fluentd versions 1.0 or higher, you can find further explanation of link:https://docs.fluentd.org/v1.0/articles/in_forward[how to set up the *inforward* plugin]
+and link:https://docs.fluentd.org/v1.0/articles/out_forward[the *out_forward* plugin].
 
-If the external aggregator is another Fluentd server, it must have the
-`fluent-plugin-secure-forward` plug-in installed and make use of the input
-plug-in it provides:
+* If using Fluentd 0.12 or earlier, you must have the *fluent-plugin-secure-forward* plug-in installed and 
+make use of the input plug-in it provides. In Fluentd 0.12, the same `fluent-plugin-secure-forward` plugin implements both the client (sending) side and the server (receiving) side.
++
+For Fluentd 0.12 you can find further explanation of link:https://github.com/tagomoris/fluent-plugin-secure-forward[*fluent-plugin-secure-forward* plug-in in fluent-plugin-secure-forward repository].
+
+
+The following is an example of a `in_forward` configuration for Fluentd 1.0 and later:
 
 ----
 <source>
-  @type secure_forward
-
-  self_hostname ${HOSTNAME}
-  bind 0.0.0.0
+  @type forward
+  @id my-secure-forward
   port 24284
-
-  shared_key thisisasharedkey
-
-  secure yes
-  cert_path        /path/for/certificate/cert.pem
-  private_key_path /path/for/certificate/key.pem
-  private_key_passphrase secret_foo_bar_baz
+  bind 0.0.0.0
+  <security>
+    self_hostname server.fqdn.example.com
+    shared_key    <shared_key_between_forwarder_and_forwardee>
+  </security>
+  <transport tls>
+    cert_path        /path/to/my/tlsservercert
+    private_key_path /path/to/my/tlsserverkey
+    private_key_passphrase not_used_if_key_is_unencrypted
+  </transport>
 </source>
 ----
 
-You can find further explanation of how to set up the
-`fluent-plugin-secure-forward` plug-in in the
-link:https://github.com/tagomoris/fluent-plugin-secure-forward[`fluent-plugin-secure-forward` repository].
