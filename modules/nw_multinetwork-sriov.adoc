@@ -1,0 +1,289 @@
+// Module name: nw_multinetwork-sriov.adoc
+// Module included in the following assemblies:
+//
+// * networking/managing_multinetworking.adoc
+
+[id='multinetwork-sriov-{context}']
+= Configuring SR-IOV
+
+{product-title} includes the capability to use SR-IOV hardware on {product-title} nodes, which enables you to attach SR-IOV virtual function (VF) interfaces to pods in addition to other network interfaces.
+
+Two components are required to provide this capability: the SR-IOV network device plug-in and the SR-IOV CNI plug-in.
+
+* The SR-IOV network device plug-in is a Kubernetes device plug-in for discovering, advertising, and allocating SR-IOV network virtual function (VF) resources. Device plug-ins are used in Kubernetes to enable the use of limited resources, typically in physical devices. Device plug-ins give the Kubernetes scheduler awareness of which resources are exhausted, allowing pods to be scheduled to worker nodes that have sufficient resources available.
+
+* The SR-IOV CNI plug-in plumbs VF interfaces allocated from the SR-IOV device plug-in directly into a pod.
+
+== Supported Devices
+
+The supported Network Interface Card (NIC) models in {product-title} are:
+
+* Intel 25G card with vendor id: `0x8086` and device id: `0x158b`
+* Mellanox 25G card with vendor id: `0x15b3` and device id: `0x1015`
+* Mellanox 100G card with vendor id: `0x15b3` and device id: `0x1017`
+
+[NOTE]
+====
+For Mellanox cards, ensure that SR-IOV is enabled in the firmware before provisioning VFs on the host.
+====
+
+== Creating SR-IOV plug-ins and daemonsets
+
+[NOTE]
+====
+The creation of SR-IOV VFs is not handled by the SR-IOV device plug-in and SR-IOV CNI.
+To provision SR-IOV VF on hosts, you must configure it manually.
+
+====
+
+To use the SR-IOV network device plug-in and SR-IOV CNI plug-in, run both plug-ins in daemon mode on each node in your cluster.
+
+. Create an `openshift-sriov` namespace YAML file:
++
+[source,yaml]
+----
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: openshift-sriov
+  labels:
+    name: openshift-sriov
+    openshift.io/run-level: "0"
+  annotations:
+    openshift.io/node-selector: ""
+    openshift.io/description: "Openshift SR-IOV network components"
+----
+
+. Run the following command to create the `openshift-sriov` namespace:
++
+----
+oc create -f openshift-sriov.yaml
+----
+
+. Create a YAML file for the `sriov-device-plugin` ServiceAccount:
++
+[source,yaml]
+----
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: sriov-device-plugin
+  namespace: openshift-sriov
+----
+
+. Run the following command to create the `sriov-device-plugin` ServiceAccount:
++
+----
+oc create -f sriov-device-plugin.yaml
+----
+
+. Create a YAML file for the `sriov-cni` ServiceAccount:
++
+[source,yaml]
+----
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: sriov-cni
+  namespace: openshift-sriov
+----
+
+. Run the following command to create the `sriov-cni` ServiceAccount:
++
+----
+oc create -f sriov-cni.yaml
+----
+
+
+. Create a YAML file for the `sriov-device-plugin` DaemonSet:
++
+[NOTE]
+====
+The SR-IOV network device plug-in daemon, when launched, will discover all the configured SR-IOV VFs (of supported NIC models) on each node and advertise discovered resources. The number of available SR-IOV VF resources that are capable of being allocated can be reviewed by describing a node with [command]`oc describe node node-name`. The resource name for the SR-IOV VF reosurces is `openshift.io/sriov`. when no SR-IOV VFs are available on the node, that a value of zero is displayed.
+====
++
+[source,yaml]
+----
+kind: DaemonSet
+apiVersion: apps/v1
+metadata:
+  name: sriov-device-plugin
+  namespace: openshift-sriov
+  annotations:
+    kubernetes.io/description: |
+      This daemon set launches the SR-IOV network device plugin on each node.
+spec:
+  selector:
+    matchLabels:
+      app: sriov-device-plugin
+  updateStrategy:
+    type: RollingUpdate
+  template:
+    metadata:
+      labels:
+        app: sriov-device-plugin
+        component: network
+        type: infra
+        openshift.io/component: network
+      annotations:
+        scheduler.alpha.kubernetes.io/critical-pod: ''
+    spec:
+      hostNetwork: true
+      hostPID: true
+      nodeSelector:
+        beta.kubernetes.io/os: linux
+      tolerations:
+      - operator: Exists
+      serviceAccountName: sriov-device-plugin
+      containers:
+      - name: sriov-device-plugin
+        image: quay.io/openshift/origin-sriov-network-device-plugin:v4.0.0
+        args:
+        - --log-level=10
+        securityContext:
+          privileged: true
+        volumeMounts:
+        - name: devicesock
+          mountPath: /var/lib/kubelet/device-plugins/
+          readOnly: false
+        - name: net
+          mountPath: /sys/class/net
+          readOnly: true
+      volumes:
+        - name: devicesock
+          hostPath:
+            path: /var/lib/kubelet/device-plugins/
+        - name: net
+          hostPath:
+            path: /sys/class/net
+----
+
+. Run the following command to create the `sriov-device-plugin` DaemonSet:
++
+----
+oc create -f sriov-device-plugin.yaml
+----
+
+. Create a YAML file for the `sriov-cni` DaemonSet:
++
+[source,yaml]
+----
+kind: DaemonSet
+apiVersion: apps/v1
+metadata:
+  name: sriov-cni
+  namespace: openshift-sriov
+  annotations:
+    kubernetes.io/description: |
+      This daemon set launches the SR-IOV CNI plugin on SR-IOV capable worker nodes.
+spec:
+  selector:
+    matchLabels:
+      app: sriov-cni
+  updateStrategy:
+    type: RollingUpdate
+  template:
+    metadata:
+      labels:
+        app: sriov-cni
+        component: network
+        type: infra
+        openshift.io/component: network
+    spec:
+      hostNetwork: true
+      nodeSelector:
+        beta.kubernetes.io/os: linux
+      tolerations:
+      - operator: Exists
+      serviceAccountName: sriov-cni
+      containers:
+      - name: sriov-cni
+        image: quay.io/openshift/origin-sriov-cni:v4.0.0
+        securityContext:
+          privileged: true
+        volumeMounts:
+        - name: cnibin
+          mountPath: /host/opt/cni/bin
+      volumes:
+        - name: cnibin
+          hostPath:
+            path: /var/lib/cni/bin
+----
+
+
+. Run the following command to create the `sriov-cni` DaemonSet:
++
+----
+oc create -f sriov-cni.yaml
+----
+
+== Configuring additional interfaces using SR-IOV
+
+. Create a YAML file for the Custom Resource (CR) with SR-IOV configuration. The `name` field in the following CR  has the value `sriov-conf`.
++
+[source,yaml]
+----
+apiVersion: "k8s.cni.cncf.io/v1"
+kind: NetworkAttachmentDefinition
+metadata:
+  name: sriov-conf
+  annotations:
+    k8s.v1.cni.cncf.io/resourceName: openshift.io/sriov <2>
+spec:
+  config: '{
+      "type": "sriov", <1>
+      "name": "sriov-conf",
+      "ipam": {
+        "type": "host-local",
+        "subnet": "10.56.217.0/24",
+        "routes": [{
+          "dst": "0.0.0.0/0"
+        }],
+        "gateway": "10.56.217.1"
+      }
+    }'
+----
++
+<1> `type` is set to `sriov`.
+<2> `k8s.v1.cni.cncf.io/resourceName` annotation is set to `openshift.io/sriov`
+
+
+. Run the following command to create the `sriov-conf` CR:
++
+----
+oc create -f sriov-conf.yaml
+----
+
+. Create a YAML file for a pod which references the name of the `NetworkAttachmentDefinition` and requests one `openshift.io/sriov` resource:
++
+[source,yaml]
+----
+apiVersion: v1
+kind: Pod
+metadata:
+  name: sriovsamplepod
+  annotations:
+    k8s.v1.cni.cncf.io/networks: sriov-conf
+spec:
+  containers:
+  - name: sriovsamplepod
+    command: ["/bin/bash", "-c", "sleep 2000000000000"]
+    image: centos/tools
+    resources:
+      requests:
+        openshift.io/sriov: '1'
+      limits:
+        openshift.io/sriov: '1'
+----
+
+. Run the following command to create the `sriovsamplepod` pod:
++
+----
+oc create -f sriovsamplepod.yaml
+----
+
+. View the additional interface by executing the `ip` command:
++
+----
+oc exec sriovsamplepod -- ip a
+----
