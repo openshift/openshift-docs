@@ -318,7 +318,7 @@ def reformat_for_drupal(info):
     distro = info['distro']
 
     # Build a mapping of files to ids
-    # Note: For all-in-one we need to collect ids from all books first
+    # Note: For all-in-one we have to collect ids from all books first
     file_to_id_map = {}
     if info['all_in_one']:
         book_ids = []
@@ -941,9 +941,9 @@ def main():
 
     # Copy the original data and reformat for drupal
     reformat_for_drupal(info)
-    
+
     if has_errors:
-        sys.exit(1)        
+        sys.exit(1)
 
     if args.push:
         # Parse the repo urls
