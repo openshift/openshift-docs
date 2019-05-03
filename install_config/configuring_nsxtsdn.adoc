@@ -1,0 +1,243 @@
+[[install-config-configuring-nsx-t-sdn]]
+[%hardbreaks]
+= Configuring NSX-T SDN
+{product-author}
+{product-version}
+:data-uri:
+:icons:
+:experimental:
+:toc: macro
+:toc-title:
+
+toc::[]
+
+[[nsx-t-sdn-and-openshift]]
+== NSX-T SDN and {product-title}
+
+VMware NSX-T Data Center (TM) provides advanced software-defined networking (SDN), security, and visibility
+to container environments that simplifies IT operations and extends native {product-title} networking capabilities.
+
+NSX-T Data Center  supports virtual machine, bare metal, and container workloads across multiple clusters. This allows
+organizations to have complete visibility using a single SDN across the entire environment.
+
+For more information on how NSX-T integrates with {product-title}, see the xref:../architecture/networking/network_plugins.adoc#nsx-sdn[NSX-T SDN in Available SDN plug-ins].
+
+[[nsx-t-sdn-operations-workflow]]
+== Example Topology
+
+One typical use case is to have a Tier-0 (T0) router that connects the physical system with the virtual environment and a Tier-1 (T1) router to act as a default gateway for the {product-title} VMs.
+
+Each VM has two vNICs: One vNIC connects to the Management Logical Switch for accessing the VMs. The other vNIC connects to a Dump Logical Switch and is used by `nsx-node-agent` to uplink the Pod networking. For further details, refer to link:https://docs.VMware.com/en/VMware-NSX-T-Data-Center/2.4/nsxt_24_ncp_openshift.pdf[NSX Container Plug-in for OpenShift].
+
+The LoadBalancer used for configuring {product-title} Routes and all project T1 routers and Logical Switches are created automatically during the {product-title} installation. 
+
+In this topology, the default {product-title} HAProxy Router is used for all infrastructure components such as Grafana, Prometheus, Console, Service Catalog, and others.
+Ensure that the DNS records for the infrastructure components point to the infrastructure node IP addresses, because the HAProxy uses the host network namespace.
+This works for infrastructure routes, but in order to avoid exposing the infrastructure nodes management IPs to the outside world, deploy application-specific routes to the NSX-T LoadBalancer.
+
+This example topology assumes you are using three {product-title} master virtual machines and four {product-title} worker virtual machines (two for infrastructure and two for compute).
+
+[[nsx-t-sdn-installation]]
+== Installing VMware NSX-T 
+
+Prerequisites:
+
+* ESXi hosts requirements:
+** ESXi servers that host {product-title} node VMs must be NSX-T Transport Nodes.
++
+.NSX UI dislaying the Transport Nodes for a typical high availability environment: 
++
+image::nsxt-transportnodes.png[NSX Transport Nodes]
+
+* DNS requirements:
+** You must add a new entry to your DNS server with a wildcard to the infrastructure nodes. This allows load balancing by NSX-T or other third-party LoadBalancer. In the `hosts` file below, the entry is defined by the `openshift_master_default_subdomain` variable.
+** You must update your DNS server with the `openshift_master_cluster_hostname` and `openshift_master_cluster_public_hostname` variables.
+
+* Virtual Machine requirements:
+** The {product-title} node VMs must have two vNICs:
+** A Management vNIC must be connected to the Logical Switch that is uplinked to the management T1 router.
+** The second vNIC on all VMs must be tagged in NSX-T so that the NSX Container Plug-in (NCP) knows which port needs to be used as a parent VIF for all Pods running in a particular {product-title} node. The tags must be the following:
++
+----
+{'ncp/node_name': 'node_name'}
+{'ncp/cluster': 'cluster_name'}
+----
++
+The following image shows how the tags in NSX UI for all nodes. For a large scale cluster, you can automate the tagging using API Call or by using Ansible. 
++
+.NSX UI dislaying node tags
++
+image::nsxt-tags.png[NSX VM tags]
++
+The order of the tags in the NSX UI is opposite from the API.
+The node name must be exactly as kubelet expects and the cluster name must be the same as the `nsx_openshift_cluster_name` in the Ansible hosts file, as shown below. Ensure that the proper tags are applied on the second vNIC on every node.
++
+* NSX-T requirements: 
++
+The following prerequisites need to be met in NSX:
++
+** A Tier-0 Router.
+** An Overlay Transport Zone.
+** An IP Block for POD networking.
+** Optionally, an IP Block for routed (NoNAT) POD networking.
+** An IP Pool for SNAT. By default the subnet given per Project from the Pod networking IP Block is routable only inside NSX-T. NCP uses this IP Pool to provide connectivity to the outside.
+** Optionally, the Top and Bottom firewall sections in a dFW (Distributed Firewall). NCP places the Kubernetes Network Policy rules between those two sections.
+** The Open vSwitch and CNI plug-in RPMs need to be hosted on a HTTP server reachable from the {product-title} Node VMs (`http://websrv.example.com` in this example). Those files are included in the NCP Tar file, which you can download from VMware at link:https://my.VMware.com/web/vmware/details?downloadGroup=NSX-T-PKS-240&productId=673[Download NSX Container Plug-in 2.4.0
+].
+
+* {product-title} requirements:
++
+** Run the following command to install required software packages, if any, for {product-title}:
++
+----
+$ ansible-playbook -i hosts openshift-ansible/playbooks/prerequisites.yml
+----
++
+** Ensure that the NCP container image is downloaded locally on all nodes
++
+** After the `prerequisites.yml` playbook has successfully executed, run the following command on all nodes, replacing the `xxx` with the NCP build version:
++
+----
+$ docker load -i nsx-ncp-rhel-xxx.tar
+----
++
+For example:
++
+----
+$ docker load -i nsx-ncp-rhel-2.4.0.12511604.tar
+----
++
+** Get the image name and retag it:
++
+----
+$ docker images
+$ docker image tag registry.local/xxxxx/nsx-ncp-rhel nsx-ncp <1>
+----
+<1> Replace the `xxx` with the NCP build version. For example:
++
+----
+docker image tag registry.local/2.4.0.12511604/nsx-ncp-rhel nsx-ncp
+----
++
+** In the {product-title} Ansible hosts file, specify the following parameters to set up NSX-T as the network plug-in:
++
+----
+[OSEv3:children]
+masters
+nodes
+etcd
+[OSEv3:vars]
+ansible_ssh_user=root
+openshift_deployment_type=origin
+openshift_master_identity_providers=[{'name': 'htpasswd_auth', 'login': 'true', 'challenge': 'true', 'kind': 'HTPasswdPasswordIdentityProvider'}]
+openshift_master_htpasswd_users={"admin" : "$apr1$H0QeP6oX$HHdscz5gqMdtTcT5eoCJ20"}
+openshift_master_default_subdomain=demo.example.com
+openshift_use_nsx=true
+os_sdn_network_plugin_name=cni
+openshift_use_OpenShift_sdn=false
+openshift_node_sdn_mtu=1500
+openshift_master_cluster_method=native
+openshift_master_cluster_hostname=master01.example.com
+openshift_master_cluster_public_hostname=master01.example.com
+openshift_hosted_manage_registry=true
+openshift_hosted_manage_router=true
+openshift_enable_service_catalog=true
+openshift_cluster_monitoring_operator_install=true
+openshift_web_console_install=true
+openshift_console_install=true
+# NSX-T specific configuration
+#nsx_use_loadbalancer=false
+nsx_openshift_cluster_name='cluster01'
+nsx_api_managers='nsxmgr.example.com'
+nsx_api_user='nsx_admin'
+nsx_api_password='nsx_api_password_example'
+nsx_tier0_router='LR-Tier-0'
+nsx_overlay_transport_zone='TZ-Overlay'
+nsx_container_ip_block='pod-networking'
+nsx_no_snat_ip_block='pod-nonat'
+nsx_external_ip_pool='pod-external'
+nsx_top_fw_section='containers-top'
+nsx_bottom_fw_section='containers-bottom'
+nsx_ovs_uplink_port='ens224'
+nsx_cni_url='http://websrv.example.com/nsx-cni-buildversion.x86_64.rpm'
+nsx_ovs_url='http://websrv.example.com/openvswitch-buildversion.rhel75-1.x86_64.rpm'
+nsx_kmod_ovs_url='http://websrv.example.com/kmod-openvswitch-buildversion.rhel75-1.el7.x86_64.rpm'
+nsx_insecure_ssl=true
+# vSphere Cloud Provider
+#openshift_cloudprovider_kind=vsphere
+#openshift_cloudprovider_vsphere_username='administrator@example.com'
+#openshift_cloudprovider_vsphere_password='viadmin_password'
+#openshift_cloudprovider_vsphere_host='vcsa.example.com'
+#openshift_cloudprovider_vsphere_datacenter='Example-Datacenter'
+#openshift_cloudprovider_vsphere_cluster='example-Cluster'
+#openshift_cloudprovider_vsphere_resource_pool='ocp'
+#openshift_cloudprovider_vsphere_datastore='example-Datastore-name'
+#openshift_cloudprovider_vsphere_folder='ocp'
+[masters]
+master01.example.com
+master02.example.com
+master03.example.com
+[etcd]
+master01.example.com
+master02.example.com
+master03.example.com
+[nodes]
+master01.example.com ansible_ssh_host=192.168.220.2 OpenShift_node_group_name='node-config-master' OpenShift_ip=192.168.220.2
+master02.example.com ansible_ssh_host=192.168.220.3 OpenShift_node_group_name='node-config-master' OpenShift_ip=192.168.220.3
+master03.example.com ansible_ssh_host=192.168.220.4 OpenShift_node_group_name='node-config-master' OpenShift_ip=192.168.220.4
+node01.example.com ansible_ssh_host=192.168.220.5 OpenShift_node_group_name='node-config-infra' OpenShift_ip=192.168.220.5
+#node02.example.com ansible_ssh_host=192.168.220.6 OpenShift_node_group_name='node-config-infra' OpenShift_ip=192.168.220.6
+node03.example.com ansible_ssh_host=192.168.220.7 OpenShift_node_group_name='node-config-compute' OpenShift_ip=192.168.220.7
+node04.example.com ansible_ssh_host=192.168.220.8 OpenShift_node_group_name='node-config-compute' OpenShift_ip=192.168.220.8
+----
++
+For information on the {product-title} installation parameters, see xref:../install/configuring_inventory_file.adoc#install-config-configuring-inventory-file[Configuring Your Inventory File].
+
+.Procedure
+
+After meeting all of the prerequisites, you can deploy NSX Data Center and {product-title}.
+
+. Deploy the {product-title} cluster:
++
+----
+$ ansible-playbook -i hosts openshift-ansible/playbooks/deploy_cluster.yml
+----
++
+For more information on the {product-title} installation, see xref:../install/running_install.adoc#install-running-installation-playbooks[Installing OpenShift Container Platform].
+
+. After the installation is complete, validate that the NCP and nsx-node-agent Pods are running:
++
+----
+$ oc get pods -o wide -n nsx-system
+NAME                   READY     STATUS    RESTARTS   AGE       IP              NODE                                   NOMINATED NODE
+nsx-ncp-5sggt          1/1       Running   0          1h        192.168.220.8   node04.example.com     <none>
+nsx-node-agent-b8nkm   2/2       Running   0          1h        192.168.220.5   node01.example.com     <none>
+nsx-node-agent-cldks   2/2       Running   0          2h        192.168.220.8   node04.example.com     <none>
+nsx-node-agent-m2p5l   2/2       Running   28         3h        192.168.220.4   master03.example.com   <none>
+nsx-node-agent-pcfd5   2/2       Running   0          1h        192.168.220.7   node03.example.com     <none>
+nsx-node-agent-ptwnq   2/2       Running   26         3h        192.168.220.2   master01.example.com   <none>
+nsx-node-agent-xgh5q   2/2       Running   26         3h        192.168.220.3   master02.example.com   <none>
+----
+
+== Check NSX-T after {product-title} deployment
+
+After installing {product-title} and verifying the NCP and `nsx-node-agent-*` Pods:
+
+* Check the routing. Ensure that the Tier-1 routers were created during the installation and are linked to the Tier-0 router:
++
+.NSX UI dislaying showing the T1 routers
+image::nsxt-routing.png[NSX routing]
+
+* Observe the network traceflow and visibility. For example, check the connection between 'console' and 'grafana'. 
++
+For more information on securing and optimizing communications between Pods, Projects, virtual machines, and external services, see the following example:
++
+.NSX UI dislaying showing network traceflow
+image::nsxt-visibility.png[NSX visibility]
+
+* Check the load balancing. NSX-T Data center offers Load Balancer and Ingress Controller capabilities, as shown in the following example:
++
+.NSX UI dislay showing the load balancers
+image::nsxt-loadbalancing.png[NSX loadbalancing]
+
+For additional configuration and options, refer to the link:https://docs.vmware.com/en/VMware-NSX-T-Data-Center/2.4/rn/NSX-Container-Plugin-Release-Notes.html[VMware NSX-T v2.4 OpenShift Plug-In] documentation. 
