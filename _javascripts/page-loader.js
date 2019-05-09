@@ -21,12 +21,12 @@ function versionSelector(list) {
   // alert(fileRequested);
 
   // in 3.3 and above, we changed to container-platform
-  if(newVersion == 3.11 || newVersion == 3.10 || newVersion >= 3.3) {
-    newLink = "https://docs.openshift.com/container-platform/" +
+  if(newVersion == '3.0' || newVersion == '3.1' || newVersion == '3.2') {
+    newLink = "https://docs.openshift.com/enterprise/" +
       newVersion +
       fileRequested;
   } else {
-    newLink = "https://docs.openshift.com/enterprise/" +
+    newLink = "https://docs.openshift.com/container-platform/" +
       newVersion +
       fileRequested;
   }
