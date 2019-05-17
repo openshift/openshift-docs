@@ -29,7 +29,8 @@ function versionSelector(list) {
   }
 
 
-  // alert(fileRequested);
+
+  alert(fileRequested);
 
   // in 3.3 and above, we changed to container-platform
   if(newVersion == '3.0' || newVersion == '3.1' || newVersion == '3.2') {
@@ -49,6 +50,9 @@ function versionSelector(list) {
 }
 
 function selectVersion(currentVersion) {
-  document.getElementById("version-selector").value = currentVersion;
+  var el = document.getElementById("version-selector");
+  if(el) {
+    el.value = currentVersion;
+  }
   // alert(currentVersion);
 }
