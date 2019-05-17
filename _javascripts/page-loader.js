@@ -6,17 +6,28 @@ function versionSelector(list) {
   // the new final link to load
   newLink = "";
 
+  // the fileRequested
+  var fileRequested = "";
+
   // spilt the current path
   var pathArray = window.location.pathname.split( '/' );
 
   // so we can get the current version
   currentVersion = pathArray[2];
 
-  // the file path is just the version number + the end of the path
-  var fileRequested =
-    window.location.pathname.substring(
-      window.location.pathname.lastIndexOf(currentVersion) +
-      currentVersion.length);
+  // if switching major versions, just take the user to the main landing page
+  // as files change a lot between major versions.
+
+  if(currentVersion.charAt(0) === newVersion.charAt(0)) {
+    // the file path is just the version number + the end of the path
+    fileRequested =
+      window.location.pathname.substring(
+        window.location.pathname.lastIndexOf(currentVersion) +
+        currentVersion.length);
+  } else {
+    fileRequested = "/welcome/index.html";
+  }
+
 
   // alert(fileRequested);
 
