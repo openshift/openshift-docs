@@ -1,0 +1,417 @@
+
+// Module included in the following assemblies:
+//
+// * architecture/introduction-openshift-architecture.adoc
+
+[id="following-openshift-installation_{context}"]
+= Following an OpenShift Install
+
+As someone installing an OpenShift cluster, you need to choose and set up the installation platform, choose the type of installation, get the openshift-install tool on your local computer, and run the installer. The details of what happens in this process are described in the following sections.
+
+[id="choosing-platform_{context}"]
+== Choosing an OCP platform and installation type
+
+Currently, the easiest OCP installation platform is an Amazon Web Services (AWS) installation, using an installation type where the infrastructure is provisioned by the installer. The other supported installation type is a more manual installation, where the infrastructure is set up manually by the user. The user-provisioned installation is supported on bare metal, VMware vSphere, and AWS platforms.
+
+[id="choosing-installer-installation_{context}"]
+== Choosing an installer-provisioned installation
+
+For OpenShift 4.x installation types where the platform supports provisioning from the installer, the openshift-install process creates all parts of the nodes, operating systems, networking, and other components of the OCP cluster by requesting those resources from the platform itself. For OCP 4.1, this type of installation is limited to the following: +
+
+* Red Hat Enterprise Linux CoreOS (RHCOS) is the first supported operating system for OpenShift 4.1
+* AWS is the first supported OpenShift 4.x platform. Other platforms planned to be supported include Google Cloud Platform (GCP), Microsoft Azure, Red Hat OpenStack, and others.
+
+Instructions for configuring AWS for OCP 4.x are available from the https://www.google.com/url?q=https://docs.openshift.com/container-platform/4.1/installing/installing_aws/installing-aws-account.html&sa=D&ust=1557950770627000[OCP Installing on AWS] documentation.
+
+[id="choosing-user-installation_{context}"]
+== Choosing a user-provisioned installation
+
+OpenShift 4.1 installations where the users provision their own infrastructure require more setup before you can install an OCP cluster. Requirements for installations where the user sets up the infrastructure needed by the installer will include the following:
+
+* Bare metal, AWS, OpenStack and VMware platforms (see OCP installation documentation for details)
+* Expect these types of installations to be available for any platform where you can take responsibility for provisioning your own servers, setting up networking and configuring DNS.
+* RHCOS will be required for the control plane (master) systems, but you will be able to use Red Hat Enterprise Linux systems you install yourself as worker (compute) nodes. Those systems are sometimes referred to as bring-your-own-host systems.
+
+The text that follows demonstrates an installation on an AWS platform where the platform provides the infrastructure needed by OCP. Expect a section on user-provisioned infrastructure to be added to this document in the future.
+[id="understanding-openshift-install_{context}"]
+== Understanding openshift-install
+
+The OpenShift installer is unlike typical Linux installers. In fact, it’s more like a build system, in the spirit of tools like make or the systemd Init system. Understanding these major characteristics of openshift-install should help you see how it differs from other installation and configuration tools:
+
+* Targets and dependencies: Unlike a traditional installer that just steps through a set of actions, openshift-install starts out to achieve a set of targets. Each of those targets has dependencies. So, for example, before you can achieve the target of setting up a master node, dependencies require the installer to have a RHCOS image and an Install Config created. The Install Config, in turn, has dependencies of obtaining information about the platform, domain, an ssh key and a pull secret needed for the installation. +
+ +
+Each dependency is referred to as an asset. The ultimate target is a running cluster. Having dependencies instead of commands lets the installer see if the asset is already in place and just consume it if it is, instead of running through an unneeded action.
+* Fast builds: Because each target is only concerned with its own dependencies, the installer can be working on many targets at the same time. While a missing dependency, like a slow response to acquiring a certificate, might slow one target from completing, other targets that don’t have that dependency in their path can continue in parallel to completion. As a result, the entire installation process runs much faster.
+* Limited configuration: The most basic supported configuration changes you can make to your OpenShift cluster at install time comes in the form of the six questions you are prompted for when you run openshift-install. Another supported option is to produce an install-config.yaml file, which lets you configure a few additional items, such as number of nodes, IP address ranges, and additional ssh keys. OpenShift 4.1 does include other, unsupported escape hatches into modifying your installation configuration, such as creating your own manifests. In the spirit of understanding the installer, manifests are described here, along with warnings about why, in general, you should not make changes in this way.
+* Only the installer and MachineConfigOperator should change nodes: This is critical. The installer uses Ignition config files to set the exact state each node should be in when it is installed. There are a few supported options you can change at install time. Over time, changes to the node configs, such as new certificates or updated keys, are done through the Machine Config Operator. Logging into a node to make manual changes is unsupported and strongly discouraged. More on that later.
+
+[id="starting-openshift-install_{context}"]
+== Starting openshift-install
+
+Running the openshift-install command kicks off a process to install the initial set of nodes in the OpenShift cluster, as well as the services running on those nodes. The nodes are deployed as follows:
+
+* The installer gathers the configuration information needed to create the cluster
+* Terraform takes over to begin creating the infrastructure needed to support the cluster
+* The installer grabs a Red Hat Enterprise Linux CoreOS (RHCOS) operating system image (which is made available by Red Hat, but pulled in automatically by the installer)
+* A bootstrap node starts up from an Ignition config file and sets up the master nodes (control plane) using the RHCOS image and an Ignition config file tailored to setting up masters
+* After configuring and starting the nodes in the control plane, and after handing off the Ignition configs to the Machine Config Operator in the control plane, the bootstrap node is destroyed
+* Using the Ignition config it got from the bootstrap node, the control plane sets up the worker nodes
+* Additional services are then added to the control plane in the form of a set of Operators.
+
+Keep in mind that the objective of an OpenShift 4 installation is to achieve targets. If you are interested in seeing a graph of all the targets and dependencies for OpenShift 4 installation, run this command:
+
+`$ openshift-install graph | dot -Tsvg >/tmp/ocp4_graph.svg`
+
+Open the resulting graph with any SVG reader (such as eog /tmp/ocp4_graph.svg). A partial view of the dependency tree looks as follows:
+
+.OpenShift installation targets and dependencies
+image::targets-and-dependencies.png[OpenShift installation targets and dependencies]
+
+The graph contains vertices, and the edges that connect them, of component Operators. The edges in the graph show which versions you can safely update to, and the vertices are update payloads that specify the intended state of the managed cluster components.
+
+The following text describes the components involved in the install process. Keep in mind that these descriptions indicate a general order of activities that occur during the installation of an OpenShift cluster, since the exact order varies based on when each target completes.
+
+[id="providing-configuration-information_{context}"]
+== Providing configuration information to the installer
+
+With a https://www.google.com/url?q=https://docs.openshift.com/container-platform/4.1/installing/installing_aws/installing-aws-account.html&sa=D&ust=1557950770635000[properly configured AWS platform] in place, answers to a few prompts is all you need to start up an OpenShift Cluster. However, there are other supported and unsupported ways to change the configuration that is deployed. Here is a rundown of your options:
+
+[IMPORTANT]
+====
+Although not required, you should create a directory to hold your installation configuration files and identify it when you run the installation. Don’t delete that directory when you have created your cluster, since it can be used to delete your cluster later.
+====
+
+[id="running-default-install_{context}"]
+=== Running a default install
+
+For the default OCP install shown here, you are prompted for a few pieces of information needed by the installer: +
+
+----
+$ openshift-install create cluster --dir $HOME/clusterconfig
+----
+
+You are asked for:
+
+* An ssh public key to access the cluster
+* aws as the platform
+* A selected region to run in
+* The base domain name for your cluster
+* The name of your cluster (which will append to your domain name)
+* A pull secret.
+
+This approach is fully supported.
+
+[id="running-install-config_{context}"]
+=== Running an install-config install
+
+For this installation type, you create an install-config.yaml file, modify it, and run the installer so it uses that file to start the installation. This type of installation is fully supported.
+
+----
+$ openshift-install create install-config --dir $HOME/clusterconfig
+----
+
+Here’s an example of the install-config.yaml created in your install directory, with fields highlighted that you can change:
+
+----
+apiVersion: v1
+baseDomain: devel.example.com   (1)
+compute:
+- hyperthreading: Enabled
+  name: worker
+            platform: {}
+            replicas: 3   (2)
+controlPlane:
+  hyperthreading: Enabled
+  name: master
+            platform: {}
+            replicas: 3   (3)
+metadata:
+           creationTimestamp: null
+            name: mycluster   (4)
+networking:
+            clusterNetwork:
+           - cidr: 10.128.0.0/14   (5)
+            hostPrefix: 23
+                machineCIDR: 10.0.0.0/16   (6)
+                networkType: OpenShiftSDN
+                serviceNetwork:
+         - 172.30.0.0/16   (7)
+              platform:
+                aws:
+                  region: us-east-2   (8)
+pullSecret: '{"auths":{"x.example.com":{"auth":"b3Blb...}}}'   (9)
+sshKey: |
+  ssh-rsa AAAAB...|== joe@example.com   (10)
+----
+
+1.  baseDomain: The DNS domain name configured with your AWS account. It will be added as the base to the name you assign to your cluster.
+2.  compute.worker.replicas: The number of compute nodes to create initially in your cluster. The default is 3.
+3.  controlPlane.master.replicas: The number of master nodes to create initially in your cluster. The default is 3.
+4.  metadata.name: The name assigned to your cluster. For example, if the name were mycluster, and the domain name were devel.example.com, the full DNS name of your cluster would be mycluster.devel.example.com
+5.  networking.clusterNetworks.cidr: The CIDR formatted IP address range to use for the cluster networks.
+6.  networking.machineCIDR: The CIDR formatted IP address range to use for the nodes
+7.  networking.serviceNetwork: The CIDR formatted IP address range to use for the Kubernetes services
+
+Once you have modified the install-config.yaml file, make a backup copy of that file if you intend to use it again. The reason is that the file is deleted when you install from it. If you are ready, run the installer again (identifying the directory holding the install-config.yaml file) to install the cluster with those new settings:
+
+`$ openshift-install create cluster --dir $HOME/clusterconfig`
+
+[id="running-manifest-install_{context}"]
+=== Running a manifest install (unsupported)
+
+By default, the fact that an OpenShift cluster installation uses a set of manifest files is invisible. However, the installer gives you the option to drop those manifest files into a directory and halt the install process. It is possible, though not supported, to then change or add to those manifest files and continue the installation with the modified manifests.
+
+The manifest files are saved in two directories. The manifests/ directory contains the Kubernetes manifests, while the openshift/ directory hold OpenShift manifests. Here’s how to get those manifests, followed by some suggestions about using them:
+
+----
+$ openshift-install create manifests --dir $HOME/clusterconfig
+
+$ ls $HOME/clusterconfig/manifests/ $HOME/clusterconfig/openshift/
+
+clusterconfig/manifests/:
+
+04-openshift-machine-config-operator.yaml  host-etcd-service-endpoints.yaml
+
+cluster-config.yaml                        host-etcd-service.yaml
+
+cluster-dns-02-config.yml                  kube-cloud-config.yaml
+
+cluster-infrastructure-02-config.yml       kube-system-configmap-etcd-serving-ca.yaml
+
+cluster-ingress-02-config.yml              kube-system-configmap-root-ca.yaml
+
+cluster-network-01-crd.yml                 kube-system-secret-etcd-client.yaml
+
+cluster-network-02-config.yml              machine-config-server-tls-secret.yaml
+
+cvo-overrides.yaml                         pull.json
+
+etcd-service.yaml
+
+clusterconfig/openshift/:
+
+99_binding-discovery.yaml               99_openshift-cluster-api_master-machines-2.yaml
+
+99_cloud-creds-secret.yaml              99_openshift-cluster-api_master-user-data-secret.yaml
+
+99_kubeadmin-password-secret.yaml       99_openshift-cluster-api_worker-machineset.yaml
+
+99_openshift-cluster-api_cluster.yaml   99_openshift-cluster-api_worker-user-data-secret.yaml
+
+99_openshift-cluster-api_master-machines-0.yaml  99_role-cloud-creds-secret-reader.yaml
+
+99_openshift-cluster-api_master-machines-1.yaml
+----
+
+At this point, if you were to add or modify files in the manifest/ or openshift/ directories, those would be consumed and used in the cluster installation. As mentioned earlier, changing or adding to these files is not supported, but only described here for informational purposes. Here are some tips on how to handle the manifest files:
+
+* You should make sure to get the install-config.yaml file exactly right before creating the manifest files. Manifest files are generated, in part, from information in install-config.yaml. Because things like domain names are spread across manifest files, changes to those settings in a manifest file could easily become out of sync with other manifest files.
+* Think of the manifest file more like intermediate files than configuration files. Changing them would be like editing object files instead of fixing the source code.
+* If you do want to change your cluster from manifest files, the safest way is to create a new manifest file and make sure it doesn’t conflict with anything any other manifest file is doing.
+
+Once you have the manifests the way you like, simply continue the install process:
+
+----
+$ openshift-install create cluster --dir $HOME/clusterconfig
+----
+
+There a couple other things to note about providing information to the installer:
+
+* Ignition config files are also used in the install process, to configure the initial setup of  nodes. Refer to the Ignition section later for details on those configuration files
+* When you generate the configuration files, the entire state of the installer configuration is stored in a .openshift_install_state.json file in the cluster directory. Any config file that is deleted can be regenerated from that file by simply running the openshift-installer create command for the configuration file you want. Keep in mind, though, that you can’t rely on the format of this file going forward.
+
+If you want to watch the install take place in detail, add a --log-level debug option to the openshift-install command line. Instead you could also just follow the installation from the .openshift_install.log file as the installation progresses:
+
+----
+$ tail -f $HOME/clusterconfig/.openshift_install.log
+
+time="2019-04-08T10:36:09-04:00" level=debug msg="OpenShift Installer v0.14.0"
+
+time="2019-04-08T10:36:09-04:00" level=debug msg="Fetching \"Terraform Variables\"…​"
+
+time="2019-04-08T10:36:09-04:00" level=debug msg="Loading \"Terraform Variables\"…​"
+
+time="2019-04-08T10:36:09-04:00" level=debug msg="  Loading \"Cluster ID\"…​"
+
+…​
+
+time="2019-04-08T10:36:09-04:00" level=debug msg="  Loading \"Install Config\"…​"
+
+time="2019-04-08T10:36:09-04:00" level=debug msg="  Loading \"Image\"…​"
+
+time="2019-04-08T10:36:09-04:00" level=debug msg="        Loading \"Install Config\"…​"
+
+time="2019-04-08T10:36:09-04:00" level=debug msg="  Loading \"Bootstrap Ignition Config\"…​"
+
+time="2019-04-08T10:36:09-04:00" level=debug msg="        Loading \"Install Config\"…​
+
+…​
+----
+
+[id="configuring-infrastructure-terraform_{context}"]
+== Setting up infrastructure with Terraform
+
+When you run openshift-install create cluster, one of the first things to happen is that Terraform takes over to create the infrastructure. Terraform gathers and loads all the configuration files, then it creates the VMs, the network, and other parts of the infrastructure.
+
+After Terraform has set up the infrastructure, it polls the Kubernetes API endpoint, trying to connect to it. Once it can reach the API endpoint, it queries for some basic information about the cluster and waits for the bootstrap node to finish setting up the control plane. In particular, it is looking to see the status of the Cluster Version Operator, which is responsible for starting all the other Operators in the control plane. The work isn’t done until the CVO status is 100% complete.
+
+Once the bootstrap node’s work is done, Terraform destroys the bootstrap node, deleting the virtual machine and removing AWS resources for that node (the S3 bucket, security group rules, IAM roles, and other resources). At this point, the cluster takes over communications with the AWS API and begins bringing up the worker nodes.
+
+There are a few things to keep in mind about the completed cluster going forward:
+
+* To keep track of the state of the cluster, a set of terraform* files is copied to the installation directory. Don’t delete that directory yet! Those files will be used later when you tear down the cluster with the following command: +
+      openshift-install destroy cluster --dir $HOME/clusterconfig
+* Other than the terraform* files, the configuration files in the cluster directory are not used again for the current cluster. In other words, any new nodes or management of existing nodes are managed by the cluster itself (see the description of Operators later). You can copy Ignition config, install config, and manifest files to use for later installations, but consider them having been consumed and done with for the current configuration.
+
+The process of creating the cluster, for a default installation, starts by creating a bootstrap node. The boostrap node creates the master nodes that make up the control plane. The worker nodes are then create from the control plane. The following figure shows this process:
+
+.Creating the bootstrap, master, and worker nodes
+image::create-nodes.png[Creating bootstrap, master, and worker nodes]
+
+The nodes just alluded to are created by combining a Red Hat Enterprise Linux CoreOS (RHCOS) operating system image with the configuration files just described. Leading the actual initial setup of each system is the Ignition first boot installer. Those components are described next.
+
+[id="about-rhcos_{context}"]
+== About RHCOS operating system images
+
+Red Hat Enterprise Linux CoreOS (RHCOS) represents the next generation of single-purpose container operating system technology. Created by the same development teams that created RHEL Atomic Host and CoreOS Container Linux, RHCOS combines the quality standards of RHEL with automated, remote upgrade features from Container Linux.
+
+At the moment, RHCOS is only supported as a component of OpenShift 4 for all OpenShift nodes, as the team locks down those features needed to make RHCOS a fully automated operating system for running and managing containers. In fact, RHCOS is currently the only supported operating system for OpenShift 4 (with manual installation of RHEL scheduled to be supported on worker nodes in the near future).
+
+RHCOS images are downloaded to the target platform during OCP installation and initially set up with Ignition (described next). Here are some of the key features of RHCOS:
+
+* Based on RHEL: The underlying operating system consists primarily of Red Hat Enterprise Linux components. So the same quality, security, and control measures supporting RHEL also are in RHCOS. For example, RHCOS software is in RPM packages and each RHCOS system starts up with a RHEL kernel and a set of services managed by the systemd init system.
+* Controlled immutability: Although it contains RHEL components, RHCOS is designed to be managed more tightly than a default RHEL installation, with most of that management done remotely (in this case, from an OpenShift cluster). A limited number of levers are available to change how your RHCOS nodes are set up and modified. This controlled immutability allows OpenShift to store the latest state of RHCOS systems in the cluster so it is always able to spin up new nodes and perform updates based on the latest RHCOS configurations. RHCOS is required for all master nodes, but if you are provisioning your own infrastructure, RHEL 7.6 and RHEL 8 systems are also supported.
+* CRI-O container runtime: Although RHCOS contains features for running OCI- and libcontainer-formatted (used by Docker) containers, it incorporates the https://www.google.com/url?q=https://access.redhat.com/documentation/en-us/openshift_container_platform/3.11/html-single/cri-o_runtime/index&sa=D&ust=1557950770652000[CRI-O container engine], instead of the Docker container engine. By focusing on features needed by Kubernetes platforms, such as OpenShift, CRI-O can offer specific compatibility with different Kubernetes versions. CRI-O also offers a smaller footprint and reduced attack surface than is possible with container engines that offer a larger feature set. At the moment, Red Hat’s CRI-O is not offered as a stand-alone container engine outside of OpenShift.
+* Set of container tools: For tasks such as building, copying, and otherwise managing containers, RHCOS replaces the docker CLI tool with a compatible set of container tools. The podman CLI tool supports many container runtime features, such as running, starting, stopping, listing, and removing containers and container images. The skopeo CLI tool can copy, authenticate, and sign images. The crictl CLI tool lets you work with containers and pods from the CRI-O container engine. While direct use of these tools in RHCOS is discouraged, they are used under the covers in RHCOS or for debugging purposes. You can use podman and skopeo on RHEL systems, without OpenShift, to work directly with containers.
+* rpm-ostree upgrades: RHCOS features transactional upgrades and rollbacks using the https://www.google.com/url?q=http://www.projectatomic.io/docs/os-updates/&sa=D&ust=1557950770653000[rpm]https://www.google.com/url?q=http://www.projectatomic.io/docs/os-updates/&sa=D&ust=1557950770654000[ ]https://www.google.com/url?q=http://www.projectatomic.io/docs/os-updates/&sa=D&ust=1557950770654000[-ostree] upgrade system. In OpenShift, the https://www.google.com/url?q=https://github.com/openshift/machine-config-operator/blob/master/docs/OSUpgrades.md&sa=D&ust=1557950770655000[MachineConfigOperator handles operating system upgrades]. Instead of upgrading individual packages, as is done with yum upgrades, rpm-ostree delivers upgrades as an atomic unit. The downloaded tree goes into effect on the next reboot. If something goes wrong with the upgrade, a single rollback and reboot returns the system to the previous state. RHCOS upgrades in OpenShift 4 are done as part of larger cluster upgrades as needed.
+* Set up with Ignition, managed by MCO: For OpenShift 4, RHCOS images are set up initially with a feature called  https://www.google.com/url?q=https://github.com/coreos/ignition&sa=D&ust=1557950770655000[Ignition], which runs only on the system’s first boot. After first boot, RHCOS systems are managed by the Machine Config Operator (MCO) running in the OpenShift cluster. Ignition and MCO are described later.
+
+Because RHCOS systems in OpenShift are designed to be fully managed from the OpenShift cluster, directly logging into a RHCOS node is discouraged. Limited direct access to RHCOS nodes in a OpenShift cluster can be done for debugging purposes. Using the oc debug node/<nodename> command (if OpenShift is up) or creating a bastion host (if the nodes are inaccessible through OpenShift) are ways of gaining direct access to a RHCOS node.
+
+Whether during initial installation from the openshift-install tool or when later adding an RHCOS system to OpenShift later from the cluster, the feature that does the initial setup of RHCOS into bootstrap, worker, or master nodes is done by Ignition.
+
+[id="initialize-nodes-ignition_{context}"]
+== Using Ignition to initialize nodes
+
+For an OpenShift installation on AWS (where AWS provisions the infrastructure), the https://www.google.com/url?q=https://github.com/coreos/ignition&sa=D&ust=1557950770657000[Ignition] first boot installer and configuration tool takes raw RHCOS images and prepares them to become the master (control plane) nodes that make up the OpenShift cluster. Later, master (control plane) nodes use the machine api/controller to deploy worker (compute) nodes with Ignition. The OpenShift installer begins Ignition’s work using a bootstrap config that spins up a temporary bootstrap node to direct the setup of each worker node slated for the permanent cluster. The bootstrap node:
+
+* Starts up as a separate, and first, node in the cluster’s environment
+* Generates and deploys Ignition configs to each of the master machines that will make up the initial cluster. Ignition configs can vary, based on the specific operating system being deployed and the cluster environment (for example, a particular cloud or bare metal environment).
+* Shuts down and is deleted from the cluster once all the control plane nodes get to a point where they can serve their own configs
+
+Most of the actual system setup happens on each node itself. For each node, Ignition takes the RHCOS image and boots the RHCOS kernel. On the kernel command line, options identify the type of deployment and the Ignition-enabled initial Ram Disk (initramfs). To configure the worker and master nodes, Ignition does the following during the firstboot (and only during firstboot) of each node:
+
+* Gets its Ignition config. Master nodes get their Ignition configs from the bootstrap node, while worker nodes get Ignition configs from a master.
+* Creates disk partitions, filesystems, directories and links. Can do RAID arrays, but does not yet support LVM volumes
+* Mounts the root file system to /sysroot inside the initramfs and sets about directing its work to that root filesystem
+* Configures all defined filesystems and sets them up to mount appropriately at runtime
+* Runs systemd temp files to populate anything needed in /var
+* Runs ignition files to set up users, systemd unit files, and other configuration files
+* Unmounts anything from the permanent system that was mounted inside the initramfs
+* Starts up new node’s init process which, in turn, starts up all other services on the node as if it were carrying out a normal boot on the node
+
+The node is then ready to join the cluster, without requiring a reboot.
+
+[id="about-ignition_{context}"]
+=== How Ignition works
+
+The way that Ignition configures nodes is similar to how tools like https://www.google.com/url?q=https://cloud-init.io/&sa=D&ust=1557950770660000[cloud-init] or Linux Anaconda https://www.google.com/url?q=https://access.redhat.com/documentation/en-us/red_hat_enterprise_linux/7/html-single/installation_guide/index%23chap-kickstart-installations&sa=D&ust=1557950770660000[kickstart] configure systems, but with some important differences:
+
+* Runs from initramfs: Ignition runs from an initial RAM disk that is separate from the system you are installing to. Because of that, Ignition is free to repartition disks, set up file systems, and do anything else it likes to the node’s image. In contrast, cloud-init runs as part of a node’s init system when the system boots, so making foundational changes to things like disk partitions cannot be done as easily. With cloud-init, it is also difficult to reconfigure the boot process while you are in the middle of the node’s boot process.
+* Runs only on firstboot: Ignition is meant to initialize systems, not change them going forward. After a node is setup and the kernel is running from the installed system, future configuration of the node is handled by the Machine Config Operator from the OpenShift cluster.
+* Declarative: Ignition does not run a set of actions, but rather it implements a declarative configuration. Unlike an Anaconda kickstart, which runs through a set of steps like installing packages or setting firewall rules, Ignition checks that all partitions, files, services and other items are in place before the resulting node even starts up. It then makes the changes (like copying files to disk) to get the target node set up so it can be in the desired state.
+* No half-configured nodes: If a node’s setup fails for some reason, like it can’t get a file because the network goes down, Ignition will not complete successfully and will not pivot to starting up the new node from its installed hard disk. In other words, you will never end up with a node that runs in a partially configured state. If Ignition cannot completely finish its work, the node is never added to the cluster. You would have to kill it and start over. This prevents the difficult case of debugging a node when the results of a failed configuration task are not known until something that depended on it fails at a later date.
+* No multiple node failures from the same config: If there is a problem with an Ignition config that causes the setup of a node to fail, Ignition will not try to use the same config to set up another node. For example, a failure could result from an Ignition config made up of a parent and child config that both want to create the same file. A failure in such a case would prevent that Ignition config from being used again to set up an other nodes, until the problem is resolved.
+* Same kernel for configuring and running: Once Ignition is done with its configuration, the kernel keeps running, but discards the initial RAM disk and pivots to the installed system on disk. All the newly installed system services and other features are started, without requiring a reboot, as is needed with cloud-init or kickstart configurations.
+* Merge Ignition configs:  If there is a set of Ignition configs, you get a union of that set of configs.  Because Ignition is declarative, conflicts between the configs could cause Ignition to fail to set up the node. The order of information in those files doesn’t matter. Ignition will sort and implement each setting in ways that make the most sense. For example, if a file needs a directory several levels deep, if another file needs a directory along that path, the later file is created first. Ignition sorts and creates all files, directories, and links by depth.
+* Bare metal, as well as cloud: Because Ignition isn’t limited by running inside the target node, it can do something cloud-init can’t do: set up systems on bare metal from scratch (using features such as PXE boot). In the bare metal case, the Ignition config is injected into the boot partition so Ignition can find it and configure the system correctly.
+
+Due to some quirks in the tooling used to create Ignition, some explanation is needed for its version numbers:
+
+* Ignition version: OpenShift 4.1 uses Ignition v2. The previous versions were all 0.x. There is no Ignition version 1.
+* Ignition configs version: OpenShift 4.1 uses v2.3 Ignition configs and only supports that version. Previous Ignition config versions included v1, v2, v2.1, v2.2, and v2.3. If presented with those earlier versions, Ignition upgrades that Ignition config through each version until it reaches v2.3, then runs the resulting Ignition config. +
+ +
+Ignition config version 3 is available, but has not yet been added to OpenShift 4.x. One of the new features of v3 is that it will allow a child Ignition config that merges with a parent config to overwrite any file on the parent for which there is a conflict. The merge and replace features of thehttps://www.google.com/url?q=https://github.com/coreos/ignition/blob/master/doc/configuration-v3_0.md&sa=D&ust=1557950770663000[ Ignition config v3 spec]provides cleaner ways of managing these conflicts. This feature also allows many system types to share a common Ignition config, while differences, such as specific hardware or cloud features, can be added with child configs. +
+ +
+All v3 versions (v3.1, v3.2, etc.) will be guaranteed to be supported until v4 comes out. At that point, fields deprecated in later v3.x versions could be removed in v4.
+
+[id="viewing-ignition-config-files_{context}"]
+=== Viewing Ignition configuration files
+
+To see the Ignition config file used to deploy the bootstrap node, run the following command:
+
+----
+$ openshift-install create ignition-configs --dir $HOME/testconfig
+----
+
+After you answer a few questions, the bootstrap.ign, master.ign, and worker.ign files appear in the directory you entered.
+
+To see the contents of the bootstrap.ign file, pipe it through the jq filter. Here’s a snippet from that file:
+
+----
+$ cat $HOME/testconfig/bootstrap.ign | jq
+
+\\{
+
+  "ignition": \\{
+
+        "config": \\{},
+
+…​
+
+  "storage": \\{
+
+        "files": [
+
+          \\{
+
+            "filesystem": "root",
+
+            "path": "/etc/motd",
+
+            "user": \\{
+
+              "name": "root"
+
+            },
+
+            "append": true,
+
+            "contents": \\{
+
+              "source": "data:text/plain;charset=utf-8;base64,VGhpcyBpcyB0aGUgYm9vdHN0cmFwIG5vZGU7IGl0IHdpbGwgYmUgZGVzdHJveWVkIHdoZW4gdGhlIG1hc3RlciBpcyBmdWxseSB1cC4KClRoZSBwcmltYXJ5IHNlcnZpY2UgaXMgImJvb3RrdWJlLnNlcnZpY2UiLiBUbyB3YXRjaCBpdHMgc3RhdHVzLCBydW4gZS5nLgoKICBqb3VybmFsY3RsIC1iIC1mIC11IGJvb3RrdWJlLnNlcnZpY2UK",
+----
+
+To decode the contents of a file listed in the bootstrap.ign file, pipe the base64-encoded data string representing the contents of that file to the base64 -d command. Here’s an example using the contents of the /etc/motd file added to the bootstrap node from the output shown above:
+
+----
+$ echo VGhpcyBpcyB0aGUgYm9vdHN0cmFwIG5vZGU7IGl0IHdpbGwgYmUgZGVzdHJveWVkIHdoZW4gdGhlIG1hc3RlciBpcyBmdWxseSB1cC4KClRoZSBwcmltYXJ5IHNlcnZpY2UgaXMgImJvb3RrdWJlLnNlcnZpY2UiLiBUbyB3YXRjaCBpdHMgc3RhdHVzLCBydW4gZS5nLgoKICBqb3VybmFsY3RsIC1iIC1mIC11IGJvb3RrdWJlLnNlcnZpY2UK | base64 -d
+----
+
+This is the bootstrap node; it will be destroyed when the master is fully up.
+
+The primary service is "bootkube.service". To watch its status, run, e.g.:
+
+----
+          journalctl -b -f -u bootkube.service
+----
+
+Repeat those commands on the master.ign and worker.ign files to see the source of Ignition config files for each of those node types.  You should see a line like the following for the worker.ign, identifying how it gets its Ignition config from the bootstrap node:
+
+----
+"source": "https://api.myign.develcluster.example.com:22623/config/worker",
+----
+
+Here are a few things you can learn from the bootstrap.ign file: +
+
+* Format: The format of the file is defined in the https://www.google.com/url?q=https://github.com/coreos/ignition/tree/spec2x&sa=D&ust=1557950770668000[Ignition config spec]. Files of the same format are used later by the MCO to merge changes into a node’s configuration.
+* Contents: Because the bootstrap node serves the Ignition configs for other nodes, both master and worker node Ignition config information is stored in the bootstrap.ign, along with the bootstrap node’s configuration.
+* Size: The file is more than 1300 lines long, with path to various types of resources.
+* The content of each file that will be copied to the node is actually encoded into data URLs, which tends to make the content a bit clumsy to read. (Use the jq and base64 commands shown previously to make the content more readable.)
+* Configuration: The different sections of the Ignition config file are generally meant to contain files that are just dropped into a node’s file system, rather than commands to modify existing files. For example, instead of having a section on NFS that configures that service, you would just add an NFS configuration file, which would then be started by the init process when the system comes up.
+* users: A user named core is created, with your ssh key assigned to that user. This will allow you to log into the cluster with that user name and your credentials.
+* storage: The storage section identifies files that are added to each node. A few notable files include /root/.docker/config.json (which provides credentials your cluster needs to pull from container image registries) and a bunch of manifest files in /opt/openshift/manifests that are used to configure your cluster.
+* systemd: The systemd section holds content used to create systemd unit files. Those files are used to start up services at boot time, as well as manage those services on running systems.
+* Primitives: Ignition also exposes low-level primitives that other tools can build on.
+
+After Ignition finishes its work on an individual node, the kernel pivots to the installed system. The initial RAM disk is no longer used and the kernel goes on to run the init service to start up everything on the host from the installed disk. When the last node under the bootstrap node’s control is completed, and the services on those nodes come up, the work of the bootstrap node is over.
