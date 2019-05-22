@@ -20,7 +20,8 @@ cli.init_logging(False, True)
 has_errors = False
 CLONE_DIR = "."
 BASE_PORTAL_URL = "https://access.redhat.com/documentation/en-us/"
-ID_RE = re.compile("^\[(?:\[|id=\'|#)(.*?)(\'?,.*?)?(?:\]|\')?\]", re.M | re.DOTALL)
+# ID_RE = re.compile("^\[(?:\[|id=\'|#)(.*?)(\'?,.*?)?(?:\]|\')?\]", re.M | re.DOTALL)
+ID_RE = re.compile("^\[(?:\[|id=\'|#|id=\")(.*?)(\'?,.*?)?(?:\]|\'|\")?\]", re.M | re.DOTALL)
 LINKS_RE = re.compile("(?:xref|link):([\./\w_-]*/?[\w_.-]*\.(?:html|adoc))?(#[\w_-]*)?(\[.*?\])", re.M | re.DOTALL)
 EXTERNAL_LINK_RE = re.compile("[\./]*([\w_-]+)/[\w_/-]*?([\w_.-]*\.(?:html|adoc))", re.DOTALL)
 INCLUDE_RE = re.compile("include::(.*?)\[(.*?)\]", re.M)
