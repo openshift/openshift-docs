@@ -54,4 +54,20 @@ function selectVersion(currentVersion) {
     el.value = currentVersion;
   }
   // alert(currentVersion);
+
+  // in enterprise branch 4, we have modules and this is an attempt to load the
+  // modules by double clicking on them.
+  if(currentVersion.startswith("4")) {
+    var element = document.getElementsByTagName('h2');
+    Object.entries(element).map(( object ) => {
+      object[1].addEventListener("dblclick", function() {
+        // alert(this.id);
+        // alert(this.id.split("_", 1)[0] + ".adoc");
+        var fn = this.id.split("_", 1)[0] + ".adoc";
+        window.open("https://github.com/openshift/openshift-docs/tree/enterprise-" +
+          currentVersion + "/modules/" + fn, "_new");
+      });
+    });
+  }
+
 }
