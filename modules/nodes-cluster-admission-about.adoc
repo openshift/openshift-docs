@@ -14,13 +14,11 @@ Admission control plug-ins may modify the incoming object in some cases to apply
 The {product-title} master has a default list of plug-ins that are enabled by
 default for each type of resource (Kubernetes and {product-title}): 
 
-* DefaultStorageClass
 * DefaultTolerationSeconds
-* LimitRanger 
 * MutatingAdmissionWebhook
 * NamespaceLifecycle
 * OwnerReferencesPermissionEnforcement
-* PersistentVolumeClaimResize
+* PersistentVolumeClaimResize (storage)
 * Priority
 * ResourceQuota
 * ServiceAccount
@@ -35,23 +33,127 @@ the {product-title} master.
 For the full list of admission controllers, see the 
 link:https://v1-13.docs.kubernetes.io/docs/reference/access-authn-authz/admission-controllers/#what-does-each-admission-controller-do[Kubernetes documentation].
 
-AlwaysPullImages::
+// this list is based on https://docs.google.com/spreadsheets/d/1UtdL44W2sLzJCAz8M1eBCTfFMvm9h7-3OT7w9GEzR90/edit#gid=0
+// from https://jira.coreos.com/browse/MSTR-375 
+
+AlwaysAdmit::
+This *deprecated* admission controller allows all pods into the cluster. It is deprecated because its behavior is the same as if there were no admission controller at all
+
+AlwaysPullImages::  
+// dev-ex
 This admission controller modifies every new Pod to force the image pull policy to Always. Images are always pulled prior to starting containers, which means valid credentials are required.
+
+AlwaysDeny::
+This *depracted* admission controller rejects all requests.
 
 ClusterResourceOverride::
 This admission controller overrides user-provided resource requirements in order to drive scheduling density. Requires the `autoscaling.openshift.io` API.
 
-DefaultStorageClass::
-This admission controller observes creation of PersistentVolumeClaim objects that do not request any specific storage class and automatically adds a default storage class to them. 
-
 DefaultTolerationSeconds::
 This admission controller sets the default forgiveness toleration for pods to tolerate the `notready:NoExecute` and `unreachable:NoExecute` taints for 5 minutes, if the pods don’t already have toleration for taints. Requires the `operator.openshift.io/v1` API.
 
-DenyEscalatingExec::
+DenyEscalatingExec::  
+// auth
 This admission controller will deny exec and attach commands to pods that run with escalated privileges that allow host access. 
+
+DenyExecOnPrivileged:: 
+// auth
+This *deprecated* admission controller will intercept all requests to exec a command in a pod if that pod has a privileged container.
+
+EventRateLimit
+This *alpha* admission controller mitigates the problem where the API server gets flooded by event requests. The cluster admin can specify event rate limits by:
+
+* Ensuring that eventratelimit.admission.k8s.io/v1alpha1=true is included in the --runtime-config flag for the API server;
+* Enabling the EventRateLimit admission controller;
+* Referencing an EventRateLimit configuration file from the file provided to the API server’s command line flag --admission-control-config-file:
+
+----
+kind: AdmissionConfiguration
+apiVersion: apiserver.k8s.io/v1alpha1
+plugins:
+- name: EventRateLimit
+  path: eventconfig.yaml
+----
+
+There are four types of limits that can be specified in the configuration:
+
+* Server: All event requests received by the API server share a single bucket.
+* Namespace: Each namespace has a dedicated bucket.
+* User: Each user is allocated a bucket.
+* SourceAndObject: A bucket is assigned by each combination of source and involved object of the event.
+
+Below is a sample eventconfig.yaml for such a configuration:
+
+----
+kind: Configuration
+apiVersion: eventratelimit.admission.k8s.io/v1alpha1
+limits:
+- type: Namespace
+  qps: 50
+  burst: 100
+  cacheSize: 2000
+- type: User
+  qps: 10
+  burst: 50
+---
 
 ExtendedResourceToleration::
 This admission controller facilitates the creation of dedicated nodes with extended resources, such as GPUs, FPGAs, and so forth. If operators want to create dedicated nodes with extended resources, they are expected to taint the node with the extended resource name as the key. This admission controller, if enabled, automatically adds tolerations for such taints to pods requesting extended resources, so users don’t have to manually add these tolerations.  Requires the `operator.openshift.io/v1` API.
+
+ImagePolicyWebhook::
+// dev-ex
+This admission controller allows a backend webhook to make admission decisions.
+
+ImagePolicyWebhook uses a configuration file to set options for the behavior of the backend. This file may be json or yaml and has the following format:
+
+----
+imagePolicy:
+  kubeConfigFile: /path/to/kubeconfig/for/backend
+  # time in s to cache approval
+  allowTTL: 50
+  # time in s to cache denial
+  denyTTL: 50
+  # time in ms to wait between retries
+  retryBackoff: 500
+  # determines behavior if the webhook backend fails
+  defaultAllow: true
+----
+
+The ImagePolicyWebhook config file must reference a kubeconfig formatted file which sets up the connection to the backend. It is required that the backend communicate over TLS.
+
+The kubeconfig file’s cluster field must point to the remote service, and the user field must contain the returned authorizer.
+
+----
+# clusters refers to the remote service.
+clusters:
+- name: name-of-remote-imagepolicy-service
+  cluster:
+    certificate-authority: /path/to/ca.pem    # CA for verifying the remote service.
+    server: https://images.example.com/policy # URL of remote service to query. Must use 'https'.
+
+# users refers to the API server's webhook configuration.
+users:
+- name: name-of-api-server
+  user:
+    client-certificate: /path/to/cert.pem # cert for the webhook admission controller to use
+    client-key: /path/to/key.pem          # key matching the cert
+----
+
+Then, reference the ImagePolicyWebhook configuration file from the file:
+
+----
+kind: AdmissionConfiguration
+apiVersion: apiserver.k8s.io/v1alpha1
+plugins:
+- name: ImagePolicyWebhook
+  path: imagepolicyconfig.yaml
+----
+
+For more information on configuring this admission controller, 
+see the link:https://v1-13.docs.kubernetes.io/docs/reference/access-authn-authz/admission-controllers/#request-payloads[Kubernetes documentation].
+
+Initializers::
+This *alpha* admission controller determines the initializers of a resource based on the existing InitializerConfigurations. It sets the pending initializers by modifying the metadata of the resource to be created.
 
 LimitPodHardAntiAffinityTopology::
 This admission controller denies any pod that defines the `AntiAffinity` topology key other than `kubernetes.io/hostname` in `requiredDuringSchedulingRequiredDuringExecution`. Requires the `operator.openshift.io/v1` API.
@@ -62,20 +164,44 @@ This admission controller will observe the incoming request and ensure that it d
 MutatingAdmissionWebhook::
 This *beta* admission controller calls any mutating webhooks which match the request. Matching webhooks are called in serial; each one may modify the object if it desires.
 
+NamespaceAutoProvision::
+This admission controller examines all incoming requests on namespaced resources and checks if the referenced namespace does exist. It creates a namespace if it cannot be found. This admission controller is useful in deployments that do not want to restrict creation of a namespace prior to its usage.
+
+NamespaceExists::
+This admission controller checks all requests on namespaced resources other than Namespace itself. If the namespace referenced from a request doesn’t exist, the request is rejected.
+
 NamespaceLifecycle::
 This admission controller enforces that a Namespace that is undergoing termination cannot have new objects created in it and ensures that requests in a non-existent Namespace are rejected.
 
-OriginPodNodeEnvironment::
-This admission controller 
+NodeRestriction::
+// auth
+This admission controller limits the Node and Pod objects a kubelet can modify. In order to be limited by this admission controller, kubelets must use credentials in the `system:nodes` group, with a username in the form `system:node:<nodeName>`. Such kubelets will only be allowed to modify their own Node API object, and only modify Pod API objects that are bound to their node.
+
+The NodeRestriction admission plugin prevents kubelets from deleting their Node API object, and enforces kubelet modification of labels under the kubernetes.io/ or k8s.io/ prefixes as follows:
+
+* Prevents kubelets from adding/removing/updating labels with a node-restriction.kubernetes.io/ prefix. This label prefix is reserved for administrators to label their Node objects for workload isolation purposes, and kubelets will not be allowed to modify labels with that prefix.
+* Allows kubelets to add/remove/update these labels and label prefixes:
+** kubernetes.io/hostname
+** beta.kubernetes.io/arch
+** beta.kubernetes.io/instance-type
+** beta.kubernetes.io/os
+** failure-domain.beta.kubernetes.io/region
+** failure-domain.beta.kubernetes.io/zone
+** kubelet.kubernetes.io/-prefixed labels
+** node.kubernetes.io/-prefixed labels
+
+Use of any other labels is reserved, and may be disallowed or allowed by the NodeRestriction admission plugin in the future.
 
 OwnerReferencesPermissionEnforcement::
 This admission controller protects the access to the metadata.ownerReferences of an object so that only users with “delete” permission to the object can change it. 
 
 PersistentVolumeClaimResize::
+// storage
 This admission controller implements additional validations for checking incoming PersistentVolumeClaim resize requests.
 
-PodNodeConstraints::
-This admission controller restricts the set of node selectors that can appear on a pod unless they have pods/binding perm.  Requires the `autoscaling.openshift.io` API.
+PersistentVolumeLabel::
+// storage
+This deprecated admission controller automatically attaches region or zone labels to PersistentVolumes as defined by the cloud provider (for example, GCE or AWS). It helps ensure the Pods and the PersistentVolumes mounted are in the same region and/or zone.
 
 PodNodeSelector::
 This admission controller defaults and limits which node selectors can be used within a namespace by reading a namespace annotation and a global configuration. Requires the `operator.openshift.io/v1` API.
@@ -88,6 +214,10 @@ podNodeSelectorPluginConfig:
  namespace1: name-of-node-selector
  namespace2: name-of-node-selector
 ----
+
+PodSecurityPolicy::
+// auth
+This admission controller acts on creation and modification of the pod and determines if it should be admitted based on the requested security context and the available Pod Security Policies.
 
 PodTolerationRestriction::
 This admission controller first verifies any conflict between a pod’s tolerations and its namespace’s tolerations, and rejects the pod request if there is a conflict. It then merges the namespace’s tolerations into the pod’s tolerations. The resulting tolerations are checked against the namespace’s whitelist of tolerations. If the check succeeds, the pod request is admitted otherwise rejected. Requires the `operator.openshift.io/v1` API.
@@ -102,11 +232,15 @@ The priority admission controller uses the `priorityClassName` field and populat
 ResourceQuota::
 This admission controller will observe the incoming request and ensure that it does not violate any of the constraints enumerated in the ResourceQuota object in a Namespace. If you are using ResourceQuota objects in your Kubernetes deployment, you MUST use this admission controller to enforce quota constraints.
 
-RunOnceDuration::
-This admission controller specifies a maximum duration a run-once pod can run to completion.  Requires the `autoscaling.openshift.io` API.
+SecurityContextDeny::
+// auth
+This admission controller will deny any pod that attempts to set certain escalating SecurityContext fields. This should be enabled if a cluster doesn’t utilize pod security policies to restrict the set of values a security context can take.
 
 ServiceAccount::
 This admission controller implements automation for ServiceAccount objects.
+
+Storage Object in Use Protection::
+The StorageObjectInUseProtection plugin adds the kubernetes.io/pvc-protection or kubernetes.io/pv-protection finalizers to newly created Persistent Volume Claims (PVCs) or Persistent Volumes (PV). In case a user deletes a PVC or PV the PVC or PV is not removed until the finalizer is removed from the PVC or PV by PVC or PV Protection Controller. Refer to the Storage Object in Use Protection for more detailed information.
 
 ValidatingAdmissionWebhook::
 This *beta* admission controller calls any validating webhooks which match the request. Matching webhooks are called in parallel; if any of them rejects the request, the request fails. 
