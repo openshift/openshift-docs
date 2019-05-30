@@ -1,0 +1,305 @@
+// Module included in the following assemblies:
+//
+// * disaster_recovery/scenario-1-infra-recovery.adoc
+
+[id="dr-scenario-1-recover-master-hosts_{context}"]
+= Recovering from lost master hosts
+
+////
+TODO:
+ - Add a final result
+////
+
+Follow these steps to recover from the loss of one or more master hosts.
+
+.Prerequisites
+
+* Access to the cluster as a user with the `cluster-admin` role.
+* SSH access to a remaining master host.
+* A backed up etcd snapshot, if you are recovering a loss of a majority of masters.
+
+.Procedure
+
+. Restore etcd quorum on the remaining master.
++
+[NOTE]
+====
+This step is only necessary if you have had a majority of your masters fail. You can skip this step if you have a majority of your masters still available.
+====
+
+.. Copy the etcd snapshot file to the remaining master host.
++
+This procedure assumes that you have copied a snapshot file called `snapshot.db` to the `/home/core/` directory of your master host.
+
+.. Access the remaining master host.
+
+.. Set the `INITIAL_CLUSTER` variable to the list of members in the format of `<name>=<url>`. This variable will be passed to the restore script, and in this procedure, it is assumed that there is only a single member at this time.
++
+----
+[core@ip-10-0-143-125 ~]$ export INITIAL_CLUSTER="etcd-member-ip-10-0-143-125.ec2.internal=https://etcd-0.clustername.devcluster.openshift.com:2380"
+----
+
+.. Run the `etcd-snapshot-restore.sh` script.
++
+Pass in two parameters to the `etcd-snapshot-restore.sh` script: the path to the backed up etcd snapshot file and list of members, which is defined by the `INITIAL_CLUSTER` variable.
++
+----
+[core@ip-10-0-143-125 ~]$ sudo /usr/local/bin/etcd-snapshot-restore.sh /home/core/snapshot.db $INITIAL_CLUSTER
+Creating asset directory ./assets
+Downloading etcdctl binary..
+etcdctl version: 3.3.10
+API version: 3.3
+Backing up /etc/kubernetes/manifests/etcd-member.yaml to ./assets/backup/
+Stopping all static pods..
+..stopping kube-scheduler-pod.yaml
+..stopping kube-controller-manager-pod.yaml
+..stopping kube-apiserver-pod.yaml
+..stopping etcd-member.yaml
+Stopping etcd..
+Waiting for etcd-member to stop
+Stopping kubelet..
+Stopping all containers..
+bd44e4bc942276eb1a6d4b48ecd9f5fe95570f54aa9c6b16939fa2d9b679e1ea
+d88defb9da5ae623592b81619e3690faeb4fa645440e71c029812cb960ff586f
+3920ced20723064a379739c4a586f909497a7b6705a5b3cf367d9b930f23a5f1
+d470f7a2d962c90f3a21bcc021970bde96bc8908f317ec70f1c21720b322c25c
+Backing up etcd data-dir..
+Removing etcd data-dir /var/lib/etcd
+Restoring etcd member etcd-member-ip-10-0-143-125.ec2.internal from snapshot..
+2019-05-15 19:03:34.647589 I | pkg/netutil: resolving etcd-0.clustername.devcluster.openshift.com:2380 to 10.0.143.125:2380
+2019-05-15 19:03:34.883545 I | mvcc: restore compact to 361491
+2019-05-15 19:03:34.915679 I | etcdserver/membership: added member cbe982c74cbb42f [https://etcd-0.clustername.devcluster.openshift.com:2380] to cluster 807ae3bffc8d69ca
+Starting static pods..
+..starting kube-scheduler-pod.yaml
+..starting kube-controller-manager-pod.yaml
+..starting kube-apiserver-pod.yaml
+..starting etcd-member.yaml
+Starting kubelet..
+----
++
+Once the `etcd-snapshot-restore.sh` script completes, your cluster should now have a single member
+etcd cluster, and API services will begin restarting. This might take up to 15 minutes.
++
+In a terminal that has access to the cluster, run the following command to verify that it is ready:
++
+----
+$ oc get nodes -l node-role.kubernetes.io/master
+NAME                                         STATUS   ROLES    AGE   VERSION
+ip-10-0-143-125.us-east-2.compute.internal   Ready    master   46m   v1.13.4+db7b699c3
+----
++
+[NOTE]
+====
+Be sure that all old etcd members being replaced are shut down. Otherwise, they might try to connect to the new cluster and will report errors like the following in the logs:
+----
+2019-05-20 15:33:17.648445 E | rafthttp: request cluster ID mismatch (got 9f5f9f05e4d43b7f want 807ae3bffc8d69ca)
+----
+====
+
+. Create new master hosts.
++
+If your cluster has its Machine API enabled and functional, then when the
+OpenShift `machine-api` Operator is restored, it will create the new masters. If you do
+not have the `machine-api` Operator enabled, you must create new masters
+using the same methods that were used to originally create them.
++
+You will also need to approve the certificates signing requests (CSRs) for these new master hosts. Two pending CSRs are generated for each machine that was added to the cluster.
+
+.. In a terminal that has access to the cluster, run the following commands to approve the CSRs:
+
+... Get the list of current CSRs.
++
+----
+$ oc get csr
+----
+
+... Review the details of a CSR to verify it is valid.
++
+----
+$ oc describe csr <csr_name> <1>
+----
+<1> `<csr_name>` is the name of a CSR from the list of current CSRs.
+
+... Approve each valid CSR.
++
+----
+$ oc adm certificate approve <csr_name>
+----
++
+Be sure to approve both the pending client and server CSR for each master that was added to the cluster.
+
+.. In a terminal that has access to the cluster, run the following command to verify that your masters are ready:
++
+----
+$ oc get nodes -l node-role.kubernetes.io/master
+NAME                                         STATUS   ROLES    AGE   VERSION
+ip-10-0-143-125.us-east-2.compute.internal   Ready    master   50m   v1.13.4+db7b699c3
+ip-10-0-156-255.us-east-2.compute.internal   Ready    master   92s   v1.13.4+db7b699c3
+ip-10-0-162-178.us-east-2.compute.internal   Ready    master   70s   v1.13.4+db7b699c3
+----
+
+. Correct the DNS entries.
+
+.. From the AWS console, review the etcd-0, etcd-1, and etcd-2 Route 53 records in the private DNS zone, and if necessary, update the value to the appropriate new private IP address. See link:https://docs.aws.amazon.com/Route53/latest/DeveloperGuide/resource-record-sets-editing.html[Editing Records] in the AWS documentation for instructions.
++
+You can obtain the private IP address of an instance by running the following command in a terminal that has access to the cluster.
++
+----
+$ oc get node ip-10-0-143-125.us-east-2.compute.internal -o  jsonpath='{.status.addresses[?(@.type=="InternalIP")].address}{"\n"}'
+10.0.143.125
+----
+
+. Update load balancer entries.
++
+If you are using a cluster-managed load balancer, the entries will automatically be updated for you. If you are not, be sure to update your load balancer with the current addresses of your master hosts.
++
+If your load balancing is managed by AWS, see link:https://docs.aws.amazon.com/elasticloadbalancing/latest/application/target-group-register-targets.html#register-ip-addresses[Register or Deregister Targets by IP Address] in the AWS documentation for instructions on updating load balancer entries.
+
+. Grow etcd to full membership.
+
+.. Set up a temporary etcd certificate signer service on your master where you have restored etcd.
+
+... Access the original master, and log in to your cluster as a `cluster-admin` user using the following command.
++
+----
+[core@ip-10-0-143-125 ~]$ oc login https://localhost:6443
+Authentication required for https://localhost:6443 (openshift)
+Username: kubeadmin
+Password:
+Login successful.
+----
+
+... Obtain the pull specification for the `kube-etcd-signer-server` image.
++
+----
+[core@ip-10-0-143-125 ~]$ export KUBE_ETCD_SIGNER_SERVER=$(oc adm release info --image-for kube-etcd-signer-server --registry-config=/var/lib/kubelet/config.json)
+----
+
+... Run the `tokenize-signer.sh` script.
++
+Be sure to pass in the `-E` flag to `sudo` so that environment variables are properly passed to the script.
++
+----
+[core@ip-10-0-143-125 ~]$ sudo -E /usr/local/bin/tokenize-signer.sh ip-10-0-143-125 <1>
+Populating template /usr/local/share/openshift-recovery/template/kube-etcd-cert-signer.yaml.template
+Populating template ./assets/tmp/kube-etcd-cert-signer.yaml.stage1
+Tokenized template now ready: ./assets/manifests/kube-etcd-cert-signer.yaml
+----
+<1> The host name of the original master you just restored, where the signer should be deployed.
+
+... Create the signer Pod using the file that was generated.
++
+----
+[core@ip-10-0-143-125 ~]$ oc create -f assets/manifests/kube-etcd-cert-signer.yaml
+pod/etcd-signer created
+----
+
+... Verify that the signer is listening on this master node.
++
+----
+[core@ip-10-0-143-125 ~]$ ss -ltn | grep 9943
+LISTEN   0         128                       *:9943                   *:*
+----
+
+.. Add the new master hosts to the etcd cluster.
+
+... Access one of the new master hosts, and log in to your cluster as a `cluster-admin` user using the following command.
++
+----
+[core@ip-10-0-156-255 ~]$ oc login https://localhost:6443
+Authentication required for https://localhost:6443 (openshift)
+Username: kubeadmin
+Password:
+Login successful.
+----
+
+... Export two environment variables that are required by the `etcd-member-recover.sh` script.
++
+----
+[core@ip-10-0-156-255 ~]$ export SETUP_ETCD_ENVIRONMENT=$(oc adm release info --image-for setup-etcd-environment --registry-config=/var/lib/kubelet/config.json)
+----
++
+----
+[core@ip-10-0-156-255 ~]$ export KUBE_CLIENT_AGENT=$(oc adm release info --image-for kube-client-agent --registry-config=/var/lib/kubelet/config.json)
+----
+
+... Run the `etcd-member-recover.sh` script.
++
+Be sure to pass in the `-E` flag to `sudo` so that environment variables are properly passed to the script.
++
+----
+[core@ip-10-0-156-255 ~]$ sudo -E /usr/local/bin/etcd-member-recover.sh 10.0.143.125 <1>
+Downloading etcdctl binary..
+etcdctl version: 3.3.10
+API version: 3.3
+etcd-member.yaml found in ./assets/backup/
+etcd.conf backup upready exists ./assets/backup/etcd.conf
+Trying to backup etcd client certs..
+etcd client certs already backed up and available ./assets/backup/
+Stopping etcd..
+Waiting for etcd-member to stop
+etcd data-dir backup found ./assets/backup/etcd..
+etcd TLS certificate backups found in ./assets/backup..
+Removing etcd certs..
+Populating template /usr/local/share/openshift-recovery/template/etcd-generate-certs.yaml.template
+Populating template ./assets/tmp/etcd-generate-certs.stage1
+Populating template ./assets/tmp/etcd-generate-certs.stage2
+Starting etcd client cert recovery agent..
+Waiting for certs to generate..
+Waiting for certs to generate..
+Waiting for certs to generate..
+Waiting for certs to generate..
+Stopping cert recover..
+Waiting for generate-certs to stop
+Patching etcd-member manifest..
+Updating etcd membership..
+Member 249a4b9a790b3719 added to cluster 807ae3bffc8d69ca
+
+ETCD_NAME="etcd-member-ip-10-0-156-255.ec2.internal"
+ETCD_INITIAL_CLUSTER="etcd-member-ip-10-0-143-125.ec2.internal=https://etcd-0.clustername.devcluster.openshift.com:2380,etcd-member-ip-10-0-156-255.ec2.internal=https://etcd-1.clustername.devcluster.openshift.com:2380"
+ETCD_INITIAL_ADVERTISE_PEER_URLS="https://etcd-1.clustername.devcluster.openshift.com:2380"
+ETCD_INITIAL_CLUSTER_STATE="existing"
+Starting etcd..
+----
+<1> The IP address of the original master, where the signer server is running.
+
+... Verify that the new master host has been added to the etcd member list.
+
+.... Access the original master and connect to the running etcd container.
++
+----
+[core@ip-10-0-143-125 ~] id=$(sudo crictl ps --name etcd-member | awk 'FNR==2{ print $1}') && sudo crictl exec -it $id /bin/sh
+----
+
+.... In the etcd container, export variables needed for connecting to etcd.
++
+----
+sh-4.2# export ETCDCTL_API=3 ETCDCTL_CACERT=/etc/ssl/etcd/ca.crt ETCDCTL_CERT=$(find /etc/ssl/ -name *peer*crt) ETCDCTL_KEY=$(find /etc/ssl/ -name *peer*key)
+----
++
+.... In the etcd container, execute `etcdctl member list` and verify that the new member is listed.
++
+----
+sh-4.2#  etcdctl member list -w table
+
++------------------+---------+------------------------------------------+----------------------------------------------------------------+---------------------------+
+|        ID        | STATUS  |                   NAME                   |                           PEER ADDRS                           |       CLIENT ADDRS        |
++------------------+---------+------------------------------------------+----------------------------------------------------------------+---------------------------+
+|  cbe982c74cbb42f | started |  etcd-member-ip-10-0-156-255.ec2.internal | https://etcd-0.clustername.devcluster.openshift.com:2380 |  https://10.0.156.255:2379 |
+| 249a4b9a790b3719 | started | etcd-member-ip-10-0-143-125.ec2.internal | https://etcd-1.clustername.devcluster.openshift.com:2380 | https://10.0.143.125:2379 |
++------------------+---------+------------------------------------------+----------------------------------------------------------------+---------------------------+
+----
++
+Note that it may take up to 10 minutes for the new member to start.
+
+... Repeat these steps to add your other new master host until you have achieved full etcd membership.
+
+.. After all members are restored, remove the signer Pod because it is no longer needed.
++
+In a terminal that has access to the cluster, run the following command:
++
+----
+$ oc delete pod -n openshift-config etcd-signer
+----
+
+// TODO: Add a final statement of what the result of all this should be.
