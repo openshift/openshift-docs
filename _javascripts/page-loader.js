@@ -49,12 +49,15 @@ function versionSelector(list) {
 }
 
 function selectVersion(currentVersion) {
-  document.getElementById("version-selector").value = currentVersion;
+  var el = document.getElementById("version-selector");
+  if(el) {
+    el.value = currentVersion;
+  }
   // alert(currentVersion);
 
   // in enterprise branch 4, we have modules and this is an attempt to load the
   // modules by double clicking on them.
-  if(currentVersion.startswith("4")) {
+  if(currentVersion.charAt(0) === "4") {
     var element = document.getElementsByTagName('h2');
     Object.entries(element).map(( object ) => {
       object[1].addEventListener("dblclick", function() {
