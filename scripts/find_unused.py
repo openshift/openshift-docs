@@ -17,6 +17,7 @@ import sys
 class FindUnused():
     unused_directory = "_unused_topics"     # Edit this to adjust the target path.
     modules_directory = "/modules"          # Edit this to adjust the modules subdirectory
+    ignored_prefixes = ["cnv","ossm"]       # Add any prefixes to ignore here
     
     def __init__(self, args):
         self.args = args
@@ -31,7 +32,11 @@ class FindUnused():
         # Build up a dictionary from the elements in the modules subdirectory, storing their path as the value.
         for root, directories, files in os.walk(self.args.path + self.modules_directory):
             for filename in files:
-                modules[filename] = os.path.join(root,filename)
+                for prefix in self.ignored_prefixes:
+                    # Search through all provided prefixes. If one is found, skip including it.
+                    if filename.startswith(prefix):
+                        break
+                    modules[filename] = os.path.join(root,filename)
         # Since modules can also include other modules, we include them in the list of assemblies.
         for root, directories, files in os.walk(self.args.path):
             for filename in files:
