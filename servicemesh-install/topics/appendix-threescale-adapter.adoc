@@ -3,7 +3,7 @@ The 3scale Istio Adapter allows you to label a service running within the {Produ
 
 Prerequisites:
 
-* {ProductName} 0.7.0+
+* {ProductName} 0.12.0+
 * A working 3scale account (https://www.3scale.net/signup/[SaaS] or https://access.redhat.com/documentation/en-us/red_hat_3scale_api_management/2.5/html/installing_3scale/onpremises-installation[3scale 2.5 On-Premises])
 * https://docs.openshift.com/container-platform/3.11/servicemesh-install/servicemesh-install.html#service-mesh-install_prerequisites[{ProductName} prerequisites]
 * Ensure Mixer policy enforcement is enabled. https://docs.openshift.com/container-platform/3.11/servicemesh-install/servicemesh-install.html#update-mixer-policy-enforcement[Update Mixer policy enforcement] provides instructions to check the current Mixer policy enforcement status and enable policy enforcement.
@@ -40,25 +40,45 @@ Pay particular attention to the `kind: handler` resource. You must update this w
      address: "threescale-istio-adapter:3333"
 ----
 
-+
-. Create the required resources:
-+
+. Modify the rule configuration with your 3scale configuration.
+
+[source,yaml]
 ----
-oc create -f istio/
+  # rule to dispatch to handler threescalehandler
+  apiVersion: "config.istio.io/v1alpha2"
+  kind: rule
+  metadata:
+    name: threescale
+  spec:
+    match: destination.labels["service-mesh.3scale.net"] == "true"
+    actions:
+      - handler: threescale.handler
+        instances:
+          - threescale-authorization.instance
 ----
 
-
+[[threescale-adapter-cr]]
 == Generating custom resources
 The adapter includes a tool that allows you to generate the `handler`, `instance`, and `rule` custom resources.
 
 .Usage
 |===
-|Option |Description |Required | Default
+|Option |Description |Required | Default value
 
 |`-h, --help`
 |Produces help output for available options
 |No
 |
+
+|`--name`
+|Unique name for this URL, token pair
+|Yes
+|
+
+|`-n --namespace`
+|Namespace to generate templates
+|No
+|`istio-system`
 
 |`-t, --token`
 |3scale access token
@@ -75,18 +95,8 @@ The adapter includes a tool that allows you to generate the `handler`, `instance
 |Yes
 |
 
-|`--uid`
-|Unique ID for resource names that is from the 3scale Admin Portal URL and service if not set.
-|No
-|Generated from the 3scale Admin Portal URL hostname and service ID if not provided
-
-|`--fixup`
-|Attempt to automatically correct validation errors
-|No
-|False
-
 |`--auth`
-|3scale authentication pattern to specify (1=Api Key, 2=App Id/App Key)
+|3scale authentication pattern to specify (1=Api Key, 2=App Id/App Key, 3=OIDC)
 |No
 |Hybrid
 
@@ -96,58 +106,78 @@ The adapter includes a tool that allows you to generate the `handler`, `instance
 |Standard output
 
 |`-v`
-|Outputs the CLI version and exits
+|Outputs the CLI version and exits right away
 |No
 |
 |===
 
+
+[[threescale-templates-from-urls]]
 === Generate templates from URL examples
-This example generates the templates from the URL, service, and personal token:
+This example will generate generic templates, allowing the token, URL pair to be shared by multiple services as a single handler:
 
 ----
-$ 3scale-gen-config --url="https://<organization>-admin.3scale.net:443" --service="123456789" --token="[redacted]"
+$ 3scale-gen-config --name=admin-credentials --url="https://<organization>-admin.3scale.net:443" --token="[redacted]"
 ----
 
-This example generates the templates from the URL, service, and personal token but with a unique ID, that otherwise would have been derived from the URL:
+This example will generate the templates with the service ID embedded in the handler:
 
 ----
-$ 3scale-gen-config --url="https://<organization>-admin.3scale.net" --uid="my-unique-id" --service="123456789" --token="[redacted]"
+$ 3scale-gen-config --url="https://<organization>-admin.3scale.net" --name="my-unique-id" --service="123456789" --token="[redacted]"
 ----
 
-The previous example might fail to pass validation if the given unique ID contains special characters. You can use the fixup option to attempt to correct validation errors:
 
-----
-$ 3scale-gen-config --url="https://<organization>-admin.3scale.net" --uid="my-unique-id" --fixup --service="123456789" --token="[redacted]"
-----
-
+[[threescale-manifests-from-adapter]]
 == Generating manifests from a deployed adapter
-To generate manifests from a deployed adapter, run the following command replacing the following arguments with the 3scale Admin Portal URL, Service ID, and access token:
+To generate these manifests from a deployed adapter, assuming it is deployed in the `istio-system` namespace, run the following:
 
 ----
-$ oc exec -n istio-system $(oc get po -n istio-system -o jsonpath='{.items[?(@.metadata.labels.app=="3scale-istio-adapter")].metadata.name}') \
+$ export NS="istio-system" URL="https://<replaceme>-admin.3scale.net:443" NAME="name" TOKEN="token"
+oc exec -n ${NS} $(oc get po -n ${NS} -o jsonpath='{.items[?(@.metadata.labels.app=="3scale-istio-adapter")].metadata.name}') \
 -it -- ./3scale-config-gen \
---url="https://replace-me.3scale.net:443" --service="example-service-id" --token="access-token"
+--url ${URL} --name ${NAME} --token ${TOKEN} -n ${NS}
 ----
 
-This will produce sample output to the terminal and a unique identifier (UID) that must be used for multiple service use cases. Edit these samples if required and create the objects using the `oc create` command.
+This will produce sample output to the terminal. Edit these samples if required and create the objects using the `oc create` command.
+
+When the request reaches the adapter, the adapter needs to know how the service maps to an API on 3scale. This can be provided in one of two ways:
+
+* As a label on the workload (recommended)
+* Hardcoded in the handler as `service_id`
+
 
 https://docs.openshift.com/container-platform/3.11/servicemesh-install/servicemesh-install.html#routing-service-traffic-through-the-adapter[Update the workload] with the required annotations:
 
+[NOTE]
+====
+You need only update the service ID provided in the below example if it has not been embedded in the handler previously. The setting in the handler will take precedence.
+====
+
 ----
-export SVC_ID="replace-me"
+$ export CREDENTIALS_NAME="replace-me"
+export SERVICE_ID="replace-me"
 export DEPLOYMENT="replace-me"
-patch="$(oc get deployment "${DEPLOYMENT}" --template='{"spec":{"template":{"metadata":{"labels":{ {{ range $k,$v := .spec.template.metadata.labels }}"{{ $k }}":"{{ $v }}",{{ end }}"service-mesh.3scale.net":"true","service-mesh.3scale.net/uid":"'"${SVC_ID}"'"}}}}}' )"
+patch="$(oc get deployment "${DEPLOYMENT}"
+patch="$(oc get deployment "${DEPLOYMENT}" --template='{"spec":{"template":{"metadata":{"labels":{ {{ range $k,$v := .spec.template.metadata.labels }}"{{ $k }}":"{{ $v }}",{{ end }}"service-mesh.3scale.net/service-id":"'"${SERVICE_ID}"'","service-mesh.3scale.net/credentials":"'"${CREDENTIALS_NAME}"'"}}}}}' )"
 oc patch deployment "${DEPLOYMENT}" --patch ''"${patch}"''
 ----
 
+
+[[threescale-traffic-routing]]
 == Routing service traffic through the adapter
-To drive traffic for your service through the 3scale adapter, you need to match the rule `destination.labels["service-mesh.3scale.net"] == "true"` that you previously created in the configuration, in the `kind: rule` resource.
+To drive traffic for your service through the 3scale adapter, you need to match the rule `destination.labels["service-mesh.3scale.net/credentials"] =="threescale"` that you previously created in the configuration, in the `kind: rule` resource.
 
-If you need to support multiple services, an additional label is required. It should be unique per service, for example `service-mesh.3scale.net/uid` as a default. You can to modify sample templates as required.
+Integration of a service requires that the above label be added to PodTemplateSpec on the Deployment of the target workload. The value, `threescale`, refers to the name of the generated handler. This handler will store the access token required to call 3scale.
 
-You must add a label to the `PodTemplateSpec` on the Deployment of the target workload. For example, in a `productpage` service, whose Pod is managed by the `productpage-v1` deployment, add the above label under `spec.template.labels` in `productpage-v1`, to have the adapter authorize requests to this service.
+Add the following label to the workload to pass the service ID to the adapter via the instance at request time:
 
+----
+destination.labels["service-mesh.3scale.net/service-id"] == "replace-me"
+----
 
+Your 3scale administrator should be able to provide you with both the required credentials name and the service ID.
+
+[[threescale-configure-integration]]
 = Configure the integration settings in 3scale
 
 [NOTE]
@@ -155,12 +185,14 @@ You must add a label to the `PodTemplateSpec` on the Deployment of the target wo
 For 3scale SaaS customers, {ProductName} is enabled as part of the Early Access program.
 ====
 
+[[threescale-integration-settings]]
 == Integration settings
 . Navigate to *[your_API_name] > Integration > Configuration*.
-. At the top of the *Integration* page click on *edit integration settings* in the top right corner.
+. At the top of the *Integration* page click *edit integration settings* in the top right corner.
 . Under the *Service Mesh* heading, click the *Istio* option.
 . Scroll to the bottom of the page and click *Update Service*.
 
+[[threescale-caching]]
 = Caching behavior
 Responses from 3scale System API's are cached by default within the adapter. Entries will be purged from the cache when they become older than the `cacheTTLSeconds` value. Also by default, automatic refreshing of cached entries will be attempted seconds before they expire, based on the `cacheRefreshSeconds` value. You can disable automatic refreshing by setting this value higher than the `cacheTTLSeconds` value.
 
@@ -168,14 +200,15 @@ Caching can be disabled entirely by setting `cacheEntriesMax` to a non-positive 
 
 By using the refreshing process, cached values whose hosts become unreachable will be retried before eventually being purged when past their expiry.
 
+[[threescale-authenticating-requests]]
 = Authenticating requests
 This Technology Preview release supports the following authentication methods:
 
 * *Standard API Keys*: single randomized strings or hashes acting as an identifier and a secret token.
-* *Application identifier and key pairs*: immutable identifier and mutable secret key strings.
-* *OpenID authentication method*: client ID string parsed from the JSON Web Token.
+* *Application identifier and key pairs*: immutable identifier and mutable secret key strings, referred to as AppID.
+* *OpenID authentication method*: client ID string parsed from the JSON Web Token, referred to as OpenID Connect (OIDC).
 
-
+[[threescale-authentication-patterns]]
 == Applying authentication patterns
 Modify the `instance` custom resource, as illustrated in the following authentication method examples, to configure authentication behavior. You can accept the authentication credentials from:
 
@@ -188,6 +221,7 @@ Modify the `instance` custom resource, as illustrated in the following authentic
 When specifying values from headers they must be lower case. For example, if you want to send a header as `X-User-Key`, this must be referenced in the configuration as `request.headers["x-user-key"]`.
 ====
 
+[[threescale-apikey-authentication]]
 === API key authentication method
 {ProductShortName} looks for the API key in query parameters and request headers as specified in the `user` option in the `subject` custom resource parameter. It checks the values in the order given in the custom resource file. You can restrict the search for the API key to either query parameters or request headers by omitting the unwanted option.
 
@@ -214,6 +248,7 @@ spec:
 
 If you want the adapter to examine a different query parameter or request header, change the name as appropriate. For example, to check for the API key in a query parameter named “key”, change `request.query_params["user_key"]` to `request.query_params["key"]`.
 
+[[threescale-appidkeypair-authentication]]
 === Application ID and application key pair authentication method
 {ProductShortName} looks for the application ID and application key in query parameters and request headers, as specified in the `properties` option in the `subject` custom resource parameter. The application key is optional. It checks the values in the order given in the custom resource file. You can restrict the search for the credentials to either query parameters or request headers by not including the unwanted option.
 
@@ -241,8 +276,9 @@ spec:
 
 If you want the adapter to examine a different query parameter or request header, change the name as appropriate. For example, to check for the application ID in a query parameter named `identification`, change `request.query_params["app_id"]` to `request.query_params["identification"]`.
 
+[[threescale-openid-authentication]]
 === OpenID authentication method
-To use the _OpenID Connect (OIDC) authentication method_, use the properties value on the subject field to set `client_id`, and optionally `app_key`.
+To use the _OpenID Connect (OIDC) authentication method_, use the `properties` value on the `subject` field to set `client_id`, and optionally `app_key`.
 
 You can manipulate this object using the methods described previously. In the example configuration shown below, the client identifier (application ID) is parsed from the JSON Web Token (JWT) under the label _azp_. You can modify this as needed.
 
@@ -254,7 +290,6 @@ You can manipulate this object using the methods described previously. In the ex
   kind: instance
   metadata:
     name: threescale-authorization
-    namespace: istio-system
   spec:
     template: threescale-authorization
     params:
@@ -265,9 +300,10 @@ You can manipulate this object using the methods described previously. In the ex
       action:
         path: request.url_path
         method: request.method | "get"
+          service: destination.labels["service-mesh.3scale.net/service-id"] | ""
 ----
 
-For this integration to work correctly, OIDC must still be done in 3scale for the client to be created in the identity provider (IdP). You should create https://istio.io/help/ops/security/end-user-auth/[end-user authentication] for the service you want to protect in the same namespace as that service. The JWT is passed in the `Authorization` header of the request.
+For this integration to work correctly, OIDC must still be done in 3scale for the client to be created in the identity provider (IdP). You should create https://istio.io/docs/ops/security/end-user-auth/[end-user authentication] for the service you want to protect in the same namespace as that service. The JWT is passed in the `Authorization` header of the request.
 
 In the sample `Policy` defined below, replace `issuer` and `jwksUri` as appropriate.
 
@@ -292,7 +328,7 @@ In the sample `Policy` defined below, replace `issuer` and `jwksUri` as appropri
       - name: productpage
 ----
 
-
+[[threescale-hybrid-authentication]]
 === Hybrid authentication method
 You can choose to not enforce a particular authentication method and accept any valid credentials for either method. If both an API key and an application ID/application key pair are provided, {ProductShortName} uses the API key.
 
@@ -306,7 +342,6 @@ apiVersion: "config.istio.io/v1alpha2"
 kind: instance
 metadata:
   name: threescale-authorization
-  namespace: istio-system
 spec:
   template: authorization
   params:
@@ -319,7 +354,9 @@ spec:
     action:
       path: request.url_path
       method: request.method | "get"
+        service: destination.labels["service-mesh.3scale.net/service-id"] | ""
 ----
 
+[[threescale-adapter-metrics]]
 = Adapter metrics
 The adapter, by default reports various Prometheus metrics that are exposed on port `8080` at the `/metrics` endpoint. These metrics provide insight into how the interactions between the adapter and 3scale are performing. The service is labeled to be automatically discovered and scraped by Prometheus.
