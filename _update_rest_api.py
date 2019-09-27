@@ -1,4 +1,4 @@
-#!/usr/bin/env python2
+#!/usr/bin/env python
 
 import collections
 import os
@@ -25,10 +25,11 @@ def main():
     origin = os.environ.get("ORIGIN_REPO", "../origin")
 
     # clear out all subdirectories under rest_api
-    for f in os.listdir("rest_api"):
-        f = os.path.join("rest_api", f)
-        if os.path.isdir(f):
-            shutil.rmtree(f)
+    restapi_path = "rest_api"
+    if os.path.isdir(restapi_path):
+        shutil.rmtree(restapi_path)
+    elif os.path.isfile(restapi_path):
+        os.remove(restapi_path)
 
     # copy in subdirectories under rest_api from origin
     for f in os.listdir(os.path.join(origin, "api/docs")):
@@ -39,7 +40,7 @@ def main():
 
     # read rest_api topics snippet from origin
     with open(os.path.join(origin, "api/docs/_topic_map.yml")) as f:
-        topics = yaml.load(f)
+        topics = yaml.safe_load(f)
 
     # read in existing _topic_map.yml
     preamble = ""
@@ -50,7 +51,7 @@ def main():
             if line == "" or line.strip() == "---":
                 break
 
-        docs = list(yaml.load_all(f))
+        docs = list(yaml.safe_load_all(f))
 
     for doc in docs:
         if doc["Dir"] == "rest_api":
