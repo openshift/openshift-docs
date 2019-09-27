@@ -1,7 +1,6 @@
-#!/usr/bin/python
+#!/usr/bin/python3
 
 import argparse
-import ConfigParser
 import filecmp
 import fnmatch
 import logging
@@ -14,6 +13,7 @@ import time
 import yaml
 
 from aura import cli
+from configparser import ConfigParser
 
 cli.init_logging(False, True)
 
@@ -154,7 +154,7 @@ def parse_build_config(config):
     """
     config = os.path.expanduser(config)
     with open(config, "r") as f:
-        data = list(yaml.load_all(f))
+        data = list(yaml.safe_load_all(f))
 
     for book in data:
         book_name = book['Name']
@@ -750,10 +750,7 @@ def replace_nbsp(val):
     """Replaces non breaking spaces with a regular space"""
     if val is not None:
         # Check if the string is unicode
-        if isinstance(val, unicode):
-            return val.replace(u'\xa0', ' ')
-        else:
-            return val.replace('\xc2\xa0', ' ')
+        return val.replace('\xc2\xa0', ' ')
     else:
         return None
 

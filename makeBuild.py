@@ -1,8 +1,8 @@
+#!/bin/env python3
+
 import sys
 import os
 import logging
-reload(sys)
-sys.setdefaultencoding('utf8')
 
 from lxml.etree import XMLSyntaxError, XIncludeError
 
@@ -10,19 +10,8 @@ from aura import cli, utils
 from aura.exceptions import InvalidInputException
 from aura.transformers.tf_asciidoc import AsciiDocPublicanTransformer, XML_NS, LXML_XML_NS
 
-#branch = os.system("git symbolic-ref -q --short HEAD")
-
-#print(branch)
-
-# list of books - CHANGE HERE
-book_list = ['admin_guide', 'apb_devel', 'architecture', 
-  'creating_images', 'day_two_guide', 'dev_guide', 
-  'getting_started', 'install_config', 'release_notes', 'scaling_performance', 
-  'security', 'upgrading', 'using_images']
-
-
 # function to convert XML ids to HTML 4 compatible ids from ccutil
-def _fix_ids_for_html4(tree):
+def fix_ids_for_html4(tree):
     """
     Fixes any id elements that aren't html4 compatible.
 
@@ -78,69 +67,61 @@ def _fix_ids_for_html4(tree):
                     old_endterm.set('endterm', new_id)
 
 
-# all validated?
-all_validated = True
+def main():
+    # Initialize logging
+    cli.init_logging(False, False)
 
-# Initialize logging
-cli.init_logging(False, False)
+    if not os.path.isdir("drupal-build"):
+        raise RuntimeException("Did not find the drupal-build directory")
 
-for distro in os.listdir("drupal-build"):
+    all_validated = True
+    for distro in os.listdir("drupal-build"):
+        print("---------------------------------------")
+        print("BUILDING " + distro + " BOOKS")
+        print("---------------------------------------")
 
-    print("---------------------------------------")
-    print("BUILDING " + distro + " BOOKS")
-    print("---------------------------------------")
+        for book in os.listdir(os.path.join("drupal-build", distro)):
+            # rest api book is a pain and doesn't convert well
+            if book == "rest_api":
+              continue
 
-    for book in os.listdir(os.path.join("drupal-build", distro)):
+            os.chdir("drupal-build/" + distro + "/" + book)
 
-        #print(os.getcwd() + "\n")
-        #if not os.path.isdir("drupal-build/" + distro + "/" + book):
-            #print("---------------------------------------")
-            #print(">>> No Book " + book + " in this repo. Skipping <<<")
-            #print("---------------------------------------")
+            # Create the transformer instance
+            transformer = AsciiDocPublicanTransformer()
 
-            #continue
+            try:
+                # Transform the AsciiDoc to DocBook XML
+                print(">>> Working on " + book + " book in " + distro + " <<<")
+                if not transformer._build_docbook_src("master.adoc", "build"):
+                    print("Could not transform book " + book)
+                    all_validated = False
+                    continue
 
-        # rest api book is a pain and doesn't convert well
-        if book == "rest_api":
-          continue
+                # Parse the transformed XML
+                transformer._before_xml_parse("build/master.xml")
 
-        os.chdir("drupal-build/" + distro + "/" + book)
-        #print(os.getcwd() + "\n")
+                # Parse the XML content
+                tree = utils.parse_xml("build/master.xml")
 
-        # Create the transformer instance
-        transformer = AsciiDocPublicanTransformer()
+                # Apply XML updates from aura/ccutil
+                transformer._fix_uncoverted_xrefs_with_file_paths(tree)
+                fix_ids_for_html4(tree)
 
-        try:
-            # Transform the AsciiDoc to DocBook XML
-            print(">>> Working on " + book + " book in " + distro + " <<<")
-            if not transformer._build_docbook_src("master.adoc", "build"):
-                print("Could not transform book " + book)
+                # Validate the transformed XML
+                if not transformer._validate_docbook_idrefs(tree):
+                    logging.error(">>> Validation of book " + book + " in " + distro + " failed <<<")
+                    all_validated = False
+            except (XMLSyntaxError, XIncludeError, InvalidInputException) as e:
+                logging.error(e)
                 all_validated = False
-                continue
+            finally:
+                print(">>> Finished with " + book + " book in " + distro + " <<<")
+                print("---------------------------------------")
+                os.chdir("../../../")
 
-            # Parse the transformed XML
-            transformer._before_xml_parse("build/master.xml")
+    if not all_validated:
+        raise RuntimeException("Not all books got validated")
 
-            # Parse the XML content
-            tree = utils.parse_xml("build/master.xml")
-
-            # Apply XML updates from aura/ccutil
-            transformer._fix_uncoverted_xrefs_with_file_paths(tree)
-            _fix_ids_for_html4(tree)
-
-            # Validate the transformed XML
-            if not transformer._validate_docbook_idrefs(tree):
-                logging.error(">>> Validation of book " + book + " in " + distro + " failed <<<")
-                all_validated = False
-        except (XMLSyntaxError, XIncludeError, InvalidInputException) as e:
-            logging.error(e)
-            all_validated = False
-        finally:
-            print(">>> Finished with " + book + " book in " + distro + " <<<")
-            print("---------------------------------------")
-            os.chdir("../../../")
-
-if not all_validated:
-    sys.exit(-1)
-else: 
-  print("All Successful")
+if __name__ == "__main__":
+    main()
