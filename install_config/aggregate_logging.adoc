@@ -1344,8 +1344,204 @@ Turn off log rotation by setting `LOGGING_FILE_PATH=console`.
 This causes Fluentd to write logs to the Fluentd default location, *_/var/log/fluentd/fluentd.log_*, where you can retrieve them using the `oc logs -f <pod_name>` command.
 
 ----
-oc set env ds/fluentd LOGGING_FILE_PATH=console
+$ oc set env ds/fluentd LOGGING_FILE_PATH=console
 ----
+
+[[fluentd-merge-json]]
+*Disabling JSON parsing of logs with MERGE_JSON_LOG*
+
+By default, Fluentd determines if a log message is in *JSON* format and merges the message into the JSON payload document posted to Elasticsearch. 
+
+When using JSON parsing you might experience:
+
+* log loss due to Elasticsearch rejecting documents due to inconsistent type mappings;
+* buffer storage leaks caused by rejected message cycling;
+* overwritten data for fields with same names.
+
+For information on how to mitigate some of these problems, see xref:fluentd-undefined-fields[Configuring how the log collector normalizes logs].
+
+You can disable JSON parsing to avoid these problems or if you do not need to parse JSON from your logs.
+
+To disable JSON parsing:
+
+. Run the following command:
++
+----
+oc set env ds/logging-fluentd MERGE_JSON_LOG=false <1>
+----
+<1> Set this to `false` to disable this feature or `true` to enable this feature.
++
+To ensure this setting is applied each time you run Ansible, add `openshift_logging_fluentd_merge_json_log="false"` to your Ansible inventory.
+
+[[fluentd-undefined-fields]]
+*Configuring how the log collector normalizes logs*
+
+Cluster Logging uses a specific data model, like a database schema, to store log records and their metadata in the logging store. There are some restrictions on the data:
+
+* There must be a `"message"` field containing the actual log message.
+* There must be a `"@timestamp"` field containing the log record timestamp in RFC 3339 format, preferably millisecond or better resolution.
+* There must be a `"level"` field with the log level, such as `err`, `info`, `unknown`, and so forth.
+
+[NOTE]
+====
+For more information on the data model, see link:https://github.com/openshift/origin-aggregated-logging/blob/master/docs/com.redhat.viaq-openshift-project.asciidoc[Exported Fields].
+====
+
+Because of these requirements, conflicts and inconsistencies can arise with log data collected from different subsystems.
+
+For example, if you use the `MERGE_JSON_LOG` feature (`MERGE_JSON_LOG=true`), it can be extremely useful to have your applications log their output in JSON, and have the log collector automatically parse and index the data in Elasticsearch. However, this leads to several problems, including:
+
+* field names can be empty, or contain characters that are illegal in Elasticsearch;
+* different applications in the same namespace might output the same field name with a different value data type;
+* applications might emit too many fields;
+* fields may conflict with the cluster logging built-in fields.
+
+You can configure how cluster logging treats fields from disparate sources by editing the Fluentd log collector daemonset and setting environment variables in the table below.
+
+// from https://github.com/ViaQ/fluent-plugin-viaq_data_model/commit/8b5ef11cedec4c372b2cb082afc7f9cc08473654
+
+* *Undefined fields.* Fields unknown to the ViaQ data model are called _undefined_. Log data from disparate systems can contain undefined fields. The data model requires all top-level fields to be defined and described.
++
+Use the parameters to configure how {product-title} moves any undefined fields under a top-level field called `undefined` to avoid conflicting with the _well known_
+top-level fields. You can add undefined fields to the top-level fields and move others to an `undefined` container.
++
+You can also replace special characters in undefined fields and convert undefined fields to their JSON string representation.
+Converting to JSON string preserves the structure of the value, so that you can retrieve the value later and convert it back to a map or an array.
++
+** Simple scalar values like numbers and booleans are changed to a quoted string. For example: `10` becomes `"10"`, `3.1415` becomes `"3.1415"`, `false` becomes `"false"`.
++
+** Map/dict values and array values are converted to their JSON string representation: `"mapfield":{"key":"value"}` becomes `"mapfield":"{\"key\":\"value\"}"` and `"arrayfield":[1,2,"three"]` becomes `"arrayfield":"[1,2,\"three\"]"`.
+
+* *Defined fields.* Defined fields appear in the top levels of the logs. You can configure which fields are considered defined fields.
++
+[[default-fields]]
+The default top-level fields, defined through the `CDM_DEFAULT_KEEP_FIELDS` parameter, are `CEE`, `time`, `@timestamp`, `aushape`, `ci_job`, `collectd`, `docker`, `fedora-ci`,
+`file`, `foreman`, `geoip`, `hostname`, `ipaddr4`, `ipaddr6`, `kubernetes`, `level`, `message`, `namespace_name`, `namespace_uuid`,
+`offset`, `openstack`, `ovirt`, `pid`, `pipeline_metadata`, `service`, `systemd`, `tags`, `testcase`, `tlog`, `viaq_msg_id`.
++
+Any fields not included in `${CDM_DEFAULT_KEEP_FIELDS}` or `${CDM_EXTRA_KEEP_FIELDS}` are moved to `${CDM_UNDEFINED_NAME}` if `CDM_USE_UNDEFINED` is `true`. See the table below for more information on these parameters.
++
+[NOTE]
+====
+The `CDM_DEFAULT_KEEP_FIELDS` parameter is for only advanced users, or if you are instructed to do so by Red Hat support.
+====
+
+* *Empty fields.* Empty fields have no data. You can determine which empty fields to retain from logs.
+
+.Environment parameters for log normalization
+[cols="2,4a,2", options="header"]
+|===
+|Parameters  |Definition  |Example
+
+|`CDM_EXTRA_KEEP_FIELDS`
+|Specify an extra set of defined fields to be kept at the top level of the logs in addition to the `CDM_DEFAULT_KEEP_FIELDS`. The default is "".
+|`CDM_EXTRA_KEEP_FIELDS="broker"`
+
+|`CDM_KEEP_EMPTY_FIELDS`
+|Specify fields to retain in CSV format even if empty. Empty defined fields not specified are dropped. The default is "message", keep empty messages.
+|`CDM_KEEP_EMPTY_FIELDS="message"`
+
+|`CDM_USE_UNDEFINED`
+|Set to `true` to move undefined fields to the `undefined` top level field. The default is `false`. If `true`, values in `CDM_DEFAULT_KEEP_FIELDS`
+and `CDM_EXTRA_KEEP_FIELDS` are not moved to `undefined`.
+|`CDM_USE_UNDEFINED=true`
+
+|`CDM_UNDEFINED_NAME`
+|Specify a name for the undefined top level field if using `CDM_USE_UNDEFINED`. The default is`undefined`.
+Enabled only when `CDM_USE_UNDEFINED` is `true`.
+|`CDM_UNDEFINED_NAME="undef"`
+
+|`CDM_UNDEFINED_MAX_NUM_FIELDS`
+a|If the number of undefined fields is greater than this number, all undefined fields are converted to their JSON string representation
+and stored in the `CDM_UNDEFINED_NAME` field. If the record contains more than this value of undefined fields, no further processing takes place on these fields.
+Instead, the fields will be converted to a single string JSON value, stored in the top-level `CDM_UNDEFINED_NAME` field.  Keeping the default of `-1` allows for an unlimited number of undefined fields, which is not recommended.
+
+*NOTE:* This parameter is honored even if `CDM_USE_UNDEFINED` is false.
+
+|`CDM_UNDEFINED_MAX_NUM_FIELDS=4`
+
+|`CDM_UNDEFINED_TO_STRING`
+|Set to `true` to convert all undefined fields to their JSON string representation. The default is `false`.
+|`CDM_UNDEFINED_TO_STRING=true`
+
+|`CDM_UNDEFINED_DOT_REPLACE_CHAR`
+|Specify a character to use in place of a dot character '.' in an undefined field. `MERGE_JSON_LOG` must be `true`. The default is `UNUSED`.
+If you set the `MERGE_JSON_LOG` parameter to `true`, see the Note below.
+|`CDM_UNDEFINED_DOT_REPLACE_CHAR="_"`
+
+|===
+
+[NOTE]
+====
+If you set the `MERGE_JSON_LOG` parameter in the Fluentd log collector daemonset and `CDM_UNDEFINED_TO_STRING` environment variables to true, you might receive an Elasticsearch *400* error. When `MERGE_JSON_LOG=true`, the log collector adds fields with data types other than string. If you set `CDM_UNDEFINED_TO_STRING=true`,
+the log collector attempts to add those fields as a string value resulting in the Elasticsearch 400 error. The error clears when the log collector rolls over
+the indices for the next day’s logs
+
+When the log collector rolls over the indices, it creates a brand new index. The field definitions are updated and you will not get the *400* error. For more information, see xref:fluentd-merge-json-undefined[Setting MERGE_JSON_LOG and CDM_UNDEFINED_TO_STRING].
+====
+
+To configure undefined and empty field processing, edit the `logging-fluentd` daemonset:
+
+. Configure how to process fields, as needed:
+
+.. Specify the fields to move using `CDM_EXTRA_KEEP_FIELDS`.
+
+.. Specify any empty fields to retain in the `CDM_KEEP_EMPTY_FIELDS` parameter in CSV format.
+
+. Configure how to process undefined fields, as needed:
+
+.. Set `CDM_USE_UNDEFINED` to `true` to move undefined fields to the top-level `undefined` field:
+
+.. Specify a name for the undefined fields using the `CDM_UNDEFINED_NAME` parameter.
+
+.. Set `CDM_UNDEFINED_MAX_NUM_FIELDS` to a value other than the default `-1`, to set an upper bound on the number of undefined fields
+in a single record.
+
+. Specify `CDM_UNDEFINED_DOT_REPLACE_CHAR` to change any dot `.` characters in an undefined field name to another character.
+For example, if `CDM_UNDEFINED_DOT_REPLACE_CHAR=@@@` and there is a field named `foo.bar.baz` the field is transformed into `foo@@@bar@@@baz`.
+
+. Set `UNDEFINED_TO_STRING` to `true` to convert undefined fields to their JSON string representation.
+
+[NOTE]
+====
+If you configure the `CDM_UNDEFINED_TO_STRING` or `CDM_UNDEFINED_MAX_NUM_FIELDS` parameters, you use the `CDM_UNDEFINED_NAME` to change the undefined field name. This field is needed because `CDM_UNDEFINED_TO_STRING` or `CDM_UNDEFINED_MAX_NUM_FIELDS` could change the value type of the undefined field. When `CDM_UNDEFINED_TO_STRING` or `CDM_UNDEFINED_MAX_NUM_FIELDS` is set to true and there are more undefined fields in a log, the value type becomes `string`. Elasticsearch stops accepting records if the value type is changed, for example, from JSON to JSON string.
+
+For example, when `CDM_UNDEFINED_TO_STRING` is `false` or `CDM_UNDEFINED_MAX_NUM_FIELDS` is the default, `-1`, the value type of the undefined field is `json`. If you change `CDM_UNDEFINED_MAX_NUM_FIELDS` to a value other than default and there are more undefined fields in a log, the value type becomes `string` (JSON string). Elasticsearch stops accepting records if the value type is changed.
+====
+
+[[fluentd-merge-json-undefined]]
+*Setting MERGE_JSON_LOG and CDM_UNDEFINED_TO_STRING*
+
+If you set the `MERGE_JSON_LOG` and `CDM_UNDEFINED_TO_STRING` enviroment variables to `true`, you might receive an Elasticsearch *400* error. When `MERGE_JSON_LOG=true`, the log collector adds fields with data types other than string. If you set `CDM_UNDEFINED_TO_STRING=true`, Fluentd attempts to add those fields as a *string* value resulting in the Elasticsearch *400* error. The error clears when the indices roll over for the next day.
+
+When Fluentd rolls over the indices for the next day's logs, it will create a brand new index. The field definitions are updated and you will not get the *400* error. 
+
+Records that have *hard* errors, such as schema violations, corrupted data, and so forth, cannot be retried. The log collector sends the records for error handling. If you link:https://docs.fluentd.org/v1.0/articles/config-file#@error-label[add a
+`<label @ERROR>` section] to your Fluentd config, as the last `<label>`, you can handle these records as needed. 
+
+For example:
+
+----
+data:
+  fluent.conf:
+
+....
+
+    <label @ERROR>
+      <match **>
+        @type file
+        path /var/log/fluent/dlq
+        time_slice_format %Y%m%d
+        time_slice_wait 10m
+        time_format %Y%m%dT%H%M%S%z
+        compress gzip
+      </match>
+    </label>
+----
+
+This section writes error records to the link:https://www.elastic.co/guide/en/logstash/current/dead-letter-queues.html[Elasticsearch dead letter queue (DLQ) file]. See link:https://docs.fluentd.org/v0.12/articles/out_file[the fluentd documentation] for more information about the file output. 
+
+Then you can edit the file to clean up the records manually, edit the file to use with the Elasticsearch `/_bulk index` API and use cURL to add those records. For more information on Elasticsearch Bulk API, see link:https://www.elastic.co/guide/en/elasticsearch/reference/5.6/docs-bulk.html[the Elasticsearch documentation].
 
 [[fluentd-multiline-docker]]
 *Join Multi-line Docker Logs*
