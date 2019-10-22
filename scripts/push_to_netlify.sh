@@ -31,17 +31,17 @@ git rev-parse master
 git fetch upstream master
 git rev-parse upstream/master
 
-if [ "$(git rev-parse master)" != "$(git rev-parse upstream/master)" ]
-then
-    echo -e "${YELLOW}==== PUSHING UPSTRAM CHANGES TO MASTER ====${NC}"
-    git stash
-    git checkout master
-    git fetch upstream master
-    git rebase upstream/master
-    git push -f origin master
-else
-    echo -e "${GREEN}==== MASTER UP TO DATE WITH UPSTREAM MASTER ====${NC}"
-fi
+#if [ "$(git rev-parse master)" != "$(git rev-parse upstream/master)" ]
+#then
+#    echo -e "${YELLOW}==== PUSHING UPSTRAM CHANGES TO MASTER ====${NC}"
+#    git stash
+#    git checkout master
+#    git fetch upstream master
+#    git rebase upstream/master
+#    git push -f origin master
+#else
+#    echo -e "${GREEN}==== MASTER UP TO DATE WITH UPSTREAM MASTER ====${NC}"
+#fi
 
 #set the remote to user repository
 echo -e "${YELLOW}==== SETTING REMOTE FOR ${BLUE}$REPO_NAME:$PR_BRANCH${YELLOW} ====${NC}"
