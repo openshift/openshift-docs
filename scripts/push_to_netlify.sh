@@ -36,6 +36,7 @@ then
     echo -e "${YELLOW}==== PUSHING UPSTRAM CHANGES TO MASTER ====${NC}"
     git stash
     git checkout master
+    git fetch --unshallow
     git fetch upstream master
     git rebase upstream/master
     git push -f origin master
