@@ -735,6 +735,71 @@ upgrade the component.
 To upgrade an existing EFK logging stack deployment, you review your parameters
 and run the *_openshift-logging/config.yml_* playbook.
 
+The EFK upgrade also upgrades Elasticsearch from version 2 to version 5. For important information on changes in Elasticsearch 5, you should review the link:https://www.elastic.co/guide/en/elasticsearch/reference/5.5/breaking-changes-5.0.html[Elasticsearch breaking changes].
+
+It is important to note that Elasticsearch 5 has some significant changes to the index structures. Previously, Elasticsearch permitted a dot character, `.`, in field names.
+In version 5, Elasticsearch interprets any dot in an Elasticsearch field name as nested structure. If you have a field with a dot, the string after the dot is interpreted as the type of field, leading to mapping conflicts during the upgrade. 
+
+To help identify potential conflicts, {product-title} provides a script that examines your Elasticsearch fields to determine if any fields contain a dot in the name.
+
+For example, the following fields were allowed in Elasticsearch 2:
+
+----
+{
+  "field": 123  // "field" is of type number
+}
+
+// Any dot in field name is treated as any other valid character in the field name.
+// It is just part of the field name.
+{
+  "field.name": "Bob"  // "field.name" is of type String 
+----
+
+In Elasticsearch 5 and higher the `field` string would become the field and the `name` string would become a type for the field: 
+
+----
+{
+  "field": 123  // "field" is of type number
+}
+
+// Any dot in field name is always interpreted as nested structure.
+{
+  "field" : {  // "field" is of type Object
+    "name": "Bob"  // "name" is of type String
+  }
+}
+----
+
+Upgrading in this case would result in the `field` field having two different types, which is not permitted. 
+
+If you need to keep these conflicting indices, you need to reindex the data and change the documents to get rid of conflicting data structure. For more information, see link:https://www.elastic.co/guide/en/elasticsearch/reference/2.4/dots-in-names.html#_upgrading_fields_with_dots_to_5_x[Upgrading fields with dots to 5.x]. 
+
+[[upgrading-efk-logging-stack-script]]
+==== Determining if fields have dots in field names
+
+You can run the following script to determine if your indices contain any fields with a dot in the name.
+
+[NOTE]
+====
+The following command uses the `jq` JSON processor to get directly at the necessary data. Red Hat Enterprise Linux (RHEL), depending on version, might not provide a package for `jq`. You might need to install this from external sources, or unsupported locations.
+====
+
+----
+oc exec -c elasticsearch -n $LOGGING_NS $pod -- es_util --query='_mapping?pretty&filter_path=**.mappings.*.properties' \
+  | jq '.[].mappings[].properties | keys' \
+  | jq .[] \
+  | egrep -e "\."
+----
+
+The upgrade path depends on whether the indices xref:upgrading-efk-logging-stack-dots[have fields with dots] or xref:upgrading-efk-logging-stack-nodots[do not have fields with dots]. 
+
+[[upgrading-efk-logging-stack-dots]]
+==== Upgrading if fields have dots in field names
+
+If the xref:upgrading-efk-logging-stack-script[script above] indicates your indices contain fields with a dot in the name, use the following steps to correct this issue and upgrade. 
+
+To upgrade your EFK stack:
+
 . Review how to
 xref:../install_config/aggregate_logging.adoc#aggregate-logging-ansible-variables[specify logging Ansible variables]
 and update your Ansible inventory file to at least set the
@@ -756,19 +821,78 @@ You can set the `openshift_logging_elasticsearch_replace_configmap` parameter to
 ConfigMap can cause the upgrade to fail. The default is set to `false`. For more information, see the parameter 
 in xref:../install_config/aggregate_logging.adoc#aggregate-logging-ansible-variables[specify logging Ansible variables].
 
-. If your Fluentd `DeploymentConfig` and `DaemonSet` parameters for the EFK
-components set `imagePullPolicy` to `IfNotPresent`, set them to `Always`:
+. Dechedule your Fluentd pods to stop data ingestion and ensure the cluster state does not change.
++
+For example, you can change the node selector in Fluentd pods to one that does not match any nodes.
 +
 ----
-        image: <image_name>:<vX.Y>
-        imagePullPolicy: Always
+oc patch daemonset logging-fluentd -p '{"spec": {"template": {"spec": {"nodeSelector": {"non-existing": "true"}}}}}'
 ----
+
+. Perform an link: https://www.elastic.co/guide/en/elasticsearch/reference/2.4/indices-flush.html[Elasticsearch Index flush] on all relevant indices. The flush process persists all logs from memory to disk, which prevents log loss when Elasticsearch is shutdown during the upgrade.
+
+. Perform an online or offline backup:
+
+* Perform an link:https://www.elastic.co/guide/en/elasticsearch/reference/current/modules-snapshots.html[online backup] of specific Elasticsearch indices the entire cluster.
+
+* Perform an offline backup: 
+
+.. Scale down all Elasticsearch DaemonSets to `0`:
++
+----
+$ oc scale dc <name> -n openshift-logging --replicas=0
+----
+
+.. Backup external persistent volumes using the appropriate method for your organization.
+
+. For any file name with a dot character, you need to take one of the following actions before upgrading:
++
+* Deleting the indices. This is the better approach to avoid mapping conflicts during the upgrade.
+* Reindexing the data and changing the documents to get rid of conflicting data structure. This method retain the data.   
+For information on potential mapping conflicts see link:https://www.elastic.co/guide/en/elasticsearch/reference/5.5/breaking_50_mapping_changes.html[Mappging changes] in the Elasticsearch documentation.
+
+. Repeat the on-line or offline backup.
 
 . Run the *_openshift-logging/config.yml_* playbook according to the
 xref:../install_config/aggregate_logging.adoc#deploying-the-efk-stack[deploying
 the EFK stack] instructions to complete the logging upgrade. You run the
 installation playbook for the new {product-title} version to upgrade the
 logging deployment.
+
+[[upgrading-efk-logging-stack-nodots]]
+==== Upgrading if fields do not have dots
+
+If the xref:upgrading-efk-logging-stack-script[script above] indicates your indices do not contain fields with a dot in the name, use the following steps to upgrade. 
+
+. Optionally, dechedule your Fluentd pods and scale down your Elasticsearch pods to stop data ingestion and ensure the cluster state does not change.
++
+For example, you can change the node selector in Fluentd pods to one that does not match any nodes.
++
+----
+oc patch daemonset logging-fluentd -p '{"spec": {"template": {"spec": {"nodeSelector": {"non-existing": "true"}}}}}'
+----
+
+. Optionally, perform and online or offline backup:
+
+* Perform an link:https://www.elastic.co/guide/en/elasticsearch/reference/current/modules-snapshots.html[online backup] of specific Elasticsearch indices the entire cluster.
+
+* Perform an offline backup: 
+
+.. Scale down all Elasticsearch DeploymentConfigs to `0`:
++
+----
+$ oc scale dc <name> -n openshift-sdn --replicas=0
+----
+
+.. Backup external persistent volumes using the appropriate method for your organization.
+
+. Run the *_openshift-logging/config.yml_* playbook according to the
+xref:../install_config/aggregate_logging.adoc#deploying-the-efk-stack[deploying
+the EFK stack] instructions to complete the logging upgrade. You run the
+installation playbook for the new {product-title} version to upgrade the
+logging deployment.
+
+. Optionally, use the link:https://www.elastic.co/guide/en/elasticsearch/reference/5.5/modules-snapshots.html[Elasticsearch restore module] to restore your Elasticsearch indices from the snapshot.
 
 [[upgrading-cluster-metrics]]
 === Upgrading cluster metrics
