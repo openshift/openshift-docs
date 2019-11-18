@@ -51,7 +51,7 @@ function hcsearch(searchParams) {
   var hcSearchResult = $("#hc-search-results");
 
   // the "searchprovider" is to return a JSON response in the expected format
-  var searchprovider = "https://help.openshift.com/search/search_custom.php";
+  var searchprovider = "https://search.help.openshift.com/json";
   var searchReq = { "q" : searchParams.q + searchParams.urlFilter,
                     "l" : searchParams.label,
                     "si" : searchParams.si }  // q = query, l = label
