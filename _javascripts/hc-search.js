@@ -54,7 +54,7 @@ function hcsearch(searchParams) {
   var searchprovider = "https://search.help.openshift.com/json";
   var searchReq = { "q" : searchParams.q + searchParams.urlFilter,
                     "fields.label" : searchParams.label,
-                    "si" : searchParams.si }  // q = query, l = label
+                    "start" : searchParams.si }
 
   hcMoreBtn.hide();
   hcSearchIndicator.show();
