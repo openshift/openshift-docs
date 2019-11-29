@@ -1,0 +1,325 @@
+//Module included in the following assemblies:
+//
+// * installing/installing_openstack/installing-openstack-installer.adoc
+// * installing/installing_openstack/installing-openstack-installer-custom.adoc
+// * installing/installing_openstack/installing-openstack-installer-kuryr.adoc
+
+[id="installation-osp-default-kuryr-deployment_{context}"]
+= Kuryr SDN
+
+link:https://docs.openstack.org/kuryr-kubernetes/latest/[Kuryr] (or more
+specifically Kuryr-Kubernetes) is a CNI plug-in solution built using
+link:https://github.com/containernetworking/cni[CNI] that uses
+link:https://docs.openstack.org/neutron/latest/[OpenStack Neutron] and
+link:https://docs.openstack.org/octavia/latest/[OpenStack Octavia] to provide
+networking for Pods and Services.
+
+Kuryr and {product-title} integration is primarily designed for
+{product-title} clusters running on OpenStack VMs. Kuryr improves the
+network performance by plugging OpenShift Pods into OpenStack SDN.
+In addition, it provides interconnectivity between OpenShift Pods and
+OpenStack virtual instances.
+
+Kuryr components are installed as Pods in {product-title} using the
+`openshift-kuryr` namespace:
+
+* kuryr-controller - a single service instance installed on a `master` node.
+Modeled in {product-title} as a `Deployment`.
+* kuryr-cni - container installing and configuring Kuryr as a CNI driver on
+  each {product-title} node. Modeled in {product-title} as a `DaemonSet`.
+
+The Kuryr controller watches the OpenShift API server for Pod, Service, and
+namespace create, update, and delete events. It maps the {product-title} API
+calls to corresponding objects in Neutron and Octavia. This means that every
+network solution that implements the Neutron trunk port functionality can be
+used to back {product-title} via Kuryr. This includes open source solutions
+such as Open vSwitch (OVS) and Open Virtual Network (OVN) as well as
+Neutron-compatible commercial SDNs.
+
+Kuryr is recommended for OpenShift deployments on encapsulated OpenStack tenant
+networks to avoid double encapsulation, such as running an encapsulated
+OpenShift SDN over an OpenStack network.
+
+Conversely, using Kuryr does not make sense in the following cases:
+
+* You use provider networks or tenant VLANs.
+* The deployment uses many Services on a few hypervisors. Each OpenShift
+  Service creates an Octavia Amphora virtual machine in OpenStack that hosts a
+  required load balancer.
+* UDP Services are needed.
+
+link:https://docs.openstack.org/kuryr-kubernetes/latest/[Learn more about Kuryr]
+
+
+[id="kuryr-requirements"]
+== Requirements when enabling Kuryr
+
+When using Kuryr SDN, Pods, Services, Namespaces, Network Policies, etc. are
+using resources from the {rh-openstack} quota; this increases the minimum
+requirements. Kuryr also has some additional requirements on top of what a
+default install requires.
+Use the following quota to satisfy a default cluster's minimum requirements:
+
+.Recommended resources for a default {product-title} cluster on {rh-openstack} with Kuryr
+[options="header"]
+|================================
+|Resource              | Value
+|Floating IP addresses | 3 (plus the expected number of Services of LoadBalancer type)
+|Ports                 | 1500 (1 needed per Pod)
+|Routers               | 1
+|Subnets               | 250 (1 needed per Namespace/Project)
+|Networks              | 250 (1 needed per Namespace/Project)
+|RAM                   | 112 GB
+|vCPUs                 | 28
+|Volume storage        | 175 GB
+|Instances             | 7
+|Security groups       | 250 (1 needed per Service and per Network Policy)
+|Security group rules  | 1000
+|Swift containers      | 2
+|Swift objects         | 1
+|Swift available space | 10 MB or more
+|================================
+
+[NOTE]
+====
+Number of ports required is actually larger than the number of Pods. Kuryr uses
+ports pools to have pre-created ports ready to be used by Pods and speed up the
+Pods booting time.
+====
+
+[NOTE]
+====
+Each Network Policy is mapped into an {rh-openstack} security group, and
+depending on the Network Policy spec, one or more rules are added to the
+security group.
+====
+
+[NOTE]
+====
+Each Service is mapped into an {rh-openstack} load balancer. Each load balancer
+has a security group with the user project; therefore, it must be taken into
+account when estimating the number of security groups required for the quota.
+====
+
+To enable Kuryr SDN, your environment must meet the following requirements:
+
+* Run OpenStack 13 or later.
+* Have Overcloud with Octavia.
+* Have Neutron Trunk ports extension enabled.
+* Use `openvswitch` firewall driver if ML2/OVS Neutron driver is used instead
+of `ovs-hybrid`.
+
+
+[id="kuryr-increase-quota"]
+== Increase quota
+
+When using Kuryr SDN, you must increase quotas to satisfy the OpenStack
+resources used by Pods, Services, Namespaces, and Network Policies. Increase
+the quotas for a project by running this command (as an administrator):
+
+```sh
+openstack quota set --secgroups 250 --secgroup-rules 1000 --ports 1500 --subnets 250 --networks 250 <project>
+```
+
+
+[id="kuryr-neutron-configuration"]
+== Neutron configuration
+
+Kuryr CNI leverages the Neutron Trunks extension to plug containers into the
+OpenStack SDN, so the `trunks` extension must be enabled for Kuryr to properly
+work.
+
+In addition, if the default ML2/OVS Neutron driver is used, the firewall must be
+set to `openvswitch` instead of `ovs_hybrid` so that security groups are
+enforced on trunk subports and Kuryr can properly handle Network Policies.
+
+
+[id="kuryr-octavia-configuration"]
+== Octavia configuration
+
+Kuryr SDN uses OpenStack Octavia LBaaS to implement OpenShift Services. Thus the
+OpenStack environment must have Octavia components installed and configured if
+Kuryr SDN is used.
+
+To enable Octavia, the Octavia service must be included during the
+installation of the OpenStack Overcloud or upgraded if the Overcloud already exists.
+The following steps provide basic non-custom steps in enabling Octavia and
+apply to both either a clean install of the Overcloud or an Overcloud update.
+
+[NOTE]
+====
+The following steps only capture the key pieces required during the
+https://access.redhat.com/documentation/en-us/red_hat_openstack_platform/13/html/director_installation_and_usage/[deployment
+of OpenStack] when dealing with Octavia.
+It is also important to note that
+https://access.redhat.com/documentation/en-us/red_hat_openstack_platform/13/html/director_installation_and_usage/configuring-a-container-image-source#registry-methods[Registry Methods]
+vary.
+This example uses the local registry method.
+====
+
+If you are using the local registry, create a template to upload the images to the
+registry. For example:
+
+----
+(undercloud) $ openstack overcloud container image prepare \
+-e /usr/share/openstack-tripleo-heat-templates/environments/services-docker/octavia.yaml \
+--namespace=registry.access.redhat.com/rhosp13 \
+--push-destination=<local-ip-from-undercloud.conf>:8787 \
+--prefix=openstack- \
+--tag-from-label {version}-{release} \
+--output-env-file=/home/stack/templates/overcloud_images.yaml \
+--output-images-file /home/stack/local_registry_images.yaml
+----
+
+Verify that the created `local_registry_images.yaml` contains the Octavia images.
+
+.Octavia images in local registry file
+----
+...
+- imagename: registry.access.redhat.com/rhosp13/openstack-octavia-api:13.0-43
+  push_destination: <local-ip-from-undercloud.conf>:8787
+- imagename: registry.access.redhat.com/rhosp13/openstack-octavia-health-manager:13.0-45
+  push_destination: <local-ip-from-undercloud.conf>:8787
+- imagename: registry.access.redhat.com/rhosp13/openstack-octavia-housekeeping:13.0-45
+  push_destination: <local-ip-from-undercloud.conf>:8787
+- imagename: registry.access.redhat.com/rhosp13/openstack-octavia-worker:13.0-44
+  push_destination: <local-ip-from-undercloud.conf>:8787
+----
+
+[NOTE]
+====
+The Octavia container versions vary depending upon the specific
+{rh-openstack} release installed.
+====
+
+
+The following step pulls the container images from registry.access.redhat.com
+to the Undercloud node. This may take some time depending on the speed of the
+network and Undercloud disk.
+
+----
+(undercloud) $ sudo openstack overcloud container image upload \
+  --config-file  /home/stack/local_registry_images.yaml \
+  --verbose
+----
+
+
+Since an Octavia Load Balancer is used to access the OpenShift API, you must
+increase their listeners' default timeouts for the connections. The default
+timeout is 50 seconds. Increase the timeout to 20 minutes by passing the
+following file to the Overcloud deploy command:
+
+----
+(undercloud) $ cat octavia_timeouts.yaml
+parameter_defaults:
+  OctaviaTimeoutClientData: 1200000
+  OctaviaTimeoutMemberData: 1200000
+----
+
+[NOTE]
+====
+This is not needed from Red Hat OpenStack Platform 14 and onwards.
+====
+
+Install or update your Overcloud environment with Octavia:
+
+----
+openstack overcloud deploy --templates \
+.
+.
+.
+  -e /usr/share/openstack-tripleo-heat-templates/environments/services-docker/octavia.yaml \
+  -e octavia_timeouts.yaml
+.
+.
+.
+----
+
+[NOTE]
+====
+The command above only includes the files associated with Octavia. This command
+varies based on your specific installation of OpenStack. See the official
+OpenStack documentation for further information. For more information on
+customizing your Octavia installation, see
+https://access.redhat.com/documentation/en-us/red_hat_openstack_platform/13/html-single/networking_guide/#planning_your_octavia_deployment[installation
+of Octavia using Director].
+====
+
+[NOTE]
+====
+If Kuryr SDN is used, the Overcloud installation requires the `trunk` extension
+to be enabled at Neutron. This is enabled by default on Director deployments.
+Use the `openvswitch` firewall instead of the default `ovs-hybrid` when the Neutron
+backend is ML2/OVS. There is no need for modifications if the backend is
+ML2/OVN.
+====
+
+To enforce Network Policies across Services, like when traffic goes through
+the Octavia load balancer, you must ensure Octavia creates the amphora VM
+security groups on the user project. To do that, you must add the project ID
+to the `octavia.conf` configuration file after you create the project.
+This step ensures that required LoadBalancer security groups belong to that
+project and that they can be updated to enforce Services isolation.
+
+. Get the project ID
++
+----
+$ openstack project show *<project>*
++-------------+----------------------------------+
+| Field       | Value                            |
++-------------+----------------------------------+
+| description |                                  |
+| domain_id   | default                          |
+| enabled     | True                             |
+| id          | PROJECT_ID                       |
+| is_domain   | False                            |
+| name        | *<project>*                      |
+| parent_id   | default                          |
+| tags        | []                               |
++-------------+----------------------------------+
+----
++
+. Add the project ID to `octavia.conf` for the controllers and restart the
+Octavia worker.
++
+----
+$ source stackrc  # undercloud credentials
+$ # List overcloud controllers
+$ openstack server list
++--------------------------------------+--------------+--------+-----------------------+----------------+------------+
+│
+| ID                                   | Name         | Status | Networks
+| Image          | Flavor     |
+│
++--------------------------------------+--------------+--------+-----------------------+----------------+------------+
+│
+| 6bef8e73-2ba5-4860-a0b1-3937f8ca7e01 | controller-0 | ACTIVE |
+ctlplane=192.168.24.8 | overcloud-full | controller |
+│
+| dda3173a-ab26-47f8-a2dc-8473b4a67ab9 | compute-0    | ACTIVE |
+ctlplane=192.168.24.6 | overcloud-full | compute    |
+│
++--------------------------------------+--------------+--------+-----------------------+----------------+------------+
+
+$ # ssh into the controller(s)
+$ ssh heat-admin@192.168.24.8
+
+controller-0$ # Edit the octavia.conf to add the project into the list of
+              # projects where amphora security groups will be on user's account
+controller-0$ vi /var/lib/config-data/puppet-generated/octavia/etc/octavia/octavia.conf
+[controller_worker]
+# List of project ids that are allowed to have Load balancer security groups
+# belonging to them.
+amp_secgroup_allowed_projects = PROJECT_ID
+
+controller-0$ # Restart the octavia_worker component so that the new
+              # configuration is loaded
+controller-0$ sudo docker restart octavia_worker
+----
+
+[NOTE]
+====
+Depending on your OpenStack environment, Octavia may not support UDP
+listeners, which means there is no support for UDP Services if Kuryr SDN is
+used.
+====
