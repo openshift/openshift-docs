@@ -6,20 +6,26 @@
 = Configuring OperatorHub for restricted networks
 
 Cluster administrators can configure OLM and OperatorHub to use local content in
-restricted network environments.
+a restricted network environment using a custom Operator catalog image. For this
+example, the procedure uses a custom `redhat-operators` catalog image previously
+built and pushed to supported registry.
 
 .Prerequisites
 
-* Cluster administrator access to an {product-title} cluster and its internal registry.
-* Separate workstation without network restrictions.
-* If pushing images to the {product-title} cluster's internal registry, the registry must be exposed with a route.
+* A Linux workstation with unrestricted network access
+ifeval::["{context}" == "olm-restricted-networks"]
+footnoteref:[BZ1771329]
+endif::[]
+* A custom Operator catalog image pushed to a supported registry
+* `oc` version 4.3+
 * `podman` version 1.5.1+
+* Access to mirror registry that supports
+link:https://docs.docker.com/registry/spec/manifest-v2-2/[Docker v2-2], which
+must be exposed with a certificate that is trusted by the workstation
 
 .Procedure
 
-. **Disable the default OperatorSources.**
-+
-Add `disableAllDefaultSources: true` to the spec:
+. Disable the default OperatorSources by adding `disableAllDefaultSources: true` to the spec:
 +
 ----
 $ oc patch OperatorHub cluster --type json \
@@ -29,243 +35,48 @@ $ oc patch OperatorHub cluster --type json \
 This disables the default OperatorSources that are configured by default during
 an {product-title} installation.
 
-. **Retrieve package lists.**
-+
-To get the list of packages that are available for the default OperatorSources,
-run the following `curl` commands from your workstation without network
-restrictions:
+. Extract the contents of your custom Operator catalog image to generate manifests
+required for mirroring:
 +
 ----
-$ curl https://quay.io/cnr/api/v1/packages?namespace=redhat-operators > packages.txt
-$ curl https://quay.io/cnr/api/v1/packages?namespace=community-operators >> packages.txt
-$ curl https://quay.io/cnr/api/v1/packages?namespace=certified-operators >> packages.txt
-----
-+
-Each package in the new `packages.txt` is an Operator that you could add to your
-restricted network catalog. From this list, you could either pull every Operator
-or a subset that you would like to expose to users.
+$ oc adm catalog mirror \
+    <registry_host_name>:<port>/<namespace>/redhat-operators:v1 \ <1>
+    <registry_host_name>:<port>/openshift <2>
 
-. **Pull Operator content.**
+mirroring ...
+----
+<1> Specify your Operator catalog image.
+<2> Specify a namespace to mirror all referenced images.
 +
-For a given Operator in the package list, you must pull its content:
+This generates an ImageContentSourcePolicy object that can configure nodes to
+translate between the image references stored in Operator manifests and the
+mirrored registry. A `mapping.txt` file is also created that which contains all
+of the source images and where to map them to in the target registry. This file
+is compatible with `oc image mirror` and can be used to further customize the
+mirroring configuration.
++
+By default, these files are created in the `./manifests` directory:
 +
 ----
-$ curl https://quay.io/cnr/api/v1/packages/<namespace>/<operator_name>/<release>
-----
-+
-This example uses the etcd Operator:
-
-.. Retrieve the digest:
-+
-----
-$ curl https://quay.io/cnr/api/v1/packages/community-operators/etcd/0.0.12
+$ ls ./manifests
+imageContentSourcePolicy.yaml
+mapping.txt
 ----
 
-.. From that JSON, take the digest and use it to pull the gzipped archive:
+. Apply the manifests:
 +
 ----
-$ curl -XGET https://quay.io/cnr/api/v1/packages/community-operators/etcd/blobs/sha256/8108475ee5e83a0187d6d0a729451ef1ce6d34c44a868a200151c36f3232822b \
-    -o etcd.tar.gz
+$ oc apply -f ./manifests
 ----
++
+[IMPORTANT]
+====
+If any invalid source tags are found, remove the offending mappings from your
+`mapping.txt` file and pass the file to the `oc image mirror` command to
+continue.
+====
 
-.. To pull the information out, you must untar the archive into a
-`manifests/<operator_name>/` directory with all the other Operators that you
-want. For example, to untar to an existing directory called `manifests/etcd/`:
-+
-----
-$ mkdir -p manifests/etcd/ <1>
-$ tar -xf etcd.tar.gz -C manifests/etcd/
-----
-<1> Create different subdirectories for each extracted archive so that files are not
-overwritten by subsequent extractions for other Operators.
-
-. *Break apart `bundle.yaml` content, if necessary.*
-+
-In your new `manifests/<operator_name>` directory, the goal is to get your bundle in the following directory structure:
-+
-----
-manifests/
-└── etcd
-    ├── 0.0.12
-    │   ├── clusterserviceversion.yaml
-    │   └── customresourcedefinition.yaml
-    └── package.yaml
-----
-+
-If you see files already in this structure, you can skip this step. However, if
-you instead see only a single file called `bundle.yaml`, you must first break
-this file up to conform to the required structure.
-+
-You must separate the CSV content under `data.clusterServiceVersion` (each file
-in the list), the CRD content under `data.customResourceDefinition` (each file
-in the list), and the package content under `data.Package` into their own files.
-
-.. For the CSV file creation, find the following lines in the `bundle.yaml` file:
-+
-[source,yaml]
-----
-data:
-  clusterServiceVersions: |
-----
-+
-Omit those lines, but save a new file consisting of the full CSV resource
-content beginning with the following lines, removing the prepended `-`
-character:
-+
-[source,yaml]
-.Example `clusterserviceversion.yaml` file snippet
-----
-apiVersion: operators.coreos.com/v1alpha1
-kind: ClusterServiceVersion
-[...]
-----
-
-.. For the CRD file creation, find the following line in the `bundle.yaml` file:
-+
-[source,yaml]
-----
-  customResourceDefinitions: |
-----
-+
-Omit this line, but save new files consisting of each, full CRD resource content
-beginning with the following lines, removing the prepended `-` character:
-+
-[source,yaml]
-.Example `customresourcedefinition.yaml` file snippet
-----
-apiVersion: apiextensions.k8s.io/v1beta1
-kind: CustomResourceDefinition
-[...]
-----
-+
-.. For the package file creation, find the following line in the `bundle.yaml`
-file:
-+
-[source,yaml]
-----
-  packages: |
-----
-+
-Omit this line, but save a new file consisting of the package content beginning
-with the following lines, removing the prepended `-` character, and ending with
-a `packageName` entry:
-+
-[source,yaml]
-.Example `package.yaml` file
-----
-channels:
-- currentCSV: etcdoperator.v0.9.4
-  name: singlenamespace-alpha
-- currentCSV: etcdoperator.v0.9.4-clusterwide
-  name: clusterwide-alpha
-defaultChannel: singlenamespace-alpha
-packageName: etcd
-----
-
-. **Identify images required by the Operators you want to use.**
-+
-Inspect the CSV files of each Operator for `image:` fields to identify the pull
-specs for any images required by the Operator, and note them for use in a later
-step.
-+
-For example, in the following `deployments` spec of an etcd Operator CSV:
-+
-[source,yaml]
-----
-  spec:
-   serviceAccountName: etcd-operator
-   containers:
-   - name: etcd-operator
-     command:
-     - etcd-operator
-     - --create-crd=false
-     image: quay.io/coreos/etcd-operator@sha256:bd944a211eaf8f31da5e6d69e8541e7cada8f16a9f7a5a570b22478997819943 <1>
-     env:
-     - name: MY_POD_NAMESPACE
-       valueFrom:
-         fieldRef:
-           fieldPath: metadata.namespace
-     - name: MY_POD_NAME
-       valueFrom:
-         fieldRef:
-           fieldPath: metadata.name
-----
-<1> Image required by Operator.
-
-. **Create an Operator catalog image.**
-
-.. Save the following to a Dockerfile, for example named
-`custom-registry.Dockerfile`:
-+
-[source,go]
-----
-FROM registry.redhat.io/openshift4/ose-operator-registry:v4.2.8 AS builder
-
-COPY manifests manifests
-
-RUN /bin/initializer -o ./bundles.db
-
-FROM openshift/origin-base
-
-COPY --from=builder /registry/bundles.db /bundles.db
-COPY --from=builder /usr/bin/registry-server /registry-server
-COPY --from=builder /bin/grpc_health_probe /bin/grpc_health_probe
-
-EXPOSE 50051
-
-ENTRYPOINT ["/registry-server"]
-
-CMD ["--database", "bundles.db"]
-----
-
-.. Use the `podman` command to create and tag the container image from the
-Dockerfile:
-+
-----
-$ podman build -f custom-registry.Dockerfile \
-    -t <local_registry_host_name>:<local_registry_host_port>/<namespace>/custom-registry <1>
-----
-<1> Tag the image for the internal registry of the restricted network
-{product-title} cluster and any namespace.
-
-. **Push the Operator catalog image to a registry.**
-+
-Your new Operator catalog image must be pushed to a registry that the restricted
-network {product-title} cluster can access. This can be the internal registry of
-the cluster itself or another registry that the cluster has network access to,
-such as an on-premise Quay Enterprise registry.
-+
-For this example, login and push the image to the internal registry
-{product-title} cluster:
-+
-----
-$ podman push <local_registry_host_name>:<local_registry_host_port>/<namespace>/custom-registry
-----
-
-. **Create a CatalogSource pointing to the new Operator catalog image.**
-
-.. Save the following to a file, for example `my-operator-catalog.yaml`:
-+
-[source,yaml]
-----
-apiVersion: operators.coreos.com/v1alpha1
-kind: CatalogSource
-metadata:
-  name: my-operator-catalog
-  namespace: default
-spec:
-  displayName: My Operator Catalog
-  sourceType: grpc
-  image: <local_registry_host_name>:<local_registry_host_port>/<namespace>/custom-registry:latest
-----
-
-.. Create the CatalogSource resource:
-+
-----
-$ oc create -f my-operator-catalog.yaml
-----
-
-.. Verify the CatalogSource and package manifest are created successfully:
+. Verify the CatalogSource and package manifest are created successfully:
 +
 ----
 # oc get pods -n openshift-marketplace
@@ -284,46 +95,6 @@ etcd My Operator Catalog 34s
 +
 You should also be able to view them from the *OperatorHub* page in the web
 console.
-
-. **Mirror the images required by the Operators you want to use.**
-
-.. Determine the images defined by the Operator(s) that you are expecting. This
-example uses the etcd Operator, requiring the `quay.io/coreos/etcd-operator`
-image.
-+
-[IMPORTANT]
-====
-This procedure only shows mirroring Operator images themselves and not Operand
-images, which are the components that an Operator manages. Operand images must
-be mirrored as well; see each Operator's documentation to identify the required
-Operand images.
-====
-
-.. To use mirrored images, you must first create an ImageContentSourcePolicy for
-each image to change the source location of the Operator catalog image. For
-example:
-+
-[source,yaml]
-----
-apiVersion: operator.openshift.io/v1alpha1
-kind: ImageContentSourcePolicy
-metadata:
-  name: etcd-operator
-spec:
-  repositoryDigestMirrors:
-  - mirrors:
-    - <local_registry_host_name>:<local_registry_host_port>/coreos/etcd-operator
-    source: quay.io/coreos/etcd-operator
-----
-
-.. Use the `oc image mirror` command from your workstation without network
-restrictions to pull the image from the source registry and push to the internal
-registry without being stored locally:
-+
-----
-$ oc image mirror quay.io/coreos/etcd-operator \
-    <local_registry_host_name>:<local_registry_host_port>/coreos/etcd-operator
-----
 
 You can now install the Operator from the OperatorHub on your restricted network
 {product-title} cluster.
