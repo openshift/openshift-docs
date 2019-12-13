@@ -577,35 +577,29 @@ def _fix_links(content, book_dir, src_file, info, tag=None, cwd=None):
         link_anchor = link.group(2)
         link_title = link.group(3)
 
+
         if link_file is not None:
             fixed_link_file = link_file.replace(".html", ".adoc")
             fixed_link_file_abs = os.path.abspath(os.path.join(current_dir, fixed_link_file))
             if fixed_link_file_abs in file_to_id_map:
-                if fixed_link_file_abs.startswith(book_dir + os.sep) or fixed_link_file_abs == src_file:
-                    # We are dealing with a cross reference within the same book here
-                    if link_anchor is None:
-                        # Cross reference to the top of a topic, without an id being specified
-                        link_anchor = "#" + file_to_id_map[fixed_link_file_abs]
 
-                    fixed_link = "xref:" + link_anchor.replace("#", "") + link_title
+                # We are dealing with a cross reference to another book here
+                external_link = EXTERNAL_LINK_RE.search(link_file)
+                book_dir_name = external_link.group(1)
+
+                # Find the book name
+                book_name = book_dir_name
+                for book in info['data']:
+                    if check_node_distro_matches(book, info['distro']) and book['Dir'] == book_dir_name:
+                        book_name = book['Name']
+                        break
+
+                fixed_link_file = BASE_PORTAL_URL + build_portal_url(info, book_name)
+
+                if link_anchor is None:
+                    fixed_link = "link:" + fixed_link_file + "#" + file_to_id_map[fixed_link_file_abs] + link_title
                 else:
-                    # We are dealing with a cross reference to another book here
-                    external_link = EXTERNAL_LINK_RE.search(link_file)
-                    book_dir_name = external_link.group(1)
-
-                    # Find the book name
-                    book_name = book_dir_name
-                    for book in info['data']:
-                        if check_node_distro_matches(book, info['distro']) and book['Dir'] == book_dir_name:
-                            book_name = book['Name']
-                            break
-
-                    fixed_link_file = BASE_PORTAL_URL + build_portal_url(info, book_name)
-
-                    if link_anchor is None:
-                        fixed_link = "link:" + fixed_link_file + "#" + file_to_id_map[fixed_link_file_abs] + link_title
-                    else:
-                        fixed_link = "link:" + fixed_link_file + link_anchor + link_title
+                    fixed_link = "link:" + fixed_link_file + link_anchor + link_title
             else:
                 # Cross reference or link that isn't in the docs suite
                 fixed_link = link_text
