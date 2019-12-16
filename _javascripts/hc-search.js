@@ -31,7 +31,7 @@ function hcSearchCategory(label, version) {
       hcsearch(searchParams);
     }
   });
-  
+
   // hide search modal by 'X' or by clicking outside of the modal
   closeModal.click(function() {
     modalSearch.hide();
@@ -53,8 +53,8 @@ function hcsearch(searchParams) {
   // the "searchprovider" is to return a JSON response in the expected format
   var searchprovider = "https://help.openshift.com/search/search_custom.php";
   var searchReq = { "q" : searchParams.q + searchParams.urlFilter,
-                    "l" : searchParams.label,
-                    "si" : searchParams.si }  // q = query, l = label
+                    "fields.label" : searchParams.label,
+                    "start" : searchParams.si }
 
   hcMoreBtn.hide();
   hcSearchIndicator.show();
@@ -80,7 +80,7 @@ function hcsearch(searchParams) {
         // replace any existing click handler with one to fetch the next set of results
         hcMoreBtn.off('click');
         hcMoreBtn.click(function() {
-          hcsearch(searchParams); 
+          hcsearch(searchParams);
         });
         hcMoreBtn.show();
       } else {
