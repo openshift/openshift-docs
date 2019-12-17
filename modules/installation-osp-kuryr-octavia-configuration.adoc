@@ -1,0 +1,194 @@
+// Module included in the following assemblies:
+//
+// * installing/installing_openstack/installing-openstack-installer-kuryr.adoc
+
+[id="installation-osp-kuryr-octavia-configuration_{context}"]
+= Configuring Octavia
+
+Kuryr SDN uses OpenStack Octavia LBaaS to implement OpenShift Services. Thus,
+you must install and configure Octavia components in your OpenStack environment
+to use Kuryr SDN.
+
+To enable Octavia, you must include the Octavia Service during the installation
+of the OpenStack Overcloud, or upgrade the Octavia Service if the Overcloud
+already exists. The following steps for enabling Octavia apply to both a clean
+install of the Overcloud or an Overcloud update.
+
+[NOTE]
+====
+The following steps only capture the key pieces required during the
+https://access.redhat.com/documentation/en-us/red_hat_openstack_platform/13/html/director_installation_and_usage/[deployment of OpenStack]
+when dealing with Octavia. It is also important to note that
+https://access.redhat.com/documentation/en-us/red_hat_openstack_platform/13/html/director_installation_and_usage/configuring-a-container-image-source#registry-methods[registry methods]
+vary.
+
+This example uses the local registry method.
+====
+
+.Procedure
+
+. If you are using the local registry, create a template to upload the images to
+the registry. For example:
++
+----
+(undercloud) $ openstack overcloud container image prepare \
+-e /usr/share/openstack-tripleo-heat-templates/environments/services-docker/octavia.yaml \
+--namespace=registry.access.redhat.com/rhosp13 \
+--push-destination=<local-ip-from-undercloud.conf>:8787 \
+--prefix=openstack- \
+--tag-from-label {version}-{release} \
+--output-env-file=/home/stack/templates/overcloud_images.yaml \
+--output-images-file /home/stack/local_registry_images.yaml
+----
+
+. Verify that the `local_registry_images.yaml` file contains the Octavia images.
+For example:
++
+----
+...
+- imagename: registry.access.redhat.com/rhosp13/openstack-octavia-api:13.0-43
+  push_destination: <local-ip-from-undercloud.conf>:8787
+- imagename: registry.access.redhat.com/rhosp13/openstack-octavia-health-manager:13.0-45
+  push_destination: <local-ip-from-undercloud.conf>:8787
+- imagename: registry.access.redhat.com/rhosp13/openstack-octavia-housekeeping:13.0-45
+  push_destination: <local-ip-from-undercloud.conf>:8787
+- imagename: registry.access.redhat.com/rhosp13/openstack-octavia-worker:13.0-44
+  push_destination: <local-ip-from-undercloud.conf>:8787
+----
++
+[NOTE]
+====
+The Octavia container versions vary depending upon the specific
+{rh-openstack} release installed.
+====
+
+. Pull the container images from registry.redhat.io to the Undercloud node:
++
+----
+(undercloud) $ sudo openstack overcloud container image upload \
+  --config-file  /home/stack/local_registry_images.yaml \
+  --verbose
+----
++
+This may take some time depending on the speed of your network and Undercloud
+disk.
+
+. Since an Octavia load balancer is used to access the OpenShift API, you must
+increase their listeners' default timeouts for the connections. The default
+timeout is 50 seconds. Increase the timeout to 20 minutes by passing the
+following file to the Overcloud deploy command:
++
+----
+(undercloud) $ cat octavia_timeouts.yaml
+parameter_defaults:
+  OctaviaTimeoutClientData: 1200000
+  OctaviaTimeoutMemberData: 1200000
+----
++
+[NOTE]
+====
+This is not needed for Red Hat OpenStack Platform 14+.
+====
+
+. Install or update your Overcloud environment with Octavia:
++
+----
+openstack overcloud deploy --templates \
+  -e /usr/share/openstack-tripleo-heat-templates/environments/services-docker/octavia.yaml \
+  -e octavia_timeouts.yaml
+----
++
+[NOTE]
+====
+This command only includes the files associated with Octavia; it varies based on
+your specific installation of OpenStack. See the official OpenStack
+documentation for further information. For more information on customizing your
+Octavia installation, see
+https://access.redhat.com/documentation/en-us/red_hat_openstack_platform/13/html-single/networking_guide/#planning_your_octavia_deployment[installation
+of Octavia using Director].
+====
++
+[NOTE]
+====
+When leveraging Kuryr SDN, the Overcloud installation requires the Neutron `trunk` extension. This is available by default on Director deployments.
+Use the `openvswitch` firewall instead of the default `ovs-hybrid` when the Neutron
+backend is ML2/OVS. There is no need for modifications if the backend is
+ML2/OVN.
+====
+
+. To enforce network policies across Services, like when traffic goes through
+the Octavia load balancer, you must ensure Octavia creates the Amphora VM
+security groups on the user project. To do that, you must add the project ID
+to the `octavia.conf` configuration file after you create the project.
++
+This ensures that required LoadBalancer security groups belong to that project
+and that they can be updated to enforce Services isolation.
+
+.. Get the project ID
++
+----
+$ openstack project show <project>
++-------------+----------------------------------+
+| Field       | Value                            |
++-------------+----------------------------------+
+| description |                                  |
+| domain_id   | default                          |
+| enabled     | True                             |
+| id          | PROJECT_ID                       |
+| is_domain   | False                            |
+| name        | *<project>*                      |
+| parent_id   | default                          |
+| tags        | []                               |
++-------------+----------------------------------+
+----
+
+.. Add the project ID to `octavia.conf` for the controllers.
+
+... List the Overcloud controllers.
++
+----
+$ source stackrc  # Undercloud credentials
+$ openstack server list
++--------------------------------------+--------------+--------+-----------------------+----------------+------------+
+│
+| ID                                   | Name         | Status | Networks
+| Image          | Flavor     |
+│
++--------------------------------------+--------------+--------+-----------------------+----------------+------------+
+│
+| 6bef8e73-2ba5-4860-a0b1-3937f8ca7e01 | controller-0 | ACTIVE |
+ctlplane=192.168.24.8 | overcloud-full | controller |
+│
+| dda3173a-ab26-47f8-a2dc-8473b4a67ab9 | compute-0    | ACTIVE |
+ctlplane=192.168.24.6 | overcloud-full | compute    |
+│
++--------------------------------------+--------------+--------+-----------------------+----------------+------------+
+----
+
+... SSH into the controller(s).
++
+----
+$ ssh heat-admin@192.168.24.8
+----
+
+... Edit the `octavia.conf` to add the project into the list of projects where
+Amphora security groups are on the user's account.
++
+----
+# List of project IDs that are allowed to have Load balancer security groups
+# belonging to them.
+amp_secgroup_allowed_projects = PROJECT_ID
+----
+
+.. Restart the Octavia worker so the new configuration loads.
++
+----
+controller-0$ sudo docker restart octavia_worker
+----
+
+[NOTE]
+====
+Depending on your OpenStack environment, Octavia might not support UDP
+listeners, which means there is no support for UDP Services if Kuryr SDN is
+used.
+====
