@@ -1,7 +1,7 @@
 #!/usr/bin/python
 
 import argparse
-import ConfigParser
+import configparser
 import filecmp
 import fnmatch
 import logging
@@ -517,12 +517,12 @@ def scrub_file(info, book_src_dir, src_file, tag=None, cwd=None):
 
     # Fix up any duplicate ids
     if base_src_file in DUPLICATE_IDS:
-        for duplicate_id, new_id in DUPLICATE_IDS[base_src_file].items():
+        for duplicate_id, new_id in list(DUPLICATE_IDS[base_src_file].items()):
             content = content.replace("[[" + duplicate_id + "]]", "[[" + new_id + "]]")
 
     # Replace incorrect links with correct ones
     if base_src_file in INCORRECT_LINKS:
-        for incorrect_link, fixed_link in INCORRECT_LINKS[base_src_file].items():
+        for incorrect_link, fixed_link in list(INCORRECT_LINKS[base_src_file].items()):
             content = content.replace(incorrect_link, fixed_link)
 
     # Fix up the links
@@ -730,7 +730,7 @@ def build_file_id(file_title, file_to_id_map, existing_ids):
     """
     file_id = base_id = re.sub(r"[\[\]\(\)#]", "", file_title.lower().replace("_", "-").replace(" ", "-"))
     count = 1
-    while file_id in existing_ids or file_id in file_to_id_map.values():
+    while file_id in existing_ids or file_id in list(file_to_id_map.values()):
         file_id = base_id + "-" + str(count)
         count += 1
 
@@ -751,8 +751,8 @@ def replace_nbsp(val):
     """Replaces non breaking spaces with a regular space"""
     if val is not None:
         # Check if the string is unicode
-        if isinstance(val, unicode):
-            return val.replace(u'\xa0', ' ')
+        if isinstance(val, str):
+            return val.replace('\xa0', ' ')
         else:
             return val.replace('\xc2\xa0', ' ')
     else:
@@ -851,7 +851,7 @@ def _sync_directories_dircmp(dcmp):
             shutil.copytree(left, right)
 
     # Sync sub directories
-    for subdcmp in dcmp.subdirs.values():
+    for subdcmp in list(dcmp.subdirs.values()):
         _sync_directories_dircmp(subdcmp)
 
 
@@ -881,7 +881,7 @@ def parse_repo_config(config_file, distro, version):
         log.error("Failed loading the repo configuration from %s", config_file)
         sys.exit(-1)
 
-    parser = ConfigParser.SafeConfigParser()
+    parser = configparser.SafeConfigParser()
     parser.read(config_file)
 
     repo_urls = dict()
@@ -957,7 +957,7 @@ def main():
         ensure_directory(base_git_dir)
 
         # Checkout the gitlab repo, copy the changes and push them back up
-        for book_dir, gitlab_repo_url in repo_urls.items():
+        for book_dir, gitlab_repo_url in list(repo_urls.items()):
             build_book_dir = os.path.join(dest_dir, book_dir)
             git_dirname = gitlab_repo_url.split('/')[-1].replace(".git", "")
             git_dir = os.path.join(base_git_dir, git_dirname)
