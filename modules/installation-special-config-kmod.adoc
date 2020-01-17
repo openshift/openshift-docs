@@ -1,0 +1,304 @@
+// Module included in the following assemblies:
+//
+// * installing/installing_aws_user_infra/installing-aws-user-infra.adoc
+
+[id="installation-user-infra-generate-k8s-manifest-ignition-rhcos_{context}"]
+= Adding kernel modules to nodes
+
+For most common hardware, the Linux kernel includes the device driver
+modules needed to use that hardware when the computer starts up. For
+some hardware, however, modules are not available in Linux. So you need
+to find a way to provide those modules to each host computer. This
+procedure describes how to do that for nodes in an {product-title} cluster.
+
+When a kernel module is first deployed following these instructions,
+the module is made available for the current kernel. If a new kernel
+is installed, the kmods-via-containers software will rebuild and deploy
+the module so a compatible version of that module is available with the
+new kernel.
+
+The way that this feature is able to keep the module up to date on each
+node is by:
+
+* Adding a systemd service to each node that starts at boot time to detect
+if a new kernel has been installed and
+* If a new kernel is detected, the
+service rebuilds the module and installs it to the kernel
+
+For information on the software needed for this procedure, see the
+link:https://github.com/dustymabe/kmods-via-containers[kmods-via-containers] github site.
+
+[IMPORTANT]
+====
+In this procedure, the software needed to build your kernel modules is
+deployed in a RHEL container. Keep in mind that modules are rebuilt
+automatically on each node when that node gets a new kernel. For that
+reason, each node needs access to a yum repository that contains the
+kernel and related packages needed to rebuild the module. That content
+is best provided with a valid RHEL subscription.
+====
+
+== Build and test the kernel module container
+Gather the kernel module’s source code, the KVC framework, and the
+kmod-via-containers software. Then build and test the module. To do
+that on a RHEL 8 system, do the following:
+
+Procedure
+
+. Get a RHEL 8 system, then register and subscribe it:
++
+----
+# subscription-manager register
+Username: yourname
+Password: ***************
+# subscription-manager subscribe --auto
+----
+
+. Install software needed to build the software and container:
++
+----
+# yum install podman make git -y
+----
+
+. Clone the kmod-via-containers repository:
++
+----
+$ mkdir kmods; cd kmods
+$ git clone https://github.com/dustymabe/kmods-via-containers.git
+----
+
+. Install a KVC framework instance on your build host to test the module.
+This adds a kmods-via-container systemd service and loads it:
++
+----
+$ cd kmods-via-containers/
+$ make install
+$ sudo systemctl daemon-reload
+----
+
+. Get the kernel module. This could be a third-party module that you don’t
+have control over, but is supplied by others. You will need configuration files
+and source code similar to those shown in the kvc-simple-kmod example that can
+be cloned to your system as follows:
++
+----
+$ cd ..
+$ git clone https://github.com/dustymabe/kvc-simple-kmod
+----
+
+. Edit the configuration file (`simple-kmod.conf`, in his example) and
+change the name of the Dockerfile to Dockerfile.rhel so the file appears as
+shown here:
++
+----
+$ cd kvc-simple-kmod
+$ cat simple-kmod.conf
+
+KMOD_CONTAINER_BUILD_CONTEXT="git://github.com/dustymabe/kvc-simple-kmod.git"
+KMOD_CONTAINER_BUILD_FILE=Dockerfile.rhel
+KMOD_SOFTWARE_VERSION=dd1a7d4
+KMOD_NAMES="simple-kmod simple-procfs-kmod"
+----
+
+. Create an instance of kmods-via-containers@.service for your kernel module
+(simple-kmod in this example) and enable it:
++
+----
+$ sudo make install
+$ sudo kmods-via-containers build simple-kmod $(uname -r)
+----
+. Enable and start the systemd service, then check the status:
++
+----
+$ sudo systemctl enable kmods-via-containers@simple-kmod.service
+$ sudo systemctl start kmods-via-containers@simple-kmod.service
+$ sudo systemctl status kmods-via-containers@simple-kmod.service
+● kmods-via-containers@simple-kmod.service - Kmods Via Containers - simple-kmod
+   Loaded: loaded (/etc/systemd/system/kmods-via-containers@.service;
+          enabled; vendor preset: disabled)
+   Active: active (exited) since Sun 2020-01-12 23:49:49 EST; 5s ago...
+----
+
+. Here are a few ways to interact with the kernel modules in this example and make sure they were loaded:
++
+----
+$ lsmod | grep simple_
+simple_procfs_kmod     16384  0
+simple_kmod            16384  0
+$ dmesg | grep 'Hello world'
+[ 6420.761332] Hello world from simple_kmod.
+$ sudo cat /proc/simple-procfs-kmod
+simple-procfs-kmod number = 0
+$ spkut 44
+KVC: wrapper simple-kmod for 4.18.0-147.3.1.el8_1.x86_64
+Running userspace wrapper using the kernel module container...
++ podman run -i --rm --privileged
+   simple-kmod-dd1a7d4:4.18.0-147.3.1.el8_1.x86_64 spkut 44
+simple-procfs-kmod number = 0
+simple-procfs-kmod number = 44
+----
+
+Going forward, when the system boots this service will check if a new
+kernel is running. If there is a new kernel, the service builds a new
+version of the kernel module and then loads it. If the module is already
+built, it will just load it.
+
+== Provision the kernel module via Ignition
+Depending on whether or not you need to have the kernel module in place
+when OpenShift Container Platform cluster first boots, you can set up the
+kernel modules to be deployed in one of two ways:
+
+* **Provision kernel modules at cluster install time (day-1)**: You can add
+the kernel module software to Ignition config files during installation by
+including the required content through the `openshift-install` command.
+
+* **Provision kernel modules via MCO (day-2)**: If you can wait until the
+cluster is up and running to add your kernel module, you can the kernel
+module software via the Machine Config Operator (MCO).
+
+In either case, each node needs access to new kernel packages and related
+software packages as they are available. There are a few ways to provide this information:
+
+* Provide RHEL entitlements to each node (through `subscription-manager` or secrets)
+* Get RHEL entitlements from an existing RHEL host (`/etc/pki/entitlement` directory)
+and copy them to the same location in `$FAKEROOT` when you build your Ignition config
+* Inside the Dockerfile, add pointers to a yum repository containing the kernel and other packages
+(this must include new kernel packages as they are available)
+
+=== Provision kernel modules at cluster install time
+
+First create a base Ignition config that you'd like to use. It will
+contain the ssh public key to add to the authorized_keys file for
+the core user and also a systemd unit file. The systemd unit file
+require-simple-kmod.service that requires kmods-via-containers@simple-kmod.service.
+
+The systemd unit is a workaround for an
+link:https://github.com/coreos/ignition/issues/586[upstream bug]
+and makes sure that the kmods-via-containers@simple-kmod.service gets started
+on boot:
+
+. Create an Ignition config file that creates a systemd unit file:
++
+----
+$ cat <<EOF > ./baseconfig.ign
+{
+  "ignition": { "version": "3.0.0" },
+  "passwd": {
+    "users": [
+      {
+        "name": "core",
+        "groups": ["sudo"],
+        "sshAuthorizedKeys": [
+          "ssh-rsa AAAA"
+        ]
+      }
+    ]
+  },
+  "systemd": {
+    "units": [{
+      "name": "require-kvc-simple-kmod.service",
+      "enabled": true,
+      "contents": "[Unit]\nRequires=kmods-via-containers@simple-kmod.service\n[Service]\nType=oneshot\nExecStart=/usr/bin/true\n\n[Install]\nWantedBy=multi-user.target"
+    }]
+  }
+}
+EOF
+----
++
+[NOTE]
+====
+You'll need to add your public SSH key to that baseconfig.ign.
+====
+
+. Create a fakeroot directory and populate it with files that we want to
+deliver via Ignition, using the repositories cloned earlier:
++
+----
+$ FAKEROOT=$(mktemp -d)
+$ cd ../kmods-via-containers
+$ make install DESTDIR=${FAKEROOT}/usr/local CONFDIR=${FAKEROOT}/etc/
+$ cd ../kvc-simple-kmod
+$ make install DESTDIR=${FAKEROOT}/usr/local CONFDIR=${FAKEROOT}/etc/
+----
+
+. Use a tool call the `filetranspiler` to generate a final Ignition config (`config.ign`),
+and have it include the base Ignition config and the fakeroot directory with files you
+would like to deliver:
++
+----
+$ cd ..
+$ git clone https://github.com/ashcrow/filetranspiler
+$ ./filetranspiler/filetranspile -i ./baseconfig.ign \
+     -f ${FAKEROOT} -p -o config.ign
+----
+
+. Use this ignition config (`config.ign`) to start a RHEL CoreOS node and
+see the kmods-via-containers@simple-kmod.service and the kernel modules
+associated with simple-kmods get loaded. You can check the modules are
+loaded by going on to node (using `oc debug`) and running this command:
++
+----
+$ lsmod | grep simple_
+simple_procfs_kmod     16384  0
+simple_kmod            16384  0
+----
+
+=== Provision kernel modules via the MCO
+
+. Start with a base MCO yaml snippet that looks like:
++
+----
+$ cat <<EOF > mc-base.yaml
+apiVersion: machineconfiguration.openshift.io/v1
+kind: MachineConfig
+metadata:
+  labels:
+    machineconfiguration.openshift.io/role: worker
+  name: 10-kvc-simple-kmod
+spec:
+  config:
+EOF
+----
+
+. Start with a base ignition config snippet that looks like the following. Note that you do not need an SSH key here because the OpenShift Container Platform cluster install already has configs for the SSH key defined.
++
+----
+$ cat <<EOF > ./baseconfig.ign
+{
+  "ignition": { "version": "2.2.0" },
+  "systemd": {
+    "units": [{
+      "name": "require-kvc-simple-kmod.service",
+      "enabled": true,
+      "contents": "[Unit]\nRequires=kmods-via-containers@simple-kmod.service\n[Service]\nType=oneshot\nExecStart=/usr/bin/true\n\n[Install]\nWantedBy=multi-user.target"
+    }]
+  }
+}
+EOF
+----
+
+. Follow the steps from the previous section on setting up the fakeroot and
+populating the files. For the filetranspiler step, add two new arguments:
++
+* **--format=yaml** to output yaml for the machineconfig
+* **--dereference-symlinks** to workaround missing symlink support in the MCO
++
+Pipe that output into a sed command to indent the text by the appropriate
+amount so you can append it to the mc-base.yaml. The appended file will be
+written to mc.yaml
+
++
+----
+$ ./filetranspiler/filetranspile -i ./baseconfig.ign \
+     -f ${FAKEROOT} --format=yaml --dereference-symlinks \
+     | sed 's/^/     /' | (cat mc-base.yaml -) > mc.yaml
+----
+
+. Now create a new MachineConfig for the cluster:
++
+----
+$ oc create -f mc.yaml
+----
+
+In time, your nodes will start the kmods-via-containers@simple-kmod.service
+service and the kernel modules should be loaded.
