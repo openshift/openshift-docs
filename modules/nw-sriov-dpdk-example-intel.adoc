@@ -1,0 +1,152 @@
+// Module included in the following assemblies:
+//
+// * networking/multiple-networks/configuring-sr-iov.adoc
+
+[id="example-vf-use-in-dpdk-mode-intel_{context}"]
+= Example use of virtual function (VF) in DPDK mode with Intel NICs
+
+[IMPORTANT]
+====
+The Data Plane Development Kit (DPDK) is a Technology Preview feature only.
+Technology Preview features are not supported with Red Hat production service
+level agreements (SLAs), might not be functionally complete, and Red Hat does
+not recommend to use them for production. These features provide early access to
+upcoming product features, enabling customers to test functionality and provide
+feedback during the development process.
+
+For more information on Red Hat Technology Preview features support scope, see
+https://access.redhat.com/support/offerings/techpreview/.
+endif::[]
+====
+
+.Prerequisites
+
+* Install the OpenShift Command-line Interface (CLI), commonly known as `oc`.
+* Log in as a user with `cluster-admin` privileges.
+* You must have installed the SR-IOV Operator.
+
+.Procedure
+
+. Create the following SriovNetworkNodePolicy CR, and then save the YAML in the `intel-dpdk-node-policy.yaml` file.
++
+[source,yaml]
+----
+apiVersion: sriovnetwork.openshift.io/v1
+kind: SriovNetworkNodePolicy
+metadata:
+  name: intel-dpdk-node-policy
+  namespace: openshift-sriov-network-operator
+spec:
+  resourceName: intelnics
+  nodeSelector:
+    feature.node.kubernetes.io/network-sriov.capable: "true"
+  priority: <priority>
+  numVfs: <num>
+  nicSelector:
+    vendor: "8086"
+    deviceID: "158b"
+    pfName: ["<pf_name>", ...]
+    rootDevices: ["<pci_bus_id>", "..."]
+  deviceType: vfio-pci <1>
+----
+
+[NOTE]
+=====
+Please refer to `Configuring SR-IOV network devices` section for detailed explanation on each option in `SriovNetworkNodePolicy`.
+
+When applying the configuration specified in a SriovNetworkNodePolicy CR, the SR-IOV Operator may drain the nodes, and in some cases, reboot nodes.
+It may take several minutes for a configuration change to apply.
+Ensure that there are enough available nodes in your cluster to handle the evicted workload beforehand.
+
+After the configuration update is applied, all the Pods in `openshift-sriov-network-operator` namespace will change to a `Running` status.
+=====
+
+<1> Specify the driver type for the virtual functions to `vfio-pci`.
+
+. Create the SriovNetworkNodePolicy CR by running the following command:
++
+----
+$ oc create -f intel-dpdk-node-policy.yaml
+----
+
+. Create the following SriovNetwork CR, and then save the YAML in the `intel-dpdk-network.yaml` file.
++
+[source,yaml]
+----
+apiVersion: sriovnetwork.openshift.io/v1
+kind: SriovNetwork
+metadata:
+  name: intel-dpdk-network
+  namespace: openshift-sriov-network-operator
+spec:
+  networkNamespace: <target_namespace>
+  ipam: "{}" <1>
+  vlan: <vlan>
+  resourceName: intelnics
+----
+
+[NOTE]
+=====
+Please refer to `Configuring SR-IOV additional network` section for detailed explanation on each option in `SriovNetwork`.
+=====
+
+<1> Specify an empty object `"{}"` for the ipam CNI plug-in. DPDK works in userspace mode, it doesn't require an IP address.
+
+. Create the SriovNetworkNodePolicy CR by running the following command:
++
+----
+$ oc create -f intel-dpdk-network.yaml
+----
+
+. Create the following Pod spec, and then save the YAML in the `intel-dpdk-pod.yaml` file.
++
+[source,yaml]
+----
+apiVersion: v1
+kind: Pod
+metadata:
+  name: dpdk-app
+  namespace: <target_namespace> <1>
+  annotations:
+    k8s.v1.cni.cncf.io/networks: intel-dpdk-network
+spec:
+  containers:
+  - name: testpmd
+    image: <DPDK_image> <2>
+    securityContext:
+     capabilities:
+        add: ["IPC_LOCK"] <3>
+    volumeMounts:
+    - mountPath: /dev/hugepages <4>
+      name: hugepage
+    resources:
+      limits:
+        openshift.io/intelnics: "1" <5>
+        memory: "1Gi"
+        cpu: "4" <6>
+        hugepages-1Gi: "4Gi" <7>
+      requests:
+        openshift.io/intelnics: "1"
+        memory: "1Gi"
+        cpu: "4"
+        hugepages-1Gi: "4Gi"
+    command: ["sleep", "infinity"]
+  volumes:
+  - name: hugepage
+    emptyDir:
+      medium: HugePages
+----
+
+<1> Specify the same `target_namespace` where SriovNetwork CR `intel-dpdk-network` is created. If you would like to create the Pod in a different namespace, change `target_namespace` in both Pod spec and SriovNetowrk CR.
+<2> Specify the DPDK image which includes your application and DPDK library used by application.
+<3> Specify the `IPC_LOCK` capability which is required by application to allocate hugepage memory inside container.
+<4> Mount hugepage volume to DPDK Pod under `/dev/hugepages`. Hugepage volume is backed by emptyDir volume type with medium being `Hugepages`.
+<5> (optional) Specify number of DPDK devices allocated to DPDK Pod. This resource request and limit, if not explicitly specified, will be automatically added by SR-IOV network resource injector. SR-IOV network resource injector is an admission controller component managed by SR-IOV Operator, it's enabled by default and can be disabled by setting `Injector` option to `false` in default `SriovOperatorConfig` CR.
+<6> Specify number of CPUs. DPDK Pod usually requires exclusive CPUs be allocated from kubelet, this is achieved by setting CPU Manager policy to `static` and create Pod with `Guaranteed` QoS. Refer to `Setting up CPU Manager` on how to setup CPU Manager.
+<7> Specify hugepage size `hugepages-1Gi` or `hugepages-2Mi` and the quantity of hugepages that will be allocated to DPDK Pod. Refer to `Configuring huge pages` and `Adding kernel arguments to Nodes` on how to configure `2Mi` and `1Gi` hugepages separately. Configuring `1Gi` hugepage requires adding kernel arguments to Nodes, for example, adding kernel arguments `default_hugepagesz=1GB`, `hugepagesz=1G` and `hugepages=16` will result in `16*1Gi` hugepages be allocated during system boot.
+
+. Create the DPDK Pod by running the following command:
++
+----
+$ oc create -f intel-dpdk-pod.yaml
+----
