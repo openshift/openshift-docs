@@ -10,26 +10,33 @@ aggregator, and not the default Elasticsearch, using the *forward*
 plug-in. From there, you can further process log records after the locally
 hosted Fluentd has processed them. 
 
+In this documentation, the {product-title} cluster is called the _sender_ and the external aggregator is called the _receiver_.
+
+[NOTE]
+====
+This legacy *out_forward* method is deprecated and will be removed in a future release.
+====
+
 ifdef::openshift-origin[]
 The *forward* plug-ins are provided with the Fluentd image as of v1.4.0.
-The *in_forward* plug-in implements the server (receiving) side and *out_forward* implements the client (sending) side.
+The *in_forward* plug-in implements the server side (receiver), and *out_forward* implements the client side (sender).
 endif::openshift-origin[]
 
 ifdef::openshift-enterprise[]
 The *forward* plug-ins are supported by Fluentd only.
-The *in_forward* plug-in implements the server (receiving) side, and *out_forward* implements the client (sending) side.
+The *in_forward* plug-in implements the server side (receiver), and *out_forward* implements the client side (sender).
 endif::openshift-enterprise[]
 
-To configure the *out_forward* plug-in, Create a ConfigMap called `secure-forward` in the `openshift-logging` namespace. On the external aggregator, configure the Fluentd `secure-forward.conf` file. For more information on using the *out_forward* plug-in, see the link:https://docs.fluentd.org/output/forward[Fluentd documentation].
+To configure the *out_forward* plug-in, create a ConfigMap called `secure-forward` in the `openshift-logging` namespace. On the receiver, configure the Fluentd `secure-forward.conf` file. For more information on using the *in_forward* plug-in, see the link:https://docs.fluentd.org/input/forward[Fluentd documentation].
 
 [IMPORTANT]
 ====
 Changes introduced by the new log forward feature modified the support for *out_forward* starting with the {product-title} 4.3 release. In {product-title} 4.3, you create a ConfigMap, as described below, to configure out_forward. Any updates to the `secure-forward.conf` section of the Fluentd ConfigMap are removed. Before upgrading cluster logging, you can copy your current `secure-forward.conf` section and use the copied data when you create the `secure-forward` ConfigMap. 
 
-Additionally, you can add any certificates required by your configuration to a secret named `secure-forward` that will be mounted to the Fluentd pods.
-==== 
+Additionally, you can add any certificates required by your configuration to a secret named `secure-forward` that will be mounted to the Fluentd Pods.
+====
 
-.Sample `secure-forward` configmap
+.Sample `secure-forward.conf`
 [source,yaml]
 ----
 <store>
@@ -64,18 +71,63 @@ Additionally, you can add any certificates required by your configuration to a s
 </store> 
 ----
 
+.Sample `secure-forward` ConfigMap based on the configuration
+
+[source,yaml]
+----
+apiVersion: v1
+data:
+ secure-forward.conf: "<store>
+     \ @type forward
+     \ <security>
+     \   self_hostname ${hostname} # ${hostname} is a placeholder.
+     \   shared_key \"fluent-receiver\"
+     \ </security>
+     \ transport tls
+     \ tls_verify_hostname false           # Set false to ignore server cert hostname.
+     \ tls_cert_path '/etc/ocp-forward/ca-bundle.crt'
+     \ <buffer>
+     \   @type file
+     \   path '/var/lib/fluentd/secureforwardlegacy'
+     \   queued_chunks_limit_size \"#{ENV['BUFFER_QUEUE_LIMIT'] || '1024' }\"
+     \   chunk_limit_size \"#{ENV['BUFFER_SIZE_LIMIT'] || '1m' }\"
+     \   flush_interval \"#{ENV['FORWARD_FLUSH_INTERVAL'] || '5s'}\"
+     \   flush_at_shutdown \"#{ENV['FLUSH_AT_SHUTDOWN'] || 'false'}\"
+     \   flush_thread_count \"#{ENV['FLUSH_THREAD_COUNT'] || 2}\"
+     \   retry_max_interval \"#{ENV['FORWARD_RETRY_WAIT'] || '300'}\"
+     \   retry_forever true
+     \   # the systemd journald 0.0.8 input plugin will just throw away records if the buffer
+     \   # queue limit is hit - 'block' will halt further reads and keep retrying to flush the
+     \   # buffer to the remote - default is 'exception' because in_tail handles that case
+     \   overflow_action \"#{ENV['BUFFER_QUEUE_FULL_ACTION'] || 'exception'}\"
+     \ </buffer>
+     \ <server>
+     \   host fluent-receiver.openshift-logging.svc  # or IP
+     \   port 24224
+     \ </server>
+     </store>"
+kind: ConfigMap
+metadata:
+  creationTimestamp: "2020-01-15T18:56:04Z"
+  name: secure-forward
+  namespace: openshift-logging
+  resourceVersion: "19148"
+  selfLink: /api/v1/namespaces/openshift-logging/configmaps/secure-forward
+  uid: 6fd83202-93ab-d851b1d0f3e8
+----
+
 .Procedure
 
 To configure the *out_forward* plug-in:
 
-. Create a ConfigMap called `secure-forward` in the openshift-logging namespace:
+. Create a configuration file named `secure-forward.conf` for the *out_forward* parameters: 
 +
 .. Configure the secrets and TLS information:
 +
 [source,yaml]
 ----
  <store>
-  @type secure_forward
+  @type forward
 
   self_hostname ${hostname} <1>
   shared_key <SECRET_STRING> <2>
@@ -83,7 +135,7 @@ To configure the *out_forward* plug-in:
   transport tls <3>
 
   tls_verify_hostname true <4>
-  tls_cert_path /etc/ocp-forward/ca_cert.pem <5>
+  tls_cert_path <path_to_file> <5>
 ----
 +
 <1> Specify the default value of the auto-generated certificate common name (CN).
@@ -110,11 +162,11 @@ To use mTLS, see the link:https://docs.fluentd.org/output/forward#tips-and-trick
   </server>
 ----
 +
-<1> Optionally, enter a name for this external aggregator.
-<2> Specify the host name or IP of the external aggregator.
-<3> Specify the port of the external aggregator.
-<4> Optionally, add additional external aggregator. 
-If you specify two or more servers, `out_secure_forward` uses these server nodes in a round-robin order.
+<1> Optionally, enter a name for this receiver.
+<2> Specify the host name or IP of the receiver.
+<3> Specify the port of the receiver.
+<4> Optionally, add additional receivers. 
+If you specify two or more receivers, `out_secure_forward` uses these server nodes in a round-robin order.
 +
 For example:
 +
@@ -134,21 +186,33 @@ For example:
   </store>
 ----
 
-. Optionally, create a secret named `secure-forward` in the `openshift-logging` namespace.
+. Create a ConfigMap named `secure-forward` in the `openshift-logging` namespace from the configuration file:
 +
 ----
-$ oc create secret secure-forward --from-file=<arbitrary-name-of-key>=<file-name-of-ssl-private-key> --from-file=<arbitrary-name-of-cert>=<file-name-of-ssl-cert>
+$ oc create configmap secure-forward --from-file=secure-forward.conf -n openshift-logging
+----
+
+. Optionally, import any secrets required for the receiver:
++
+----
+$ oc create secret generic secure-forward --from-file=<arbitrary-name-of-key1>=cert_file_from_fluentd_receiver --from-literal=shared_key=value_from_fluentd_receiver
 ----
 +
 For example:
 +
 ----
-$ oc create secret secure-forward --from-file=tls.key=ca-for-es/logging-es.key --from-file=tls.crt=/etc/ocp-forward/ca-bundle.crt
+$ oc create secret generic secure-forward --from-file=ca-bundle.crt=ca-for-fluentd-receiver/ca.crt --from-literal=shared_key=fluentd-receiver
 ----
 
-. Configure the `secure-forward.conf` file on the external aggregator to accept messages securely from Fluentd.
+. Refresh the `fluentd` Pod to apply the `secure-forward` secret and `secure-forward` ConfigMap:
 +
-When configuring the external aggregator, it must be able to accept messages securely from Fluentd.
+----
+$ oc delete pod --selector logging-infra=fluentd
+----
+
+. Configure the `secure-forward.conf` file on the receiver to accept messages securely from {product-title}.
++
+When configuring the recevier, it must be able to accept messages securely from {product-title}.
 
 You can find further explanation of link:https://docs.fluentd.org/v1.0/articles/in_forward[how to set up the *inforward* plug-in] and link:https://docs.fluentd.org/v1.0/articles/out_forward[the *out_forward* plug-in].
 
