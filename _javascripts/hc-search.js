@@ -25,7 +25,7 @@ function hcSearchCategory(label, version) {
         si: 0,
         q: query.val(),
         label: label,
-        urlFilter: (typeof version === "undefined" || version == "Branch Build") ? "" : (" url:*\\/" + version + "\\/*")
+        urlFilter: (typeof version === "undefined" || version == "Branch Build") ? "" : (" url:*\\/" + version.toLowerCase() + "\\/*")
       };
       modalSearch.show();
       hcsearch(searchParams);
@@ -65,7 +65,7 @@ function hcsearch(searchParams) {
       $("#hc-search-result").append("<p><strong>An error occured while retrieving search results. Please try again later.</strong></p>");
       hcSearchIndicator.hide();
     }
-    if (hcsearchresults.response.result) {
+    if (!$.isEmptyObject(hcsearchresults.response.result)) { 
       // if there are any results
       $(hcsearchresults.response.result).each(function () {
         var row = '<div class="search-result-item"><a href="' + this.url +
