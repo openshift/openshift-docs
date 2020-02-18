@@ -1,0 +1,216 @@
+// Module included in the following assemblies:
+//
+// * operators/operator_sdk/osdk-scorecard.adoc
+
+[id="osdk-scorecard-olm_{context}"]
+= Running the scorecard with an OLM-managed Operator
+
+The scorecard can be run using a ClusterServiceVersion (CSV), providing a way to
+test cluster-ready and non-SDK Operators.
+
+.Prerequisites
+
+* Running with a CSV alone requires both the `csv-path: <csv_manifest_path>` and
+`olm-deployed` options to be set. The scorecard assumes your CSV and relevant
+CRDs have been deployed onto the cluster using OLM when using `olm-deployed`.
+* The scorecard requires a proxy container in the Operator's `Deployment` Pod to
+read Operator logs. A few modifications to your CSV and creation of one extra
+object are required to run the proxy _before_ deploying your Operator with OLM.
+
+.Procedure
+
+. Create a proxy server secret containing a local Kubeconfig:
+
+.. Generate a user name using the scorecard proxy's namespaced owner reference.
++
+----
+$ echo '{"apiVersion":"","kind":"","name":"scorecard","uid":"","Namespace":"'<namespace>'"}' | base64 -w 0 <1>
+----
+<1> Replace `<namespace>` with the namespace your Operator was deployed in, if any.
+
+.. Write a `Config` manifest `scorecard-config.yaml` using the following template,
+replacing `<username>` with the base64 user name generated in the previous
+step:
++
+[source,yaml]
+----
+apiVersion: v1
+kind: Config
+clusters:
+- cluster:
+    insecure-skip-tls-verify: true
+    server: http://<username>@localhost:8889
+  name: proxy-server
+contexts:
+- context:
+    cluster: proxy-server
+    user: admin/proxy-server
+  name: <namespace>/proxy-server
+current-context: <namespace>/proxy-server
+preferences: {}
+users:
+- name: admin/proxy-server
+  user:
+    username: <username>
+    password: unused
+----
+
+.. Encode the `Config` as base64:
++
+----
+$ cat scorecard-config.yaml | base64 -w 0
+----
+
+.. Create a `Secret` manifest `scorecard-secret.yaml`:
++
+[source,yaml]
+----
+apiVersion: v1
+kind: Secret
+metadata:
+  name: scorecard-kubeconfig
+  namespace: <namespace> <1>
+data:
+  kubeconfig: <kubeconfig_base64> <2>
+----
+<1> Replace `<namespace>` with the namespace your Operator was deployed in, if any.
+<2> Replace `<kubeconfig_base64>` with the `Config` encoded as base64.
+
+.. Apply the secret:
++
+----
+$ oc apply -f scorecard-secret.yaml
+----
+
+.. Insert a volume referring to the `Secret` into the Operator's Deployment:
++
+[source,yaml]
+----
+spec:
+  install:
+    spec:
+      deployments:
+      - name: memcached-operator
+        spec:
+          ...
+          template:
+            ...
+            spec:
+              containers:
+              ...
+              volumes:
+              - name: scorecard-kubeconfig <1>
+                secret:
+                  secretName: scorecard-kubeconfig
+                  items:
+                  - key: kubeconfig
+                    path: config
+----
+<1> Scorecard `kubeconfig` volume.
+
+. Insert a volume mount and `KUBECONFIG` environment variable into each container
+in your Operator's Deployment:
++
+[source,yaml]
+----
+spec:
+  install:
+    spec:
+      deployments:
+      - name: memcached-operator
+        spec:
+          ...
+          template:
+            ...
+            spec:
+              containers:
+              - name: container1
+                ...
+                volumeMounts:
+                - name: scorecard-kubeconfig <1>
+                  mountPath: /scorecard-secret
+                env:
+                - name: KUBECONFIG <2>
+                  value: /scorecard-secret/config
+              - name: container2 <3>
+                ...
+----
+<1> Scorecard `kubeconfig` volume mount.
+<2> Scorecard `kubeconfig` environment variable.
+<3> Repeat the same for this and all other containers.
+
+. Insert the scorecard proxy container into the Operator's Deployment:
++
+[source,yaml]
+----
+spec:
+  install:
+    spec:
+      deployments:
+      - name: memcached-operator
+        spec:
+          ...
+          template:
+            ...
+            spec:
+              containers:
+              ...
+              - name: scorecard-proxy <1>
+                command:
+                - scorecard-proxy
+                env:
+                - name: WATCH_NAMESPACE
+                  valueFrom:
+                    fieldRef:
+                      apiVersion: v1
+                      fieldPath: metadata.namespace
+                image: quay.io/operator-framework/scorecard-proxy:master
+                imagePullPolicy: Always
+                ports:
+                - name: proxy
+                  containerPort: 8889
+----
+<1> Scorecard proxy container.
+
+[TIP]
+====
+Alternatively, the
+link:https://github.com/operator-framework/community-operators[`community-operators`]
+repository has several bash functions that can perform this procedure for you:
+
+----
+$ curl -Lo csv-manifest-modifiers.sh \
+    https://raw.githubusercontent.com/operator-framework/community-operators/master/scripts/lib/file
+$ . ./csv-manifest-modifiers.sh
+$ create_kubeconfig_secret_file scorecard-secret.yaml "<namespace>" <1>
+$ oc apply -f scorecard-secret.yaml
+$ insert_kubeconfig_volume "<csv_file>" <2>
+$ insert_kubeconfig_secret_mount "<csv_file>"
+$ insert_proxy_container "<csv_file>" "quay.io/operator-framework/scorecard-proxy:master"
+----
+<1> Replace `<namespace>` with the namespace your Operator was deployed in.
+<2> Replace `<csv_file>` with the path to your Operator's CSV manifest.
+====
+
+After completing this procedure, follow the steps in
+link:https://github.com/operator-framework/community-operators/blob/master/docs/testing-operators.md[Testing your Operator with Operator Framework]
+to bundle your CSV and CRDs, deploy OLM on minikube or
+link:https://www.okd.io/[OKD], and deploy your Operator.
+
+After your Operator has been deployed, run the scorecard with both the
+`csv-path: <csv_manifest_path>` and `olm-deployed` options set.
+
+[NOTE]
+====
+Currently, using the scorecard with a CSV does not permit multiple CR manifests
+to be set through the CLI, configuration file, or CSV annotations. You must tear
+down your Operator in the cluster, re-deploy, and re-run the scorecard for each
+CR that is tested.
+====
+
+[NOTE]
+====
+You can either set `cr-manifest` or your CSV's
+link:https://github.com/operator-framework/operator-lifecycle-manager/blob/master/doc/design/building-your-csv.md#crd-templates[`metadata.annotations['alm-examples'\]`]
+to provide CRs to the scorecard, but not both.
+====
