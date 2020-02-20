@@ -3,38 +3,124 @@
 // * logging/efk-logging-deploy.adoc
 
 [id="efk-logging-fluentd-scaling_{context}"]
-= Scaling up systemd-journald
+= Configuring systemd-journald for cluster logging 
 
 As you scale up your project, the default logging environment might need some
 adjustments.
 
 For example, if you are missing logs, you might have to increase the rate limits for journald.
+You can adjust the number of messages to retain for a specified period of time to ensure that
+cluster logging does not use excessive resources without dropping logs. 
+
+You can also determine if you want the logs compressed, how long to retain logs, how or if the logs are stored,
+and other settings.
 
 .Procedure
 
-. Update to *systemd-219-22.el7.x86_64*.
-
-. Add the following to the *_/etc/systemd/journald.conf_* file:
+. Create a `journald.conf` file with the required settings:
 +
 ----
-# Disable rate limiting
-RateLimitInterval=1s
-RateLimitBurst=10000
-Storage=volatile
-Compress=no
-MaxRetentionSec=30s
-----
-
-. Restart the services:
-+
-----
-$ systemctl restart systemd-journald.service
-$ systemctl restart rsyslog.service
+Compress=no <1>
+ForwardToConsole=yes <2>
+ForwardToSyslog=no <2>
+MaxRetentionSec=30s <3>
+RateLimitBurst=10000 <4>
+RateLimitInterval=1s <4>
+Storage=volatile <5>
+SyncIntervalSec=1s <6>
+SystemMaxUse=8g <7>
+SystemKeepFree=20% <8>
+SystemMaxFileSize10M <9>
 ----
 +
-These settings account for the bursty nature of uploading in bulk.
-
-After removing the rate limit, you might see increased CPU utilization on the
+<1> Specify whether you want logs compressed before they are written to the file system. 
+Specify `yes` to compress the message or `no` to not compress. The default is `yes`.
+<2> Configure whether to forward log messages. Defaults to `no` for each. Specify:
+* `ForwardToConsole` to forward logs to the system console.
+* `ForwardToKsmg` to forward logs to the kernel log buffer.
+* `ForwardToSyslog` to forward to a syslog daemon.
+* `ForwardToWall` to forward messages as wall messages to all logged-in users.
+<3> Specify the maximum time to store journal entries. Enter digits to specify seconds. Or 
+include a unit: "year", "month", "week", "day", "h" or "m". Enter `0` to disable. The default is `1month`. 
+<4> Configure rate limiting. If, during the time interval defined by `RateLimitIntervalSec`, more logs than specified in `RateLimitBurst` 
+are received, all further messages within the interval are dropped until the interval is over. It is recommended to set 
+`RateLimitInterval=1s` and `RateLimitBurst=10000`, which are the defaults.
+<5> Specify how logs are stored. The default is `persistent`: 
+* `volatile` to store logs in memory in `/var/log/journal/`. 
+* `persistent` to store logs to disk  in `/var/log/journal/`. systemd creates the directory if it does not exist. 
+* `auto` to store logs in  in `/var/log/journal/` if the directory exists. If it does not exist, systemd temporarily stores logs in `/run/systemd/journal`.
+* `none` to not store logs. systemd drops all logs.
+<6> Specify the timeout before synchronizing journal files to disk for *ERR*, *WARNING*, *NOTICE*, *INFO*, and *DEBUG* logs. 
+systemd immediately syncs after receiving a *CRIT*, *ALERT*, or *EMERG* log. The default is `1s`.
+<7> Specify the maximum size the journal can use. The default is `8g`.
+<8> Specify how much disk space systemd must leave free. The default is `20%`.
+<9> Specify the maximum size for individual journal files stored persistently in `/var/log/journal`. The default is `10M`.
++
+[NOTE]
+====
+If you are removing the rate limit, you might see increased CPU utilization on the
 system logging daemons as it processes any messages that would have previously
 been throttled.
+====
++
+For more information on systemd settings, see link:https://www.freedesktop.org/software/systemd/man/journald.conf.html[https://www.freedesktop.org/software/systemd/man/journald.conf.html]. The default settings listed on that page might not apply to {product-title}.
++
+// Defaults from https://github.com/openshift/openshift-ansible/pull/3753/files#diff-40b7a7231e77d95ca6009dc9bcc0f470R33-R34
+
+. Convert the `journal.conf` file to base64:
++
+----
+$ export jrnl_cnf=$( cat /journald.conf | base64 -w0 )
+----
+
+. Create a new MachineConfig for master or worker and add the `journal.conf` parameters:
++
+For example: 
++
+[source,yaml]
+----
+
+...
+
+config:
+  storage:
+    files:
+    - contents:
+        source: data:text/plain;charset=utf-8;base64,${jrnl_cnf}
+        verification: {}
+      filesystem: root
+      mode: 0644 <1>
+      path: /etc/systemd/journald.conf <2>
+  systemd: {}
+----
+<1> Set the permissions for the `journal.conf` file. It is recommended to set `0644` permissions. 
+<2> Specify the path to the base64-encoded `journal.conf` file.
+
+. Create the MachineConfig:
++
+----
+$ oc apply -f <filename>.yaml
+----
++
+The controller detects the new MachineConfig and generates a new `rendered-worker-<hash>` version. 
+
+. Monitor the status of the rollout of the new rendered configuration to each node:
++
+----
+$ oc describe machineconfigpool/worker
+
+
+Name:         worker
+Namespace:    
+Labels:       machineconfiguration.openshift.io/mco-built-in=
+Annotations:  <none>
+API Version:  machineconfiguration.openshift.io/v1
+Kind:         MachineConfigPool
+
+...
+
+Conditions:
+  Message:               
+  Reason:                All nodes are updating to rendered-worker-913514517bcea7c93bd446f4830bc64e
+----
 
