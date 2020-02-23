@@ -1,0 +1,262 @@
+// Module included in the following assemblies:
+//
+// migration/migrating-4_1-4/deploying_cam.adoc
+// migration/migrating-4_2-4/deploying_cam.adoc
+[id='installing-cam-operator-on-restricted-network_{context}']
+= Installing the CAM Operator with OLM on a restricted network
+
+When {product-title} {product-version} is installed on a restricted network, the Operator Lifecycle Manager (OLM) can no longer use the default OperatorHub sources because they require Internet connectivity. You can link:https://docs.openshift.com/container-platform/4.2/operators/olm-restricted-networks.html[disable the default sources and create local mirrors] so that OLM can install and manage Operators from local sources.
+
+.Prerequisites
+
+* You must have `cluster-admin` privileges on all clusters.
+* You must have `podman` 1.5.1 (or later) installed.
+* You must be logged in to the link:https://access.redhat.com/RegistryAuthentication[Red Hat Container Registry].
+* You must be logged in to a local registry and be able to push images.
+
+The following procedure is provided as an example.
+
+.Procedure
+
+. Set the following variables:
++
+----
+$ export QUAY_TOKEN="<token>" <1>
+$ export local_registry=image-registry.openshift-image-registry.svc:5000 <2>
+$ export local_registry_ns=rhcam-1-0-restricted <3>
+$ export exposed_registry=$local_registry
+$ export ocs_source_registry=registry.redhat.io
+$ export ocs_source_registry_ns=ocs4
+$ export source_registry=registry.redhat.io
+$ export source_registry_ns=rhcam-1-0
+$ export remote_registry=registry.redhat.io
+$ export remote_registry_ns=rhcam-1-0
+$ export remote_registry_prefix=""
+$ export remote_app_ns=redhat-operators
+$ export coperator_image=openshift-migration-rhel7-operator
+$ export roperator_image=rook-ceph-rhel8-operator
+$ export moperator_image=mcg-rhel8-operator
+$ export ooperator_image=ocs-rhel8-operator
+$ export noobaa_image=mcg-core-rhel8
+$ export controller_image=openshift-migration-controller-rhel8
+$ export ui_image=openshift-migration-ui-rhel8
+$ export velero_image=openshift-migration-velero-rhel8
+$ export plugin_image=openshift-migration-plugin-rhel8
+$ export helper_image=openshift-migration-velero-restic-restore-helper-rhel8
+----
+<1> Specify your Quay access token.
+<2> Specify the local registry you are using for the mirrored images.
+<3> Specify the namespace of the local registry.
+
+. Disable the default `OperatorSources`:
++
+----
+$ oc patch OperatorHub cluster --type json -p '[{"op": "add", "path": "/spec/disableAllDefaultSources", "value": true}]'
+----
+
+. Download the `cam-operator` and `ocs-operator` archive files:
++
+----
+curl -s -H "Authorization: $QUAY_TOKEN" -XGET https://quay.io/cnr/api/v1/packages/${remote_app_ns}/cam-operator/blobs/sha256/$(curl -H "Authorization: $QUAY_TOKEN" https://quay.io/cnr/api/v1/packages/${remote_app_ns}/cam-operator/$(curl -s -H "Authorization: $QUAY_TOKEN" https://quay.io/cnr/api/v1/packages?namespace=${remote_app_ns} | jq -r ".[] | select(.name == \"${remote_app_ns}/cam-operator\") | .default") | jq -r .[0].content.digest) -o cam-operator.tar.gz
+
+curl -s -H "Authorization: $QUAY_TOKEN" -XGET https://quay.io/cnr/api/v1/packages/${remote_app_ns}/ocs-operator/blobs/sha256/$(curl -H "Authorization: $QUAY_TOKEN" https://quay.io/cnr/api/v1/packages/${remote_app_ns}/ocs-operator/$(curl -s -H "Authorization: $QUAY_TOKEN" https://quay.io/cnr/api/v1/packages?namespace=${remote_app_ns} | jq -r ".[] | select(.name == \"${remote_app_ns}/ocs-operator\") | .default") | jq -r .[0].content.digest) -o ocs-operator.tar.gz
+----
+
+. Extract the `cam-operator` and `ocs-operator` files:
++
+----
+$ mkdir -p manifests/cam-operator manifests/ocs-operator
+$ bsdtar --strip-components=1 -xf cam-operator.tar.gz -C manifests/cam-operator/
+$ bsdtar --strip-components=1 -xf ocs-operator.tar.gz -C manifests/ocs-operator/
+----
+
+. Create a `Dockerfile` for the custom registry container:
++
+----
+$ cat << EOF > Dockerfile
+FROM registry.redhat.io/openshift4/ose-operator-registry AS builder
+COPY manifests manifests
+RUN /bin/initializer -o ./bundles.db
+FROM registry.redhat.io/rhel7
+COPY --from=builder /registry/bundles.db /bundles.db
+COPY --from=builder /bin/registry-server /registry-server
+COPY --from=builder /bin/grpc_health_probe /bin/grpc_health_probe
+EXPOSE 50051
+ENTRYPOINT ["/registry-server"]
+CMD ["--database", "bundles.db"]> Dockerfile
+EOF
+----
+
+. Build the custom registry container:
++
+----
+$ docker build -f Dockerfile -t ${exposed_registry}/${local_registry_ns}/custom-registry .
+----
+
+. Push the custom registry container:
++
+----
+$ docker push ${exposed_registry}/${local_registry_ns}/custom-registry
+----
+
+. Create the `openshift-migration` namespace and CAM catalog source:
++
+----
+$ oc create namespace openshift-migration
+$ oc project openshift-migration
+$ cat << EOF > cam-catalog.yaml
+apiVersion: operators.coreos.com/v1alpha1
+kind: CatalogSource
+metadata:
+  name: cam-catalog
+  namespace: openshift-migration
+spec:
+  displayName: CAM Catalog
+  sourceType: grpc
+  image: ${local_registry}/${local_registry_ns}/custom-registry:latest
+EOF
+----
+
+. Install the CAM catalog source:
++
+----
+$ oc create -f cam-catalog.yaml
+----
+
+. Create an `ImageContentSourcePolicy` for each image:
++
+----
+$ cat << EOF > image-content-source-policy.yml
+---
+apiVersion: operator.openshift.io/v1alpha1
+kind: ImageContentSourcePolicy
+metadata:
+  name: cam-operator
+spec:
+  repositoryDigestMirrors:
+  - mirrors:
+    - ${local_registry}/${local_registry_ns}/openshift-migration-rhel7-operator
+    source: ${source_registry}/${source_registry_ns}/openshift-migration-rhel7-operator
+---
+apiVersion: operator.openshift.io/v1alpha1
+kind: ImageContentSourcePolicy
+metadata:
+  name: cam-controller
+spec:
+  repositoryDigestMirrors:
+  - mirrors:
+    - ${local_registry}/${local_registry_ns}/openshift-migration-controller-rhel8
+    source: ${source_registry}/${source_registry_ns}/openshift-migration-controller-rhel8
+---
+apiVersion: operator.openshift.io/v1alpha1
+kind: ImageContentSourcePolicy
+metadata:
+  name: cam-ui
+spec:
+  repositoryDigestMirrors:
+  - mirrors:
+    - ${local_registry}/${local_registry_ns}/openshift-migration-ui-rhel8
+    source: ${source_registry}/${source_registry_ns}/openshift-migration-ui-rhel8
+---
+apiVersion: operator.openshift.io/v1alpha1
+kind: ImageContentSourcePolicy
+metadata:
+  name: cam-velero
+spec:
+  repositoryDigestMirrors:
+  - mirrors:
+    - ${local_registry}/${local_registry_ns}/openshift-migration-velero-rhel8
+    source: ${source_registry}/${source_registry_ns}/openshift-migration-velero-rhel8
+---
+apiVersion: operator.openshift.io/v1alpha1
+kind: ImageContentSourcePolicy
+metadata:
+  name: cam-plugin
+spec:
+  repositoryDigestMirrors:
+  - mirrors:
+    - ${local_registry}/${local_registry_ns}/openshift-migration-plugin-rhel8
+    source: ${source_registry}/${source_registry_ns}/openshift-migration-plugin-rhel8
+---
+apiVersion: operator.openshift.io/v1alpha1
+kind: ImageContentSourcePolicy
+metadata:
+  name: cam-helper
+spec:
+  repositoryDigestMirrors:
+  - mirrors:
+    - ${local_registry}/${local_registry_ns}/openshift-migration-velero-restic-restore-helper-rhel8
+    source: ${source_registry}/${source_registry_ns}/openshift-migration-velero-restic-restore-helper-rhel8
+---
+apiVersion: operator.openshift.io/v1alpha1
+kind: ImageContentSourcePolicy
+metadata:
+  name: roperator
+spec:
+  repositoryDigestMirrors:
+  - mirrors:
+    - ${local_registry}/${local_registry_ns}/rook-ceph-rhel8-operator
+    source: ${source_registry}/${source_registry_ns}/rook-ceph-rhel8-operator
+---
+apiVersion: operator.openshift.io/v1alpha1
+kind: ImageContentSourcePolicy
+metadata:
+  name: moperator
+spec:
+  repositoryDigestMirrors:
+  - mirrors:
+    - ${local_registry}/${local_registry_ns}/mcg-rhel8-operator
+    source: ${source_registry}/${source_registry_ns}/mcg-rhel8-operator
+---
+apiVersion: operator.openshift.io/v1alpha1
+kind: ImageContentSourcePolicy
+metadata:
+  name: ooperator
+spec:
+  repositoryDigestMirrors:
+  - mirrors:
+    - ${local_registry}/${local_registry_ns}/ocs-rhel8-operator
+    source: ${source_registry}/${source_registry_ns}/ocs-rhel8-operator
+---
+apiVersion: operator.openshift.io/v1alpha1
+kind: ImageContentSourcePolicy
+metadata:
+  name: noobaa
+spec:
+  repositoryDigestMirrors:
+  - mirrors:
+    - ${local_registry}/${local_registry_ns}/mcg-core-rhel8
+    source: ${source_registry}/${source_registry_ns}/mcg-core-rhel8
+
+EOF
+
+$ oc create -f image-content-source-policy.yml
+----
+
+. Mirror the images required by the CAM, OCS, Rook, and MCG operators:
++
+----
+$ export coperator_sha=$(grep -h image: manifests/cam-operator/v1.0.1/mig-operator.v1.0.1.clusterserviceversion.yaml | sort -u | awk -F ':' '{ print $NF }')
+$ export controller_sha=$(grep MIG_CONTROLLER_TAG -A1 manifests/cam-operator/v1.0.1/mig-operator.v1.0.1.clusterserviceversion.yaml | grep value | awk -F "[ :]" '{ print $NF }')
+$ export ui_sha=$(grep MIG_UI_TAG -A1 manifests/cam-operator/v1.0.1/mig-operator.v1.0.1.clusterserviceversion.yaml | grep value | awk -F "[ :]" '{ print $NF }')
+$ export velero_sha=$(grep VELERO_TAG -A1 manifests/cam-operator/v1.0.1/mig-operator.v1.0.1.clusterserviceversion.yaml | grep value | awk -F "[ :]" '{ print $NF }')
+$ export plugin_sha=$(grep VELERO_PLUGIN_TAG -A1 manifests/cam-operator/v1.0.1/mig-operator.v1.0.1.clusterserviceversion.yaml | grep value | awk -F "[ :]" '{ print $NF }')
+$ export helper_sha=$(grep VELERO_RESTIC_RESTORE_HELPER_TAG -A1 manifests/cam-operator/v1.0.1/mig-operator.v1.0.1.clusterserviceversion.yaml | grep value | awk -F "[ :]" '{ print $NF }')
+$ export noobaa_sha=$(grep NOOBAA_CORE_IMAGE -A1 manifests/ocs-operator/4.2.0/ocs-operator.v4.2.0.clusterserviceversion.yaml | grep value | awk -F "[ :]" '{ print $NF }')
+$ export ooperator_sha=$(grep ocs-rhel8-operator manifests/ocs-operator/4.2.0/ocs-operator.v4.2.0.clusterserviceversion.yaml | awk -F ':' '{ print $NF }')
+$ export roperator_sha=$(grep rook-ceph-rhel8-operator manifests/ocs-operator/4.2.0/ocs-operator.v4.2.0.clusterserviceversion.yaml | awk -F ':' '{ print $NF }')
+$ export moperator_sha=$(grep mcg-rhel8-operator manifests/ocs-operator/4.2.0/ocs-operator.v4.2.0.clusterserviceversion.yaml | awk -F ':' '{ print $NF }')
+
+$ oc image mirror --insecure=true ${remote_registry}/${remote_registry_ns}/${coperator_image}@sha256:${coperator_sha} ${exposed_registry}/${local_registry_ns}/openshift-migration-rhel7-operator:v1.0
+$ oc image mirror --insecure=true ${remote_registry}/${remote_registry_ns}/${controller_image}@sha256:${controller_sha} ${exposed_registry}/${local_registry_ns}/openshift-migration-controller-rhel8:v1.0
+$ oc image mirror --insecure=true ${remote_registry}/${remote_registry_ns}/${ui_image}@sha256:$ui_sha ${exposed_registry}/${local_registry_ns}/openshift-migration-ui-rhel8:v1.0
+$ oc image mirror --insecure=true ${remote_registry}/${remote_registry_ns}/${velero_image}@sha256:$velero_sha ${exposed_registry}/${local_registry_ns}/openshift-migration-velero-rhel8:v1.0
+$ oc image mirror --insecure=true ${remote_registry}/${remote_registry_ns}/${plugin_image}@sha256:$plugin_sha ${exposed_registry}/${local_registry_ns}/openshift-migration-plugin-rhel8:v1.0
+$ oc image mirror --insecure=true ${remote_registry}/${remote_registry_ns}/${helper_image}@sha256:$helper_sha ${exposed_registry}/${local_registry_ns}/openshift-migration-velero-restic-restore-helper-rhel8:v1.0
+$ oc image mirror --insecure=true ${remote_registry}/${remote_registry_ns}/${roperator_image}@sha256:${roperator_sha} ${exposed_registry}/${local_registry_ns}/rook-ceph-rhel8-operator:v4.2.0
+$ oc image mirror --insecure=true ${remote_registry}/${remote_registry_ns}/${ooperator_image}@sha256:${ooperator_sha} ${exposed_registry}/${local_registry_ns}/ocs-rhel8-operator:v4.2.0
+$ oc image mirror --insecure=true ${remote_registry}/${remote_registry_ns}/${moperator_image}@sha256:${moperator_sha} ${exposed_registry}/${local_registry_ns}/mcg-rhel8-operator:v4.2.0
+$ oc image mirror --insecure=true ${remote_registry}/${remote_registry_ns}/${noobaa_image}@sha256:${noobaa_sha} ${exposed_registry}/${local_registry_ns}/mcg-core-rhel8:v4.2.0
+----
++
+You can now install the CAM Operator with OLM on the {product-title} 4.2 cluster.
