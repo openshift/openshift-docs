@@ -17,7 +17,7 @@ import sys
 class FindUnused():
     unused_directory = "_unused_topics"     # Edit this to adjust the target path.
     modules_directory = "/modules"          # Edit this to adjust the modules subdirectory
-    ignored_prefixes = ["cnv","ossm"]       # Add any prefixes to ignore here
+    ignored_prefixes = ["virt","ossm"]       # Add any prefixes to ignore here
     
     def __init__(self, args):
         self.args = args
