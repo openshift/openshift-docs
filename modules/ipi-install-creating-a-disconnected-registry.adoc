@@ -1,0 +1,172 @@
+// Module included in the following assemblies:
+//
+// * list of assemblies where this module is included
+// install/installing_bare_metal_ipi/ipi-install-installation-workflow.adoc
+
+[id="ipi-install-creating-a-disconnected-registry_{context}"]
+
+= Creating a disconnected registry (optional)
+
+In some cases, you may want to install an Openshift KNI cluster using a local copy of the installation registry. This could be for enhancing network efficiency because the cluster hosts are on a network that does not have access to the internet.
+
+A local, or mirrored, copy of the registry requires the following:
+
+* A certificate for the registry host. This can be a self-signed certificate.
+* A webserver - this will be served by a container on a system.
+* An updated pull secret that contains the certificate and local repository information.
+
+== Preparing the node to host the mirrored registry
+
+Make the following changes to the registry node.
+
+.Procedure
+
+. Open the firewall for the registry host.
++
+----
+$ sudo firewall-cmd --add-port=5000/tcp --zone=libvirt  --permanent
+$ sudo firewall-cmd --add-port=5000/tcp --zone=public   --permanent
+$ sudo firewall-cmd --reload
+----
+
+. Install `podman`, `httpd` and `httpd-tools`.
++
+----
+$ sudo yum -y install podman httpd httpd-tools
+----
+
+. Create the directory structure where the repository information will be held.
++
+----
+$ sudo mkdir -p /opt/registry/{auth,certs,data}
+----
+
+
+== Generating the self-signed certificate
+
+Generate a self-signed certificate for the node and put it in the `/opt/registry/certs` directory.
+
+.Procedure
+
+. Adjust the certificate information as appropriate.
++
+----
+$ host_fqdn=$( hostname --long )
+$ cert_c="US"               # Certificate CCommon Name (CN)
+$ cert_s="Massachussets"    # Certificate State (S)
+$ cert_l="Boston"           # Certificate Locality (L)
+$ cert_o="Red Hat, Inc"     # Certificate Organization (O)
+$ cert_ou="Engineering"     # Certificate Organizational Unit (OU)
+$ cert_cn="${host_fqdn}"    # Certificate Common Name (CN)
+
+$ sudo openssl req \
+    -newkey rsa:4096 \
+    -nodes \
+    -sha256 \
+    -keyout /opt/registry/certs/domain.key \
+    -x509 \
+    -days 365 \
+    -out /opt/registry/certs/domain.crt \
+    -subj "/C=${cert_c}/ST=${cert_s}/L=${cert_l}/O=${cert_o}/OU=${cert_ou}/CN=${cert_cn}"
+----
+
+. Update the systems ca-trust with the new certificate.
++
+----
+$ sudo cp /opt/registry/certs/domain.crt /etc/pki/ca-trust/source/anchors/
+$ sudo update-ca-trust extract
+----
+
+== Creating the registry podman
+
+The registry container uses the `/opt/registry` directory for certificates, authentication files, and to store its data files.
+
+The registry container uses `httpd` and needs an `htpasswd` file for authentication.
+
+.Procedure
+
+. Create an `htpasswd` file in `/opt/registry/auth` for the container to use.
++
+----
+$ sudo htpasswd -bBc /opt/registry/auth/htpasswd dummy dummy
+----
+
+. Create and start the registry container.
++
+----
+$ sudo podman create \
+  --name ocpdiscon-registry \
+  -p 5000:5000 \
+  -e "REGISTRY_AUTH=htpasswd" \
+  -e "REGISTRY_AUTH_HTPASSWD_REALM=Registry" \
+  -e "REGISTRY_HTTP_SECRET=ALongRandomSecretForRegistry" \
+  -e "REGISTRY_AUTH_HTPASSWD_PATH=/auth/htpasswd" \
+  -e "REGISTRY_HTTP_TLS_CERTIFICATE=/certs/domain.crt" \
+  -e "REGISTRY_HTTP_TLS_KEY=/certs/domain.key" \
+  -v /opt/registry/data:/var/lib/registry:z \
+  -v /opt/registry/auth:/auth:z \
+  -v /opt/registry/certs:/certs:z \
+  docker.io/library/registry:2
+----
++
+----
+$ sudo podman start ocpdiscon-registry
+----
+
+== Modifying the pull-secret
+
+Modify the pull-secret to include the authentication information for the new registry. The authentication string is the base64 encoding of the `http` credentials used to create the `htpasswd` file.
+
+.Procedure
+
+Update the pull-secret and place the new registry authentication credentials in the correct location in the `json` file. The `$USER` variable is an environmental variable containing the name of the currently logged in user.
+
+The authentication string is the base64 encoding of the `http` credentials used to create the `htpasswd` file.
+
+----
+$ host_fqdn=$( hostname --long )
+$ b64auth=$( echo -n 'dummy:dummy' openssl base64 )
+$ AUTHSTRING="{\"$host_fqdn:5000\": {\"auth\": \"$b64auth\",\"email\": \"$USER@redhat.com\"}}"
+
+$ jq ".auths += $AUTHSTRING" < pull-secret.json > pull-secret.jsoning.new
+----
+
+== Mirroring the repository
+
+.Procedure
+
+Mirror the remote install images to the local repository.
+
+----
+$ /usr/local/bin/oc adm release mirror \
+  -a pull-secret.json.new
+  --from=$UPSTREAM_REPO \
+  --to-release-image=$LOCAL_REG/$LOCAL_REPO:${VERSION} \
+  --to=$LOCAL_REG/$LOCAL_REPO
+----
+
+== Modify the `install-config.yaml` file to use the disconnected registry
+
+The `install-config.yaml` file should use the newly created pull-secret.
+The `install-config.yaml` file must also contain the disconnected registry node's certificate and registry information.
+
+.Procedure
+
+. Add the disconnected registry node's certificate to the `install-config.yaml` file. The certificate should follow the `"additionalTrustBundle: |"` line and be properly indented, usually by two spaces.
++
+----
+echo "additionalTrustBundle: |" >> install-config.yaml
+sed -e 's/^/  /' /opt/registry/certs/domain.crt >> install-config.yaml
+----
+
+. Add the mirror information for the registry to the `install-config.yaml` file.
++
+----
+echo "imageContentSources:" >> install-config.yaml
+echo "- mirrors:" >> install-config.yaml
+echo "  - $host_fqdn:5000/ocp4/openshift4" >> install-config.yaml
+echo "  source: quay.io/openshift-release-dev/ocp-v4.0-art-dev" >> install-config.yaml
+echo "- mirrors:" >> install-config.yaml
+echo "  - $host_fqdn:5000/ocp4/openshift4" >> install-config.yaml
+echo "  source: registry.svc.ci.openshift.org/ocp/release" >> install-config.yaml
+----
