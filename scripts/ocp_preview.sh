@@ -2,13 +2,13 @@
 set -ev
 
 # Download the preview page
-wget https://raw.githubusercontent.com/openshift-docs/scripts/master/_previewpage
+wget https://raw.githubusercontent.com/openshift/openshift-docs/master/scripts/ocpdocs/_previewpage
 
 # Copy preview page into the _preview folder
 cp --verbose _previewpage _preview/index.html
 
 #Download robots.txt
-wget https://raw.githubusercontent.com/openshift-docs/scripts/master/robots_preview.txt
+wget https://raw.githubusercontent.com/openshift/openshift-docs/master/scripts/ocpdocs/robots_preview.txt
 
 # Copy robots into the _preview folder
 cp --verbose robots_preview.txt _preview/robots.txt
