@@ -1,3 +1,8 @@
+# converts books prepared for it from the build_for_portal.py or build.py
+# scripts from AsciiDoc to DocBook XML
+
+# uses a refactored Aura script which is an opensource port of ccutil
+
 import sys
 import os
 import logging
@@ -13,13 +18,6 @@ from aura.transformers.tf_asciidoc import AsciiDocPublicanTransformer, XML_NS, L
 #branch = os.system("git symbolic-ref -q --short HEAD")
 
 #print(branch)
-
-# list of books - CHANGE HERE
-book_list = ['admin_guide', 'apb_devel', 'architecture', 
-  'creating_images', 'day_two_guide', 'dev_guide', 
-  'getting_started', 'install_config', 'release_notes', 'scaling_performance', 
-  'security', 'upgrading', 'using_images']
-
 
 # function to convert XML ids to HTML 4 compatible ids from ccutil
 def _fix_ids_for_html4(tree):
@@ -142,5 +140,5 @@ for distro in os.listdir("drupal-build"):
 
 if not all_validated:
     sys.exit(-1)
-else: 
+else:
   print("All Successful")
