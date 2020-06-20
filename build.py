@@ -1,5 +1,14 @@
 #!/usr/bin/python
 
+# this file builds content from asciidoc to ccutil ready format BUT is only
+# used for validating content, rather than the actual conversion. For the
+# actual conversion, the file build_for_portal.py is used (on the portal).
+
+# the only difference between this and build_for_portal file is in the
+# section on _fix_links. This file replaces link anchors within the same file
+# to the top of the file so that Travis build passes. Travis builds don't
+# know books external to them and this helps pass the builds.
+
 import argparse
 import configparser
 import filecmp
