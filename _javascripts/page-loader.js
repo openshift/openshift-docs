@@ -103,17 +103,16 @@ function selectVersion(currentVersion) {
   // edit in the branch
   h1.innerHTML += "&nbsp;<a href='https://github.com/openshift/openshift-docs/edit/" + (is4? "master" : ("enterprise-" + currentVersion)) + "/" + fn + "?" + message;
 
-   // add mouseover and out to the h1 tag to show or hide the link
-   // unlike the links added to h2, here it is at [0], the only 'a' tag
-   // added
-   h1.addEventListener("mouseover", function() {
-     this.getElementsByTagName('a')[0].style.visibility = "visible";
-   });
+  // add mouseover and out to the h1 tag to show or hide the link
+  // unlike the links added to h2, here it is at [0], the only 'a' tag
+  // added
+  h1.addEventListener("mouseover", function() {
+   this.getElementsByTagName('a')[0].style.visibility = "visible";
+  });
 
-   h1.addEventListener("mouseout", function() {
-     this.getElementsByTagName('a')[0].style.visibility = "hidden";
-   });
-
+  h1.addEventListener("mouseout", function() {
+   this.getElementsByTagName('a')[0].style.visibility = "hidden";
+  });
 
   if(is4) { // in version 4 also allow to edit subsections which are modules
 
@@ -145,24 +144,4 @@ function selectVersion(currentVersion) {
       });
     }
   }
-
-
-
-
-
-//    Object.entries(element).map(( object ) => {
-//      object[1].innerHTML += "&nbsp;&nbsp;<font size='-2'><a href=''>Edit this section</a></font>";
-//      var fn = this.id.split("_", 1)[0] + ".adoc";
-//      alert(fn);
-//      object[1].addEventListener("dblclick", function() {
-//         // alert(this.id);
-//         // alert(this.id.split("_", 1)[0] + ".adoc");
-//        var fn = this.id.split("_", 1)[0] + ".adoc";
-// //       window.open("https://github.com/openshift/openshift-docs/edit/enterprise-" +
-// //         currentVersion + "/modules/" + fn, "_new");
-//         window.open("https://github.com/openshift/openshift-docs/edit/master/modules/" + fn, "_new");
-//      });
-//    });
-//  }
-
 }
