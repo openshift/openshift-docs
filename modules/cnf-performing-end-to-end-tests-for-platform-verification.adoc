@@ -1,0 +1,352 @@
+// Module included in the following assemblies:
+// Epic CNF-290 (4.5)
+// scalability_and_performance/cnf-performance-addon-operator-for-low-latency-nodes.adoc
+
+[id="cnf-performing-end-to-end-tests-for-platform-verification_{context}"]
+= Performing end-to-end tests for platform verification
+
+The CNF tests image is a containerized test suite that validates features required to run CNF payloads.
+You can use this image to validate a CNF-enabled OpenShift cluster where all the components
+required for running CNF workloads are installed.
+
+The tests run by the image are split into three different phases:
+
+* Simple cluster validation
+* Setup
+* End to end tests
+
+The validation phase checks that all the features required to be tested are deployed correctly on the cluster.
+
+Validations include:
+
+* Targeting a machine config pool that the machines to be tested belong to
+* Enabling SCTP on the nodes
+* The Performance Addon Operator is installed
+* The SR-IOV operator is installed
+* The PTP operator is installed
+* Using ovn k8s as the sdn
+
+.Prerequisites
+
+* The test entrypoint is `/usr/bin/test-run.sh`. It runs both a setup test set and the real conformance test suite.
+The minimum requirement is to provide it with a kubeconfig file and it's related `$KUBECONFIG` environment variable, mounted through a volume.
+
+* The tests assumes that a given feature is already available on the cluster in the form of an operator, flags enabled on the cluster, or machine configs.
+
+* Some tests require a pre-existing machine config pool to append their changes to.
+This needs to be created on the cluster before running the tests.
++
+The default worker pool is `worker-cnf` and can be created with the following manifest:
++
+[source,yaml]
+----
+apiVersion: machineconfiguration.openshift.io/v1
+kind: MachineConfigPool
+metadata:
+  name: worker-cnf
+  labels:
+    machineconfiguration.openshift.io/role: worker-cnf
+spec:
+  machineConfigSelector:
+    matchExpressions:
+      - {
+          key: machineconfiguration.openshift.io/role,
+          operator: In,
+          values: [worker-cnf, worker],
+        }
+  paused: false
+  nodeSelector:
+    matchLabels:
+      node-role.kubernetes.io/worker-cnf: ""
+----
++
+The worker pool name can be overridden using the `ROLE_WORKER_CNF` variable:
++
+----
+docker run -v $(pwd)/:/kubeconfig -e KUBECONFIG=/kubeconfig/kubeconfig -e ROLE_WORKER_CNF=custom-worker-pool quay.io/openshift-kni/cnf-tests /usr/bin/test-run.sh
+----
++
+[NOTE]
+====
+Currently, not all tests run selectively on the nodes belonging to the pool.
+====
+
+== Running the tests
+Assuming the file is in the current folder, the command for running the test suite is:
+
+----
+docker run -v $(pwd)/:/kubeconfig -e KUBECONFIG=/kubeconfig/kubeconfig quay.io/openshift-kni/cnf-tests /usr/bin/test-run.sh
+----
+This allows your kubeconfig file to be consumed from inside the running container.
+
+=== Image parameters
+
+Depending on the requirements, the tests can use different images.
+There are two images used by the tests that can be changed using the following environment variables:
+
+* `CNF_TESTS_IMAGE`
+* `DPDK_TESTS_IMAGE`
+
+For example, to change the `CNF_TESTS_IMAGE` with a custom registry run the following command:
+
+----
+docker run -v $(pwd)/:/kubeconfig -e KUBECONFIG=/kubeconfig/kubeconfig -e CNF_TESTS_IMAGE="custom-cnf-tests-image:latests" quay.io/openshift-kni/cnf-tests /usr/bin/test-run.sh
+----
+
+=== Ginkgo parameters
+
+The test suite is built upon the ginkgo bdd framework. This means that it accepts parameters for filtering or skipping tests.
+
+You can use the `-ginkgo.focus` parameter to filter a set of tests:
+
+----
+docker run -v $(pwd)/:/kubeconfig -e KUBECONFIG=/kubeconfig/kubeconfig quay.io/openshift-kni/cnf-tests /usr/bin/test-run.sh -ginkgo.focus="performance|sctp"
+----
+
+The set of available features to filter are:
+
+* `performance`
+* `sriov`
+* `ptp`
+* `sctp`
+* `dpdk`
+
+Use this command to run in dry-run mode.
+This is useful for checking what’s in the test suite and provides output for all of the tests the image would run.
+
+----
+docker run -v $(pwd)/:/kubeconfig -e KUBECONFIG=/kubeconfig/kubeconfig quay.io/openshift-kni/cnf-tests /usr/bin/test-run.sh -ginkgo.dryRun -ginkgo.v
+----
+
+
+== Disconnected mode
+
+The CNF tests image support running tests in a disconnected cluster, meaning a cluster that is not able to reach outer registries.
+This is done in two steps:
+
+. Performing the mirroring.
+
+. Instructing the tests to consume the images from a custom registry.
+
+=== Mirroring the images to a custom registry accessible from the cluster
+
+A `mirror` executable is shipped in the image to provide the input required by oc to mirror the images needed to run the tests to a local registry.
+
+Run this command from an intermediate machine that has access both to the cluster and to `quay.io` over the Internet:
+----
+docker run -v $(pwd)/:/kubeconfig -e KUBECONFIG=/kubeconfig/kubeconfig quay.io/openshift-kni/cnf-tests /usr/bin/mirror -registry my.local.registry:5000/ |  oc image mirror -f -
+----
+
+Then follow the instructions in <<instruct-the-tests-to-consume-images-from-a-custom-registry_{context}>> about overriding the
+registry used to fetch the images.
+
+[id="instruct-the-tests-to-consume-images-from-a-custom-registry_{context}"]
+=== Instruct the tests to consume those images from a custom registry
+
+This is done by setting the `IMAGE_REGISTRY` environment variable:
+
+----
+docker run -v $(pwd)/:/kubeconfig -e KUBECONFIG=/kubeconfig/kubeconfig -e IMAGE_REGISTRY="my.local.registry:5000/" -e CNF_TESTS_IMAGE="custom-cnf-tests-image:latests" quay.io/openshift-kni/cnf-tests /usr/bin/test-run.sh
+----
+
+=== Mirroring to the cluster internal registry
+
+OpenShift Container Platform provides a built in container image registry which runs as a standard workload on the cluster.
+
+.Procedure
+
+. Gain external access to the registry by exposing it with a route:
++
+----
+oc patch configs.imageregistry.operator.openshift.io/cluster --patch '{"spec":{"defaultRoute":true}}' --type=merge
+----
+
+. Fetch the registry endpoint:
++
+----
+REGISTRY=$(oc get route default-route -n openshift-image-registry --template='{{ .spec.host }}')
+----
+
+. Create a namespace for exposing the images:
++
+----
+oc create ns cnftests
+----
+
+. Make that imagestream available to all the namespaces used for tests.
+This is required to allow the tests namespaces to fetch the images from the cnftests imagestream.
++
+----
+oc policy add-role-to-user system:image-puller system:serviceaccount:sctptest:default --namespace=cnftests
+oc policy add-role-to-user system:image-puller system:serviceaccount:cnf-features-testing:default --namespace=cnftests
+oc policy add-role-to-user system:image-puller system:serviceaccount:performance-addon-operators-testing:default --namespace=cnftests
+oc policy add-role-to-user system:image-puller system:serviceaccount:dpdk-testing:default --namespace=cnftests
+oc policy add-role-to-user system:image-puller system:serviceaccount:sriov-conformance-testing:default --namespace=cnftests
+----
+
+. Retrieve the docker secret name and auth token:
++
+----
+SECRET=$(oc -n cnftests get secret | grep builder-docker | awk {'print $1'}
+TOKEN=$(oc -n cnftests get secret $SECRET -o jsonpath="{.data['\.dockercfg']}" | base64 -d | jq '.["image-registry.openshift-image-registry.svc:5000"].auth')
+----
+
+. Write a `dockerauth.json` similar to this:
++
+----
+echo "{\"auths\": { \"$REGISTRY\": { \"auth\": $TOKEN } }}" > dockerauth.json
+----
+
+. Do the mirroring:
++
+----
+docker run -v $(pwd)/:/kubeconfig -e KUBECONFIG=/kubeconfig/kubeconfig quay.io/openshift-kni/cnf-tests /usr/bin/mirror -registry $REGISTRY/cnftests |  oc image mirror --insecure=true -a=$(pwd)/dockerauth.json -f -
+----
+
+. Run the tests:
++
+----
+docker run -v $(pwd)/:/kubeconfig -e KUBECONFIG=/kubeconfig/kubeconfig -e IMAGE_REGISTRY=image-registry.openshift-image-registry.svc:5000/cnftests cnf-tests-local:latest /usr/bin/test-run.sh
+----
+
+=== Mirroring a different set of images
+
+.Procedure
+
+. The `mirror` command tries to mirror the u/s images by default. This can be overridden by passing a file with the following format to the image:
+
+----
+[
+    {
+        "registry": "public.registry.io:5000",
+        "image": "imageforcnftests:4.5"
+    },
+    {
+        "registry": "public.registry.io:5000",
+        "image": "imagefordpdk:4.5"
+    }
+]
+----
+
+. By passing it to the `mirror` command, for example saving it locally as `images.json`.
+With the following command, the local path is mounted in `/kubeconfig` inside the container and that can be passed to the mirror command.
+
+----
+docker run -v $(pwd)/:/kubeconfig -e KUBECONFIG=/kubeconfig/kubeconfig quay.io/openshift-kni/cnf-tests /usr/bin/mirror --registry "my.local.registry:5000/" --images "/kubeconfig/images.json" |  oc image mirror -f -
+----
+
+
+== Test Reports
+
+CNF end-to-end tests produce two outputs: a JUnit test output and a test failure report.
+
+=== JUnit test output
+
+A junit compliant xml is produced by passing the `--junit` parameter together with the path where the report is dumped:
+
+----
+docker run -v $(pwd)/:/kubeconfig -v $(pwd)/junitdest:/path/to/junit -e KUBECONFIG=/kubeconfig/kubeconfig quay.io/openshift-kni/cnf-tests /usr/bin/test-run.sh --junit /path/to/junit
+----
+
+=== Test failure report
+
+A report with information about the cluster state and resources for troubleshooting can be produced by passing the `--report` parameter with the path where the report is dumped:
+
+----
+docker run -v $(pwd)/:/kubeconfig -v $(pwd)/reportdest:/path/to/report -e KUBECONFIG=/kubeconfig/kubeconfig quay.io/openshift-kni/cnf-tests /usr/bin/test-run.sh --report /path/to/report
+----
+
+
+=== A note on podman
+
+When executing podman as non root (and non privileged), mounting paths can fail with "permission denied" errors.
+To make it work, append `:Z` to the volumes creation; for example, `-v $(pwd)/:/kubeconfig:Z` to allow podman to do the proper selinux relabeling.
+
+=== Running on OpenShift 4.4
+
+With the exception of the following, the CNF end-to-end tests are compatible with OpenShift 4.4:
+
+----
+[test_id:28466][crit:high][vendor:cnf-qe@redhat.com][level:acceptance] Should contain configuration injected through openshift-node-performance profile
+[test_id:28467][crit:high][vendor:cnf-qe@redhat.com][level:acceptance] Should contain configuration injected through the openshift-node-performance profile
+----
+
+You can skip theses tests by adding the ` -ginkgo.skip “28466|28467"` parameter.
+
+=== Using a single performance profile
+
+The DPDK tests require more resources than what is required by the performance test suite.
+To make the execution quicker, you can override the performance profile used by the tests using a profile that
+also serves the DPDK test suite.
+
+To do this, use a profile like the following one that can be mounted inside the container,
+and the performance tests can be instructed to deploy it.
+
+[source,yaml]
+----
+apiVersion: performance.openshift.io/v1alpha1
+kind: PerformanceProfile
+metadata:
+  name: performance
+spec:
+  cpu:
+    isolated: "0-15"
+    reserved: "0-7"
+  hugepages:
+    defaultHugepagesSize: "1Gi"
+    pages:
+    - size: "1Gi"
+      count: 16
+      node: 0
+  realTimeKernel:
+    enabled: true
+  nodeSelector:
+    node-role.kubernetes.io/worker-cnf: ""
+----
+
+To override the performance profile, the manifest must be mounted inside the container and the tests must be instructed by setting the `PERFORMANCE_PROFILE_MANIFEST_OVERRIDE`:
+
+----
+docker run -v $(pwd)/:/kubeconfig:Z -e KUBECONFIG=/kubeconfig/kubeconfig -e PERFORMANCE_PROFILE_MANIFEST_OVERRIDE=/kubeconfig/manifest.yaml quay.io/openshift-kni/cnf-tests /usr/bin/test-run.sh
+----
+
+== Impacts on the cluster
+
+Depending on the feature, running the test suite couldcause different impacts on the cluster.
+In general, only the SCTP tests do not change the cluster configuration.
+All the other features have various impacts on the configuration.
+
+=== SCTP
+SCTP tests just run different pods on different nodes to check connectivity.
+The impacts on the cluster are related to running simple pods on two nodes.
+
+=== SR-IOV
+
+SR-IOV tests require changes in the SR-IOV network configuration, where the tests create and destroy
+different types of configuration.
+
+This may have an impact if existing SR-IOV network configurations are already installed on the cluster,
+because there may be conflicts depending on the priority of such configurations.
+
+At the same time, the result of the tests may be affected by existing configurations.
+
+=== PTP
+
+PTP tests apply a ptp configuration to a set of nodes of the cluster.
+As per SR-IOV, this may conflict with any existing PTP configuration already in place, with unpredictable results.
+
+=== Performance
+
+Performance tests apply a performance profile to the cluster.
+The effect of this is changes in the node configuration, reserving CPUs, allocating memory hugepages,
+and setting the kernel packages to be realtime.
+If an existing profile named “performance” is already available on the cluster, the tests do not deploy it.
+
+=== DPDK
+
+DPDK relies on both performance and SR-IOV features, so the test suite configures both a performance profile and SR-IOV
+networks, so the impacts are the same as those described in SR-IOV testing and performance testing.
+
+=== Cleaning up
+
+After running the test suite, all the dangling resources are cleaned up.
