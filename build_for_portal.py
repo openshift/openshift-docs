@@ -1,5 +1,7 @@
 #!/usr/bin/python
 
+# see notes in the build.py script as to what this file does
+
 import argparse
 import configparser
 import filecmp

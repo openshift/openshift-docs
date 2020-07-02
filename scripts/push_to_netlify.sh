@@ -143,7 +143,7 @@ if [[ "$COMMENT_FOUND" = false ]]; then
                 fi
             done
     fi
-        
+
     echo -e "${YELLOW}ADDING COMMENT on PR${NC}"
     #if there is a comment file show individual file URLs otherwise show the main URL
     if [ ! -f comments.txt ]; then
