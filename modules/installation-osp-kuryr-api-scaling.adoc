@@ -1,0 +1,86 @@
+// Module included in the following assemblies:
+//
+// * networking/openstack/load-balancing-openstack.adoc
+
+[id="installation-osp-kuryr-octavia-configure{context}"]
+= Scaling API using {rh-openstack} Octavia
+
+API can be scaled on {product-title} cluster running on {rh-openstack} with
+Octavia support
+Octavia is a requirement to deploy {product-title} with Kuryr, as Kuryr uses it
+to create the services, but when installing without Kuryr it is not. So first
+step is to ensure Octavia is available.
+If it is, it can be leveraged to create extra API IPs and better scale with the
+load. This allows to remove the API bottleneck as currently the traffics enters
+through the master node that holds the API VIP.
+
+If {product-title} cluster was installed with Kuryr, the Cluster Network
+Operator already creates an internal Octavia Load Balancer (Amphora driver) used
+for by the pods that wants to reach the kubernetes service IP (e.g.,
+172.30.0.1). Note: components using the api-int DNS record do not get to the API
+through this load balancer.
+
+As this loadbalancer already exists, we can simply associate the API Floating IP
+to it:
++
+----
+$ openstack floating ip unset $API_FIP
+$ openstack floating ip set  --port $(openstack loadbalancer show -c vip_port_id
+-f value ${OCP_CLUSTER}-kuryr-api-loadbalancer) $API_FIP
+----
+
+
+On the other hand, if {product-title} cluster was installed without kuryr, or an
+extra load balancer(s) wants to be created, then the next steps can be used:
+
+. Create an Octavia Load Balancer (Amphora as it requires L7 capabilities). Note
+the subnet selected is the same where the worker node VMs are running.
++
+----
+$ openstack loadbalancer create --name API_OCP_CLUSTER --vip-subnet-id WORKER_VMS_SUBNET_ID
+----
+
+. Wait for the loadbalancer to be in ACTIVE status, and then create the listeners
++
+----
+$ openstack loadbalancer listener create --name API_OCP_CLUSTER_6443 --protocol HTTPS--protocol-port 6443 API_OCP_CLUSTER
+----
+
+. Create the pool. Note the load balancer algorithm selected is ROUND_ROBIN and
+the pool session persistence is enabled:
++
+----
+$ openstack loadbalancer pool create --name API_OCP_CLUSTER_pool_6443 --lb-algorithm ROUND_ROBIN --session-persistence type=SOURCE_IP --listener API_OCP_CLUSTER_6443 --protocol HTTPS
+----
+
+. Create a health monitor to ensure masters nodes are available (node, if Octavia
+version supports HTTP monitors it can be used to check /healthz/readyz instead):
++
+----
+$ openstack loadbalancer healthmonitor create --delay 5 --max-retries 4 --timeout 10 --type TCP API_OCP_CLUSTER_pool_6443
+----
+
+. Add the master nodes as members of the load balancer pool:
++
+----
+$ for SERVER in $(MASTER-0-IP MASTER-1-IP MASTER-2-IP)
+do
+  openstack loadbalancer member create --address $SERVER  --protocol-port 6443 API_OCP_CLUSTER_pool_6443
+done
+----
+
+. Remove the API_FIP from the current port if the same wants to be used (otherwise a new one can be created):
++
+----
+$ openstack floating ip unset $API_FIP
+----
+
+. Add the API_FIP to the created Load Balancer VIP:
++
+----
+$ openstack floating ip set  --port $(openstack loadbalancer show -c vip_port_id -f value API_OCP_CLUSTER) $API_FIP
+----
+
+Note that with Octavia Amphora driver the traffic will still go through a single VM (in this case the Amphora VM).
+So, to avoid this the above steps can be replicated as many times as desired, creating several API load balancers to achieve better performance at scale.
+
