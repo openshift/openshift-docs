@@ -11,7 +11,7 @@ document.querySelectorAll('span.clipboard-button').forEach((copybutton, index) =
 var clipboard = new ClipboardJS('.clipboard-button', {
     text: function(target) {
       const targetId = target.getAttribute('data-clipboard-target').substr(1);
-      const clipboardText = document.getElementById(targetId).innerText.replace(/\$\s/g, "");
+      const clipboardText = document.getElementById(targetId).innerText.replace(/\$[ ]/g, "");
 
       if (clipboardText.slice(0, 2) === "# ") {
         return clipboardText.substr(2);
