@@ -2056,6 +2056,252 @@ $ oc exec <$espod> -- es_load_kibana_ui_objects <user-name>
 
 Where `$espod` is the name of any one of your Elasticsearch pods.
 
+[[kibana-visualizations-custom]]
+*Adding Custom Fields to Kibana Visualize*
+
+If your {product-title} cluster generates logs in JSON format that contain custom fields
+that are not defined in the Elasticsearch `.operations.\*` or the `project.*` 
+indices, you cannot create visualizations with these fields because the custom fields are not 
+available in Kibana. 
+
+However, you can add the custom fields to the Elasticsearch indices, which allows you to add
+the fields to the Kibana index patterns for use in Kibana Visualize. 
+
+[NOTE]
+====
+The custom fields are applied to only the indices created after the template is updated.
+====
+
+To add custom fields to Kibana Visualize:
+
+. Add custom fields to an Elasticsearch index template:
+
+.. Determine which Elasticsearch index you want to add the fields to, either
+the `.operations.\*` or the `project.*` index. 
+If there is a specific project that has the custom fields, 
+you add the fields to a specific index for the project,
+for example: `project.this-project-has-time-fields.*`.
+
+.. Create a JSON file for the custom fields, similar to the following:
++
+For example:
++
+----
+{
+	"order": 20,
+	"mappings": {
+		"_default_": {
+			"properties": {
+				"mytimefield1": { <1>
+					"doc_values": true,
+					"format": "yyyy-MM-dd HH:mm:ss,SSSZ||yyyy-MM-dd'T'HH:mm:ss.SSSSSSZ||yyyy-MM-dd'T'HH:mm:ssZ||dateOptionalTime",
+					"index": "not_analyzed",
+					"type": "date"
+				},
+				"mytimefield2": {
+					"doc_values": true,
+					"format": "yyyy-MM-dd HH:mm:ss,SSSZ||yyyy-MM-dd'T'HH:mm:ss.SSSSSSZ||yyyy-MM-dd'T'HH:mm:ssZ||dateOptionalTime",
+					"index": "not_analyzed",
+					"type": "date"
+				}
+			}
+		}
+	},
+	"template": "project.<project-name>.*" <2>
+}
+----
+<1> Add a custom field and parameters.
+<2> Specify the `.operations.\*` or `project.*` index.
+
+.. Change to the `openshift-logging` project:
++
+----
+$ oc project openshift-logging
+----
+
+.. Get the name of one of the Elasticsearch pods:
++
+----
+$ oc get -n logging pods -l component=es
+
+NAME                                       READY     STATUS    RESTARTS   AGE       IP             NODE                         NOMINATED NODE
+logging-es-data-master-5av030lk-1-2x494    2/2       Running   0          38m       154.128.0.80   ip-153-12-8-6.wef.internal   <none>
+----
+
+.. Load the JSON file into the Elasticsearch pod:
++
+----
+$ cat <json-file-name> | \  <1>
+oc exec -n logging -i -c elasticsearch <es-pod-name> -- \ <2>
+    curl -s -k --cert /etc/elasticsearch/secret/admin-cert \
+    --key /etc/elasticsearch/secret/admin-key \
+    https://localhost:9200/_template/<json-file-name> -XPUT -d@- | \ <1>
+python -mjson.tool
+----
+<1> The name of the JSON file you created.
+<2> The name of the Elasticsearch pod. 
++
+----
+{
+    "acknowledged": true
+}
+----
+
+..  If you have a separate OPS cluster, get the name of one of the es-ops 
+Elasticsearch pods:
++
+----
+$ oc get -n logging pods -l component=es-ops
+
+NAME                                           READY     STATUS    RESTARTS   AGE       IP             NODE                         NOMINATED NODE
+logging-es-ops-data-master-o7nhcbo4-5-b7stm    2/2       Running   0          38m       154.128.0.80   ip-153-12-8-6.wef.internal   <none>
+----
+
+.. Load the JSON file into the es-ops Elasticsearch pod:
++
+----
+$ cat <json-file-name> | \ <1>
+oc exec -n logging -i -c elasticsearch <esops-pod-name> -- \ <2>
+    curl -s -k --cert /etc/elasticsearch/secret/admin-cert \
+    --key /etc/elasticsearch/secret/admin-key \
+    https://localhost:9200/_template/<json-file-name> -XPUT -d@- | \ <1>
+python -mjson.tool
+----
+<1> The name of the JSON file you created.
+<2> The name of the OPS cluster Elasticsearch pod. 
++
+The output appears similar to the following:
++
+----
+{
+    "acknowledged": true
+}
+----
+
+.. Verify that the indices are updated:
++
+----
+oc exec -n logging -i -c elasticsearch <es-pod-name> -- \ <1>
+    curl -s -k --cert /etc/elasticsearch/secret/admin-cert \
+    --key /etc/elasticsearch/secret/admin-key \
+    https://localhost:9200/project.*/_search?sort=<custom-field>:desc | \ <2>
+python -mjson.tool
+----
+<1> The name of the Elasticsearch or OPS cluster Elasticsearch pod.
+<2> The name of a custom field you added.
++
+The command outputs the index records for your custom fields sorted in descending order. 
++
+[NOTE]
+====
+The settings do not apply to existing indices. If you want to apply the settings
+to existing indices, perform a re-index.
+====
+
+. Add the custom fields to Kibana:
+
+.. Get the existing index pattern file from your Elasticsearch container:
++
+----
+$ mkdir index_patterns
+$ cd index_patterns
+$ oc project openshift-logging
+$ for espod in $( oc get pods -l component=es -o jsonpath='{.items[*].metadata.name}' ) ; do
+>  for ff in $( oc exec -c elasticsearch <es-pod-name> -- ls /usr/share/elasticsearch/index_patterns ) ; do
+>    oc exec -c elasticsearch <es-pod-name> -- cat /usr/share/elasticsearch/index_patterns/$ff > $ff
+>  done
+>  break
+> done
+----
++
+The index pattern files are downloaded to the *_/usr/share/elasticsearch/index_patterns_* directory.
++
+For example:
++
+----
+index_patterns $ ls
+
+com.redhat.viaq-openshift.index-pattern.json
+----
+
+.. Edit the corresponding index pattern files to add a definition for each custom field to the `fields` value:
++
+For example:
++
+----
+{\"count\": 0, \"name\": \"mytimefield2\", \"searchable\": true, \"aggregatable\": true, \"readFromDocValues\": true, \"type\": \"date\", \"scripted\": false},
+----
++
+The definition must contain the `\"searchable\": true,` and `\"aggregatable\": true,` parameters in order to be used in visualizations. The data type must correspond to the Elasticsearch field definition you added above. For example, if you added the `myfield` field in Elasticsearch that is a `number` type, you cannot add `myfield` to Kibana as a `string` type.
+
+.. In the index pattern file, add the name of the Kibana index pattern to the index pattern files:
++
+For example, to use the *operations.\** index pattern:
++
+----
+"title": "*operations.*"
+----
++
+To use the *project.MYNAMESPACE.\** index pattern:
++
+----
+"title": "project.MYNAMESPACE.*"
+----
+
+.. Identify the user name and get the hash value of the user name. The index patterns are stored using the hash of the user name. Run the following two commands in order:
++
+----
+$ get_hash() {
+>     printf "%s" "$1" | sha1sum | awk '{print $1}'
+> }
+----
++
+----
+$ get_hash admin
+
+d0aeb5660fc2140aec35850c4da997
+----
+
+.. Apply the index pattern file to Elasticsearch:
++
+----
+cat com.redhat.viaq-openshift.index-pattern.json | \ <1>
+  oc exec -i -c elasticsearch <espod-name> -- es_util \ 
+    --query=".kibana.<user-hash>/index-pattern/<index>" -XPUT --data-binary @- | \ <2>
+  python -mjson.tool
+----
+<1> The name of the index pattern file.
+<2> The user hash and the index, either `.operations.\*` or `project.*`.
++
+For example:
++
+----
+cat index-pattern.json | \
+  oc exec -i -c elasticsearch mypod-23-gb9pl -- es_util \
+    --query=".kibana.d0aeb5660fc2140aec35850c4da997/index-pattern/project.MYNAMESPACE.*" -XPUT --data-binary @- | \
+  python -mjson.tool
+----
++
+The output appears similar to the following:
++
+----
+{
+    "_id": ".operations.*",
+    "_index": ".kibana.d0aeb5660fc2140aec35850c4da997",
+    "_shards": {
+        "failed": 0,
+        "successful": 2,
+        "total": 2
+    },
+    "_type": "index-pattern",
+    "_version": 1,
+    "created": true,
+    "result": "created"
+}
+----
+
+.. Exit and restart the Kibana console for the custom fields to appear in the *Available Fields* list and in the fields list on the *Management* -> *Index Patterns* page.
+
 [[configuring-curator]]
 === Curator
 
