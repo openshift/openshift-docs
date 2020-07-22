@@ -62,7 +62,7 @@ function hcsearch(searchParams) {
     // GET success
     if (hcsearchresults == "") {
       // success, but no response (response code mismatch)
-      $("#hc-search-result").append("<p><strong>An error occured while retrieving search results. Please try again later.</strong></p>");
+      $("#hc-search-result").append("<p><strong>An error occurred while retrieving search results. Please try again later.</strong></p>");
       hcSearchIndicator.hide();
     }
     if (!$.isEmptyObject(hcsearchresults.response.result)) { 
@@ -99,7 +99,7 @@ function hcsearch(searchParams) {
     hcSearchIndicator.hide();
   }).fail(function(response) {
     // GET error
-    hcSearchResult.append("<p><strong>An error occured while retrieving search results. Please try again later.</strong></p>");
+    hcSearchResult.append("<p><strong>An error occurred while retrieving search results. Please try again later.</strong></p>");
     hcSearchIndicator.hide();
   });
 }  // function hcsearch()
