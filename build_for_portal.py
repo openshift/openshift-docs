@@ -14,6 +14,7 @@ import subprocess
 import sys
 import time
 import yaml
+import requests
 
 from aura import cli
 
@@ -470,6 +471,23 @@ def scrub_file(info, book_src_dir, src_file, tag=None, cwd=None):
     Scrubs a file and returns the cleaned file contents.
     """
     base_src_file = src_file.replace(info['src_dir'] + "/", "")
+
+    # added 1/Sep/2020
+    # to allow loading files like json and yaml from external sources, this
+    # procedure loads the file recognizing that it starts with http
+    # it then checks if it exists or not, and if it exists, returns the raw data
+    # data that it finds.
+    if(base_src_file.startswith("http")):
+        try:
+            response = requests.get(base_src_file)
+            if(response):
+                return response.text
+            else:
+                raise ConnectionError("Malformed URL")
+        except Exception as exception:
+            log.error("An include file wasn't found: %s", base_src_file)
+            has_errors = True
+            sys.exit(-1)
 
     # Get a list of predefined custom title ids for the file
     title_ids = TITLE_IDS.get(base_src_file, {})
