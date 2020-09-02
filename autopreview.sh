@@ -1,7 +1,7 @@
 #!/bin/bash
 set -ev
 
-ALLOWED_USERS=("mburke5678" "vikram-redhat" "abrennan89" "ahardin-rh" "kalexand-rh" "adellape" "bmcelvee" "ousleyp" "lamek" "JStickler" "rh-max" "bergerhoffer" "huffmanca" "sheriff-rh" "jboxman" "bobfuru" "joaedwar" "aburdenthehand" "boczkowska" "Preeticp" "neal-timpe" "codyhoag" "pmacko1" "apinnick" "bgaydosrh" "lmandavi" "nkakkar81" "maxwelldb" "pneedle-rh" "lbarbeevargas" "jeana-redhat" "RichardHoch" "johnwilkins" "sjhala-ccs" "chrisnegus" "mgarrellRH" "SNiemann15")
+ALLOWED_USERS=("mburke5678" "vikram-redhat" "abrennan89" "ahardin-rh" "kalexand-rh" "adellape" "bmcelvee" "ousleyp" "lamek" "JStickler" "rh-max" "bergerhoffer" "huffmanca" "sheriff-rh" "jboxman" "bobfuru" "joaedwar" "aburdenthehand" "boczkowska" "Preeticp" "neal-timpe" "codyhoag" "pmacko1" "apinnick" "bgaydosrh" "lmandavi" "nkakkar81" "maxwelldb" "pneedle-rh" "lbarbeevargas" "jeana-redhat" "RichardHoch" "johnwilkins" "sjhala-ccs" "chrisnegus" "mgarrellRH" "SNiemann15" "sfortner-RH")
 USERNAME=${TRAVIS_PULL_REQUEST_SLUG::-15}
 COMMIT_HASH="$(git rev-parse @~)"
 mapfile -t FILES_CHANGED < <(git diff --name-only "$COMMIT_HASH")
