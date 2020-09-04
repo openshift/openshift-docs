@@ -1,25 +1,33 @@
 #!/bin/bash
 set -ev
 
-<<<<<<< HEAD
-ALLOWED_USERS=("gaurav-nelson" "tmorriso-rh" "mburke5678" "vikram-redhat" "ahardin-rh" "kalexand-rh" "adellape" "bfallonf" "bmcelvee" "ousleyp" "dhoyle-rh")
-=======
+#download build log
+wget https://api.travis-ci.org/v3/job/"${TRAVIS_JOB_ID}"/log.txt
+
+# since all errors are Red (\033[0;31m), grep gets them and then sed
+# removes all color information.
+ERROR_LIST=$(grep '31m' travis-log-408052641.txt | sed -r "s/[[:cntrl:]]\[[0-9]{1,3}m//g")
+echo "" > errors.txt
+
 ALLOWED_USERS=("mburke5678" "vikram-redhat" "abrennan89" "ahardin-rh" "kalexand-rh" "adellape" "bmcelvee" "ousleyp" "lamek" "JStickler" "rh-max" "bergerhoffer" "huffmanca" "sheriff-rh" "jboxman" "bobfuru" "joaedwar" "aburdenthehand" "boczkowska" "Preeticp" "neal-timpe" "codyhoag" "pmacko1" "apinnick" "bgaydosrh" "lmandavi" "nkakkar81" "maxwelldb" "pneedle-rh" "lbarbeevargas" "jeana-redhat" "RichardHoch" "johnwilkins" "sjhala-ccs" "chrisnegus" "mgarrellRH" "SNiemann15" "sfortner-RH")
->>>>>>> e62f2d9a8... update preview files
 USERNAME=${TRAVIS_PULL_REQUEST_SLUG::-15}
-COMMIT_HASH="$(git rev-parse @~)"
-mapfile -t FILES_CHANGED < <(git diff --name-only "$COMMIT_HASH")
 
 if [ "$TRAVIS_PULL_REQUEST" != "false" ] ; then #to make sure it only runs on PRs and not all merges
     if [[ " ${ALLOWED_USERS[*]} " =~ " ${USERNAME} " ]]; then # to make sure it only runs on PRs from @openshift/team-documentation
         if [ "${TRAVIS_PULL_REQUEST_BRANCH}" != "master" ] ; then # to make sure it does not run for direct master changes
-            if [[ " ${FILES_CHANGED[*]} " = *".adoc"* ]] || [[ " ${FILES_CHANGED[*]} " = *"_topic_map.yml"* ]] || [[ " ${FILES_CHANGED[*]} " = *"_distro_map.yml"* ]] ; then # to make sure this doesn't run for general modifications
-                echo "{\"PR_BRANCH\":\"${TRAVIS_PULL_REQUEST_BRANCH}\",\"BASE_REPO\":\"${TRAVIS_REPO_SLUG}\",\"PR_NUMBER\":\"${TRAVIS_PULL_REQUEST}\",\"USER_NAME\":\"${USERNAME}\",\"BASE_REF\":\"${TRAVIS_BRANCH}\",\"REPO_NAME\":\"${TRAVIS_PULL_REQUEST_SLUG}\"}" > buildset.json
-                curl -H 'Content-Type: application/json' --request POST --data @buildset.json "https://preview-receiver.glitch.me/"
-                echo -e "\\n\\033[0;32m[✓] Sent request for building a preview.\\033[0m"
-            else
-                echo -e "\\n\\033[1;33m[!] No .adoc files modified, not building a preview.\\033[0m"
-            fi
+          echo "$ERROR_LIST" >> errors.txt
+
+          #add metadta for errors (required for adding GH comment)
+          {
+          echo -e "USERNAME:${USERNAME}"
+          echo "PR_NUMBER:${TRAVIS_PULL_REQUEST}"
+          echo "BASE_REPO:${TRAVIS_REPO_SLUG}"
+          } >> info.txt
+
+          #bundle errors and metadata as json
+          cat errors.txt info.txt | jq  --raw-input . | jq --slurp . > buildlog.json
+          #send json to ocp-docs-bot
+          curl -H 'Content-Type: application/json' --request POST --data @buildlog.json "https://ocp-docs-bot.glitch.me/travis-error"
         else
             echo -e "\\n\\033[1;33m[!] Direct PR for master branch, not building a preview.\\033[0m"
         fi
