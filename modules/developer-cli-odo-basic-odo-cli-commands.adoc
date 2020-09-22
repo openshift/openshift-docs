@@ -478,9 +478,6 @@ Perform storage operations.
   # Delete storage mystorage from the currently active component
   odo storage delete mystorage
 
-  # Delete storage mystorage from component 'mongodb'
-  odo storage delete mystorage --component mongodb
-
   # List all storage attached or mounted to the current component and
   # all unattached or unmounted storage in the current application
   odo storage list
