@@ -17,6 +17,10 @@ var clipboard = new ClipboardJS('.clipboard-button', {
         return clipboardText.substr(2);
       }
 
+      if (clipboardText.slice(0,5) === "sh-4.") {
+        return clipboardText.substr(8)
+      }
+
       return clipboardText;
     }
 });
