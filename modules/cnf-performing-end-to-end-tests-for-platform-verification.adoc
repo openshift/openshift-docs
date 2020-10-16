@@ -5,13 +5,8 @@
 [id="cnf-performing-end-to-end-tests-for-platform-verification_{context}"]
 = Performing end-to-end tests for platform verification
 
-[IMPORTANT]
-====
-The feature described in this document is for *Developer Preview* purposes and is *not supported* by Red Hat at this time.
-This feature could cause nodes to reboot and not be available.
-====
-
-The CNF tests image is a containerized test suite that validates features required to run CNF payloads.
+The Cloud-native Network Functions (CNF) link:https://quay.io/repository/openshift-kni/cnf-tests?tag=latest&tab=tags[(CNF)]
+tests image is a containerized test suite that validates features required to run CNF payloads.
 You can use this image to validate a CNF-enabled OpenShift cluster where all the components
 required for running CNF workloads are installed.
 
@@ -25,14 +20,20 @@ The validation phase checks that all the features required to be tested are depl
 
 Validations include:
 
-* Targeting a machine config pool that belong to the machines to be tested
+* Targeting a MachineConfigPool that belong to the machines to be tested
 * Enabling SCTP on the nodes
-* The Performance Addon Operator is installed
-* The SR-IOV Operator is installed
-* The PTP Operator is installed
+* Having the Performance Addon Operator installed
+* Having the SR-IOV Operator installed
+* Having the PTP Operator installed
 * Using OVN k8s as the SDN
 
-.Prerequisites
+The tests need to perform an environment configuration every time they are executed.
+This involves items such as creating SRI-OV Node Policies, Performance Profiles, or PtpProfiles.
+Allowing the tests to configure an already configured cluster may affect the functionality of the cluster.
+Also, changes to configuration items such as SR-IOV Node Policy might result in the environment being temporarily
+unavailable until the configuration change is processed.
+
+== Prerequisites
 
 * The test entrypoint is `/usr/bin/test-run.sh`. It runs both a setup test set and the real conformance test suite.
 The minimum requirement is to provide it with a kubeconfig file and it's related `$KUBECONFIG` environment variable, mounted through a volume.
@@ -66,10 +67,12 @@ spec:
       node-role.kubernetes.io/worker-cnf: ""
 ----
 +
-The worker pool name can be overridden using the `ROLE_WORKER_CNF` variable:
+You can use the `ROLE_WORKER_CNF` variable to override the worker pool name:
 +
+[source,terminal]
 ----
-$ docker run -v $(pwd)/:/kubeconfig -e KUBECONFIG=/kubeconfig/kubeconfig -e ROLE_WORKER_CNF=custom-worker-pool registry.redhat.io/openshift4/cnf-tests-rhel8 /usr/bin/test-run.sh
+$ docker run -v $(pwd)/:/kubeconfig -e KUBECONFIG=/kubeconfig/kubeconfig -e
+ROLE_WORKER_CNF=custom-worker-pool registry.redhat.io/openshift4/cnf-tests-rhel8 /usr/bin/test-run.sh
 ----
 +
 [NOTE]
@@ -85,7 +88,7 @@ $ docker run -v $(pwd)/:/kubeconfig -e KUBECONFIG=/kubeconfig/kubeconfig registr
 ----
 This allows your kubeconfig file to be consumed from inside the running container.
 
-=== Image parameters
+== Image parameters
 
 Depending on the requirements, the tests can use different images.
 There are two images used by the tests that can be changed using the following environment variables:
@@ -101,13 +104,24 @@ $ docker run -v $(pwd)/:/kubeconfig -e KUBECONFIG=/kubeconfig/kubeconfig -e CNF_
 
 === Ginkgo parameters
 
-The test suite is built upon the ginkgo bdd framework. This means that it accepts parameters for filtering or skipping tests.
+The test suite is built upon the ginkgo BDD framework.
+This means that it accepts parameters for filtering or skipping tests.
 
 You can use the `-ginkgo.focus` parameter to filter a set of tests:
 
 ----
 $ docker run -v $(pwd)/:/kubeconfig -e KUBECONFIG=/kubeconfig/kubeconfig registry.redhat.io/openshift4/cnf-tests-rhel8 /usr/bin/test-run.sh -ginkgo.focus="performance|sctp"
 ----
+
+[NOTE]
+====
+There is a particular test ([sriov] SCTP integration) that requires both SR-IOV and SCTP.
+Given the selective nature of the `focus` parameter, this test is triggered by only placing the `sriov` matcher.
+If the tests are executed against a cluster where SR-IOV is installed but SCTP is not, adding the
+`-ginkgo.skip=SCTP` parameter causes the tests to skip SCTP testing.
+====
+
+=== Available features
 
 The set of available features to filter are:
 
@@ -117,13 +131,14 @@ The set of available features to filter are:
 * `sctp`
 * `dpdk`
 
+== Dry run
+
 Use this command to run in dry-run mode.
 This is useful for checking what is in the test suite and provides output for all of the tests the image would run.
 
 ----
 $ docker run -v $(pwd)/:/kubeconfig -e KUBECONFIG=/kubeconfig/kubeconfig registry.redhat.io/openshift4/cnf-tests-rhel8 /usr/bin/test-run.sh -ginkgo.dryRun -ginkgo.v
 ----
-
 
 == Disconnected mode
 
@@ -242,6 +257,152 @@ With the following command, the local path is mounted in `/kubeconfig` inside th
 $ docker run -v $(pwd)/:/kubeconfig -e KUBECONFIG=/kubeconfig/kubeconfig registry.redhat.io/openshift4/cnf-tests-rhel8 /usr/bin/mirror --registry "my.local.registry:5000/" --images "/kubeconfig/images.json" |  oc image mirror -f -
 ----
 
+== Discovery mode
+
+Discovery mode allows you to validate the functionality of a cluster without altering its configuration.
+Existing environment configuration are used for the tests. The tests attempt to find the configuration items needed
+and use those items to execute the tests.
+If resources needed to run a specific test are not found, the test is skipped (providing an appropriate
+message to the user).
+After the tests are finished, no cleanup of the preconfigured configuration items is done, and the test environment
+can immediately be used for another test run.
+
+Some configuration items are still created by the tests.
+These are specific items needed for a test to run; for example, a SRIOV Network.
+These configuration items are created in custom namespaces and are cleaned up after the tests are executed.
+
+An additional bonus is a reduction in test run times.
+As the configuration items are already there, no time is needed for environment configuration and stabilization.
+
+To enable discovery mode, the tests must be instructed by setting the `DISCOVERY_MODE` environment variable as follows:
+
+[source,terminal]
+----
+$ docker run -v $(pwd)/:/kubeconfig:Z -e KUBECONFIG=/kubeconfig/kubeconfig -e
+DISCOVERY_MODE=true quay.io/openshift-kni/cnf-tests /usr/bin/test-run.sh
+----
+
+=== Required environment configuration prerequisites
+
+.SRIOV tests
+
+Most SRIOV tests require the following resources:
+
+* SriovNetworkNodePolicy
+* At least one with the resource specified by SriovNetworkNodePolicy being allocatable
+(a resource count of at least 5 is considered sufficient)
+
+Some tests have additional requirements:
+
+* An unused device on the node with available policy resource (with link state DOWN and not a bridge slave)
+* A SriovNetworkNodePolicy with a MTU value of 9000
+
+.DPDK tests
+
+The DPDK related tests require:
+
+* A PerformanceProfile
+* A SRIOV policy
+* A node with resources available for the SRIOV policy and available with the PerformanceProfile node selector
+
+.PTP tests
+
+* A slave PtpConfig (`ptp4lOpts="-s" ,phc2sysOpts="-a -r"`)
+* A node with a label matching the slave PtpConfig
+
+.SCTP tests
+
+* `SriovNetworkNodePolicy`
+* A node matching both the `SriovNetworkNodePolicy` and a MachineConfig that enables SCTP
+
+.Performance operator tests
+
+Various tests have different requirements. Some of them are:
+
+* A PerformanceProfile
+* A PerformanceProfile having `profile.Spec.CPU.Isolated = 1`
+* A PerformanceProfile having `profile.Spec.RealTimeKernel.Enabled == true`
+* A node with no huge pages usage
+
+=== Limiting the nodes used during tests
+
+The nodes on which the tests are executed can be limited by specifying a `NODES_SELECTOR` environment variable.
+Any resources created by the test are then limited to the specified nodes.
+
+----
+$ docker run -v $(pwd)/:/kubeconfig:Z -e KUBECONFIG=/kubeconfig/kubeconfig -e
+NODES_SELECTOR=node-role.kubernetes.io/worker-cnf quay.io/openshift-kni/cnf-tests /usr/bin/test-run.sh
+----
+
+=== Reducing test running time
+
+=== Using a single performance profile
+
+The resources needed by the DPDK tests are higher than those required by the performance test suite.
+To make the execution quicker, the performance profile used by tests can be overridden using one that also serves
+the DPDK test suite.
+
+To do this, a profile like the following one can be mounted inside the container,
+and the performance tests can be instructed to deploy it.
+
+[source,yaml]
+----
+apiVersion: performance.openshift.io/v1
+kind: PerformanceProfile
+metadata:
+  name: performance
+spec:
+  cpu:
+    isolated: "4-15"
+    reserved: "0-3"
+  hugepages:
+    defaultHugepagesSize: "1G"
+    pages:
+    - size: "1G"
+      count: 16
+      node: 0
+  realTimeKernel:
+    enabled: true
+  nodeSelector:
+    node-role.kubernetes.io/worker-cnf: ""
+----
+
+To override the performance profile used, the manifest must be mounted inside the container and
+the tests must be instructed by setting the `PERFORMANCE_PROFILE_MANIFEST_OVERRIDE` parameter as follows:
+
+[source,terminal]
+----
+$ docker run -v $(pwd)/:/kubeconfig:Z -e KUBECONFIG=/kubeconfig/kubeconfig -e
+PERFORMANCE_PROFILE_MANIFEST_OVERRIDE=/kubeconfig/manifest.yaml quay.io/openshift-kni/cnf-tests /usr/bin/test-run.sh
+----
+
+=== Disabling the performance profile cleanup
+
+When not running in discovery mode, the suite cleans up all the created artifacts and configurations.
+This includes the performance profile.
+
+When deleting the performance profile, the MachineConfigPool is modified and nodes are rebooted.
+After a new iteration, a new profile is created. This causes long test cycles between runs.
+
+To speed up this process, a `CLEAN_PERFORMANCE_PROFILE="false"` can be set to instruct the tests not to
+clean the performance profile. In this way, the next iteration won't need to create it and wait for it to be applied.
+
+[source,terminal]
+----
+$ docker run -v $(pwd)/:/kubeconfig:Z -e KUBECONFIG=/kubeconfig/kubeconfig -e
+CLEAN_PERFORMANCE_PROFILE="false" quay.io/openshift-kni/cnf-tests /usr/bin/test-run.sh
+----
+
+== Troubleshooting
+
+The cluster must be reached from within the container. You can verify this by running:
+
+----
+docker run -v $(pwd)/:/kubeconfig -e KUBECONFIG=/kubeconfig/kubeconfig
+quay.io/openshift-kni/cnf-tests oc get nodes
+----
+
+If this does not work, it could be caused by spanning across dns, mtu size, or firewall issues.
 
 
 == Test Reports
@@ -291,7 +452,7 @@ and the performance tests can be instructed to deploy it.
 
 [source,yaml]
 ----
-apiVersion: performance.openshift.io/v1alpha1
+apiVersion: performance.openshift.io/v1
 kind: PerformanceProfile
 metadata:
  name: performance
