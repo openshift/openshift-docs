@@ -21,6 +21,9 @@ using tools and libraries provided by the SDK.
 or above to support the `apps/v1beta2` API group), for example {product-title} {product-version}
 - Access to the cluster using an account with `cluster-admin` permissions
 - OpenShift CLI (`oc`) v{product-version}+ installed
+- kubectl[https://kubernetes.io/docs/tasks/tools/install-kubectl/] version v1.11.3+.
+- kustomize[https://sigs.k8s.io/kustomize/docs/INSTALL.md] v3.1.0+
+- Access to a OpenShift v{product-version}+ cluster.
 
 .Procedure
 
@@ -29,10 +32,11 @@ or above to support the `apps/v1beta2` API group), for example {product-title} {
 Use the CLI to create a new `memcached-operator` project:
 +
 ----
-$ mkdir -p $GOPATH/src/github.com/example-inc/
-$ cd $GOPATH/src/github.com/example-inc/
-$ operator-sdk new memcached-operator
-$ cd memcached-operator
+$ mkdir -p $GOPATH/src/github.com/example-inc/memcached-operator
+$ cd $GOPATH/src/github.com/example-inc/memcached-operator
+# we'll use a domain of example.com
+# so all API groups will be <group>.example.com
+$ operator-sdk init --domain=example.com --repo=github.com/example-inc/memcached-operator
 ----
 
 . *Add a new Custom Resource Definition (CRD).*
@@ -41,15 +45,22 @@ $ cd memcached-operator
 `cache.example.com/v1apha1` and `Kind` set to `Memcached`:
 +
 ----
-$ operator-sdk add api \
-    --api-version=cache.example.com/v1alpha1 \
-    --kind=Memcached
+$ operator-sdk create api --group=cache --version=v1alpha1 --kind=Memcached
+
+Create Resource [y/n]
+y
+Create Controller [y/n]
+y
+Writing scaffold for you to edit...
+api/v1alpha1/memcached_types.go
+controllers/memcached_controller.go
+...
 ----
 +
-This scaffolds the Memcached resource API under `pkg/apis/cache/v1alpha1/`.
+This scaffolds the Memcached resource API under `api/v1alpha1/`.
 
 .. Modify the spec and status of the `Memcached` Custom Resource (CR) at the
-`pkg/apis/cache/v1alpha1/memcached_types.go` file:
+`api/v1alpha1/memcached_types.go` file:
 +
 [source,go]
 ----
@@ -63,14 +74,39 @@ type MemcachedStatus struct {
 }
 ----
 
+.. Add the +kubebuilder:subresource:status marker to add a status subresource to the CRD manifest so that the controller can update the CR status without changing the rest of the CR object:
++
+[source,go]
+----
+// Memcached is the Schema for the memcacheds API
+// +kubebuilder:subresource:status
+type Memcached struct {
+	metav1.TypeMeta   `json:",inline"`
+	metav1.ObjectMeta `json:"metadata,omitempty"`
+
+	Spec   MemcachedSpec   `json:"spec,omitempty"`
+	Status MemcachedStatus `json:"status,omitempty"`
+}
+----
+
 .. After modifying the `*_types.go` file, always run the following command to
 update the generated code for that resource type:
 +
 ----
-$ operator-sdk generate k8s
+$ make generate
 ----
 
-. *Optional: Add custom validation to your CRD.*
+.. The above makefile target will invoke the controller-gen utility to update the api/v1alpha1/zz_generated.deepcopy.go file to ensure our API’s Go type definitons implement the runtime.Object interface that all Kind types must implement.
+
+Generating CRD manifests
+.. Once the API is defined with spec/status fields and CRD validation markers, the CRD manifests can be generated and updated with the following command:
++
+----
+$ make manifests
+----
+.. This makefile target will invoke controller-gen to generate the CRD manifests at config/crd/bases/cache.example.com_memcacheds.yaml.
+
+. *Optional: OpenAPI validation*
 +
 OpenAPI v3.0 schemas are added to CRD manifests in the `spec.validation` block when
 the manifests are generated. This validation block allows Kubernetes to validate
@@ -104,11 +140,7 @@ documentation.
 +
 If you add any custom validations, run the following command to update the
 OpenAPI validation section in the CRD's
-`deploy/crds/cache.example.com_memcacheds_crd.yaml` file:
-+
-----
-$ operator-sdk generate crds
-----
+
 +
 .Example generated YAML
 [source,yaml]
@@ -124,22 +156,10 @@ spec:
               type: integer
 ----
 
-. *Add a new Controller.*
-
-.. Add a new Controller to the project to watch and reconcile the Memcached
-resource:
-+
-----
-$ operator-sdk add controller \
-    --api-version=cache.example.com/v1alpha1 \
-    --kind=Memcached
-----
-+
-This scaffolds a new Controller implementation under
-`pkg/controller/memcached/`.
+. *Implement the Controller.*
 
 .. For this example, replace the generated controller file
-`pkg/controller/memcached/memcached_controller.go` with the
+`controllers/memcached_controller.go` with the
 link:https://github.com/operator-framework/operator-sdk/blob/master/example/memcached-operator/memcached_controller.go.tmpl[example implementation].
 +
 The example controller executes the following reconciliation logic for each
@@ -156,7 +176,7 @@ reconcile loop is triggered. You can skip these steps
 to go directly to building and running the Operator.
 
 .. Inspect the Controller implementation at the
-`pkg/controller/memcached/memcached_controller.go` file to see how the
+`controllers/memcached_controller.go` file to see how the
 Controller watches resources.
 +
 The first watch is for the Memcached type as the primary resource. For each Add,
@@ -207,14 +227,32 @@ return reconcile.Result{Requeue: true}, nil
 ----
 [id="building-memcached-operator-using-osdk-build-and-run_{context}"]
 
+... Specify permissions and generate RBAC manifests
+
+.... The controller needs certain RBAC permissions to interact with the resources it manages. These are specified via [RBAC markers][rbac_markers] like the following:
+
+----
+// +kubebuilder:rbac:groups=cache.example.com,resources=memcacheds,verbs=get;list;watch;create;update;patch;delete
+// +kubebuilder:rbac:groups=cache.example.com,resources=memcacheds/status,verbs=get;update;patch
+// +kubebuilder:rbac:groups=apps,resources=deployments,verbs=get;list;watch;create;update;patch;delete
+// +kubebuilder:rbac:groups=core,resources=pods,verbs=get;list;
+
+func (r *MemcachedReconciler) Reconcile(req ctrl.Request) (ctrl.Result, error) {
+----
+
+.... The ClusterRole manifest at config/rbac/role.yaml is generated from the above markers via controller-gen with the following command:
+
+----
+$ make manifests
+----
+
 . *Build and run the Operator.*
 
 .. Before running the Operator, the CRD must be registered with the Kubernetes API
 server:
 +
 ----
-$ oc create \
-    -f deploy/crds/cache_v1alpha1_memcached_crd.yaml
+$ make install
 ----
 
 .. After registering the CRD, there are two options for running the Operator:
@@ -231,14 +269,8 @@ Choose one of the following methods.
 .... Build the `memcached-operator` image and push it to a registry:
 +
 ----
-$ operator-sdk build quay.io/example/memcached-operator:v0.0.1
-----
-
-.... The Deployment manifest is generated at `deploy/operator.yaml`. Update the
-Deployment image as follows since the default is just a placeholder:
-+
-----
-$ sed -i 's|REPLACE_IMAGE|quay.io/example/memcached-operator:v0.0.1|g' deploy/operator.yaml
+$ export USERNAME=<quay-username>
+$ make docker-build IMG=quay.io/$USERNAME/memcached-operator:v0.0.1
 ----
 
 .... Ensure you have an account on link:https://quay.io[Quay.io] for the next step,
@@ -249,17 +281,21 @@ link:https://quay.io/new/[create a new public image] repository named
 .... Push the image to the registry:
 +
 ----
-$ podman push quay.io/example/memcached-operator:v0.0.1
+$ make docker-push IMG=quay.io/$USERNAME/memcached-operator:v0.0.1
 ----
 
-.... Setup RBAC and deploy `memcached-operator`:
-+
+.... Run the operator in the default namespace which can be specified for all resources in config/default/kustomization.yaml:
 ----
-$ oc create -f deploy/role.yaml
-$ oc create -f deploy/role_binding.yaml
-$ oc create -f deploy/service_account.yaml
-$ oc create -f deploy/operator.yaml
+$ cd config/default/ && kustomize edit set namespace "default" && cd ../..
 ----
+
+.... Run the following to deploy the operator. This will also install the RBAC manifests from config/rbac.
+
+----
+$ make deploy IMG=quay.io/$USERNAME/memcached-operator:v0.0.1
+----
+
+.... NOTE If you have enabled webhooks in your deployments, you will need to have cert-manager already installed in the cluster or make deploy will fail when creating the cert-manager resources.
 
 .... Verify that `memcached-operator` is up and running:
 +
