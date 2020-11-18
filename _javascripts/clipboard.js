@@ -1,5 +1,5 @@
 // This file runs the Clipboard.js functionality
-document.querySelectorAll('div.listingblock').forEach((codeblock, index) => {
+document.querySelectorAll('div.listingblock, div.literalblock').forEach((codeblock, index) => {
   codeblock.getElementsByTagName('pre')[0].insertAdjacentHTML("beforebegin", "<p class='clipboard-button-container'><span class='clipboard-button fa fa-clipboard'></span></p>");
   document.getElementsByTagName('pre')[index].setAttribute('id',`clipboard-${index}`);
 });
@@ -15,6 +15,10 @@ var clipboard = new ClipboardJS('.clipboard-button', {
 
       if (clipboardText.slice(0, 2) === "# ") {
         return clipboardText.substr(2);
+      }
+
+      if (clipboardText.slice(0,5) === "sh-4.") {
+        return clipboardText.substr(8)
       }
 
       return clipboardText;
