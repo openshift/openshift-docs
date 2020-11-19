@@ -9,7 +9,8 @@ wget https://api.travis-ci.org/v3/job/"${TRAVIS_JOB_ID}"/log.txt
 ERROR_LIST=$(grep '31m' travis-log-408052641.txt | sed -r "s/[[:cntrl:]]\[[0-9]{1,3}m//g")
 echo "" > errors.txt
 
-ALLOWED_USERS=("mburke5678" "vikram-redhat" "abrennan89" "ahardin-rh" "kalexand-rh" "adellape" "bmcelvee" "ousleyp" "lamek" "JStickler" "rh-max" "bergerhoffer" "huffmanca" "sheriff-rh" "jboxman" "bobfuru" "joaedwar" "aburdenthehand" "boczkowska" "Preeticp" "neal-timpe" "codyhoag" "pmacko1" "apinnick" "bgaydosrh" "lmandavi" "nkakkar81" "maxwelldb" "pneedle-rh" "lbarbeevargas" "jeana-redhat" "RichardHoch" "johnwilkins" "sjhala-ccs" "chrisnegus" "mgarrellRH" "SNiemann15" "sfortner-RH" "jonquilwilliams" "ktania46" "wking")
+ALLOWED_USERS=("mburke5678" "vikram-redhat" "abrennan89" "ahardin-rh" "kalexand-rh" "adellape" "bmcelvee" "ousleyp" "lamek" "JStickler" "rh-max" "bergerhoffer" "sheriff-rh" "jboxman" "bobfuru" "aburdenthehand" "boczkowska" "Preeticp" "neal-timpe" "codyhoag" "apinnick" "bgaydosrh" "lmandavi" "maxwelldb" "pneedle-rh" "lbarbeevargas" "jeana-redhat" "RichardHoch" "johnwilkins" "sjhala-ccs" "mgarrellRH" "SNiemann15" "sfortner-RH" "jonquilwilliams" "ktania46" "wking" "
+jc-berger" "rishumehra")
 USERNAME=${TRAVIS_PULL_REQUEST_SLUG::-15}
 
 if [ "$TRAVIS_PULL_REQUEST" != "false" ] ; then #to make sure it only runs on PRs and not all merges
