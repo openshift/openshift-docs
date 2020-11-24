@@ -1,10 +1,11 @@
+// the new final link to load
+newLink = "";
+newVersion = "";
+
 function versionSelector(list) {
 
   // the version we want
   newVersion = list[list.selectedIndex].value;
-
-  // the new final link to load
-  newLink = "";
 
   // the fileRequested
   var fileRequested = "";
@@ -44,7 +45,19 @@ function versionSelector(list) {
 
   // without doing async loads, there is no way to know if the path actually
   // exists - so we will just have to load
-  window.location = newLink;
+  // window.location = newLink;
+  // testing async validations
+  $.ajax({
+    type: 'HEAD',
+    url: newLink,
+    success: function() {
+      window.location = newLink;
+    },
+    error: function() {
+      alert("This page doesn't exist in version: " + newVersion);
+    }
+  });
+
 
 }
 
