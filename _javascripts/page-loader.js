@@ -53,17 +53,19 @@ function versionSelector(list) {
     success: function() {
       window.location = newLink;
     },
-    error: function() {
-      list.value = currentVersion;
-      if(confirm("This page doesn't exist in version " + newVersion + ". Click OK to search the " + newVersion + " docs OR Cancel to stay on this page.")) {
-        window.location = "https://google.com/search?q=site:https://docs.openshift.com/container-platform/" + newVersion + " " + fileRequested;
-      newVersion 
+    error: function(jqXHR, exception) {
+      if(jqXHR.status == 404) {
+        list.value = currentVersion;
+        if(confirm("This page doesn't exist in version " + newVersion + ". Click OK to search the " + newVersion + " docs OR Cancel to stay on this page.")) {
+          window.location = "https://google.com/search?q=site:https://docs.openshift.com/container-platform/" + newVersion + " " + fileRequested;
+        } else {
+          // do nothing, user doesn't want to search
+        }
       } else {
-        // do nothing
+        window.location = newLink; // assumption here is that we can follow through with a redirect
       }
     }
   });
-
 
 }
 
