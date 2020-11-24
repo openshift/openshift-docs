@@ -1,6 +1,7 @@
 // the new final link to load
 newLink = "";
 newVersion = "";
+currentVersion = "";
 
 function versionSelector(list) {
 
@@ -54,6 +55,7 @@ function versionSelector(list) {
       window.location = newLink;
     },
     error: function() {
+      list.value = currentVersion;
       alert("This page doesn't exist in version: " + newVersion);
     }
   });
