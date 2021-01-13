@@ -1,0 +1,181 @@
+// Module included in the following assemblies:
+//
+// * networking//using-an-egress-router-cni.adoc
+[id="nw-egress-router-cni_{context}"]
+= About the egress router CNI
+
+The {product-title} egress router CNI redirects traffic to a specified remote server, using a private source IP address that is not used for any other purpose.
+This allows you to send network traffic to servers that are set up to allow access only from specific IP addresses.
+
+[NOTE]
+===
+This is currently on Technology Preview for the current release
+===
+
+[IMPORTANT]
+====
+The egress router image is not compatible with Amazon AWS, Azure Cloud, or any other cloud platform that does not support layer 2 manipulations due to their incompatibility with macvlan traffic.
+====
+
+[id="nw-egress-router-cni-about-modes_{context}"]
+
+== Egress router CNI modes
+In _redirect mode_, an egress router pod sets up iptables rules to redirect traffic from its own IP address to one or more destination IP addresses. Client pods that need to use the reserved source IP address must be modified to connect to the egress router rather than connecting directly to the destination IP.
+
+[NOTE]
+===
+In Technology Preview, Egress router CNI only supports _redirect_mode_
+===
+
+[id="nw-egress-router-cni-implementation"]
+== Egress router CNI implementation
+
+An egress router is a pod that has two interfaces, (eth0) and (e.g. macvlan0). eth0 is on the cluster network in OpenShift (internal) and macvlan0 has an IP and gateway from the external physical network.
+Pods can access the egress router service thus enabling them to access external services. The egress router acts as a bridge between pods and an external system.
+
+Traffic going out the egress router goes via node, but it will have the MAC address of the macvlan0 interface inside the egress router.
+In openshift-sdn, the egress router was implemented by adding an annotation to allow a pod to request a macvlan interface. In order to avoid repeating this behavior in ovn-kubernetes, we'd be requesting such interface using multus to ensure feature-parity with openshift-sdn.
+
+The CNI plugin itself gets installed by multus' daemonset, so we'll have to configure it using a `NetworkAttachmentDefinition`
+
+[id="nw-egress-router-nad"]
+== Egress router CNI NetworkAttachmentDefinition
+
+As the CNI plugin is installed, you'd be able to create a NetworkAttachmentDefinition (NAD) with the CNI configuration alongside, just such as in the below example.
+
+The `NetworkAttachmentDefinition` is used to setup the network attachment, i.e. secondary interface for the pod.
+
+[source,yaml]
+---
+apiVersion: "k8s.cni.cncf.io/v1"
+kind: NetworkAttachmentDefinition
+metadata:
+  name: egress-router
+spec:
+  config: '{
+    "cniVersion": "0.4.0",
+    "type": "egress-router",
+    "name": "egress-router",
+    "ip": {
+      "addresses": [
+        "192.168.123.99"
+        ],
+      "destinations": [
+        "192.168.123.91"
+      ],
+      "gateway": "192.168.123.1"
+      }
+    }'
+---
+
+These options would be equivalent as the ones in the openshift-sdn case:
+
+* `addresses` configures the macvlan interface to use as its ip address.
+* `gateway` is the IP address for the gateway
+* `destinations` Network Address Translations (NAT) are set up so that connections to the cluster IP address of the pod attached to this NAD are redirected to the same port on IP address specified by this variable.
+
+s would create the additional network, which would be later used in the pod
+with the macvlan interface.
+
+[id="nw-egress-router-cni-pod"]
+== Egress Router CNI Pod
+
+[NOTE]
+===
+ A pod image with iptables is required in order to use it to see the created
+ iptables rules, but it is NOT for the egress-router-cni to work.
+===
+
+[source,yaml]
+---
+apiVersion: v1
+kind: Pod
+metadata:
+  name: egress-router-pod
+  annotations:
+    k8s.v1.cni.cncf.io/networks: egress-router
+spec:
+  containers:
+    - name: openshift-egress-router-pod
+      command: ["/bin/bash", "-c", "sleep 999999999"]
+      image: centos/tools
+      securityContext:
+        privileged: true
+
+---
+
+If we now check out the annotations from the just-created pod, we'd be able to
+see that it has two interfaces: the default one and another atached to the NAD
+that we just created previously.
+
+[source,bash]
+---
+Annotations:  k8s.ovn.org/pod-networks:
+                {"default":{"ip_addresses":["10.131.0.12/23"],"mac_address":"0a:58:0a:83:00:0c","gateway_ips":["10.131.0.1"],"ip_address":"10.131.0.12/23"...
+              k8s.v1.cni.cncf.io/network-status:
+                [{
+                    "name": "",
+                    "interface": "eth0",
+                    "ips": [
+                        "10.131.0.12"
+                    ],
+                    "mac": "0a:58:0a:83:00:0c",
+                    "default": true,
+                    "dns": {}
+                },{
+                    "name": "default/egress-router",
+                    "interface": "net1",
+                    "ips": [
+                        "10.200.16.0"
+                    ],
+                    "mac": "a6:e3:20:ae:a9:69",
+                    "dns": {}
+                }]
+
+---
+
+Also, inside the egress router pod the iptables rules would've been applied,
+pretty much in the same way as we showed before.
+
+[NOTE]
+===
+ Depending on the iptables version on the pod and the host, some `legacy`
+ iptables rules might not be showing from the pod, we'll explain how to check
+ that directly from the host.
+===
+
+[source,bash]
+---
+[dsal@bkr-hv02  ~]$ oc rsh egress-router-pod
+sh-4.2# iptables -t nat -L
+Chain PREROUTING (policy ACCEPT)
+target     prot opt source               destination
+DNAT       all  --  anywhere             anywhere             to:10.0.3.0
+
+Chain INPUT (policy ACCEPT)
+target     prot opt source               destination
+
+Chain OUTPUT (policy ACCEPT)
+target     prot opt source               destination
+
+Chain POSTROUTING (policy ACCEPT)
+target     prot opt source               destination
+SNAT       all  --  anywhere             anywhere             to:192.168.10.99
+---
+
+In case you don't see any iptables rule from the pod, you can always get them
+from the host the pod is running at.
+
+[source,bash]
+---
+[root@worker-1 core]# iptables-save -t nat
+# Generated by iptables-save v1.8.4 on Fri Dec 11 15:29:48 2020
+*nat
+:PREROUTING ACCEPT [0:0]
+:INPUT ACCEPT [0:0]
+:POSTROUTING ACCEPT [0:0]
+:OUTPUT ACCEPT [0:0]
+-A PREROUTING -i eth0 -j DNAT --to-destination 10.100.3.0
+-A POSTROUTING -o net1 -j SNAT --to-source 10.200.16.0
+COMMIT
+---
