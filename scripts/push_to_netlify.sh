@@ -130,16 +130,15 @@ if [[ "$COMMENT_FOUND" = false ]]; then
             do
                 #only do this for adoc files
                 if [ "${i: -5}" == ".adoc" ] ; then
-                    #ignore adoc files which are modules or topics as final urls are for assemblies
+                    #ignore adoc files which are modules or topics
                     if [[ ${i} != *"topic"* || ${i} != *"module"* ]] ; then
                         FILE_NAME="${i::-5}"
-			# this check is not strictly necessary for new content, and of course, needs to be versioned.
-                        # CHECK_DOCS_URL="https://docs.openshift.com/container-platform/3.9/$FILE_NAME.html"
-                        #if curl --output /dev/null --silent --head --fail "$CHECK_DOCS_URL"; then
-                        FINAL_URL="https://${PR_BRANCH}--ocpdocs.netlify.com/openshift-enterprise/latest/$FILE_NAME.html"
-                        #COMMENT_DATA2="- *$i*: ${COMMENT_DATA2}${FINAL_URL}\\n"
-                        echo "- *$i*: ${FINAL_URL}" >> comments.txt
-                        #fi
+                        CHECK_DOCS_URL="https://docs.openshift.com/container-platform/3.9/$FILE_NAME.html"
+                        if curl --output /dev/null --silent --head --fail "$CHECK_DOCS_URL"; then
+                            FINAL_URL="https://${PR_BRANCH}--ocpdocs.netlify.com/openshift-enterprise/latest/$FILE_NAME.html"
+                            #COMMENT_DATA2="- *$i*: ${COMMENT_DATA2}${FINAL_URL}\\n"
+                            echo "- *$i*: ${FINAL_URL}" >> comments.txt
+                        fi
                     fi
                 fi
             done
