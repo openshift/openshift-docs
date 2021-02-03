@@ -27,6 +27,8 @@ function hcSearchCategory(label, version) {
         label: label,
         urlFilter: (typeof version === "undefined" || version == "Branch Build") ? "" : (" url:*\\/" + version + "\\/*")
       };
+      // work around the current OKD-specific version=4 and URL discrepancy
+      if (window.location.href.includes("docs.okd.io/latest/") && version == 4) searchParams.urlFilter = " url:*\\/latest\\/*"
       modalSearch.show();
       hcsearch(searchParams);
     }
