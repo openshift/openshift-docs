@@ -1,7 +1,7 @@
 #!/bin/bash
 set -ev
 
-ALLOWED_USERS=("openshift-cherrypick-robot", "vikram-redhat")
+ALLOWED_USERS=("openshift-cherrypick-robot" "vikram-redhat")
 USERNAME=${TRAVIS_PULL_REQUEST_SLUG::-15}
 
 # echo -e $DUMMY
