@@ -1,11 +1,8 @@
 #!/bin/bash
 set -ev
 
-ALLOWED_USERS=("openshift-cherrypick-robot" "vikram-redhat")
+ALLOWED_USERS=("openshift-cherrypick-robot")
 USERNAME=${TRAVIS_PULL_REQUEST_SLUG::-15}
-
-# echo -e $DUMMY
-# echo -e "DUMMY: ${DUMMY}"
 
 echo -e  "{\"PR_BRANCH\":\"${TRAVIS_PULL_REQUEST_BRANCH}\",\"BASE_REPO\":\"${TRAVIS_REPO_SLUG}\",\"PR_NUMBER\":\"${TRAVIS_PULL_REQUEST}\",\"USER_NAME\":\"${USERNAME}\",\"BASE_REF\":\"${TRAVIS_BRANCH}\",\"REPO_NAME\":\"${TRAVIS_PULL_REQUEST_SLUG}\"}"
 
