@@ -1,0 +1,763 @@
+[id="cco-mode-sts"]
+= Using manual mode with STS
+include::modules/common-attributes.adoc[]
+:context: cco-mode-sts
+toc::[]
+
+Manual mode with STS is available as a link:https://access.redhat.com/support/offerings/techpreview[Technology Preview] for Amazon Web Services (AWS).
+
+:FeatureName: Support for AWS Secure Token Service (STS)
+include::modules/technology-preview.adoc[leveloffset=+0]
+
+In manual mode with STS, the individual {product-title} cluster components use AWS Secure Token Service (STS) to assign components IAM roles that provide short-term, limited-privilege security credentials. These credentials are associated with IAM roles that are specific to each component that makes AWS API calls.
+
+Requests for new and refreshed credentials are automated by using an appropriately configured AWS IAM OpenID Connect (OIDC) identity provider, combined with AWS IAM roles. {product-title} signs service account tokens that are trusted by AWS IAM, and can be projected into a pod and used for authentication. Tokens are refreshed after one hour.
+
+//to-do: more detailed info on this flow
+
+.STS authentication flow
+image::142_OpenShift_credentials_STS_0221.svg[Detailed authentication flow between AWS and the cluster when using AWS STS]
+//to-do: improve alt-text
+
+Using manual mode with STS changes the content of the AWS credentials that are provided to individual {product-title} components.
+
+.AWS secret format using long-lived credentials
+
+[source,yaml]
+----
+apiVersion: v1
+kind: Secret
+metadata:
+  namespace: <target-namespace> <1>
+  name: <target-secret-name> <2>
+data:
+  aws_access_key_id: <base64-encoded-access-key-id>
+  aws_secret_access_key: <base64-encoded-secret-access-key>
+----
+<1> The namespace for the component.
+<2> The name of the component secret.
+
+.AWS secret format with STS
+
+[source,yaml]
+----
+apiVersion: v1
+kind: Secret
+metadata:
+  namespace: <target-namespace> <1>
+  name: <target-secret-name> <2>
+data:
+  role_name: <operator-role-name> <3>
+  web_identity_token_file: <path-to-token> <4>
+----
+<1> The namespace for the component.
+<2> The name of the component secret.
+<3> The IAM role for the component.
+<4> The path to the service account token inside the pod. By convention, this is `/var/run/secrets/openshift/serviceaccount/token` for {product-title} components.
+
+[id="sts-mode-installing"]
+== Installing an {product-title} cluster configured for manual mode with STS
+
+To install a cluster that is configured to use the CCO in manual mode with STS in {product-title} version 4.7:
+
+* xref:#sts-mode-installing-manual-config[Create the required AWS resources]
+* xref:#sts-mode-installing-manual-run-installer[Run the {product-title} installer]
+* xref:#sts-mode-installing-verifying[Verify that the cluster is using short-lived credentials]
+
+////
+In {product-title} version 4.7, you can install a cluster that is configured to use the CCO in manual mode with STS by using one of two methods:
+
+* xref:#sts-mode-installing-preflight-config[Configuring a cluster with the `sts-preflight` tool]
+* xref:#sts-mode-installing-manual-config[Configuring a cluster manually]
+
+After installing with either of these methods, the procedure for xref:#sts-mode-installing-verifying[verifying the installation] is the same.
+
+[id="sts-mode-installing-preflight-config"]
+=== Configuring a cluster with the sts-preflight tool
+
+When xref:#sts-mode-installing[installing] an {product-title} cluster that is configured to use the CCO in manual mode with STS, you can use the `sts-preflight` tool to create the required AWS resources.
+
+This tool, which is hosted in an external repository, helps configure a cluster that uses STS mode while the feature is a link:https://access.redhat.com/support/offerings/techpreview[Technology Preview].
+
+As an alternative, you can xref:#sts-mode-installing-manual-config[create the required AWS resources manually].
+
+[id="sts-mode-installing-preflight-preparing"]
+==== Preparing the installer
+
+.Prerequisites
+* Obtain the pull secret for your cluster.
+* Obtain the {product-title} version 4.7 installation binary.
+
+.Procedure
+
+. From the directory that contains the installation program, obtain details of the {product-title} release image that your `openshift-install` binary is built to use:
++
+[source,terminal]
+----
+$ ./openshift-install version
+----
++
+.Example output
+[source,terminal]
+----
+./openshift-install 4.7.0
+built from commit 2d8b61dd8802058ffffcdc576e0cff67acebdb85
+release image registry.svc.ci.openshift.org/ocp/release@sha256:a322ab4941701452f428f5c138efb5354ad2aec33f6f7693f0a3033bfe257d8c
+----
+
+. Extract the AWS `CredentialsRequest` custom resources (CRs) from the release image:
++
+[source,terminal]
+----
+$ mkdir credreqs ; oc adm release extract --cloud=aws --credentials-requests quay.io/openshift-release-dev/ocp-release:4.<y>.<z>-x86_64 --to=./credreqs ; cat ./credreqs/*.yaml > credreqs.yaml
+----
++
+Where `<y>` and `<z>` are the numbers corresponding to the version of {product-title} you are installing.
+
+. Create the `install-config.yaml` file:
++
+[source,terminal]
+----
+$ ./openshift-install create install-config
+----
+
+. Configure the cluster to install with the CCO in manual mode:
++
+[source,terminal]
+----
+$ echo "credentialsMode: Manual" >> install-config.yaml
+----
+
+. Create install manifests:
++
+[source,terminal]
+----
+$ ./openshift-install create manifests
+----
+
+[id="sts-mode-installing-preflight-using"]
+==== Using the sts-preflight tool
+
+.Prerequisites
+* Download and build the link:https://github.com/sjenning/sts-preflight[`sts-preflight` tool].
+
+.Procedure
+
+. Using an AWS account with administrator-level permissions, run the following command to:
++
+--
+** Generate public and private `ServiceAccount` object signing keys.
+** Create an S3 bucket.
+** Upload the OIDC config into the S3 bucket.
+** Set up an IAM Identity Provider that trusts the S3 bucket.
+** Create an IAM role with administrator rights to use for installation.
+** Create IAM roles for each AWS `CredentialsRequest` CR.
++
+[source,terminal]
+----
+$ ./sts-preflight create --infra-name <aws-infra-name> --region <aws-region> --credentials-requests-to-roles <path-to-credreqs.yaml>
+----
++
+Where `<aws-infra-name>` is a prefix the `sts-preflight` tool uses when naming the objects that are created in AWS.
+--
++
+The files that are required by the installer are added to the `_output` directory.
+
+. The `sts-preflight` tool does not put conditions that allow only specific `ServiceAccount` objects to assume a role on the IAM roles that it creates. To restrict which identities can assume which role, you must manually modify the trust relationship of each role to add a corresponding condition.
++
+[NOTE]
+====
+Role names that exceed 64 characters might be truncated.
+====
+
+.. Modify the trust relationship of the `<aws-infra-name>-openshift-image-registry-installer-cloud-credentials` role to have the following condition:
++
+[source,json]
+----
+"Condition": {
+  "StringEquals": {
+    "s3.<aws-region>.amazonaws.com/<aws-infra-name>-installer:sub": [
+      "system:serviceaccount:openshift-image-registry:registry",
+      "system:serviceaccount:openshift-image-registry:cluster-image-registry-operator"
+    ]
+  }
+}
+----
+
+.. Modify the trust relationship of the `<aws-infra-name>-openshift-ingress-operator-cloud-credentials` role to have the following condition:
++
+[source,json]
+----
+"Condition": {
+  "StringEquals": {
+    "s3.<aws-region>.amazonaws.com/<aws-infra-name>-installer:sub": [
+      "system:serviceaccount:openshift-ingress-operator:ingress-operator"
+    ]
+  }
+}
+----
+
+.. Modify the trust relationship of the `<aws-infra-name>-openshift-cluster-csi-drivers-ebs-cloud-credentials` role to have the following condition:
++
+[source,json]
+----
+"Condition": {
+  "StringEquals": {
+    "s3.<aws-region>.amazonaws.com/<aws-infra-name>-installer:sub": [
+      "system:serviceaccount:openshift-cluster-csi-drivers:aws-ebs-csi-driver-operator",
+      "system:serviceaccount:openshift-cluster-csi-drivers:aws-ebs-csi-driver-controller-sa"
+    ]
+  }
+}
+----
+
+.. Modify the trust relationship of the `<aws-infra-name>-openshift-machine-api-aws-cloud-credentials` role to have the following condition:
++
+[source,json]
+----
+"Condition": {
+  "StringEquals": {
+    "s3.<aws-region>.amazonaws.com/<aws-infra-name>-installer:sub": [
+      "system:serviceaccount:openshift-machine-api:machine-api-controllers"
+    ]
+  }
+}
+----
+
+. Copy the manifests that the `sts-preflight` tool created to the `manifests` directory in the same location as the `install-config.yaml` file:
++
+[source,terminal]
+----
+$ cp _output/manifests/* <path-to-install-config.yaml-dir>/manifests/
+----
+
+. Copy the private key for the `ServiceAccount` object signer to the same location as the `install-config.yaml` file:
++
+[source,terminal]
+----
+$ cp -a _output/tls <path-to-install-config.yaml-dir>
+----
+
+. Create a token that is trusted by the OIDC identity provider:
++
+[source,terminal]
+----
+$ ./sts-preflight token
+----
++
+This token is used to assume a role to get the credentials that are required to start the installation. The token is created in the `_output/token` directory.
+
+. Use the token to assume the installer role and create the credentials that are required for the {product-title} installation process.
++
+[source,terminal]
+----
+$ ./sts-preflight assume
+----
++
+The output prints several `export` commands.
+
+. Run the `export` commands from the output of the previous step.
++
+[source,terminal]
+----
+$ export AWS_ACCESS_KEY_ID=<aws-access-key-id>
+----
++
+[source,terminal]
+----
+$ export AWS_SECRET_ACCESS_KEY=<aws-secret-access_>
+----
++
+[source,terminal]
+----
+$ export AWS_SESSION_TOKEN=<aws-session-token>
+----
+
+[id="sts-mode-installing-preflight-run-installer"]
+==== Running the installer
+
+. Run the {product-title} installer
++
+[source,terminal]
+----
+$ ./openshift-install create cluster --log-level=debug
+----
+
+. Continue to xref:#sts-mode-installing-verifying[Verifying the installation].
+
+[id="sts-mode-installing-manual-config"]
+=== Configuring a cluster manually
+
+When xref:#sts-mode-installing[installing] an {product-title} cluster that is configured to use the CCO in manual mode with STS, you can manually create the required AWS resources.
+
+As an alternative, you can use the xref:#sts-mode-installing-preflight-config[`sts-preflight` tool] to create AWS resources.
+////
+
+[id="sts-mode-installing-manual-config"]
+=== Creating AWS resources manually
+
+To install an {product-title} cluster that is configured to use the CCO in manual mode with STS, you must first manually create the required AWS resources.
+
+.Procedure
+
+. Generate a private key to sign the `ServiceAccount` object:
++
+[source,terminal]
+----
+$ openssl genrsa -out sa-signer 4096
+----
+
+. Generate a `ServiceAccount` object public key:
++
+[source,terminal]
+----
+$ openssl rsa -in sa-signer -pubout -out sa-signer.pub
+----
+
+. Create an S3 bucket to hold the OIDC configuration:
++
+[source,terminal]
+----
+$ aws s3api create-bucket --bucket <oidc-bucket-name> --region <aws-region> --create-bucket-configuration LocationConstraint=<aws-region>
+----
++
+[NOTE]
+====
+If the value of `<aws-region>` is `us-east-1`, do not specify the `LocationConstraint` parameter.
+====
+
+. Retain the S3 bucket URL:
++
+[source,terminal]
+----
+OPENID_BUCKET_URL="https://<oidc-bucket-name>.s3.<aws-region>.amazonaws.com"
+----
+
+. Build an OIDC configuration:
+
+.. Create a file named `keys.json` that contains the following information:
++
+[source,json]
+----
+{
+    "keys": [
+        {
+            "use": "sig",
+            "kty": "RSA",
+            "kid": "<public-signing-key-id>",
+            "alg": "RS256",
+            "n": "<public-signing-key-modulus>",
+            "e": "<public-signing-key-exponent>"
+        }
+    ]
+}
+----
++
+Where:
+
+*** `<public-signing-key-id>` is generated from the public key with:
++
+[source,terminal]
+----
+$ openssl rsa -in sa-signer.pub -pubin --outform DER | openssl dgst -binary -sha256 | openssl base64 | tr '/+' '_-' | tr -d '='
+----
++
+This command converts the public key to DER format, performs a SHA-256 checksum on the binary representation, encodes the data with base64 encoding, and then changes the base64-encoded output to base64URL encoding.
+
+*** `<public-signing-key-modulus>` is generated from the public key with:
++
+[source,terminal]
+----
+$ openssl rsa -pubin -in sa-signer.pub -modulus -noout | sed  -e 's/Modulus=//' | xxd -r -p | base64 -w0 | tr '/+' '_-' | tr -d '='
+----
++
+This command prints the modulus of the public key, extracts the hex representation of the modulus, converts the ASCII hex to binary, encodes the data with base64 encoding, and then changes the base64-encoded output to base64URL encoding.
+
+*** `<public-signing-key-exponent>` is generated from the public key with:
++
+[source,terminal]
+----
+$ printf "%016x" $(openssl rsa -pubin -in sa-signer.pub -noout -text | grep Exponent | awk '{ print $2 }') |  awk '{ sub(/(00)+/, "", $1); print $1 }' | xxd -r -p | base64 -w0 | tr '/+' '_-' | tr -d '='
+----
++
+This command extracts the decimal representation of the public key exponent, prints it as hex with a padded `0` if needed, removes leading `00` pairs, converts the ASCII hex to binary, encodes the data with base64 encoding, and then changes the base64-encoded output to use only characters that can be used in a URL.
+
+.. Create a file named `openid-configuration` that contains the following information:
++
+[source,json]
+----
+{
+	"issuer": "$OPENID_BUCKET_URL",
+	"jwks_uri": "${OPENID_BUCKET_URL}/keys.json",
+    "response_types_supported": [
+        "id_token"
+    ],
+    "subject_types_supported": [
+        "public"
+    ],
+    "id_token_signing_alg_values_supported": [
+        "RS256"
+    ],
+    "claims_supported": [
+        "aud",
+        "exp",
+        "sub",
+        "iat",
+        "iss",
+        "sub"
+    ]
+}
+----
+
+. Upload the OIDC configuration:
++
+[source,terminal]
+----
+$ aws s3api put-object --bucket <oidc-bucket-name> --key keys.json --body ./keys.json
+----
++
+[source,terminal]
+----
+$ aws s3api put-object --bucket <oidc-bucket-name> --key '.well-known/openid-configuration' --body ./openid-configuration
+----
++
+Where `<oidc-bucket-name>` is the S3 bucket that was created to hold the OIDC configuration.
+
+. Allow the AWS IAM OIDC identity provider to read these files:
++
+[source,terminal]
+----
+$ aws s3api put-object-acl --bucket <oidc-bucket-name> --key keys.json --acl public-read
+----
++
+[source,terminal]
+----
+$ aws s3api put-object-acl --bucket <oidc-bucket-name> --key '.well-known/openid-configuration' --acl public-read
+----
+
+. Create an AWS IAM OIDC identity provider:
+
+.. Get the certificate chain from the server that hosts the OIDC configuration:
++
+[source,terminal]
+----
+$ echo | openssl s_client -servername $<oidc-bucket-name>.s3.$<aws-region>.amazonaws.com -connect $<oidc-bucket-name>.s3.$<aws-region>.amazonaws.com:443 -showcerts 2>/dev/null | awk '/BEGIN/,/END/{ if(/BEGIN/){a++}; out="cert"a".pem"; print >out}'
+----
+
+.. Calculate the fingerprint for the certificate at the root of the chain:
++
+[source,terminal]
+----
+$ export BUCKET_FINGERPRINT=$(openssl x509 -in cert<number>.pem -fingerprint -noout | sed -e 's/.*Fingerprint=//' -e 's/://g')
+----
++
+Where `<number>` is the highest number in the files that were saved. For example, if `2` is the highest number in the files that were saved, use `cert2.pem`.
+
+.. Create the identity provider:
++
+[source,terminal]
+----
+$ aws iam create-open-id-connect-provider --url $OPENID_BUCKET_URL --thumbprint-list $BUCKET_FINGERPRINT --client-id-list openshift sts.amazonaws.com
+----
+
+.. Retain the returned ARN of the newly created identity provider. This ARN is later referred to as `<aws-iam-openid-arn>`.
+
+. Generate IAM roles:
+
+.. Locate all `CredentialsRequest` CRs in this release image that target the cloud you are deploying on:
++
+[source,terminal]
+----
+$ oc adm release extract quay.io/openshift-release-dev/ocp-release:4.<y>.<z>-x86_64 --credentials-requests --cloud=aws
+----
++
+Where `<y>` and `<z>` are the numbers corresponding to the version of {product-title} you are installing.
+
+.. For each `CredentialsRequest` CR, create an IAM role of type `Web identity` using the previously created IAM Identity Provider that grants the necessary permissions and establishes a trust relationship that trusts the  identity provider previously created.
++
+For example, for the openshift-machine-api-operator `CredentialsRequest` CR in `0000_30_machine-api-operator_00_credentials-request.yaml`, create an IAM role that allows an identity from the created OIDC provider created for the cluster, similar to the following:
++
+[source,json]
+----
+{
+    "Role": {
+        "Path": "/",
+        "RoleName": "openshift-machine-api-aws-cloud-credentials",
+        "RoleId": "ARSOMEROLEID",
+        "Arn": "arn:aws:iam::123456789012:role/openshift-machine-api-aws-cloud-credentials",
+        "CreateDate": "2021-01-06T15:54:13Z",
+        "AssumeRolePolicyDocument": {
+            "Version": "2012-10-17",
+            "Statement": [
+                {
+                    "Effect": "Allow",
+                    "Principal": {
+                        "Federated": "<aws-iam-openid-arn>"
+                    },
+                    "Action": "sts:AssumeRoleWithWebIdentity",
+                    "Condition": {
+                        "StringEquals": {
+                            "<oidc-bucket-name>.s3.<aws-region>.amazonaws.com/$BUCKET_NAME:aud": "openshift"
+                        }
+                    }
+                }
+            ]
+        },
+        "Description": "OpenShift role for openshift-machine-api/aws-cloud-credentials",
+        "MaxSessionDuration": 3600,
+        "RoleLastUsed": {
+            "LastUsedDate": "2021-02-03T02:51:24Z",
+            "Region": "<aws-region>"
+        }
+    }
+}
+----
++
+Where `<aws-iam-openid-arn>` is the returned ARN of the newly created identity provider.
+
+.. To further restrict the role such that only specific cluster `ServiceAccount` objects can assume the role, modify the trust relationship of each role by updating the `.Role.AssumeRolePolicyDocument.Statement[].Condition` field to the specific `ServiceAccount` objects for each component.
+
+*** Modify the trust relationship of the `cluster-image-registry-operator` role to have the following condition:
++
+[source,json]
+----
+"Condition": {
+  "StringEquals": {
+    "<oidc-bucket-name>.s3.<aws-region>.amazonaws.com:sub": [
+      "system:serviceaccount:openshift-image-registry:registry",
+      "system:serviceaccount:openshift-image-registry:cluster-image-registry-operator"
+    ]
+  }
+}
+----
+
+*** Modify the trust relationship of the `openshift-ingress-operator` to have the following condition:
++
+[source,json]
+----
+"Condition": {
+  "StringEquals": {
+    "<oidc-bucket-name>.s3.<aws-region>.amazonaws.com:sub": [
+      "system:serviceaccount:openshift-ingress-operator:ingress-operator"
+    ]
+  }
+}
+----
+
+*** Modify the trust relationship of the `openshift-cluster-csi-drivers` to have the following condition:
++
+[source,json]
+----
+"Condition": {
+  "StringEquals": {
+    "<oidc-bucket-name>.s3.<aws-region>.amazonaws.com:sub": [
+      "system:serviceaccount:openshift-cluster-csi-drivers:aws-ebs-csi-driver-operator",
+      "system:serviceaccount:openshift-cluster-csi-drivers:aws-ebs-csi-driver-controller-sa"
+    ]
+  }
+}
+----
+
+*** Modify the trust relationship of the `openshift-machine-api` to have the following condition:
++
+[source,json]
+----
+"Condition": {
+  "StringEquals": {
+    "<oidc-bucket-name>.s3.<aws-region>.amazonaws.com:sub": [
+      "system:serviceaccount:openshift-machine-api:machine-api-controllers"
+    ]
+  }
+}
+----
+
+. For each IAM role, attach an IAM policy to the role that reflects the required permissions from the corresponding `CredentialsRequest` objects.
++
+For example, for `openshift-machine-api`, attach an IAM policy similar to the following:
++
+[source,json]
+----
+{
+    "RoleName": "openshift-machine-api-aws-cloud-credentials",
+    "PolicyName": "openshift-machine-api-aws-cloud-credentials",
+    "PolicyDocument": {
+        "Version": "2012-10-17",
+        "Statement": [
+            {
+                "Effect": "Allow",
+                "Action": [
+                    "ec2:CreateTags",
+                    "ec2:DescribeAvailabilityZones",
+                    "ec2:DescribeDhcpOptions",
+                    "ec2:DescribeImages",
+                    "ec2:DescribeInstances",
+                    "ec2:DescribeSecurityGroups",
+                    "ec2:DescribeSubnets",
+                    "ec2:DescribeVpcs",
+                    "ec2:RunInstances",
+                    "ec2:TerminateInstances",
+                    "elasticloadbalancing:DescribeLoadBalancers",
+                    "elasticloadbalancing:DescribeTargetGroups",
+                    "elasticloadbalancing:RegisterInstancesWithLoadBalancer",
+                    "elasticloadbalancing:RegisterTargets",
+                    "iam:PassRole",
+                    "iam:CreateServiceLinkedRole"
+                ],
+                "Resource": "*"
+            },
+            {
+                "Effect": "Allow",
+                "Action": [
+                    "kms:Decrypt",
+                    "kms:Encrypt",
+                    "kms:GenerateDataKey",
+                    "kms:GenerateDataKeyWithoutPlainText",
+                    "kms:DescribeKey"
+                ],
+                "Resource": "*"
+            },
+            {
+                "Effect": "Allow",
+                "Action": [
+                    "kms:RevokeGrant",
+                    "kms:CreateGrant",
+                    "kms:ListGrants"
+                ],
+                "Resource": "*",
+                "Condition": {
+                    "Bool": {
+                        "kms:GrantIsForAWSResource": true
+                    }
+                }
+            }
+        ]
+    }
+}
+----
+. Prepare to run the {product-title} installer:
+
+.. Create the `install-config.yaml` file:
++
+[source,terminal]
+----
+$ ./openshift-install create install-config
+----
+
+.. Configure the cluster to install with the CCO in manual mode:
++
+[source,terminal]
+----
+$ echo "credentialsMode: Manual" >> install-config.yaml
+----
+
+.. Create install manifests:
++
+[source,terminal]
+----
+$ ./openshift-install create manifests
+----
+
+.. Create a `tls` directory, and copy the private key generated previously there:
++
+[NOTE]
+====
+The target file name must be `./tls/bound-service-account-signing-key.key`.
+====
++
+[source,terminal]
+----
+$ mkdir tls ; cp <path-to-service-account-signer> ./tls/bound-service-account-signing-key.key
+----
+
+.. Create a custom `Authentication` CR with the file name `cluster-authentication-02-config.yaml`:
++
+[source,terminal]
+----
+$ cat << EOF > manifests/cluster-authentication-02-config.yaml
+apiVersion: config.openshift.io/v1
+kind: Authentication
+metadata:
+  name: cluster
+spec:
+  serviceAccountIssuer: $OPENID_BUCKET_URL
+EOF
+----
+////
+.. Locate all `CredentialsRequest` CRs in this release image that target the cloud you are deploying on:
++
+[source,terminal]
+----
+$ oc adm release extract quay.io/openshift-release-dev/ocp-release:4.<y>.<z>-x86_64 --credentials-requests --cloud=aws
+----
++
+Where `<y>` and `<z>` are the numbers corresponding to the version of {product-title} you are installing.
+////
+
+.. For each `CredentialsRequest` CR that is extracted from the release image, create a secret with the target namespace and target name that is indicated in each `CredentialsRequest`, substituting the AWS IAM role ARN created previously for each component:
++
+.Example secret manifest for `openshift-machine-api`:
++
+[source,terminal]
+----
+$ cat manifests/openshift-machine-api-aws-cloud-credentials-credentials.yaml
+apiVersion: v1
+stringData:
+  credentials: |-
+    [default]
+    role_arn = arn:aws:iam::123456789012:role/openshift-machine-api-aws-cloud-credentials
+    web_identity_token_file = /var/run/secrets/openshift/serviceaccount/token
+kind: Secret
+metadata:
+  name: aws-cloud-credentials
+  namespace: openshift-machine-api
+type: Opaque
+----
+
+[id="sts-mode-installing-manual-run-installer"]
+=== Running the installer
+
+. Run the {product-title} installer:
++
+[source,terminal]
+----
+$ ./openshift-install create cluster
+----
+
+. Continue to xref:#sts-mode-installing-verifying[Verifying the installation].
+
+[id="sts-mode-installing-verifying"]
+=== Verifying the installation
+
+. Connect to the {product-title} cluster.
+
+. Verify that the cluster does not have `root` credentials:
++
+[source,terminal]
+----
+$ oc get secrets -n kube-system aws-creds
+----
++
+The output should look similar to:
++
+[source,terminal]
+----
+Error from server (NotFound): secrets "aws-creds" not found
+----
+
+. Verify that the components are assuming the IAM roles that are specified in the secret manifests, instead of using credentials that are created by the CCO:
++
+.Example command with the Image Registry Operator
+[source,terminal]
+----
+oc get secrets -n openshift-image-registry installer-cloud-credentials -o json | jq -r .data.credentials | base64 -d
+----
++
+The output should show the role and web identity token that are used by the component and look similar to:
++
+.Example output with the Image Registry Operator
+[source,terminal]
+----
+[default]
+role_arn = arn:aws:iam::123456789:role/openshift-image-registry-installer-cloud-credentials
+web_identity_token_file = /var/run/secrets/openshift/serviceaccount/token
+----
