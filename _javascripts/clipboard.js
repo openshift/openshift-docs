@@ -11,14 +11,19 @@ document.querySelectorAll('span.clipboard-button').forEach((copybutton, index) =
 var clipboard = new ClipboardJS('.clipboard-button', {
     text: function(target) {
       const targetId = target.getAttribute('data-clipboard-target').substr(1);
-      const clipboardText = document.getElementById(targetId).innerText.replace(/\$[ ]/g, "");
+      let clipboardText;
+      clipboardText = document.getElementById(targetId).innerText.replace(/\$[ ]/g, "");
 
-      if (clipboardText.slice(0, 2) === "# ") {
-        return clipboardText.substr(2);
+      if (clipboardText.slice(0,2) === "# ") {
+        clipboardText = clipboardText.substr(2);
       }
 
       if (clipboardText.slice(0,5) === "sh-4.") {
-        return clipboardText.substr(8)
+        clipboardText = clipboardText.substr(8);
+      }
+
+      if (clipboardText.split(/\r\n|\n|\r/)[0].endsWith("\\ ") | clipboardText.split(/\r\n|\n|\r/)[0].endsWith("\\")) {
+        clipboardText = clipboardText.replace(/(\\[ ]\r\n|\\[ ]\n|\\[ ]\r|\\\r\n|\\\n|\\\r)/g,"").replace(/(\s+|\t)/g," ");
       }
 
       return clipboardText;
