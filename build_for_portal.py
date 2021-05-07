@@ -540,6 +540,7 @@ def scrub_file(info, book_src_dir, src_file, tag=None, cwd=None):
         for duplicate_id, new_id in list(DUPLICATE_IDS[base_src_file].items()):
             content = content.replace("[[" + duplicate_id + "]]", "[[" + new_id + "]]")
 
+
     # Replace incorrect links with correct ones
     if base_src_file in INCORRECT_LINKS:
         for incorrect_link, fixed_link in list(INCORRECT_LINKS[base_src_file].items()):
@@ -587,9 +588,15 @@ def _fix_links(content, book_dir, src_file, info, tag=None, cwd=None):
     Fix any links that were done incorrectly and reference the output instead of the source content.
     """
     # TODO Deal with xref so that they keep the proper path. Atm it'll just strip the path and leave only the id
+
     file_to_id_map = info['file_to_id_map']
     current_dir = cwd or os.path.dirname(src_file)
+
     cleaned_content = remove_conditional_content(content, info, tag=tag)
+    original_content = cleaned_content
+    if "{docs_root}" in cleaned_content:
+        cleaned_content = cleaned_content.replace("{docs_root}", "..")
+
     links = LINKS_RE.finditer(cleaned_content)
 
     for link in links:
@@ -598,11 +605,21 @@ def _fix_links(content, book_dir, src_file, info, tag=None, cwd=None):
         link_anchor = link.group(2)
         link_title = link.group(3)
 
-
         if link_file is not None:
+
             fixed_link_file = link_file.replace(".html", ".adoc")
+
             fixed_link_file_abs = os.path.abspath(os.path.join(current_dir, fixed_link_file))
-            if fixed_link_file_abs in file_to_id_map:
+
+            current_dir_parent = os.path.abspath(os.path.join(current_dir, os.pardir))
+
+            current_dir_parent_parent = os.path.abspath(os.path.join(current_dir_parent, os.pardir))
+
+            fixed_link_file_abs_parent = os.path.abspath(os.path.join(current_dir_parent, fixed_link_file))
+
+            fixed_link_file_abs_parent_parent = os.path.abspath(os.path.join(current_dir_parent_parent, fixed_link_file))
+
+            if fixed_link_file_abs in file_to_id_map or fixed_link_file_abs_parent in file_to_id_map or fixed_link_file_abs_parent_parent in file_to_id_map:
 
                 # We are dealing with a cross reference to another book here
                 external_link = EXTERNAL_LINK_RE.search(link_file)
@@ -617,10 +634,12 @@ def _fix_links(content, book_dir, src_file, info, tag=None, cwd=None):
 
                 fixed_link_file = BASE_PORTAL_URL + build_portal_url(info, book_name)
 
+
                 if link_anchor is None:
                     fixed_link = "link:" + fixed_link_file + "#" + file_to_id_map[fixed_link_file_abs] + link_title
                 else:
                     fixed_link = "link:" + fixed_link_file + link_anchor + link_title
+
             else:
                 # Cross reference or link that isn't in the docs suite
                 fixed_link = link_text
@@ -631,7 +650,13 @@ def _fix_links(content, book_dir, src_file, info, tag=None, cwd=None):
         else:
             fixed_link = "xref:" + link_anchor.replace("#", "") + link_title
 
-        content = content.replace(link_text, fixed_link)
+
+        if "{docs_root}" in original_content:
+            link_text = link_text.replace("..", "{docs_root}")
+            content = content.replace(link_text, fixed_link)
+        else:
+            content = content.replace(link_text, fixed_link)
+
 
     return content
 

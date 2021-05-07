@@ -596,7 +596,13 @@ def _fix_links(content, book_dir, src_file, info, tag=None, cwd=None):
     # TODO Deal with xref so that they keep the proper path. Atm it'll just strip the path and leave only the id
     file_to_id_map = info['file_to_id_map']
     current_dir = cwd or os.path.dirname(src_file)
+
     cleaned_content = remove_conditional_content(content, info, tag=tag)
+    original_content = cleaned_content
+
+    if "{docs_root}" in cleaned_content:
+        cleaned_content = cleaned_content.replace("{docs_root}", "..")
+
     links = LINKS_RE.finditer(cleaned_content)
 
     for link in links:
@@ -606,9 +612,21 @@ def _fix_links(content, book_dir, src_file, info, tag=None, cwd=None):
         link_title = link.group(3)
 
         if link_file is not None:
+
             fixed_link_file = link_file.replace(".html", ".adoc")
+
             fixed_link_file_abs = os.path.abspath(os.path.join(current_dir, fixed_link_file))
-            if fixed_link_file_abs in file_to_id_map:
+
+            current_dir_parent = os.path.abspath(os.path.join(current_dir, os.pardir))
+
+            current_dir_parent_parent = os.path.abspath(os.path.join(current_dir_parent, os.pardir))
+
+            fixed_link_file_abs_parent = os.path.abspath(os.path.join(current_dir_parent, fixed_link_file))
+
+            fixed_link_file_abs_parent_parent = os.path.abspath(os.path.join(current_dir_parent_parent, fixed_link_file))
+
+            if fixed_link_file_abs in file_to_id_map or fixed_link_file_abs_parent in file_to_id_map or fixed_link_file_abs_parent_parent in file_to_id_map:
+
                 if fixed_link_file_abs.startswith(book_dir + os.sep) or fixed_link_file_abs == src_file:
                     # We are dealing with a cross reference within the same book here
                     if link_anchor is None:
@@ -645,7 +663,12 @@ def _fix_links(content, book_dir, src_file, info, tag=None, cwd=None):
         else:
             fixed_link = "xref:" + link_anchor.replace("#", "") + link_title
 
-        content = content.replace(link_text, fixed_link)
+        if "{docs_root}" in original_content:
+            link_text = link_text.replace("..", "{docs_root}")
+            content = content.replace(link_text, fixed_link)
+        else:
+            content = content.replace(link_text, fixed_link)
+
 
     return content
 
