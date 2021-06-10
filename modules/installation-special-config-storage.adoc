@@ -1,0 +1,156 @@
+// Module included in the following assemblies:
+//
+// * installing/install_config/installing-customizing.adoc
+
+[id="installation-special-config-storage_{context}"]
+= Encrypting or mirroring disks during installation
+
+During {product-title} installation, you can enable boot disk encryption and mirroring on control plane and worker nodes.
+
+[id="installation-special-config-encrypt-disk_{context}"]
+== About disk encryption
+
+This feature:
+
+* Is available for installer-provisioned infrastructure and user-provisioned infrastructure deployments
+* Is supported on {op-system-first} systems only
+* Sets up disk encryption during the manifest installation phase so all data written to disk, from first boot forward, is encrypted
+* Encrypts data on the root filesystem only (`/dev/mapper/root` on `/`)
+* Requires no user intervention for providing passphrases
+* Uses AES-256-XTS encryption, or AES-256-CBC if FIPS mode is enabled
+
+There are two different supported encryption modes:
+
+* TPM v2: This is the preferred mode. TPM v2 stores passphrases in a secure cryptoprocessor.
+* Tang: To use Tang to encrypt your cluster, you need to use a Tang server. Clevis implements decryption on the client side. Tang encryption mode is only supported for bare metal installs.
+
+[NOTE]
+====
+On previous versions of {op-system}, disk encryption was configured by specifying `/etc/clevis.json` in the Ignition config. That file is not supported in clusters created with {product-title} 4.7 or above, and disk encryption should be configured using the following procedure.
+====
+
+[id="installation-special-config-mirrored-disk_{context}"]
+== About disk mirroring
+
+During {product-title} installation on control plane and worker nodes, you can enable mirroring of the boot disk to two or more redundant storage devices. A node continues to function after storage device failure as long as one device remains available.
+
+Mirroring does not support replacement of a failed disk. To restore the mirror to a pristine, non-degraded state, reprovision the node.
+
+[NOTE]
+====
+Mirroring is available only for user-provisioned infrastructure deployments on {op-system} systems. Mirroring support is available on x86_64 nodes booted with BIOS or UEFI and on ppc64le nodes.
+====
+
+[id="installation-special-config-storage-procedure_{context}"]
+== Configuring disk encryption or mirroring
+
+.Procedure
+
+To enable boot disk encryption or mirroring during {product-title} deployment:
+
+. If you want to use TPM v2 to encrypt your cluster, check to see if TPM v2 encryption needs to be enabled in the BIOS on each node. This is required on most Dell systems. Check the manual for your computer.
+
+. If you want to use Tang to encrypt your cluster, follow these preparatory steps:
+
+.. Access a Red Hat Enterprise Linux server from which you can configure the encryption settings.
+
+.. Set up or access an existing Tang server. See link:https://access.redhat.com/documentation/en-us/red_hat_enterprise_linux/8/html/security_hardening/configuring-automated-unlocking-of-encrypted-volumes-using-policy-based-decryption_security-hardening#network-bound-disk-encryption_configuring-automated-unlocking-of-encrypted-volumes-using-policy-based-decryption[Network-bound disk encryption] for instructions. See link:https://youtu.be/2uLKvB8Z5D0[Securing Automated Decryption New Cryptography and Techniques] for a presentation on Tang.
+
+.. Install the `clevis` package, if it is not already installed:
++
+[source,terminal]
+----
+$ sudo yum install clevis -y
+----
+
+.. Generate a thumbprint for the Tang server.
+
+... In the following command, replace the value of `url` with the Tang server URL:
++
+[source,terminal]
+----
+$ echo nifty random wordwords | clevis-encrypt-tang '{"url":"https://tang.example.org"}'
+----
++
+.Example output
+[source,terminal]
+----
+The advertisement contains the following signing keys:
+
+PLjNyRdGw03zlRoGjQYMahSZGu9
+----
+
+... When the `Do you wish to trust these keys? [ynYN]` prompt displays, type `Y`, and the thumbprint is displayed:
++
+.Example output
+[source,terminal]
+----
+eyJhbmc3SlRyMXpPenc3ajhEQ01tZVJiTi1oM...
+----
+
+.. If nodes are configured with static IP addressing, ensure you use the `coreos-installer` `--append-karg` option when installing {op-system} nodes to set the IP address of the installed system.  Append the `ip=` and other arguments needed for your network.
++
+[IMPORTANT]
+====
+Some methods for configuring static IPs do not affect the initramfs after the first boot and will not work with Tang encryption. These include the `coreos-installer` `--copy-network` option, as well as adding `ip=` arguments to the kernel command line of the live ISO or PXE image during installation. Incorrect static IP configuration causes the second boot of the node to fail.
+====
+
+. Change to the directory that contains the installation program and generate the Kubernetes manifests for the cluster:
++
+[source,terminal]
+----
+$ ./openshift-install create manifests --dir=<installation_directory>
+----
+
+. Create a Butane config that configures disk encryption, mirroring, or both. For example, to configure storage for worker nodes, create a `$HOME/clusterconfig/worker-storage.bu` file:
++
+[source,yaml]
+.Butane config example
+----
+variant: openshift
+version: 4.8.0
+metadata:
+  name: worker-storage <1>
+  labels:
+    machineconfiguration.openshift.io/role: worker <1>
+boot_device:
+  layout: x86_64 <2>
+  luks: <3>
+    tpm2: true <4>
+    tang: <5>
+      - url: https://tang.example.com
+        thumbprint: eyJhbmc3SlRyMXpPenc3ajhEQ01tZVJiTi1oM...
+    threshold: 1 <6>
+  mirror: <7>
+    devices: <8>
+      - /dev/sda
+      - /dev/sdb
+openshift:
+  fips: true <9>
+----
++
+<1> On control plane nodes, substitute `master` for `worker` in both of these locations.
+<2> On ppc64le nodes, set this field to `ppc64le`.  On all other nodes, this field can be omitted.
+<3> Include this section if you want to encrypt the root filesystem. See "About disk encryption" for more details.
+<4> Include this field if you want to use a Trusted Platform Module (TPM) to encrypt the root filesystem.
+<5> Include this section if you want to use a Tang server. To obtain the server URL and thumbprint, follow the preceding instructions.
+<6> Include this directive to use Shamir's Secret Sharing (SSS) to require the specified number of Tang servers, or one less than the specified number of servers plus a TPM, to unlock the disk.
+<7> Include this section if you want to mirror the boot disk. See "About disk mirroring" for more details.
+<8> List all disk devices that should be included in the boot disk mirror, including the disk that {op-system} will be installed onto.
+<9> Include this directive to enable FIPS mode on your cluster.
++
+[IMPORTANT]
+====
+If you are configuring nodes to use both disk encryption and mirroring, both features must be configured in the same Butane config.  In addition, if you are configuring disk encryption on a node with FIPS mode enabled, you must include the `fips` directive in the same Butane config, even if FIPS mode is also enabled in a separate manifest.
+====
+
+. In the `openshift` directory, use Butane to create a control plane or worker manifest from the Butane config. For example, to create a manifest for worker nodes, run the following command:
++
+[source,terminal]
+----
+$ butane $HOME/clusterconfig/worker-storage.bu -o ./99-worker-storage.yaml
+----
+
+. Save the Butane config in case you need to update the manifest in the future.
+
+. Continue with the remainder of the {product-title} deployment.
