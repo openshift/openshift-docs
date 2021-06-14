@@ -157,7 +157,7 @@ def parse_build_config(config):
     """
     config = os.path.expanduser(config)
     with open(config, "r") as f:
-        data = list(yaml.load_all(f))
+        data = list(yaml.load_all(f,Loader=yaml.FullLoader))
 
     for book in data:
         book_name = book['Name']
@@ -739,7 +739,7 @@ def extract_file_ids(file_path):
 
 def build_file_id(file_title, file_to_id_map, existing_ids):
     """
-    Generates a unique id for a file, based on it's title.
+    Generates a unique id for a file, based on its title.
     """
     file_id = base_id = re.sub(r"[\[\]\(\)#]", "", file_title.lower().replace("_", "-").replace(" ", "-"))
     count = 1

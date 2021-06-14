@@ -1,0 +1,174 @@
+// Module included in the following assemblies:
+//
+// * installing/installing_vmc/installing-restricted-networks-vmc-user-infra.adoc
+// * installing/installing_vmc/installing-vmc-user-infra.adoc
+// * installing/installing_vmc/installing-vmc-network-customizations-user-infra.adoc
+// * installing/installing_vsphere/installing-vsphere.adoc
+// * installing/installing_vsphere/installing-vsphere-network-customizations.adoc
+// * installing/installing_vsphere/installing-restricted-networks-vsphere.adoc
+
+// This content was sourced from the bare metal RHCOS assembly file `modules/installation-user-infra-machines-advanced.adoc` under the `== Disk partitioning` subheader. "Disk partioning" content in the bare metal assembly is not modularized, so anything in this vsphere module should be checked against that file for consistency until such time that the large bare metal assembly can be modularized.
+
+[id="installation-disk-partitioning_{context}"]
+= Disk partitioning
+
+In most cases, data partitions are originally created by installing {op-system}, rather than by installing another operating system. In such cases, the {product-title} installer should be allowed to configure your disk partitions.
+
+However, there are two cases where you might want to intervene to override the default partitioning when installing an
+{product-title} node:
+
+* Create separate partitions: For greenfield installations on an empty
+disk, you might want to add separate storage to a partition. This is
+officially supported for making `/var` or a subdirectory of `/var`, such as `/var/lib/etcd`, a separate partition, but not both.
++
+[IMPORTANT]
+====
+Kubernetes supports only two filesystem partitions. If you add more than one partition to the original configuration, Kubernetes cannot monitor all of them.
+====
+* Retain existing partitions: For a brownfield installation where you are reinstalling {product-title} on an existing node and want to retain data partitions installed from your previous operating system, there are both boot arguments and options to `coreos-installer` that allow you to retain existing data partitions.
+
+[discrete]
+= Creating a separate `/var` partition
+In general, disk partitioning for {product-title} should be left to the
+installer. However, there are cases where you might want to create separate partitions in a part of the filesystem that you expect to grow.
+
+{product-title} supports the addition of a single partition to attach
+storage to either the `/var` partition or a subdirectory of `/var`.
+For example:
+
+* `/var/lib/containers`: Holds container-related content that can grow
+as more images and containers are added to a system.
+* `/var/lib/etcd`: Holds data that you might want to keep separate for purposes such as performance optimization of etcd storage.
+* `/var`: Holds data that you might want to keep separate for purposes such as auditing.
+
+Storing the contents of a `/var` directory separately makes it easier to grow storage for those areas as needed and reinstall {product-title} at a later date and keep that data intact. With this method, you will not have to pull all your containers again, nor will you have to copy massive log files when you update systems.
+
+Because `/var` must be in place before a fresh installation of
+{op-system-first}, the following procedure sets up the separate `/var` partition
+by creating a machine config that is inserted during the `openshift-install`
+preparation phases of an {product-title} installation.
+
+.Prerequisites
+
+* If container storage is on the root partition, ensure that this root partition is mounted with the `pquota` option by including `rootflags=pquota` in the GRUB command line.
+
+* If the container storage is on a partition that is mounted by `/etc/fstab`, ensure that the following mount option is included in the `/etc/fstab` file:
++
+[source,terminal]
+----
+/dev/sdb1      /var           xfs defaults,pquota 0 0
+----
+
+* If the container storage is on a partition that is mounted by `systemd`, ensure that the `MachineConfig` object includes the following mount option as in this example:
++
+[source,yaml]
+----
+spec:
+  config:
+    ignition:
+      version: 3.1.0
+    storage:
+      disks:
+        - device: /dev/sdb
+          partitions:
+            - label: var
+              sizeMiB: 240000
+              startMiB: 0
+            filesystems:
+        - device: /dev/disk/by-partlabel/var
+          format: xfs
+          path: /var
+    systemd:
+      units:
+        - contents: |
+            [Unit]
+            Before=local-fs.target
+            [Mount]
+            Where=/var
+            What=/dev/disk/by-partlabel/var
+            Options=defaults,pquota
+            [Install]
+            WantedBy=local-fs.target
+          enabled: true
+          name: var.mount
+----
+
+.Procedure
+
+. Create a directory to hold the {product-title} installation files:
++
+[source,terminal]
+----
+$ mkdir $HOME/clusterconfig
+----
+
+. Run `openshift-install` to create a set of files in the `manifest` and
+`openshift` subdirectories. Answer the system questions as you are prompted:
++
+[source,terminal]
+----
+$ openshift-install create manifests --dir $HOME/clusterconfig
+? SSH Public Key ...
+$ ls $HOME/clusterconfig/openshift/
+99_kubeadmin-password-secret.yaml
+99_openshift-cluster-api_master-machines-0.yaml
+99_openshift-cluster-api_master-machines-1.yaml
+99_openshift-cluster-api_master-machines-2.yaml
+...
+----
+
+. Create a `MachineConfig` object and add it to a file in the `openshift` directory.
+For example, name the file `98-var-partition.yaml`, change the disk device name to the name of the storage device on the `worker` systems, and set the storage size as appropriate. This attaches storage to a separate `/var`
+directory.
+
++
+[source,yaml]
+----
+apiVersion: machineconfiguration.openshift.io/v1
+kind: MachineConfig
+metadata:
+  labels:
+    machineconfiguration.openshift.io/role: worker
+  name: 98-var-partition
+spec:
+  config:
+    ignition:
+      version: 3.1.0
+    storage:
+      disks:
+      - device: /dev/<device_name> <1>
+        partitions:
+        - sizeMiB: <partition_size>
+          startMiB: <partition_start_offset> <2>
+          label: var
+      filesystems:
+        - path: /var
+          device: /dev/disk/by-partlabel/var
+          format: xfs
+    systemd:
+      units:
+        - name: var.mount
+          enabled: true
+          contents: |
+            [Unit]
+            Before=local-fs.target
+            [Mount]
+            Where=/var
+            What=/dev/disk/by-partlabel/var
+            [Install]
+            WantedBy=local-fs.target
+----
++
+<1> The storage device name of the disk that you want to partition.
+<2> When adding a data partition to the boot disk, a minimum value of 25000 mebibytes is recommended. The root file system is automatically resized to fill all available space up to the specified offset. If no value is specified, or if the specified value is smaller than the recommended minimum, the resulting root file system will be too small, and future reinstalls of {op-system} might overwrite the beginning of the data partition.
+
+. Run `openshift-install` again to create Ignition configs from a set of files in the `manifest` and `openshift` subdirectories:
++
+[source,terminal]
+----
+$ openshift-install create ignition-configs --dir $HOME/clusterconfig
+$ ls $HOME/clusterconfig/
+auth  bootstrap.ign  master.ign  metadata.json  worker.ign
+----
+
+Now you can use the Ignition config files as input to the vSphere installation procedures to install {op-system-first} systems.

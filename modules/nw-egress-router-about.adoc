@@ -1,0 +1,103 @@
+// Module included in the following assemblies:
+//
+// * networking/openshift_sdn/using-an-egress-router.adoc
+
+[id="nw-egress-router-about_{context}"]
+= About an egress router pod
+
+The {product-title} egress router pod redirects traffic to a specified remote server, using a private source IP address that is not used for any other purpose.
+This allows you to send network traffic to servers that are set up to allow access only from specific IP addresses.
+
+[NOTE]
+====
+The egress router pod is not intended for every outgoing connection. Creating large numbers of egress router pods can exceed the limits of your network hardware. For example, creating an egress router pod for every project or application could exceed the number of local MAC addresses that the network interface can handle before reverting to filtering MAC addresses in software.
+====
+
+[IMPORTANT]
+====
+The egress router image is not compatible with Amazon AWS, Azure Cloud, or any other cloud platform that does not support layer 2 manipulations due to their incompatibility with macvlan traffic.
+====
+
+[id="nw-egress-router-about-modes_{context}"]
+== Egress router modes
+
+In _redirect mode_, an egress router pod sets up iptables rules to redirect traffic from its own IP address to one or more destination IP addresses. Client pods that need to use the reserved source IP address must be modified to connect to the egress router rather than connecting directly to the destination IP.
+
+In _HTTP proxy mode_, an egress router pod runs as an HTTP proxy on port `8080`. This mode only works for clients that are connecting to HTTP-based or HTTPS-based services, but usually requires fewer changes to the client pods to get them to work. Many programs can be told to use an HTTP proxy by setting an environment variable.
+
+In _DNS proxy mode_, an egress router pod runs as a DNS proxy for TCP-based services from its own IP address to one or more destination IP addresses. To make use of the reserved, source IP address, client pods must be modified to connect to the egress router pod rather than connecting directly to the destination IP address. This modification ensures that external destinations treat traffic as though it were coming from a known source.
+
+Redirect mode works for all services except for HTTP and HTTPS. For HTTP and HTTPS services, use HTTP proxy mode. For TCP-based services with IP addresses or domain names, use DNS proxy mode.
+
+[id="nw-egress-router-about-router-pod-implementation_{context}"]
+== Egress router pod implementation
+
+The egress router pod setup is performed by an initialization container. That container runs in a privileged context so that it can configure the macvlan interface and set up `iptables` rules.
+After the initialization container finishes setting up the `iptables` rules, it exits.
+Next the egress router pod executes the container to handle the egress router traffic. The image used varies depending on the egress router mode.
+
+The environment variables determine which addresses the egress-router image uses. The image configures the macvlan interface to use `EGRESS_SOURCE` as its IP address, with `EGRESS_GATEWAY` as the IP address for the gateway.
+
+Network Address Translation (NAT) rules are set up so that connections to the cluster IP address of the pod on any TCP or UDP port are redirected to the same port on IP address specified by the `EGRESS_DESTINATION` variable.
+
+If only some of the nodes in your cluster are capable of claiming the specified source IP address and using the specified gateway, you can specify a `nodeName` or `nodeSelector` indicating which nodes are acceptable.
+
+[id="nw-egress-router-about-deployments_{context}"]
+== Deployment considerations
+
+An egress router pod adds an additional IP address and MAC address to the primary network interface of the node. As a result, you might need to configure your hypervisor or cloud provider to allow the additional address.
+
+{rh-openstack-first}::
+
+If you are deploying {product-title} on {rh-openstack}, you must whitelist the IP and MAC addresses on your OpenStack environment, otherwise link:https://access.redhat.com/solutions/2803331[communication will fail]:
++
+[source,terminal]
+----
+$ openstack port set --allowed-address \
+  ip_address=<ip_address>,mac_address=<mac_address> <neutron_port_uuid>
+----
+
+{rh-virtualization-first}::
+
+If you are using link:https://access.redhat.com/documentation/en-us/red_hat_virtualization/4.4/html/administration_guide/sect-virtual_network_interface_cards#Explanation_of_Settings_in_the_VM_Interface_Profile_Window[{rh-virtualization}], you must select *No Network Filter* for the Virtual Network Interface Card (vNIC).
+
+VMware vSphere::
+
+If you are using VMware vSphere, see the link:https://docs.vmware.com/en/VMware-vSphere/6.0/com.vmware.vsphere.security.doc/GUID-3507432E-AFEA-4B6B-B404-17A020575358.html[VMWare documentation for securing vSphere standard switches]. View and change VMWare vSphere default settings by selecting the host virtual switch from the vSphere Web Client.
+
+Specifically, ensure that the following are enabled:
+
+* https://docs.vmware.com/en/VMware-vSphere/6.0/com.vmware.vsphere.security.doc/GUID-942BD3AA-731B-4A05-8196-66F2B4BF1ACB.html[MAC Address Changes]
+* https://docs.vmware.com/en/VMware-vSphere/6.0/com.vmware.vsphere.security.doc/GUID-7DC6486F-5400-44DF-8A62-6273798A2F80.html[Forged Transits]
+* https://docs.vmware.com/en/VMware-vSphere/6.0/com.vmware.vsphere.security.doc/GUID-92F3AB1F-B4C5-4F25-A010-8820D7250350.html[Promiscuous Mode Operation]
+
+[id="nw-egress-router-about-failover_{context}"]
+== Failover configuration
+
+To avoid downtime, you can deploy an egress router pod with a `Deployment` resource, as in the following example. To create a new `Service` object for the example deployment, use the `oc expose deployment/egress-demo-controller` command.
+
+[source,yaml,subs="attributes+"]
+----
+apiVersion: v1
+kind: Deployment
+metadata:
+  name: egress-demo-controller
+spec:
+  replicas: 1 <1>
+  selector:
+    name: egress-router
+  template:
+    metadata:
+      name: egress-router
+      labels:
+        name: egress-router
+      annotations:
+        pod.network.openshift.io/assign-macvlan: "true"
+    spec: <2>
+      initContainers:
+        ...
+      containers:
+        ...
+----
+<1> Ensure that replicas is set to `1`, because only one pod can use a given egress source IP address at any time. This means that only a single copy of the router runs on a node.
+<2> Specify the `Pod` object template for the egress router pod.

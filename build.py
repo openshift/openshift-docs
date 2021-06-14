@@ -164,7 +164,7 @@ def parse_build_config(config):
     """
     config = os.path.expanduser(config)
     with open(config, "r") as f:
-        data = list(yaml.load_all(f))
+        data = list(yaml.load_all(f,Loader=yaml.FullLoader))
 
     for book in data:
         book_name = book['Name']
