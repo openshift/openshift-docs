@@ -1,0 +1,216 @@
+// TELCODOCS-272 4.8 Using Assisted Installer to Install & Manage ocp Clusters on Bare Metal
+//
+//
+//
+= Enabling Assisted Installer Service on Bare Metal
+<<introduction,Introduction to Assisted Installer Service>>
+<<enable-assisted-installer-service,Enabling the Assisted Installer Service>>
+<<resources-explained,Resources Explained>>
+
+== Introduction
+
+The Assisted Installer Service (AIS) deploys Red Hat OpenShift Container Platform (ocp) clusters running on a Bare Metal Operator (BMO) node. Red Hat Advanced Cluster Management (RHACM) 2.3+ ships with AIS, which deploys once the `MultiClusterHub` is enabled.
+
+RHACM 2.3+ only supports *Single Node OpenShift (SNO)* cluster deployments. A SNO cluster runs OpenShift Container Platform (ocp) on top of a single BMO node. The single BMO acts as *both the supervisor and the worker node*.
+
+== Enable assisted installer service
+
+=== Prerequisites
+
+. OpenShift Container Platform 4.8+ installed on Bare Metal
+. https://access.redhat.com/documentation/en-us/red_hat_advanced_cluster_management_for_kubernetes/2.2/html/install/installing#installing-red-hat-advanced-cluster-management-from-the-operatorhub[RHACM 2.3+ with MultiClusterHub resource created]
+. Two `PersistentVolumes` (PV)
+. Install `openshift-install` [cli tool] for the desired version of OCP
+
+=== Steps
+
+. Modify `HiveConfig` to enable the feature gate for Assisted Installer
++
+[source,terminal]
+----
+ oc patch hiveconfig hive --type merge -p '{"spec":{"targetNamespace":"hive","logLevel":"debug","featureGates":{"custom":{"enabled":["AlphaAgentInstallStrategy"]},"featureSet":"Custom"}}}'
+----
+
+. Modify `provisioning` resource to allow the Bare Metal Operator to watch all namespaces
++
+[source,terminal]
+----
+ oc patch provisioning provisioning-configuration --type merge -p '{"spec":{"watchAllNamespaces": true }}'
+----
+
+. Create an `AgentServiceConfig` custom resource to install the Assisted Installer Service's controller
++
+[source,terminal]
+----
+ cat <<EOF | kubectl create -f -
+ apiVersion: agent-install.openshift.io/v1beta1
+ kind: AgentServiceConfig
+ metadata:
+   name: agent
+   namespace: assisted-installer
+ spec:
+   databaseStorage:
+     volumeName: <db-pv-name>
+     accessModes:
+     - ReadWriteOnce
+     resources:
+       requests:
+         storage: <db-storage-size>
+   filesystemStorage:
+     volumeName: <fs-pv-name>
+     accessModes:
+     - ReadWriteOnce
+     resources:
+       requests:
+         storage: <fs-storage-size>
+   osImages:
+     - openshiftVersion: <ocp-version>
+       rootfs: <rootfs-url>
+       url: <iso-url>
+ EOF
+----
+
+[NOTE]
+====
+`db-pv-name` is the name of the PersistentVolume to use for database storage.
+
+`db-storage-size` is the volume size of the `db-pv-name` PersistentVolume. For example, `20Gi`.
+
+`fs-pv-name` is the name of the PersistentVolume to use for file system storage.
+
+`fs-storage-size` is the volume size of the `fs-pv-name` PersistentVolume. For example, `120Gi`.
+
+`ocp-version` is the OCP version to boot the SNO clusters with.
+
+`rootfs-url` is the rootfs iso. This is the rootfs URL found in step 4 of the prerequisites.
+
+`iso-url` is the image url found in step 4 of the prerequisites.
+====
+
+
+=== Troubleshooting
+
+==== Managed cluster fails to come online
+
+. Check the `AgentClusterInstall` install status:
+[source,terminal]
+----
+oc get agentclusterinstall -n <cluster-name>
+----
+
+If under the `INSTALLED` column is `false`, the installation was unsuccessful. Use `describe` to view error details.
+
+[source,terminal]
+----
+oc describe agentclusterinstall -n <cluster-name> <cluster-name>
+----
+
+. Amend the errors and do the following:
+
+Remove the cluster's namespace.
+[source,terminal]
+----
+ oc delete namespace <cluster-name>
+----
+This deletes all the namespace-scoped custom resources created for this SNO cluster.
+
+. Remove the cluster's managed cluster resource.
+[source,terminal]
+----
+ oc delete managedcluster <cluster-name>
+----
+
+. Redo the <<custom-resource-creation,Custom Resource Creation>> section for this cluster.
+
+== Resources explained
+
+Kubernetes Custom Resources explained within the context of Assisted Installer Service.
+
+|===
+| Resource | Explanation | Usage | Scoping | New Resource
+
+| BareMetalHost
+| Contains the connection information for the BMC of the target Bare Metal machine
+| Loads and boots the Discovery ISO on the target machine using the Redfish protocol.
+| Namespace-scoped
+| No*
+
+| InfraEnv
+| Contains information for pulling OCP onto the target Bare Metal machine
+| Used with ClusterDeployment to generate the Discovery ISO for the SNO cluster.
+| Namespace-scoped
+| Yes
+
+| AgentClusterInstall
+| Specifies the SNO cluster's configuration such as networking, number of supervisor (control plane) nodes, etc. Will show the kubeconfig and credentials after completed installation.
+| Used to specify the SNO cluster's configuration information and provide status during the installation of the cluster.
+| Namespace-scoped
+| Yes
+
+| ClusterDeployment
+| References the AgentClusterInstall to use.
+| Used with InfraEnv to generate the Discovery ISO for the SNO cluster.
+| Namespace-scoped
+| No*
+
+| NMStateConfig
+| Provides `MAC` \-> `IP` mapping and other network settings to the Assisted Installer. Not needed for DHCP.
+| Used to setup static IP for the SNO cluster's Kubernetes API server
+| Namespace-scoped
+| Yes
+
+| Agent
+| Contains hardware information about the target Bare Metal machine
+| Created automatically on the Hub once the Discovery ISO on the targeted machine is booted
+| Namespace-scoped
+| Yes
+
+| ManagedCluster
+| When a cluster will be managed by the Hub, it needs to be imported and known. This Kubernetes object provides that interface.
+| The Hub uses this resource to provision, manage and show status of clusters.
+| Cluster-scoped
+| No
+
+| KlusterletAddonConfig
+| Contains the list of services (provided by the Hub) to be deployed to a ManagedCluster
+| Tells the Hub which addon services to deploy to a ManagedCluster
+| Namespace-scoped
+| No
+
+| Namespace
+| Logical space for each ManagedCluster's resources existing on the Hub
+| Used to propagate resources to the ManagedCluster
+| Cluster-scoped
+| No
+
+| Secret
+| Three are created: BMC Secret, Private key Secret, and Image Pull Secret
+| *BMC Secret* is used to authenticate into the target Bare Metal machine using its username and password. *Private key Secret* is used to SSH into the target Bare Metal machine. *Image Pull Secret* contains authentication information for the ocp image installed on the target Bare Metal machine.
+| Namespace-scoped
+| No
+
+| ClusterImageSet
+| Contains OCP image information such as the repository and image name
+| Passed into resources to provide ocp images
+| Cluster-scoped
+| No
+|===
+
+NOTE: *These resources are new within the context of RHACM, not ocp.
+
+== Glossary
+
+Definitions and explanations of abbreviations.
+
+[frame="topbot",options="header"]
+|====
+| Term | Abbreviation | Explanation
+| Assisted Installer | AI | Also known as Assisted Installer Service. Service provided by RHACM to provision OCP clusters on Bare Metal
+| Baseboard Management Controller | BMC | Processor that manages physical state of a computer
+| Bare Metal Host | BMH | A new Kubernetes custom resource to manage and provision OCP on Bare Metal
+| Discovery ISO file | ISO | Disk image file used to "discover" and boot the target Bare Metal machine
+| Red Hat OpenShift Container Platform | ocp | Enterprise Kubernetes Platform used as the foundation for building and scaling containerized applications
+| Persistent Volume | PV | Storage used by the Assisted Installer Service that remians in place even if the Assisted Installer's pods stop responding
+| Red Hat Advanced Cluster Management | RHACM | Set of services provided by Red Hat to manage clusters and Kubernetes workloads
+| Single Node OpenShift | SNO | A machine consisting of only one Node running OpenShift Container Platform
+| Zero Touch Provisioning | ZTP | Allows users to provision a separate machine without configuring that machine
