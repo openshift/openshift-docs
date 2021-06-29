@@ -1,0 +1,225 @@
+[id="update-using-custom-machine-config-pools"]
+= Use of customized machine config pools during update
+include::modules/common-attributes.adoc[]
+:context: update-using-custom-machine-config-pools
+
+toc::[]
+In OpenShift V4 nodes are not considered individually. Nodes are considered in groups i.e. machine config pools(MCP).
+In a typical OCP cluster we have two MCPs.
+The MCP for the control plane is called master pool and other group which have worker nodes is called worker pool.
+During an OpenShift update all pools are updated concurrently.
+
+Nodes within a MCP are updated by cordoning and draining up to the specified `maxUnavailable` number of nodes (if required).
+Once drained the Machine Config Daemon applies MachineConfig changes which may include updating the OS and the host is rebooted.
+The MCP gives us the ability to pause a pool and it will make sure that the OS is not updated/rebooted during the update process.
+We can create more than one customized machine config pool out of the worker pool, which will give us a more control over
+the sequence in which the nodes are updated.
+
+[NOTE]
+====
+Creating custom MCP using master nodes is not supported.
+Machine config operator (responsible for updating the nodes) will ignore the custom MCP created out of the master nodes.
+This is required to make sure control plane nodes remain stable.
+====
+
+An OpenShift or Kubernetes cluster is highly available by design and there are many Kubernetes features
+(e.g. pod disruption budget, pod affinity, health checks, replicas) which can make the application highly available in case of node failures.
+
+However there might be some secenarios where a controlled rollout of upgrade to the worker nodes is desired.
+This helps to make sure the mission critical application stays available during the whole update process even if the upgrade process causes a failure.
+It is also useful in scenarios where we can not have a single maintenance window to complete the whole update process.
+
+The slow rollout of a new OpenShift version to worker nodes can be characterized as a canary release i.e. we can
+control the rollout of worker nodes by controlling the machine config pools. After the update of the first MCP, the
+application compatibility can be verfied and then the whole fleet can be updated gradually to the new version.
+
+
+== Workflow for updating worker nodes with canary rollout
+
+. Create MCPs out of the worker pool. The number of nodes in each MCP depends on a few factors like maintaince window duration for each MCP and the amount of reserve capacity (extra worker nodes) present.
++
+[NOTE]
+====
+In case of a failure i.e. if the MCP with the new version does not work as expected with the applications, the nodes in the pool can be cordoned and drained. So that the application will not run on these nodes and the extra capacity will help to maintain the quality of service of the applications.
+====
++
+. Pause the MCPs you do not want to update as part of the default update process.
++
+[NOTE]
+====
+Pausing the MCP will also pause the kube-apiserver-to-kubelet-signer automatic CA certificates rotation.
+New CA certificates are generation and removal happens at 292 day (from the installation day) and 365 days respectively.
+See the link:https://access.redhat.com/articles/5651701[article] to findout how much time you have before the next automatic CA certificate rotation.
+Make sure the pools are unpaused when the CA cert rotation happens.
+If the MCPs are paused then the cert rotation will not happen and that would make the cluster degraded.
+====
++
+[NOTE]
+====
+kube-apiserver-to-kubelet-signer CA certifcation require node reboot for OCP version prior to 4.7. However for later versions i.e. V4.7 and later does not need a node reboot for the same.
+====
++
+. Start the update process. The update process will only update the MCPs which are not paused. That includes the master nodes i.e. the control plane.
++
+. Once the control plane update is completed, unpause one MCP. Unpausing the MCP will start the update process for the pool of nodes. You can check the progress of the update in the web console (In Administrator view -> Administration -> Cluster settings ) as well as running `$ oc get machineconfigpools` CLI command.
++
+[NOTE]
+====
+You can change `maxUnavailable` in a MCP to specify the percentage or the number of machines that can be updating at any given time. The default is 1.
+====
++
+. Test if the applications are working as expected on the newly updated MCP.
+
+. Update the remaining MCPs By unpausing one by one till all worker nodes are updated.
+
+
+== Steps to create a MCP
+
+. Get the list of worker nodes.
++
+[source,terminal]
+----
+$ oc get -l 'node-role.kubernetes.io/master!=' -o 'jsonpath={range .items[*]}{.metadata.name}{"\n"}{end}' nodes
+----
++
+.. Example:
++
+[source,terminal]
+----
+$ oc get -l 'node-role.kubernetes.io/master!=' -o 'jsonpath={range .items[*]}{.metadata.name}{"\n"}{end}' nodes
+ci-ln-pwnll6b-f76d1-s8t9n-worker-a-s75z4
+ci-ln-pwnll6b-f76d1-s8t9n-worker-b-dglj2
+ci-ln-pwnll6b-f76d1-s8t9n-worker-c-lldbm
+----
+. Add the MCP name as label to the worker node.
++
+[source,terminal]
+----
+$ oc label node <node name> node-role.kubernetes.io/<mcp name>=
+----
+.. Example:
++
+[source,terminal]
+----
+$ oc label node ci-ln-gtrwm8t-f76d1-spbl7-worker-a-xk76k node-role.kubernetes.io/mcpfoo=
+node/ci-ln-gtrwm8t-f76d1-spbl7-worker-a-xk76k labeled
+----
++
+. Create the machineconfig pool
++
+[source,yaml]
+----
+$ cat mcpfoo.yaml
+apiVersion: machineconfiguration.openshift.io/v1
+kind: MachineConfigPool
+metadata:
+  name: mcpfoo | <1>
+spec:
+  machineConfigSelector:
+    matchExpressions:
+      - {key: machineconfiguration.openshift.io/role, operator: In, values: [worker,mcpfoo]} | <1>
+  nodeSelector:
+    matchLabels:
+      node-role.kubernetes.io/mcpfoo: "" | <1>
+----
+<1> Name of the machine config pool
++
+[source,terminal]
+----
+$ oc create -f mcpfoo.yaml
+----
++
+.. Example:
++
+[source,terminal]
+----
+$ oc create -f mcpfoo.yaml
+machineconfigpool.machineconfiguration.openshift.io/mcpfoo created
+----
++
+. To see the list of MCPs present in the cluster and their state
++
+[source,terminal]
+----
+$ oc get machineconfigpool
+----
++
+.. Example:
++
+[source,terminal]
+----
+$ oc get machineconfigpool
+NAME     CONFIG                                             UPDATED   UPDATING   DEGRADED   MACHINECOUNT   READYMACHINECOUNT   UPDATEDMACHINECOUNT   DEGRADEDMACHINECOUNT   AGE
+master   rendered-master-b0bb90c4921860f2a5d8a2f8137c1867   True      False      False      3              3                   3                     0                      97m
+mcpbar   rendered-mcpbar-87ba3dec1ad78cb6aecebf7fbb476a36   True      False      False      2              2                   2                     0                      2m18s
+mcpfoo   rendered-mcpfoo-87ba3dec1ad78cb6aecebf7fbb476a36   True      False      False      1              1                   1                     0                      2m42s
+worker   rendered-worker-87ba3dec1ad78cb6aecebf7fbb476a36   True      False      False      0              0                   0                     0                      97m
+----
+
+=== Pause a MCP
+
+Pausing a MCP will keep it from updating to the new OS version by the machine config operator.
+
+[source,terminal]
+----
+$ oc patch mcp/<mcp name> --patch '{"spec":{"paused":true}}' --type=merge
+----
+Example:
+[source,terminal]
+----
+$  oc patch mcp/mcpfoo --patch '{"spec":{"paused":true}}' --type=merge
+machineconfigpool.machineconfiguration.openshift.io/mcpfoo patched
+----
+
+=== Unpause a MCP
+
+Unpausing will enable the nodes in the MCP to move to the new OS version and reboot (if required) it.
+
+[source,terminal]
+----
+$ oc patch mcp/<mcp name> --patch '{"spec":{"paused":false}}' --type=merge
+----
+Example:
+[source,terminal]
+----
+$  oc patch mcp/mcpfoo --patch '{"spec":{"paused":false}}' --type=merge
+machineconfigpool.machineconfiguration.openshift.io/mcpfoo patched
+----
+
+== Steps to remove a node from a MCP
+
+A node must have a role to be properly functioning with in the OpenShift cluster.
+If you want to remove a node from a MCP, you should first relabel the node as a worker as it should be part of worker MCP if is not going to be part of any other MCP. Once it is labeled as worker only then proceed to unlabel it from the MCP.
+
+. Label it as worker if it does not have worker label
++
+[source,terminal]
+----
+$ oc label node <node name>  node-role.kubernetes.io/worker=
+----
++
+. Remove the MCP label
++
+[source,terminal]
+----
+$oc label node <node name> node-role.kubernetes.io/<mcp name>-
+----
++
+. The machine config operator is then going to reconcile the node to the worker pool configuration. Check the output of `oc get mcp` to make sure the worker pool is updated before going to the next step.
++
+. Delete the MCP
++
+[source,terminal]
+----
+$ oc delete mcp <mcp name>
+----
+
+== In Case Of Failure
+
+In case of failure, keep all the MCP paused and wait for the version with the bug fix and start the update process again.
+
+[NOTE]
+====
+We do not recommend updating MCPs to different versions i.e. one MCP from 4.Y.100 to 4.Y+1.10 and another 4.Y.100 to 4.Y+1.20.
+This scenario is never tested and may result in to undefined cluster state.
+====
