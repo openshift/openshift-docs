@@ -48,6 +48,34 @@ function versionSelector(list) {
 
 }
 
+// checks what language was selected and then sends the user to the portal for their localized version
+function selectLang(langList) {
+
+  var lang = langList[langList.selectedIndex].value;
+  var winPath = window.location.pathname;
+
+  console.log("Lang: " + lang);
+  console.log("Win Path: " + winPath);
+
+  var currentVersion = document.getElementById("version-selector").value;
+  // var currentVersion = "4.7";
+  console.log("CurrentVersion: " + currentVersion);
+
+  // path for the file to reference on portal (the last bit removes .html)
+  var path = winPath.substring(winPath.lastIndexOf(currentVersion) +   currentVersion.length, winPath.length - 5);
+
+  console.log("Path: " + path);
+
+  var portalBaseURL = "https://access.redhat.com/documentation";
+  var finalURL = portalBaseURL + "/" + lang + "/openshift_container_platform/" + currentVersion + "/html/" + path;
+
+  console.log("Final URL: " + finalURL);
+
+  // alert(finalURL);
+  window.location.href = finalURL;
+
+}
+
 // sets the current version in the drop down and sets up suggest an edit options
 function selectVersion(currentVersion) {
 
