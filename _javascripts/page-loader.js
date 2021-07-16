@@ -79,11 +79,33 @@ function selectLang(langList) {
   console.log("Win Path: " + winPath);
 
   var currentVersion = document.getElementById("version-selector").value;
-  // var currentVersion = "4.7";
-  console.log("CurrentVersion: " + currentVersion);
+  // var currentVersion = "l10n";
+  console.log("CurrentVersn: " + currentVersion);
 
   // path for the file to reference on portal (the last bit removes .html)
-  var path = winPath.substring(winPath.lastIndexOf(currentVersion) +   currentVersion.length, winPath.length - 5);
+  var path = winPath.substring(winPath.lastIndexOf(currentVersion) +   (currentVersion.length + 1), winPath.length - 5);
+
+  var parts = path.split("/");
+
+  console.log(parts);
+
+  // this goes to a subsection
+
+  if(parts.length > 2) {
+    var book = parts[0]; // transforms as is on portal for most books
+
+    if(currentVersion != "4.5") {
+      if(book === "virt") book = "openshift_virtualization";
+      if(book === "security") book = "security_and_compliance";
+    }
+
+    var section = parts[1].replace(/\_/g, "-"); // replace underscore with dash
+    console.log(section);
+    var subsection = parts[2].replace(/\_/g, "-");
+    console.log(subsection);
+
+    path = book + "/" + section + "#" + subsection;
+  }
 
   console.log("Path: " + path);
 
