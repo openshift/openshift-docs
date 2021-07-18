@@ -79,7 +79,7 @@ function selectLang(langList) {
   console.log("Win Path: " + winPath);
 
   var currentVersion = document.getElementById("version-selector").value;
-  // var currentVersion = "l10n";
+  var currentVersion = "l10n";
   console.log("CurrentVersn: " + currentVersion);
 
   // path for the file to reference on portal (the last bit removes .html)
@@ -89,32 +89,30 @@ function selectLang(langList) {
 
   console.log(parts);
 
-  // this goes to a subsection
+  // map things to html-single. While plain HTML is preferred, it is harder to map and get all anchors right. html-single ensures there is no 404 and the user at least lands on the right book
+  console.log(parts[parts.length-1]);
 
-  if(parts.length > 2) {
-    var book = parts[0]; // transforms as is on portal for most books
+  var anchorid = parts[parts.length-1];
+  var book = parts[0];
 
-    if(currentVersion != "4.5") {
-      if(book === "virt") book = "openshift_virtualization";
-      if(book === "security") book = "security_and_compliance";
-    }
+  // add changed book names here
+  if(book == "updating") book = "updating_clusters";
 
-    var section = parts[1].replace(/\_/g, "-"); // replace underscore with dash
-    console.log(section);
-    var subsection = parts[2].replace(/\_/g, "-");
-    console.log(subsection);
+  // var section = parts[1].replace(/\_/g, "-"); // replace underscore with dash
+  // var section = subGroup.toLowerCase().replace(" ", "-");
+  // console.log(section);
+  // var subsection = parts[2].replace(/\_/g, "-");
+  // console.log(subsection);
 
-    path = book + "/" + section + "#" + subsection;
-  }
+  // path = book + "/" + section + "#" + subsection;
+  path = book + "#" + anchorid;
 
   console.log("Path: " + path);
 
   var portalBaseURL = "https://access.redhat.com/documentation";
-  var finalURL = portalBaseURL + "/" + lang + "/openshift_container_platform/" + currentVersion + "/html/" + path;
+  var finalURL = portalBaseURL + "/" + lang + "/openshift_container_platform/" + currentVersion + "/html-single/" + path;
 
   console.log("Final URL: " + finalURL);
-
-  // alert(finalURL);
   window.location.href = finalURL;
 
 }
