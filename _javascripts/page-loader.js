@@ -78,9 +78,8 @@ function selectLang(langList) {
   console.log("Lang: " + lang);
   console.log("Win Path: " + winPath);
 
-  var currentVersion = document.getElementById("version-selector").value;
-  var currentVersion = "l10n";
-  console.log("CurrentVersn: " + currentVersion);
+  var currentVersion = document.getElementById("version-selector").value;  
+  console.log("CurrentVersion: " + currentVersion);
 
   // path for the file to reference on portal (the last bit removes .html)
   var path = winPath.substring(winPath.lastIndexOf(currentVersion) +   (currentVersion.length + 1), winPath.length - 5);
