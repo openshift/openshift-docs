@@ -97,6 +97,7 @@ function selectLang(langList) {
   // add changed book names here
   if(book == "updating") book = "updating_clusters";
   if(book == "virt") book = "openshift_virtualization";
+  if(book == "post_installation_configuration") book = "post-installation_configuration";  
 
   // var section = parts[1].replace(/\_/g, "-"); // replace underscore with dash
   // var section = subGroup.toLowerCase().replace(" ", "-");
