@@ -1,0 +1,284 @@
+// Module included in the following assemblies:
+//
+// *scalability_and_performance/ztp-zero-touch-provisioning.adoc
+
+[id="ztp-creating-siteconfig-custom-resources_{context}"]
+= Creating ZTP custom resources for managed clusters
+
+Create the zero touch provisioning (ZTP) custom resources that contain the site-specific data required to install and configure a cluster for RAN applications.
+
+.Prerequisites
+
+* Enable Assisted Installer Service.
+
+* Ensure network connectivity:
+** The container within the hub must be able to reach the Baseboard Management Controller (BMC) address of the target bare metal machine.
+
+** The managed cluster must be able to resolve and reach the hub’s API `hostname` and `{asterisk}.app` host name.
+Example of the hub’s API and `{asterisk}.app` host name:
++
+[source,terminal]
+----
+console-openshift-console.apps.hub-cluster.internal.domain.com
+Api.hub-cluster.internal.domain.com
+----
+
+** The hub must be able to resolve and reach the API and `{asterisk}.app` host name of the managed cluster.
+Here is an example of the managed cluster’s API and `{asterisk}.app` host name:
++
+[source,terminal]
+----
+console-openshift-console.apps.sno-managed-cluster-1.internal.domain.com
+Api.sno-managed-cluster-1.internal.domain.com
+----
+
+** A DNS Server that is IP reachable from the target bare metal machine.
+
+* A target bare metal machine for the managed cluster with the following hardware minimums:
+
+** 4 CPU or 8 vCPU
+** 32 GiB RAM
+** 120 GiB Disk for root filesystem
+
+* When working in a disconnected environment, the release image needs to be mirrored. Use this command to mirror the release image:
++
+[source,terminal]
+----
+oc adm release mirror -a <pull_secret.json>
+--from=quay.io/openshift-release-dev/ocp-release:{{ mirror_version_spoke_release }}
+--to={{ provisioner_cluster_registry }}/ocp4 --to-release-image={{
+provisioner_cluster_registry }}/ocp4:{{ mirror_version_spoke_release }}
+----
+
+* You mirrored the ISO and `rootfs` used to generate the spoke cluster ISO to an HTTP server and configured the settings to pull images from there.
++
+The images must match the version of the ClusterImageSet. To deploy a 4.8.0 version, the `rootfs` and ISO need to be 4.8.0 as well.
+
+
+.Procedure
+
+. Create a `ClusterImageSet` for each specific cluster version that needs to be deployed. A `ClusterImageSet` has the following format:
++
+[source,yaml]
+----
+apiVersion: hive.openshift.io/v1
+kind: ClusterImageSet
+metadata:
+  name: openshift-4.8.0-rc.0 <1>
+spec:
+   releaseImage: quay.io/openshift-release-dev/ocp-release:4.8.0-x86_64 <2>
+----
+<1> `name` is the descriptive version that you want to deploy.
+<2> `releaseImage` needs to point to the specific release image to deploy.
+
+
+. Create the `Namespace` definition for the managed cluster:
++
+[source,yaml]
+----
+apiVersion: v1
+kind: Namespace
+metadata:
+     name: <cluster-name> <1>
+     labels:
+        name: <cluster-name> <1>
+----
+<1>  `cluster-name` is the name of the managed cluster to provision.
+
+. Create the `BMC Secret` custom resource:
++
+[source,yaml]
+----
+apiVersion: v1
+data:
+  password: <bmc-password> <1>
+  username: <bmc-username> <2>
+kind: Secret
+metadata:
+  name: <cluster-name>-bmc-secret
+  namespace: <cluster-name>
+type: Opaque
+----
+<1> `bmc-password` is the password to the target bare metal machine. Must be base-64 encoded.
+<2> `bmc-username` is the username to the target bare metal machine. Must be base-64 encoded.
+
+. Create the `Image Pull Secret` custom resource:
++
+[source,yaml]
+----
+apiVersion: v1
+data:
+  .dockerconfigjson: <pull-secret> <1>
+kind: Secret
+metadata:
+  name: assisted-deployment-pull-secret
+  namespace: <cluster-name>
+type: kubernetes.io/dockerconfigjson
+----
+<1> `pull-secret` is the {product-title} pull secret. Must be base-64 encoded.
+
+. Create the `AgentClusterInstall` custom resource:
++
+[source,yaml]
+----
+apiVersion: extensions.hive.openshift.io/v1beta1
+kind: AgentClusterInstall
+metadata:
+  # Only include the annotation if using OVN, otherwise omit the annotation
+  annotations:
+    agent-install.openshift.io/install-config-overrides: '{"networking":{"networkType":"OVNKubernetes"}}'
+  name: <cluster-name>
+  namespace: <cluster-name>
+spec:
+  clusterDeploymentRef:
+    name: <cluster-name>
+  imageSetRef:
+    name: <cluster-image-set> <1>
+  networking:
+    clusterNetwork:
+    - cidr: 10.128.0.0/14
+      hostPrefix: 23
+    machineNetwork:
+    - cidr: <machine-network-cidr> <2>
+    serviceNetwork:
+    - 172.30.0.0/16
+  provisionRequirements:
+    controlPlaneAgents: 1
+    workerAgents: 0
+  sshPublicKey: <public-key> <3>
+----
++
+<1> `cluster-image-set` is the name of the ClusterImageSet custom resource.
+<2> `machine-network-cidr` is the target bare metal machine’s CIDR.
+<3> `public-key` entered as plain text can be used to SSH into the target bare metal machine after the host is installed.
++
+[NOTE]
+====
+If you want to configure a static IP for the managed cluster at this point, see the procedure in this document for configuring static IP addresses for managed clusters.
+====
+
+
+. Create the `ClusterDeployment` custom resource:
++
+[source,yaml]
+----
+apiVersion: hive.openshift.io/v1
+kind: ClusterDeployment
+metadata:
+  name: <cluster-name>
+  namespace: <cluster-name>
+spec:
+  baseDomain: <base-domain> <1>
+  clusterInstallRef:
+    group: extensions.hive.openshift.io
+    kind: AgentClusterInstall
+    name: <cluster-name>
+    version: v1beta1
+  clusterName: <cluster-name>
+  platform:
+    agentBareMetal:
+      agentSelector:
+        matchLabels:
+          cluster-name: <cluster-name>
+  pullSecretRef:
+    name: assisted-deployment-pull-secret
+----
++
+<1> `base-domain` is the managed cluster’s base domain.
+
+. Create the `KlusterletAddonConfig` custom resource:
++
+[source,yaml]
+----
+apiVersion: agent.open-cluster-management.io/v1
+kind: KlusterletAddonConfig
+metadata:
+  name: <cluster-name>
+  namespace: <cluster-name>
+spec:
+  clusterName: <cluster-name>
+  clusterNamespace: <cluster-name>
+  clusterLabels:
+    cloud: auto-detect
+    vendor: auto-detect
+  applicationManager:
+    enabled: true
+  certPolicyController:
+    enabled: true <1>
+  iamPolicyController:
+    enabled: true
+  policyController:
+    enabled: true
+  searchCollector:
+    enabled: false
+----
++
+<1> `enabled:` is set to either `true` to enable KlusterletAddonConfig or `false` to disable the KlusterletAddonConfig. Keep `searchCollector` disabled.
+
+. Create the `ManagedCluster` custom resource:
++
+[source,yaml]
+----
+apiVersion: cluster.open-cluster-management.io/v1
+kind: ManagedCluster
+metadata:
+  name: <cluster-name>
+spec:
+  hubAcceptsClient: true
+----
+
+. Create the `InfraEnv` custom resource:
++
+[source,yaml]
+----
+apiVersion: agent-install.openshift.io/v1beta1
+kind: InfraEnv
+metadata:
+  name: <cluster-name>
+  namespace: <cluster-name>
+spec:
+  clusterRef:
+    name: <cluster-name>
+    namespace: <cluster-name>
+  sshAuthorizedKey: <public-key> <1>
+  agentLabelSelector:
+    matchLabels:
+      cluster-name: <cluster-name>
+  pullSecretRef:
+    name: assisted-deployment-pull-secret
+----
+<1> Enter `public-key` as plain text and use it to SSH into the target bare metal machine when the host is booted from the ISO.
+
+. Create the `BareMetalHost` custom resource:
++
+[source,yaml]
+----
+apiVersion: metal3.io/v1alpha1
+kind: BareMetalHost
+metadata:
+  name: <cluster-name>
+  namespace: <cluster-name>
+  annotations:
+    inspect.metal3.io: disabled
+  labels:
+    infraenvs.agent-install.openshift.io: "<cluster-name>"
+spec:
+  bootMode: "UEFI"
+  bmc:
+    address: <bmc-address> <1>
+    disableCertificateVerification: true
+    credentialsName: <cluster-name>-bmc-secret
+  bootMACAddress: <mac-address> <2>
+  automatedCleaningMode: disabled
+  online: true
+----
+<1> `bmc-address` is the baseboard address of the target bare metal machine.
+<2> `mac-address` is the target bare metal machine’s MAC address.
++
+Optionally, you can add `bmac.agent-install.openshift.io/hostname: <host-name>` as an annotation to set the managed cluster’s host name, otherwise it will default to either a host name from the DHCP server or local host.
+
+. After you have created the custom resources, push the entire directory of generated custom resources to the Git repository you created for storing the custom resources.
+
+.Next step
+
+To provision additional clusters, repeat this procedure for each cluster.
