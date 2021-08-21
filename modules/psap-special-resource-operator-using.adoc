@@ -1,0 +1,404 @@
+// Module included in the following assemblies:
+//
+// * hardware_enablement/psap-special-resource-operator.adoc
+
+[id="using-the-special-resource-operator"]
+= Using the Special Resource Operator
+
+As an example, the Special Resource Operator can be used to manage the build and deployment of a driver container for a minimal kernel module called simple-kmod. 
+
+The objects required to build and deploy the kernel module can be defined using a Helm chart. The SRO image contains a local repository of Helm charts including the templates for deploying the simple-kmod. SRO can also read the templates from a ConfigMap. Both methods are demonstrated in the following examples.
+
+[id="deploy-simple-kmod-using-local-chart"]
+== Build and run the simple-kmod SpecialResource using the SRO image's local manifests.
+
+.Prerequisites
+
+* You have a running {product-title} cluster.
+* You have set the Image Registry Operator state to Managed for your cluster. See the additional resources section below for more information.
+* You have installed the OpenShift CLI (`oc`).
+* You are logged into the OpenShift CLI as a user with `cluster-admin` privileges.
+* You have installed the Node Feature Discovery (NFD) Operator.
+* You have installed the Special Resource Operator.
+
+.Procedure
+. To deploy the simple-kmod using the SRO image's local Helm repository, the following SpecialResource manifest can be used. Save this YAML as `simple-kmod-local.yaml`
++
+[source,yaml]
+----
+apiVersion: sro.openshift.io/v1beta1
+kind: SpecialResource
+metadata:
+  name: simple-kmod
+spec:
+  namespace: simple-kmod
+  chart:
+    name: simple-kmod
+    version: 0.0.1
+    repository:
+      name: example
+      url: file:///charts/example
+  set:
+    kind: Values
+    apiVersion: sro.openshift.io/v1beta1
+    kmodNames: ["simple-kmod", "simple-procfs-kmod"]
+    buildArgs:
+    - name: "KMODVER"
+      value: "SRO"
+  driverContainer:
+    source:
+      git:
+        ref: "master"
+        uri: "https://github.com/openshift-psap/kvc-simple-kmod.git"
+----
+
+. Create the SpecialResource with:
++
+[source,terminal]
+----
+$ oc create -f simple-kmod-local.yaml
+----
+
+. The simple-kmod resources are deployed in the simple-kmod namespace as specified in the object manifest. After a short time, the build pod for the simple-kmod driver container runs. The build completes after a few minutes and then the driver container pods run.
++
+[source,terminal]
+----
+$ oc get pods -n simple-kmod
+----
++
+.Example output
+[source,terminal]
+----
+NAME                                                  READY   STATUS      RESTARTS   AGE
+simple-kmod-driver-build-12813789169ac0ee-1-build     0/1     Completed   0          7m12s
+simple-kmod-driver-container-12813789169ac0ee-mjsnh   1/1     Running     0          8m2s
+simple-kmod-driver-container-12813789169ac0ee-qtkff   1/1     Running     0          8m2s
+----
+
+. You can display the logs of the simple-kmod driver container image build using the oc log command along with the build pod name from the previous command:
++
+[source,terminal]
+----
+$ oc logs pod/simple-kmod-driver-build-12813789169ac0ee-1-build -n simple-kmod
+----
+
+. To verify that the simple-kmod kernel modules are loaded, execute the `lsmod` command in one of the driver container pods from step 3. 
++
+[source,terminal]
+----
+$ oc exec -n simple-kmod -it pod/simple-kmod-driver-container-12813789169ac0ee-mjsnh -- lsmod | grep simple
+----
++
+.Example output
+[source,terminal]
+----
+simple_procfs_kmod     16384  0
+simple_kmod            16384  0
+----
+
+To remove the simple-kmod kernel module from the node, delete the simple-kmod SpecialResource API object with `oc delete`. The kernel module is unloaded when the driver container pod is deleted.
+
+[id="deploy-simple-kmod-using-configmap-chart"]
+== Build and run the simple-kmod SpecialResource using a ConfigMap
+
+This example shows how the loading of any kernel module can be managed by SRO, by storing the Helm chart templates in a ConfigMap. Like in the previous example, the simple-kmod kernel module is used.
+
+.Prerequisites
+
+* You have a running {product-title} cluster.
+* You have set the Image Registry Operator state to Managed for your cluster.
+* You have installed the OpenShift CLI (`oc`).
+* You are logged into the OpenShift CLI as a user with `cluster-admin` privileges.
+* You have installed Node Feature Discovery (NFD) Operator.
+* You have installed the Special Resource Operator.
+* You have installed the Helm CLI (`helm`).
+
+.Procedure
+. To create a simple-kmod SpecialResource, you will need to define an ImageStream and BuildConfig to build the image, and a ServiceAccount, Role, RoleBinding, and DaemonSet to run the container. The ServiceAccount, Role, and RoleBinding are required to run the DaemonSet with the privileged securityContext so that the kernel module can be loaded.
+.. Create a directory for the recipe, and change into the `templates` directory
++
+[source,terminal]
+----
+mkdir -p chart/simple-kmod-0.0.1/templates
+----
++
+[source,terminal]
+----
+cd chart/simple-kmod-0.0.1/templates
+----
+
+.. Save this YAML template for the ImageStream and BuildConfig in the `templates` directory as `0000-buildconfig.yaml`. Note that the templates such as `{{.Values.specialresource.metadata.name}}` will be filled in by SRO, based on fields in the SpecialResource CR and variables known to the Operator such as `{{.Values.KernelFullVersion}}`
++
+[source,yaml]
+----
+apiVersion: image.openshift.io/v1
+kind: ImageStream
+metadata:
+  labels:
+    app: {{.Values.specialresource.metadata.name}}-{{.Values.groupName.driverContainer}}
+  name: {{.Values.specialresource.metadata.name}}-{{.Values.groupName.driverContainer}}
+spec: {}
+---
+apiVersion: build.openshift.io/v1
+kind: BuildConfig
+metadata:
+  labels:
+    app: {{.Values.specialresource.metadata.name}}-{{.Values.groupName.driverBuild}}
+  name: {{.Values.specialresource.metadata.name}}-{{.Values.groupName.driverBuild}}
+  annotations:
+    specialresource.openshift.io/wait: "true"
+    specialresource.openshift.io/driver-container-vendor: simple-kmod
+    specialresource.openshift.io/kernel-affine: "true"
+spec:
+  nodeSelector:
+    node-role.kubernetes.io/worker: ""
+  runPolicy: "Serial"
+  triggers:
+    - type: "ConfigChange"
+    - type: "ImageChange"
+  source:
+    git:
+      ref: {{.Values.specialresource.spec.driverContainer.source.git.ref}}
+      uri: {{.Values.specialresource.spec.driverContainer.source.git.uri}}
+    type: Git
+  strategy:
+    dockerStrategy:
+      dockerfilePath: Dockerfile.SRO
+      buildArgs:
+        - name: "IMAGE"
+          value: {{ .Values.driverToolkitImage  }}
+        {{- range $arg := .Values.buildArgs }}
+        - name: {{ $arg.name }}
+          value: {{ $arg.value }}
+        {{- end }}
+        - name: KVER
+          value: {{ .Values.kernelFullVersion }}
+  output:
+    to:
+      kind: ImageStreamTag
+      name: {{.Values.specialresource.metadata.name}}-{{.Values.groupName.driverContainer}}:v{{.Values.kernelFullVersion}}
+----
+
+.. Save this YAML template for the RBAC and DaemonSet in the templates directory as `1000-driver-container.yaml`
++
+[source,yaml]
+----
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: {{.Values.specialresource.metadata.name}}-{{.Values.groupName.driverContainer}}
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: {{.Values.specialresource.metadata.name}}-{{.Values.groupName.driverContainer}}
+rules:
+- apiGroups:
+  - security.openshift.io
+  resources:
+  - securitycontextconstraints
+  verbs:
+  - use
+  resourceNames:
+  - privileged
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: {{.Values.specialresource.metadata.name}}-{{.Values.groupName.driverContainer}}
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: {{.Values.specialresource.metadata.name}}-{{.Values.groupName.driverContainer}}
+subjects:
+- kind: ServiceAccount
+  name: {{.Values.specialresource.metadata.name}}-{{.Values.groupName.driverContainer}}
+  namespace: {{.Values.specialresource.spec.namespace}}
+---
+apiVersion: apps/v1
+kind: DaemonSet
+metadata:
+  labels:
+    app: {{.Values.specialresource.metadata.name}}-{{.Values.groupName.driverContainer}}
+  name: {{.Values.specialresource.metadata.name}}-{{.Values.groupName.driverContainer}}
+  annotations:
+    specialresource.openshift.io/wait: "true"
+    specialresource.openshift.io/state: "driver-container"
+    specialresource.openshift.io/driver-container-vendor: simple-kmod
+    specialresource.openshift.io/kernel-affine: "true"
+spec:
+  updateStrategy:
+    type: OnDelete
+  selector:
+    matchLabels:
+      app: {{.Values.specialresource.metadata.name}}-{{.Values.groupName.driverContainer}}
+  template:
+    metadata:
+      # Mark this pod as a critical add-on; when enabled, the critical add-on scheduler
+      # reserves resources for critical add-on pods so that they can be rescheduled after
+      # a failure.  This annotation works in tandem with the toleration below.
+      annotations:
+        scheduler.alpha.kubernetes.io/critical-pod: ""
+      labels:
+        app: {{.Values.specialresource.metadata.name}}-{{.Values.groupName.driverContainer}}
+    spec:
+      serviceAccount: {{.Values.specialresource.metadata.name}}-{{.Values.groupName.driverContainer}}
+      serviceAccountName: {{.Values.specialresource.metadata.name}}-{{.Values.groupName.driverContainer}}
+      containers:
+      - image: image-registry.openshift-image-registry.svc:5000/{{.Values.specialresource.spec.namespace}}/{{.Values.specialresource.metadata.name}}-{{.Values.groupName.driverContainer}}:v{{.Values.kernelFullVersion}}
+        name: {{.Values.specialresource.metadata.name}}-{{.Values.groupName.driverContainer}}
+        imagePullPolicy: Always
+        command: ["/sbin/init"]
+        lifecycle:
+          preStop:
+            exec:
+              command: ["/bin/sh", "-c", "systemctl stop kmods-via-containers@{{.Values.specialresource.metadata.name}}"]
+        securityContext:
+          privileged: true
+      nodeSelector:
+        node-role.kubernetes.io/worker: ""
+        feature.node.kubernetes.io/kernel-version.full: "{{.Values.KernelFullVersion}}"
+----
+
+.. Change into the `chart/simple-kmod-0.0.1` directory
++
+[source, terminal]
+----
+cd ..
+----
+
+.. Save the following YAML for the Chart as `Chart.yaml` in the `chart/simple-kmod-0.0.1` directory.
++
+[source, yaml]
+----
+apiVersion: v2
+name: simple-kmod
+description: Simple kmod will deploy a simple kmod driver-container
+icon: https://avatars.githubusercontent.com/u/55542927
+type: application
+version: 0.0.1
+appVersion: 1.0.0
+----
+
+. Now that the structure for the Helm chart is prepared, create the chart with the helm package command, from the `chart` directory:
++
+[source,terminal]
+----
+cd ..
+----
++
+[source, terminal]
+----
+helm package simple-kmod-0.0.1/
+----
++
+.Example output
+[source,terminal]
+----
+Successfully packaged chart and saved it to: /data/dagray/git/dagrayvid/special-resource-operator/yaml-for-docs/chart/simple-kmod-0.0.1/simple-kmod-0.0.1.tgz
+----
+
+. Create a ConfigMap to store the chart files
++
+[source,terminal]
+----
+mkdir cm
+----
++
+[source, terminal]
+----
+cp simple-kmod-0.0.1.tgz cm/simple-kmod-0.0.1.tgz
+----
++
+[source, terminal]
+----
+helm repo index cm --url=cm://simple-kmod/simple-kmod-chart
+----
++
+[source, terminal]
+----
+oc create namespace simple-kmod
+----
++
+[source, terminal]
+----
+oc create cm simple-kmod-chart --from-file=cm/index.yaml --from-file=cm/simple-kmod-0.0.1.tgz -n simple-kmod
+----
+
+
+. Use the following SpecialResource manifest to deploy the simple-kmod using the Helm chart that you created in the ConfigMap. The `spec.chart.repository.url` field tells SRO to look for the chart in a ConfigMap. Optionally, uncomment the #debug: true line, to have the YAML files in the chart printed in full in the operator logs and to verify that the logs are created and templated properly. Save this YAML as `simple-kmod-configmap.yaml`
++
+[source,yaml]
+----
+apiVersion: sro.openshift.io/v1beta1
+kind: SpecialResource
+metadata:
+  name: simple-kmod
+spec:
+  #debug: true
+  namespace: simple-kmod
+  chart:
+    name: simple-kmod
+    version: 0.0.1
+    repository:
+      name: example
+      url: cm://simple-kmod/simple-kmod-chart
+  set:
+    kind: Values
+    apiVersion: sro.openshift.io/v1beta1
+    kmodNames: ["simple-kmod", "simple-procfs-kmod"]
+    buildArgs:
+    - name: "KMODVER"
+      value: "SRO"
+  driverContainer:
+    source:
+      git:
+        ref: "master"
+        uri: "https://github.com/openshift-psap/kvc-simple-kmod.git"
+----
+
+. Create the SpecialResource with:
++
+[source,terminal]
+----
+$ oc create -f simple-kmod-configmap.yaml
+----
+
+. The simple-kmod resources are deployed in the namespace `simple-kmod` as specified in the object manifest. After a short time, the build pod for the simple-kmod driver container should start running. After a few minutes, the build should complete and the driver container pods should start Running.
++
+[source,terminal]
+----
+$ oc get pods -n simple-kmod
+----
++
+.Example output
+[source,terminal]
+----
+NAME                                                  READY   STATUS      RESTARTS   AGE
+simple-kmod-driver-build-12813789169ac0ee-1-build     0/1     Completed   0          7m12s
+simple-kmod-driver-container-12813789169ac0ee-mjsnh   1/1     Running     0          8m2s
+simple-kmod-driver-container-12813789169ac0ee-qtkff   1/1     Running     0          8m2s
+----
+
+. The logs of the simple-kmod driver container image build can be displayed by getting the logs of the build pod. For example, using the pod name from the previous command.
++
+[source,terminal]
+----
+$ oc logs pod/simple-kmod-driver-build-12813789169ac0ee-1-build -n simple-kmod
+----
+
+. To verify that the simple-kmod kernel modules are loaded, execute the lsmod command in one of the driver container pods.
++
+[source,terminal]
+----
+$ oc exec -n simple-kmod -it pod/simple-kmod-driver-container-12813789169ac0ee-mjsnh -- lsmod | grep simple
+----
++
+.Example output
+[source,terminal]
+----
+simple_procfs_kmod     16384  0
+simple_kmod            16384  0
+----
+
+To remove the simple-kmod kernel module from the node, delete the simple-kmod SpecialResource API object with `oc delete`. The kernel module is unloaded when the driver container pod is deleted.
