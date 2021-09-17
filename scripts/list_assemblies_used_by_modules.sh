@@ -1,4 +1,4 @@
-#!/bin/bash
+#!/usr/bin/env bash
 #
 # THIS SCRIPT IS INTENDED FOR LOCAL GIT CLONE TEST ENVIRONMENTS ONLY. REVIEW THIS SCRIPT THOROUGHLY TO DETERMINE SUITABILITY FOR YOUR TEST ENVIRONMENT.
 
@@ -103,6 +103,11 @@ fi
 # List the assemblies in the repo that include each module that is updated in the commit:
 function list_assemblies ()
 {
+  if [ "$#" -gt 0 ]; then
+    local repodir="$1"
+    repodir+="/"  # Add a slash suffix to strip the repo prefix
+  fi
+
 for i in ${MODULES}
 do
   echo "###${i}"
@@ -115,6 +120,9 @@ do
       :
     else
       TRUNCJ=$(echo ${j} | sed s/"^.\/"/" "/g)
+      if [ -n "${repodir}" ]; then
+        TRUNCJ=" ${j##*${repodir}}"
+      fi
       echo "// *${TRUNCJ}"
     fi
   done
@@ -128,9 +136,64 @@ else
 fi
 }
 
+function infer_repo_dir
+{
+  local repodir;
+  local scriptdir; scriptdir=$(dirname "${BASH_SOURCE[0]}")
+  pushd "${scriptdir}" &> /dev/null || {
+    >&2 echo "Failed to infer repository directory."
+    exit 2
+  }
+    if ! repodir=$(git rev-parse --show-toplevel); then
+      >&2 echo "Failed to determine the top-level directory for the repository."
+      exit 2
+    fi
+  popd &> /dev/null || exit 2
+
+  echo "${repodir}"
+}
+
+function check_module_file_names
+{
+  local repodir="$1" && shift
+  [ -d "${repodir}" ] || {
+    >&2 echo "BUG: specify the path to the repo as the first arg."
+    exit 3
+  }
+
+  local file_names=""
+
+  pushd "${repodir}" &> /dev/null || {
+    >&2 echo "Failed to change directory to the repository: ${repodir}"
+    exit 2
+  }
+
+  for fname in "$@"
+  do
+    name=${fname##*/}
+    if [ ! -f "modules/${name}" ]; then
+      >&2 echo "Failed to find the specified file in the modules directory: ${name}"
+    else
+      file_names+=" ${name}"
+    fi
+  done
+
+  popd &> /dev/null || exit 2
+
+  echo "${file_names}"
+}
+
 # Main:
-intro
-get_repo
-module_check
-get_adocs
-list_assemblies
+if [[ "$#" -eq 0 ]]; then
+  intro
+  get_repo
+  module_check
+  get_adocs
+  list_assemblies
+else
+  repo=$(infer_repo_dir)
+  ASSEMBLIES=$(find "${repo}" -iname "*.adoc" -not -path "./modules/*" -not -path "./_preview/*")
+  MODULES=$(check_module_file_names "${repo}" "$@")
+  list_assemblies "${repo}"
+fi
+
