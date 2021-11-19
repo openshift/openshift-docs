@@ -1,0 +1,221 @@
+// Module included in the following assemblies:
+//
+// * authentication/ldap-syncing.adoc
+
+[id="ldap-auto-syncing_{context}"]
+= Automatically syncing LDAP groups
+
+You can automatically sync LDAP groups on a periodic basis by configuring a cron job.
+
+.Prerequisites
+
+* You have access to the cluster as a user with the `cluster-admin` role.
+* You have configured an LDAP identity provider (IDP).
++
+This procedure assumes that you created an LDAP secret named `ldap-secret` and a config map named `ca-config-map`.
+
+.Procedure
+
+. Create a project where the cron job will run:
++
+[source,terminal]
+----
+$ oc new-project ldap-sync <1>
+----
+<1> This procedure uses a project called `ldap-sync`.
+
+. Locate the secret and config map that you created when configuring the LDAP identity provider and copy them to this new project.
++
+The secret and config map exist in the `openshift-config` project and must be copied to the new `ldap-sync` project.
+
+. Define a service account:
++
+.Example `ldap-sync-service-account.yaml`
+[source,yaml]
+----
+kind: ServiceAccount
+apiVersion: v1
+metadata:
+  name: ldap-group-syncer
+  namespace: ldap-sync
+----
+
+. Create the service account:
++
+[source,terminal]
+----
+$ oc create -f ldap-sync-service-account.yaml
+----
+
+. Define a cluster role:
++
+.Example `ldap-sync-cluster-role.yaml`
+[source,yaml]
+----
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: ldap-group-syncer
+rules:
+  - apiGroups:
+      - ''
+      - user.openshift.io
+    resources:
+      - groups
+    verbs:
+      - get
+      - list
+      - create
+      - update
+----
+
+. Create the cluster role:
++
+[source,terminal]
+----
+$ oc create -f ldap-sync-cluster-role.yaml
+----
+
+. Define a cluster role binding to bind the cluster role to the service account:
++
+.Example `ldap-sync-cluster-role-binding.yaml`
+[source,yaml]
+----
+kind: ClusterRoleBinding
+apiVersion: rbac.authorization.k8s.io/v1
+metadata:
+  name: ldap-group-syncer
+subjects:
+  - kind: ServiceAccount
+    name: ldap-group-syncer              <1>
+    namespace: ldap-sync
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: ldap-group-syncer                <2>
+----
+<1> Reference to the service account created earlier in this procedure.
+<2> Reference to the cluster role created earlier in this procedure.
+
+. Create the cluster role binding:
++
+[source,terminal]
+----
+$ oc create -f ldap-sync-cluster-role-binding.yaml
+----
+
+. Define a config map that specifies the sync configuration file:
++
+.Example `ldap-sync-config-map.yaml`
+[source,yaml]
+----
+kind: ConfigMap
+apiVersion: v1
+metadata:
+  name: ldap-group-syncer
+  namespace: ldap-sync
+data:
+  ldap-group-sync.yaml: |                      <1>
+    kind: LDAPSyncConfig
+    apiVersion: v1
+    url: ldaps://10.0.0.0:389                  <2>
+    insecure: false
+    bindDN: cn=admin,dc=example,dc=com         <3>
+    bindPassword:
+      file: "/etc/secrets/bindPassword"
+    ca: /etc/ldap-ca/ca.crt
+    rfc2307:                                   <4>
+      groupsQuery:
+        baseDN: "ou=groups,dc=example,dc=com"  <5>
+        scope: sub
+        filter: "(objectClass=groupOfMembers)"
+        derefAliases: never
+        pageSize: 0
+      groupUIDAttribute: dn
+      groupNameAttributes: [ cn ]
+      groupMembershipAttributes: [ member ]
+      usersQuery:
+        baseDN: "ou=users,dc=example,dc=com"   <6>
+        scope: sub
+        derefAliases: never
+        pageSize: 0
+      userUIDAttribute: dn
+      userNameAttributes: [ uid ]
+      tolerateMemberNotFoundErrors: false
+      tolerateMemberOutOfScopeErrors: false
+----
+<1> Define the sync configuration file.
+<2> Specify the URL.
+<3> Specify the `bindDN`.
+<4> This example uses the RFC2307 schema; adjust values as necessary. You can also use a different schema.
+<5> Specify the `baseDN` for `groupsQuery`.
+<6> Specify the `baseDN` for `usersQuery`.
+
+. Create the config map:
++
+[source,terminal]
+----
+$ oc create -f ldap-sync-config-map.yaml
+----
+
+. Define a cron job:
++
+.Example `ldap-sync-cron-job.yaml`
+[source,yaml]
+----
+kind: CronJob
+apiVersion: batch/v1
+metadata:
+  name: ldap-group-syncer
+  namespace: ldap-sync
+spec:                                                                      <1>
+  schedule: "*/30 * * * *"                                                 <2>
+  concurrencyPolicy: Forbid
+  jobTemplate:
+    spec:
+      backoffLimit: 0
+      template:
+        spec:
+          containers:
+            - name: ldap-group-sync
+              image: "openshift/origin-cli:latest"
+              command:
+                - "/bin/bash"
+                - "-c"
+                - oc adm groups sync
+                - --sync-config=/etc/config/ldap-group-sync.yaml --confirm <3>
+              volumeMounts:
+                - mountPath: "/etc/config"
+                  name: "ldap-sync-volume"
+                - mountPath: "/etc/secrets"
+                  name: "ldap-bind-password"
+                - mountPath: "/etc/ldap-ca"
+                  name: "ldap-ca"
+          volumes:
+            - name: "ldap-sync-volume"
+              configMap:
+                name: "ldap-group-syncer"
+            - name: "ldap-bind-password"
+              secret:
+                secretName: "ldap-secret"                                  <4>
+            - name: "ldap-ca"
+              configMap:
+                name: "ca-config-map"                                      <5>
+          restartPolicy: "Never"
+          terminationGracePeriodSeconds: 30
+          activeDeadlineSeconds: 500
+          dnsPolicy: "ClusterFirst"
+          serviceAccountName: "ldap-group-syncer"
+----
+<1> Configure the settings for the cron job. See "Creating cron jobs" for more information on cron job settings.
+<2> The schedule for the job specified in link:https://en.wikipedia.org/wiki/Cron[cron format]. This example cron job runs every 30 minutes. Adjust the frequency as necessary, making sure to take into account how long the sync takes to run.
+<3> The LDAP sync command for the cron job to run. Passes in the sync configuration file that was defined in the config map.
+<4> This secret was created when the LDAP IDP was configured.
+<5> This config map was created when the LDAP IDP was configured.
+
+. Create the cron job:
++
+[source,terminal]
+----
+$ oc create -f ldap-sync-cron-job.yaml
+----

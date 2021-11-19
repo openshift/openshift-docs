@@ -1,0 +1,151 @@
+// Module included in the following assemblies:
+//
+// security/nbde-implementation-guide.adoc
+
+[id="nbde-rekeying-all-nbde-nodes_{context}"]
+= Rekeying all NBDE nodes
+
+You can rekey all of the nodes on a remote cluster by using a `DaemonSet` object without incurring any downtime to the remote cluster.
+
+[NOTE]
+====
+If a node loses power during the rekeying, it is possible that it might become unbootable, and must be redeployed via
+{rh-rhacm-first} or a GitOps pipeline.
+====
+
+.Prerequisites
+
+* `cluster-admin` access to all clusters with Network-Bound Disk Encryption (NBDE) nodes.
+* All Tang servers, not just the server being rotated, must be accessible to every NBDE node undergoing rekeying.
+* Obtain the Tang server URL and key thumbprint for every Tang server.
+
+.Procedure
+
+. Create a `DaemonSet` object based on the following template. This template sets up three redundant Tang servers, but can be easily adapted to other situations. Change the Tang server URLs and thumbprints in the `NEW_TANG_PIN` environment to suit your environment:
++
+[source,yaml]
+----
+apiVersion: apps/v1
+kind: DaemonSet
+metadata:
+  name: tang-rekey
+  namespace: openshift-machine-config-operator
+spec:
+  selector:
+    matchLabels:
+      name: tang-rekey
+  template:
+    metadata:
+      labels:
+        name: tang-rekey
+    spec:
+      containers:
+      - name: tang-rekey
+        image: registry.access.redhat.com/ubi8/ubi-minimal:8.4
+        imagePullPolicy: IfNotPresent
+        command:
+        - "/sbin/chroot"
+        - "/host"
+        - "/bin/bash"
+        - "-ec"
+        args:
+        - |
+          rm -f /tmp/rekey-complete || true
+          echo "Current tang pin:"
+          clevis-luks-list -d $ROOT_DEV -s 1
+          echo "Applying new tang pin: $NEW_TANG_PIN"
+          clevis-luks-edit -f -d $ROOT_DEV -s 1 -c "$NEW_TANG_PIN"
+          echo "Pin applied successfully"
+          touch /tmp/rekey-complete
+          sleep infinity
+        readinessProbe:
+          exec:
+            command:
+            - cat
+            - /host/tmp/rekey-complete
+          initialDelaySeconds: 30
+          periodSeconds: 10
+        env:
+        - name: ROOT_DEV
+          value: /dev/disk/by-partlabel/root
+        - name: NEW_TANG_PIN
+          value: >-
+            {"t":1,"pins":{"tang":[
+              {"url":"http://tangserver01:7500","thp":"WOjQYkyK7DxY_T5pMncMO5w0f6E"},
+              {"url":"http://tangserver02:7500","thp":"I5Ynh2JefoAO3tNH9TgI4obIaXI"},
+              {"url":"http://tangserver03:7500","thp":"38qWZVeDKzCPG9pHLqKzs6k1ons"}
+            ]}}
+        volumeMounts:
+        - name: hostroot
+          mountPath: /host
+        securityContext:
+          privileged: true
+      volumes:
+      - name: hostroot
+        hostPath:
+          path: /
+      nodeSelector:
+        kubernetes.io/os: linux
+      priorityClassName: system-node-critical
+      restartPolicy: Always
+      serviceAccount: machine-config-daemon
+      serviceAccountName: machine-config-daemon
+----
++
+In this case, even though you are rekeying `tangserver01`, you must specify not only the new thumbprint for `tangserver01`, but also the current thumbprints for all other Tang servers.  Failure to specify all thumbprints for a rekeying operation opens up the opportunity for a man-in-the-middle attack.
+
+. To distribute the daemon set to every cluster that must be rekeyed, run the following command:
++
+[source,terminal]
+----
+$ oc apply -f tang-rekey.yaml
+----
++
+However, to run at scale, wrap the daemon set in an ACM policy. This ACM configuration must contain one policy to deploy the daemon set,
+a second policy to check that all the daemon set pods are READY, and a placement rule to apply it to the appropriate set of clusters.
+
+[NOTE]
+====
+After validating that the daemon set has successfully rekeyed all servers, delete the daemon set. If you do not delete the daemon set, it must be deleted before the next rekeying operation.
+====
+
+.Verification
+
+After you distribute the daemon set, monitor the daemon sets to ensure that the rekeying has completed successfully. The script in the example daemon set terminates with an error if the rekeying failed, and remains in the `CURRENT` state if successful. There is also a readiness probe that marks the pod as `READY` when the rekeying has completed successfully.
+
+* This is an example of the output listing for the daemon set before the rekeying has completed:
++
+[source,terminal]
+----
+$ oc get -n openshift-machine-config-operator ds tang-rekey
+----
++
+.Example output
++
+[source,terminal]
+----
+NAME         DESIRED   CURRENT   READY   UP-TO-DATE   AVAILABLE   NODE SELECTOR            AGE
+tang-rekey   1         1         0       1            0           kubernetes.io/os=linux   11s
+----
++
+* This is an example of the output listing for the daemon set after the rekeying has completed successfully:
++
+[source,terminal]
+----
+$ oc get -n openshift-machine-config-operator ds tang-rekey
+----
++
+.Example output
++
+[source,terminal]
+----
+NAME         DESIRED   CURRENT   READY   UP-TO-DATE   AVAILABLE   NODE SELECTOR            AGE
+tang-rekey   1         1         1       1            1           kubernetes.io/os=linux   13h
+----
+
+Rekeying usually takes a few minutes to complete.
+
+[NOTE]
+====
+If you use ACM policies to distribute the daemon sets to multiple clusters, you must include a compliance policy that checks every daemon set’s READY count is equal to the DESIRED count. In this way, compliance to such a policy demonstrates that all daemon set pods are READY and the rekeying has completed successfully. You could also use an ACM search to query all of the daemon sets' states.
+====
