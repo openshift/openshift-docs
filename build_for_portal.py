@@ -15,6 +15,7 @@ import sys
 import time
 import yaml
 import requests
+import tempfile
 
 from aura import cli
 
@@ -144,12 +145,27 @@ def find_build_config_file():
     """
     Finds the build config file to use, as it might be _topic_map.yml or _build_cfg.yml
     """
-    config = os.path.abspath(os.path.join(CLONE_DIR, "_topic_map.yml"))
+
+    # updated 23rd Nov to support files in _topic_maps folder
+
+    # load everything from the _topic_maps folder
+    file_list = os.listdir(os.path.join(CLONE_DIR, "_topic_maps"))
+
+    # create a temp file combining all values from that folder
+    # don't delete it immediately, and give it a suffix of swp which makes it ignored by git
+    with tempfile.NamedTemporaryFile(dir=CLONE_DIR, delete=False, suffix=".swp") as tmp:
+        for f in file_list:
+            with open(os.path.join(CLONE_DIR, "_topic_maps", f), "rb") as infile:
+                tmp.write(infile.read())
+
+    config = os.path.abspath(tmp.name)
+    log.info(config)
+
+    # backup look for a single _topic_map in the cloned directory
     if not os.path.isfile(config):
-        config = os.path.abspath(os.path.join(CLONE_DIR, "_build_cfg.yml"))
+        config = os.path.abspath(os.path.join(CLONE_DIR, "_topic_map.yml"))
 
     return config
-
 
 def parse_build_config(config):
     """
