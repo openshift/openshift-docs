@@ -1,0 +1,205 @@
+// This module is included in the following assembly:
+//
+// */cicd/pipelines/reducing-pipelines-resource-consumption.adoc
+
+[id="resource-quota-for-pipelines_{context}"]
+= Resource quota for pipelines
+
+A resource quota limits the total resource consumption per namespace. It can limit the quantity of objects created in a namespace, based on the type of the object. In addition, it can limit the total amount of compute resources consumed by resources in that namespace, using a compute resource quota.
+
+Currently, Kubernetes does not provide any direct means of specifying compute resource quota for pipelines. You can implement a workaround for this limitation by using resource quota per priority class.
+
+[id="specifying-pipelines-resource-quota-using-priority-class_{context}"]
+== Specifying pipelines resource quota using priority class
+
+A priority class defines a mapping from a priority class name to the integer value of the priority, with higher value implying the higher the priority. After you create a priority class, you can create pods that specify the priority class name in their specifications. In addition, you can control a pod's consumption of system resources based on the pod's priority.
+
+Specifying resource quota for a pipeline is approximately equivalent to setting resource quota for the subset of pods created by a pipeline run. The following steps provide an example of the workaround by specifying resource quota based on priority class.
+
+[discrete]
+.Procedure
+
+. Create a priority class for a pipeline.
++
+.Example: Priority class for a pipeline
+[source,yaml]
+----
+apiVersion: scheduling.k8s.io/v1
+kind: PriorityClass
+metadata:
+  name: pipeline1-pc
+value: 1000000
+description: "Priority class for pipeline1"
+----
+
+. Create a resource quota for a pipeline.
++
+.Example: Resource quota for a pipeline
+[source,yaml]
+----
+apiVersion: v1
+kind: ResourceQuota
+metadata:
+  name: pipeline1-rq
+spec:
+  hard:
+    cpu: "1000"
+    memory: 200Gi
+    pods: "10"
+  scopeSelector:
+    matchExpressions:
+    - operator : In
+      scopeName: PriorityClass
+      values: ["pipeline1-pc"]
+----
+
+. Verify the resource quota usage for the pipeline.
++
+.Example: Verify resource quota usage for the pipeline
+[source,terminal]
+----
+$ kubectl describe quota
+
+Name:       pipeline1-rq
+Namespace:  default
+Resource    Used  Hard
+--------    ----  ----
+cpu         0     1k
+memory      0     200Gi
+pods        0     10
+----
++
+No pods are created at the moment, so no resources are used from the quota.
+
+. Create the pipelines and tasks.
++
+.Example: YAML for the pipeline
+[source,yaml]
+----
+apiVersion: tekton.dev/v1alpha1
+kind: Pipeline
+metadata:
+  name: maven-build
+spec:
+  workspaces:
+  - name: local-maven-repo
+  resources:
+  - name: app-git
+    type: git
+  tasks:
+  - name: build
+    taskRef:
+      name: mvn
+    resources:
+      inputs:
+      - name: source
+        resource: app-git
+    params:
+    - name: GOALS
+      value: ["package"]
+    workspaces:
+    - name: maven-repo
+      workspace: local-maven-repo
+  - name: int-test
+    taskRef:
+      name: mvn
+    runAfter: ["build"]
+    resources:
+      inputs:
+      - name: source
+        resource: app-git
+    params:
+    - name: GOALS
+      value: ["verify"]
+    workspaces:
+    - name: maven-repo
+      workspace: local-maven-repo
+  - name: gen-report
+    taskRef:
+      name: mvn
+    runAfter: ["build"]
+    resources:
+      inputs:
+      - name: source
+        resource: app-git
+    params:
+    - name: GOALS
+      value: ["site"]
+    workspaces:
+    - name: maven-repo
+      workspace: local-maven-repo
+----
++
+.Example: YAML for a task in the pipeline
+[source,yaml]
+----
+apiVersion: tekton.dev/v1alpha1
+kind: Task
+metadata:
+  name: mvn
+spec:
+  workspaces:
+  - name: maven-repo
+  inputs:
+    params:
+    - name: GOALS
+      description: The Maven goals to run
+      type: array
+      default: ["package"]
+    resources:
+    - name: source
+      type: git
+  steps:
+    - name: mvn
+      image: gcr.io/cloud-builders/mvn
+      workingDir: /workspace/source
+      command: ["/usr/bin/mvn"]
+      args:
+        - -Dmaven.repo.local=$(workspaces.maven-repo.path)
+        - "$(inputs.params.GOALS)"
+      priorityClassName: pipeline1-pc
+----
++
+[NOTE]
+====
+Ensure that all tasks in the pipeline belongs to the same priority class.
+====
+
+. Create and execute the pipeline run.
++
+.Example: YAML for a pipeline run
+[source,yaml]
+----
+apiVersion: tekton.dev/v1alpha1
+kind: PipelineRun
+metadata:
+  generateName: petclinic-run-
+spec:
+  pipelineRef:
+    name: maven-build
+  resources:
+  - name: app-git
+    resourceSpec:
+      type: git
+      params:
+        - name: url
+          value: https://github.com/spring-projects/spring-petclinic
+----
+
+. Verify the resource quota usage for the pipeline run, as pods are created.
++
+.Example: Verify resource quota usage for the pipeline
+[source,terminal]
+----
+$ kubectl describe quota
+
+Name:       pipeline1-rq
+Namespace:  default
+Resource    Used  Hard
+--------    ----  ----
+cpu         500m  1k
+memory      10Gi  200Gi
+pods        1     10
+----
++
+The terminal output indicates that you can manage the combined resource quota for all concurrent running pods belonging to a priority class, by specifying the resource quota per priority class.
