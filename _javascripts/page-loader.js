@@ -157,8 +157,8 @@ function selectVersion(currentVersion) {
 
   // main file to edit is the file path after the version to the html at
   // the end.
-  // Example: https://docs.openshift.com/container-platform/4.4/updating/updating-cluster-between-minor.html
-  // file path is updating/updating-cluster-between-minor.adoc
+  // Example: https://docs.openshift.com/container-platform/4.4/updating/updating-cluster-within-minor.html
+  // file path is updating/updating-cluster-within-minor.adoc
 
   mainFileToEdit =
     window.location.pathname.substring(
