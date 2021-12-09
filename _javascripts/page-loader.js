@@ -57,7 +57,7 @@ function versionSelector(list) {
       if(jqXHR.status == 404) {
         list.value = currentVersion;
         if(confirm("This page doesn't exist in version " + newVersion + ". Click OK to search the " + newVersion + " docs OR Cancel to stay on this page.")) {
-          window.location = "https://google.com/search?q=site:https://docs.openshift.com/container-platform/" + newVersion + " " + fileRequested;
+          window.location = "https://google.com/search?q=site:https://docs.openshift.com/container-platform/" + newVersion + " " + document.title;
         } else {
           // do nothing, user doesn't want to search
         }
@@ -78,7 +78,7 @@ function selectLang(langList) {
   console.log("Lang: " + lang);
   console.log("Win Path: " + winPath);
 
-  var currentVersion = document.getElementById("version-selector").value;  
+  var currentVersion = document.getElementById("version-selector").value;
   console.log("CurrentVersion: " + currentVersion);
 
   // path for the file to reference on portal (the last bit removes .html)
@@ -97,7 +97,7 @@ function selectLang(langList) {
   // add changed book names here
   if(book == "updating") book = "updating_clusters";
   if(book == "virt") book = "openshift_virtualization";
-  if(book == "post_installation_configuration") book = "post-installation_configuration";  
+  if(book == "post_installation_configuration") book = "post-installation_configuration";
 
   // var section = parts[1].replace(/\_/g, "-"); // replace underscore with dash
   // var section = subGroup.toLowerCase().replace(" ", "-");
