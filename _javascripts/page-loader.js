@@ -1,13 +1,15 @@
+// the new final link to load
+newLink = "";
+newVersion = "";
+currentVersion = "";
+
+// the fileRequested
+fileRequested = "";
+
 function versionSelector(list) {
 
   // the version we want
   newVersion = list[list.selectedIndex].value;
-
-  // the new final link to load
-  newLink = "";
-
-  // the fileRequested
-  var fileRequested = "";
 
   // spilt the current path
   var pathArray = window.location.pathname.split( '/' );
@@ -28,7 +30,6 @@ function versionSelector(list) {
     fileRequested = "/welcome/index.html";
   }
 
-
   // alert(fileRequested);
 
   // in 3.3 and above, we changed to container-platform
@@ -44,7 +45,27 @@ function versionSelector(list) {
 
   // without doing async loads, there is no way to know if the path actually
   // exists - so we will just have to load
-  window.location = newLink;
+  // window.location = newLink;
+  // testing async validations
+  $.ajax({
+    type: 'HEAD',
+    url: newLink,
+    success: function() {
+      window.location = newLink;
+    },
+    error: function(jqXHR, exception) {
+      if(jqXHR.status == 404) {
+        list.value = currentVersion;
+        if(confirm("This page doesn't exist in version " + newVersion + ". Click OK to search the " + newVersion + " docs OR Cancel to stay on this page.")) {
+          window.location = "https://google.com/search?q=site:https://docs.openshift.com/container-platform/" + newVersion + " " + document.title;
+        } else {
+          // do nothing, user doesn't want to search
+        }
+      } else {
+        window.location = newLink; // assumption here is that we can follow through with a redirect
+      }
+    }
+  });
 
 }
 
@@ -58,20 +79,41 @@ function selectLang(langList) {
   console.log("Win Path: " + winPath);
 
   var currentVersion = document.getElementById("version-selector").value;
-  // var currentVersion = "4.7";
   console.log("CurrentVersion: " + currentVersion);
 
   // path for the file to reference on portal (the last bit removes .html)
-  var path = winPath.substring(winPath.lastIndexOf(currentVersion) +   currentVersion.length, winPath.length - 5);
+  var path = winPath.substring(winPath.lastIndexOf(currentVersion) +   (currentVersion.length + 1), winPath.length - 5);
+
+  var parts = path.split("/");
+
+  console.log(parts);
+
+  // map things to html-single. While plain HTML is preferred, it is harder to map and get all anchors right. html-single ensures there is no 404 and the user at least lands on the right book
+  console.log(parts[parts.length-1]);
+
+  var anchorid = parts[parts.length-1];
+  var book = parts[0];
+
+  // add changed book names here
+  if(book == "updating") book = "updating_clusters";
+  if(book == "virt") book = "openshift_virtualization";
+  if(book == "post_installation_configuration") book = "post-installation_configuration";
+
+  // var section = parts[1].replace(/\_/g, "-"); // replace underscore with dash
+  // var section = subGroup.toLowerCase().replace(" ", "-");
+  // console.log(section);
+  // var subsection = parts[2].replace(/\_/g, "-");
+  // console.log(subsection);
+
+  // path = book + "/" + section + "#" + subsection;
+  path = book + "#" + anchorid;
 
   console.log("Path: " + path);
 
   var portalBaseURL = "https://access.redhat.com/documentation";
-  var finalURL = portalBaseURL + "/" + lang + "/openshift_container_platform/" + currentVersion + "/html/" + path;
+  var finalURL = portalBaseURL + "/" + lang + "/openshift_container_platform/" + currentVersion + "/html-single/" + path;
 
   console.log("Final URL: " + finalURL);
-
-  // alert(finalURL);
   window.location.href = finalURL;
 
 }
