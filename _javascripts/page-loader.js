@@ -57,7 +57,7 @@ function versionSelector(list) {
       if(jqXHR.status == 404) {
         list.value = currentVersion;
         if(confirm("This page doesn't exist in version " + newVersion + ". Click OK to search the " + newVersion + " docs OR Cancel to stay on this page.")) {
-          window.location = "https://google.com/search?q=site:https://docs.openshift.com/container-platform/" + newVersion + " " + document.title;
+          window.location = "https://google.com/search?q=site:https://docs.openshift.com/container-platform/" + newVersion + " " + document.title.split(" | ")[0];
         } else {
           // do nothing, user doesn't want to search
         }
