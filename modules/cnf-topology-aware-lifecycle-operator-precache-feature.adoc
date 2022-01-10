@@ -1,0 +1,270 @@
+// Module included in the following assemblies:
+// Epic CNF-2600 (CNF-2133) (4.10), Story TELCODOCS-285
+// * scalability_and_performance/cnf-topology-aware-lifecycle-operator.adoc
+
+:_content-type: PROCEDURE
+[id="talo-precache-feature_{context}"]
+= Using the container image pre-cache feature
+
+The spoke clusters might have limited bandwidth to access the container image registry, which can cause a timeout before the updates are completed. 
+The pre-cache feature allows the required container images to be present on the spoke cluster before the update maintenance time.
+
+[NOTE]
+====
+The maintenance window is not set by the Topology Aware Lifecycle Operator. You can apply the Topology Aware Lifecycle Operator CR at the beginning of the maintenance window by manual application or by external automation. The update procedure starts when the `enable` field is set to `true`.
+====
+
+[id="talo-precache-create_policy_{context}"]
+== Creating a policy to pre-cache container images
+
+.Prerequisites
+
+* Install the Topology Aware Lifecycle Operator.
+* Provision one or more managed clusters using ZTP.
+* Log in as a user with `cluster-admin` privileges.
+
+.Procedure
+
+. Extract the container image in digest format for the `PolicyGenTemplate` CR by running the following command:
++
+[source,terminal]
+----
+$ oc adm release info 4.9.18 | head
+----
++
+.Example output
++
+[source,terminal]
+----
+Name:      4.9.18
+Digest:    sha256:1234abcd5678efgh
+Created:   2022-01-26T14:50:25Z
+OS/Arch:   linux/amd64
+Manifests: 522
+
+Pull From: example.io/openshift-release/ocp-release@sha256:1234abcd5678efgh
+----
+
+. Create the `PolicyGenTemplate` CR in `inform` mode, and then save the YAML in the `du-upgrade.yaml` file.
++
+[source,yaml]
+----
+apiVersion: ran.openshift.io/v1
+kind: PolicyGenTemplate
+metadata:
+  name: "du-upgrade"
+  namespace: "ztp-group-du-sno"
+spec:
+  bindingRules:
+    group-du-sno: ""
+  mcp: "master"
+  remediationAction: inform
+  sourceFiles:
+    - fileName: ClusterVersion.yaml
+      policyName: "platform-upgrade"
+      metadata:
+        name: version
+      spec:
+        channel: "candidate-4.9"
+        desiredUpdate:
+          version: "4.9.18"
+          image: "example.io/openshift-release/ocp-release@sha256:1234abcd5678efgh" <1>
+----
+<1> The `image` field contains a container image in digest format to facilitate the authentication of the image.
+
+.Verification
+
+. Check if the policies were created by running the following command:
++
+[source,terminal]
+----
+$ oc get policies -A | grep platform-upgrade
+----
++
+.Example output
++
+[source,terminal]
+----
+cnfdb1                ztp-group-du-sno.du-upgrade-platform-upgrade        inform               NonCompliant       3d18h
+cnfdb2                ztp-group-du-sno.du-upgrade-platform-upgrade        inform               NonCompliant       3d18h
+ztp-group-du-sno      du-upgrade-platform-upgrade                         inform               NonCompliant       3d18h
+----
+
+. Check if the cluster contains the desired cluster version by running the following command:
++
+[source,terminal]
+----
+$ oc get policy ztp-group-du-sno.du-upgrade-platform-upgrade -n cnfdb1 -o jsonpath='{.spec}' | jq
+----
++
+.Example output
++
+[source,terminal]
+----
+"spec": {
+                  "channel": "candidate-4.9",
+                  "desiredUpdate": {
+                    "force": false,
+                    "image": "example.io/openshift-release/ocp-release@sha256:1234abcd5678efgh",
+                    "version": "4.9.18" <1>
+                  }
+----
+<1> The `version` field shows the desired cluster version.
+
+[id="talo-precache-start_and_update_{context}"]
+== Starting the pre-caching task
+
+.Prerequisites
+
+* Install the Topology Aware Lifecycle Operator.
+* Provision one or more managed SNO clusters using ZTP.
+* Log in as a user with `cluster-admin` privileges.
+* Create a policy with pre-caching enabled.
+
+.Procedure
+
+. Create the `ClusterGroupUpgrade` CR with the `preCaching` field set to `true`, and then save the YAML in the `clustergroupupgrades-group-du.yaml` file:
++
+[source,yaml]
+----
+apiVersion: ran.openshift.io/v1alpha1
+kind: ClusterGroupUpgrade
+metadata:
+  name: du-upgrade-4918
+  namespace: ztp-group-du-sno
+spec:
+  preCaching: true <1>
+  deleteObjects: true
+  clusters:
+  - cnfdb1
+  - cnfdb2
+  enable: true
+  managedPolicies:
+  - du-upgrade-platform-upgrade
+  remediationStrategy:
+    maxConcurrency: 2
+    timeout: 240
+----
+<1> The `preCaching` field is set to `true`, which enables the Operator to pull the container images before starting the update.
+
+. When you want to start the update, create the `ClusterGroupUpgrade` CR by running the following command:
++
+[source,terminal]
+----
+$ oc apply -f clustergroupupgrades-group-du.yaml
+----
+
+.Verification
+
+. Check if the `ClusterGroupUpgrade` CR was created in the Hub cluster by running the following command:
++
+[source,terminal]
+----
+$ oc get cgu -A
+----
++
+.Example output
++
+[source,terminal]
+----
+NAMESPACE          NAME              AGE
+ztp-group-du-sno   du-upgrade-4918   10s <1>
+ztp-install        cnfdb1            111m
+ztp-install        cnfdb2            111m
+----
+<1> The CR is created.
+
+. Check the status of the pre-caching task by running the following command:
++
+[source,terminal]
+----
+$ oc get cgu -n ztp-group-du-sno du-upgrade-4918 -o jsonpath='{.status}' | jq
+----
++
+.Example output
++
+[source,json]
+----
+{
+  "conditions": [
+    {
+      "lastTransitionTime": "2022-01-27T19:07:24Z",
+      "message": "Precaching is not completed (required)", <1>
+      "reason": "PrecachingRequired",
+      "status": "False",
+      "type": "Ready"
+    },
+    {
+      "lastTransitionTime": "2022-01-27T19:07:24Z",
+      "message": "Precaching is required and not done",
+      "reason": "PrecachingNotDone",
+      "status": "False",
+      "type": "PrecachingDone"
+    },
+    {
+      "lastTransitionTime": "2022-01-27T19:07:34Z",
+      "message": "Pre-caching spec is valid and consistent",
+      "reason": "PrecacheSpecIsWellFormed",
+      "status": "True",
+      "type": "PrecacheSpecValid"
+    }
+  ],
+  "precaching": {
+    "clusters": [
+      "cnfdb1" <2>
+    ],
+    "spec": {
+      "platformImage": "image.example.io"
+ },
+    "status": {
+      "cnfdb1": "Active"
+----
+<1> The update is in progress.
+<2> The list of identified clusters is displayed.
+
+. Check the status of the pre-caching job by running the following command:
++
+[source,terminal]
+----
+$ oc get jobs,pods -n openshift-talo-pre-cache
+----
++
+.Example output
++
+[source,terminal]
+----
+NAME                  COMPLETIONS   DURATION   AGE
+job.batch/pre-cache   0/1           3m10s      3m10s
+
+NAME                     READY   STATUS    RESTARTS   AGE
+pod/pre-cache--1-9bmlr   1/1     Running   0          3m10s
+----
+
+ . Check the status of the `ClusterGroupUpgrade` CR by running the following command:
++
+[source,terminal]
+----
+$ oc get cgu -n ztp-group-du-sno du-upgrade-4918 -o jsonpath='{.status}' | jq
+----
++
+.Example output
++
+[source,yaml]
+----
+conditions": [
+    {
+      "lastTransitionTime": "2022-01-27T19:30:41Z",
+      "message": "The ClusterGroupUpgrade CR has all clusters compliant with all the managed policies",
+      "reason": "UpgradeCompleted",
+      "status": "True",
+      "type": "Ready"
+    },
+    {
+      "lastTransitionTime": "2022-01-27T19:28:57Z",
+      "message": "Precaching is completed",
+      "reason": "PrecachingCompleted",
+      "status": "True",
+      "type": "PrecachingDone" <1>
+    }
+----
+<1> The pre-cache tasks are done.
