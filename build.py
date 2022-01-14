@@ -957,11 +957,12 @@ def main():
     book_nodes = [node for node in data if check_node_distro_matches(node, args.distro)]
 
     # Make the new source tree
+    build_dir = os.path.join(os.getcwd(), "drupal-build")
     dest_dir = os.path.join(os.getcwd(), "drupal-build", args.distro)
     if not args.no_clean:
         log.info("Cleaning the drupal-build directory")
-        if os.path.exists(dest_dir):
-            shutil.rmtree(dest_dir)
+        if os.path.exists(build_dir):
+            shutil.rmtree(build_dir)
         os.makedirs(dest_dir)
     elif not os.path.exists(dest_dir):
         os.makedirs(dest_dir)
