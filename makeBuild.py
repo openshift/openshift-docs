@@ -6,8 +6,8 @@
 import sys
 import os
 import logging
-import imp
-imp.reload(sys)
+import importlib
+importlib.reload(sys)
 
 from lxml.etree import XMLSyntaxError, XIncludeError
 
