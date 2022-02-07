@@ -660,6 +660,7 @@ def _fix_links(content, book_dir, src_file, info, tag=None, cwd=None):
                     log.error("ERROR (%s): \"%s\" appears to try to reference a file not included in the \"%s\" distro", rel_src_file, link_text.replace("\n", ""), info['distro'])
                     sys.exit(-1)
         else:
+            log.info(link)
             fixed_link = "xref:" + link_anchor.replace("#", "") + link_title
 
         content = content.replace(link_text, fixed_link)
