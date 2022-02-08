@@ -1,0 +1,288 @@
+// Module included in the following assemblies:
+//CC-3 (alongside 4.10 dev preview)
+// * hardware_enablement/dpu-hardware-offload.adoc
+
+:_content-type: PROCEDURE
+[id="enabling-hardware-offloading-tenant_{context}"]
+= Configuring support for hardware offloading in the tenant cluster
+
+Configure support for hardware offloading in the tenant cluster by using this procedure.
+
+.Prerequisites
+
+* Install the OpenShift CLI (`oc`).
+* Log in as a user with `cluster-admin` privileges.
+
+.Procedure
+
+. Create a MachineConfigPool for all the DPU workers. Save the YAML in the `dputenantmachineconfig.yaml` file:
++
+[source,yaml]
+----
+apiVersion: machineconfiguration.openshift.io/v1
+kind: MachineConfigPool
+metadata:
+  name: dpu-host
+spec:
+  machineConfigSelector:
+    matchExpressions:
+    - key: machineconfiguration.openshift.io/role
+      operator: In
+      values:
+      - worker
+      - dpu-host
+  nodeSelector:
+    matchLabels:
+      node-role.kubernetes.io/dpu-host: ""
+----
+
+.. Run the following command:
++
+[source,terminal]
+----
+$ oc create -f dputenantmachineconfig.yaml
+----
+
+. Label the DPU nodes:
++
+[source,terminal]
+----
+$ oc label node <NODENAME> node-role.kubernetes.io/dpu-host=
+----
+
+. Install and configure the SR-IOV Network Operator:
++
+[NOTE]
+====
+This procedure describes how to install the SR-IOV Network Operator using the web console. However, if the console is not reachable due to the ingress being down follow the guidance on "CLI: Installing the SR-IOV Network Operator".
+====
+
+.. In the {product-title} web console, click *Administration* -> *Namespaces*.
+
+.. Click *Create Namespace*.
+
+.. In the *Name* field, enter `openshift-sriov-network-operator`, and click *Create*.
+
+.. In the {product-title} web console, click *Operators* -> *OperatorHub*.
+
+.. Select *SR-IOV Network Operator* from the list of available Operators, and click *Install*.
+
+.. On the *Install Operator* page, under *A specific namespace on the cluster*, select *openshift-sriov-network-operator*.
+
+.. Click *Install*.
+
+.. Verify that the SR-IOV Network Operator is installed successfully:
+
+... Navigate to the *Operators* -> *Installed Operators* page.
+
+... Ensure that *SR-IOV Network Operator* is listed in the *openshift-sriov-network-operator* project with a *Status* of *InstallSucceeded*.
++
+[NOTE]
+====
+During installation an Operator might display a *Failed* status.
+If the installation later succeeds with an *InstallSucceeded* message, you can ignore the *Failed* message.
+====
++
+If the operator does not appear as installed, to troubleshoot further:
+
++
+* Inspect the *Operator Subscriptions* and *Install Plans* tabs for any failure or errors under *Status*.
+* Navigate to the *Workloads* -> *Pods* page and check the logs for pods in the
+`openshift-sriov-network-operator` project.
+
+. Add this machine config pool to the SriovNetworkPoolConfig custom resource.
+
+.. Create a file, such as `sriov-pool-config.yaml`, with the following content:
++
+[source,yaml]
+----
+apiVersion: sriovnetwork.openshift.io/v1
+kind: SriovNetworkPoolConfig
+metadata:
+  name: default
+  namespace: openshift-sriov-network-operator
+spec:
+  ovsHardwareOffloadConfig:
+    name: dpu-host <1>
+----
+<1> The name here is the same as the machine config pool (MCP) name created in step 1.
+.. Apply the configuration:
++
+[source,terminal]
+----
+$ oc create -f sriov-pool-config.yaml
+----
++
+[NOTE]
+====
+After applying the `sriov-pool-config.yaml` the nodes reboot and you need to wait until MCP on the dpu-host is up to date again.
+====
+
+. Create a SriovNetworkNodePolicy to configure the virtual functions (VFs) on the hosts.
+
+.. Save the YAML in the `SriovNetworkNodePolicy.yaml` file:
++
+[source,yaml]
+----
+apiVersion: sriovnetwork.openshift.io/v1
+kind: SriovNetworkNodePolicy
+metadata:
+  name: policy-mlnx-bf <1>
+  namespace: openshift-sriov-network-operator
+spec:
+  resourceName: mlnx_bf <2>
+  nodeSelector:
+    node-role.kubernetes.io/dpu-host: "" <3>
+  priority: 99 <4>
+  numVfs: 4 <5>
+  nicSelector: <6>
+    vendor: "15b3" <7>
+    deviceId: "a2d6" <8>
+    pfNames: ['ens1f0#1-3'] <9>
+    rootDevices: ['0000:3b:00.0'] <10>
+----
++
+<1> The name for the custom resource object.
++
+<2> The resource name of the SR-IOV network device plug-in. You can create multiple SR-IOV network node policies for a resource name.
++
+<3> The node selector specifies the nodes to configure. Ensure this is consistent with the `nodeSelector` of the MCP created in step 1.
++
+<4> Optional: The priority is an integer value between 0 and 99. A smaller value receives higher priority. For example, a priority of 10 is a higher priority than 99. The default value is 99.
++
+<5> The number of the virtual functions (VF) to create for the SR-IOV physical network device. For a Mellanox NIC, the number of VFs cannot be larger than 128.
++
+<6> The NIC selector identifies the device for the Operator to configure. You do not have to specify values for all the parameters. It is recommended to identify the network device with enough precision to avoid selecting a device unintentionally.
++
+<7> The vendor hexadecimal code of the SR-IOV network device. Vendor id `15b3` is for Mellanox devices.
++
+<8> The device hexadecimal code of the SR-IOV network device. For example, `a2d6` is the device ID for a Bluefield-2 DPU device.
++
+<9> An array of one or more physical function (PF) names for the device. The setting `ens1f0#1-3` in this example ensures 1 virtual function is reserved for the management port.
++
+<10> An array of one or more PCI bus addresses for the PF of the device. Provide the address in the following format: `0000:02:00.1`.
++
+.. Create the SriovNetworkNodePolicy object:
++
+[source,terminal]
+----
+$ oc create -f SriovNetworkNodePolicy.yaml
+----
++
+[NOTE]
+====
+After applying `SriovNetworkNodePolicy.yaml`, the nodes reboot and you need to wait until the `dpu-host` machine config pools are up to date again.
+====
+
+. Optional: Follow these optional steps if virtual functions are not being created on the tenant cluster.
+
+.. Create the following Machine Config:
++
+[source,yaml]
+----
+$ cat <<EOF > realloc.yaml
+apiVersion: machineconfiguration.openshift.io/v1
+kind: MachineConfig
+metadata:
+  labels:
+    machineconfiguration.openshift.io/role: dpu-host
+  name: pci-realloc
+spec:
+  config:
+    ignition:
+      version: 3.2.0
+  kernelArguments:
+      - pci=realloc
+----
+
+.. Apply the Machine Config and wait until all the nodes are rebooted:
++
+[source,terminal]
+----
+$ oc create -f realloc.yaml
+----
+
+. Create a Cluster Network Operator (CNO) ConfigMap in the tenant cluster setting the mode to `dpu-host`.
+
+.. Save the YAML in the `sriovdpuconfigmap.yaml` file:
++
+[source,yaml]
+----
+apiVersion: v1
+kind: ConfigMap
+metadata:
+    name: dpu-mode-config
+    namespace: openshift-network-operator
+data:
+    mode: "dpu-host"
+immutable: true
+----
+
+.. Run the following command:
++
+[source,terminal]
+----
+$ oc create -f sriovdpuconfigmap.yaml
+----
+
+. Create a machine config to disable Open vSwitch (OVS).
+
+.. Create a YAML file for example `disable-ovs.yaml`:
++
+[source,yaml]
+----
+apiVersion: machineconfiguration.openshift.io/v1
+kind: MachineConfig
+metadata:
+  labels:
+    machineconfiguration.openshift.io/role: dpu-host
+  name: disable-ovs
+spec:
+  config:
+    ignition:
+      version: 3.1.0
+    systemd:
+      units:
+      - mask: true
+        name: ovs-vswitchd.service
+      - enabled: false
+        name: ovs-configuration.service
+----
+
+.. Add this machine config to the cluster by running the following command:
++
+[source,terminal]
+----
+$ oc create -f disable-ovs.yaml
+----
+
+. Set the environment variable `OVNKUBE_NODE_MGMT_PORT_NETDEV` for each DPU host.
+.. Save the YAML in the `setenvovnkube.yaml` file:
++
+[source,yaml]
+----
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: env-overrides
+  namespace: openshift-ovn-kubernetes
+data:
+  x86-worker-node0: |
+    OVNKUBE_NODE_MGMT_PORT_NETDEV=ens1f0v0 <1>
+----
++
+<1> `ens1f0v0` is the virtual function (VF) name that is assigned to the `ovnkube` node management port on the host.
++
+.. Run the following command:
++
+[source,terminal]
+----
+$ oc create -f setenvovnkube.yaml
+----
+
+. Label the DPU nodes in the tenant cluster. Run the following command :
++
+[source,terminal]
+----
+$ oc label node <NODENAME> network.operator.openshift.io/dpu-host=
+----
