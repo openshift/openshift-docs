@@ -13,144 +13,177 @@ Compute machines that connect to a virtual function I/O (VFIO) network require t
 $ openstack network show <VFIO_network_name> -f value -c id
 ----
 
-. Create a machine set on your cluster from the following template:
+. Create a Butane config file called `99-vhostuser-bind.bu` that binds the PCI device to the VFIO driver. As an example:
++
+[NOTE]
+====
+For more information about Butane, see "Creating machine configs with Butane" in the "Customizing nodes" section of the documentation.
+====
 +
 [%collapsible]
 ====
 [source,yaml]
 ----
-apiVersion: machineconfiguration.openshift.io/v1
-kind: MachineConfig
+variant: openshift
+version: 4.10.0
 metadata:
-  labels:
-    machineconfiguration.openshift.io/role: worker
   name: 99-vhostuser-bind
-spec:
-  config:
-    ignition:
-      version: 2.2.0
-    systemd:
-      units:
-      - name: vhostuser-bind.service
-        enabled: true
-        contents: |
-          [Unit]
-          Description=Vhostuser Interface vfio-pci Bind
-          Wants=network-online.target
-          After=network-online.target ignition-firstboot-complete.service
-          [Service]
-          Type=oneshot
-          EnvironmentFile=/etc/vhostuser-bind.conf
-          ExecStart=/usr/local/bin/vhostuser $ARG
-          [Install]
-          WantedBy=multi-user.target
-    storage:
-      files:
-      - contents:
-          inline: vfio-pci
-        filesystem: root
-        mode: 0644
-        path: /etc/modules-load.d/vfio-pci.conf
-      - contents:
-          inline: |
-            #!/bin/bash
-            set -e
-            if [[ "$#" -lt 1 ]]; then
-                echo "Nework ID not provided, nothing to do"
-                exit
+  labels:
+    machineconfiguration.openshift.io/role: worker <1>
+systemd:
+  units:
+  - name: vhostuser-bind.service
+    enabled: true
+    contents: |
+      [Unit]
+      Description=Vhostuser Interface vfio-pci Bind
+      Wants=network-online.target
+      After=network-online.target ignition-firstboot-complete.service
+      [Service]
+      Type=oneshot
+      EnvironmentFile=/etc/vhostuser-bind.conf
+      ExecStart=/usr/local/bin/vhostuser $ARG
+      [Install]
+      WantedBy=multi-user.target
+storage:
+  files:
+  - contents:
+      inline: vfio-pci
+    mode: 0644
+    path: /etc/modules-load.d/vfio-pci.conf
+  - contents:
+      inline: |
+        #!/bin/bash
+        set -e
+        if [[ "$#" -lt 1 ]]; then
+            echo "Nework ID not provided, nothing to do"
+            exit
+        fi
+        
+        source /etc/vhostuser-bind.conf
+        
+        NW_DATA="/var/config/openstack/latest/network_data.json"
+        if [ ! -f ${NW_DATA} ]; then
+            echo "Network data file not found, trying to download it from nova metadata"
+            if ! curl http://169.254.169.254/openstack/latest/network_data.json > /tmp/network_data.json; then
+                echo "Failed to download network data file"
+                exit 1
             fi
-            
-            source /etc/vhostuser-bind.conf
-            
-            NW_DATA="/var/config/openstack/latest/network_data.json"
-            if [ ! -f ${NW_DATA} ]; then
-                echo "Network data file not found, trying to download it from nova metadata"
-                if ! curl http://169.254.169.254/openstack/latest/network_data.json > /tmp/network_data.json; then
-                    echo "Failed to download network data file"
-                    exit 1
-                fi
-                NW_DATA="/tmp/network_data.json"
-            fi
-            function parseNetwork() {
-                local nwid=$1
-                local pcis=()
-                echo "Network ID is $nwid"
-                links=$(jq '.networks[] | select(.network_id == "'$nwid'") | .link' $NW_DATA)
-                if [ ${#links} -gt 0 ]; then
-                    for link in $links; do
-                        echo "Link Name: $link"
-                        mac=$(jq -r '.links[] | select(.id == '$link') | .ethernet_mac_address'  $NW_DATA)
-                        if [ -n $mac ]; then
-                            pci=$(bindDriver $mac)
-                            pci_ret=$?
-                            if [[ "$pci_ret" -eq 0 ]]; then
-                                echo "$pci bind succesful"
-                            fi
+            NW_DATA="/tmp/network_data.json"
+        fi
+        function parseNetwork() {
+            local nwid=$1
+            local pcis=()
+            echo "Network ID is $nwid"
+            links=$(jq '.networks[] | select(.network_id == "'$nwid'") | .link' $NW_DATA)
+            if [ ${#links} -gt 0 ]; then
+                for link in $links; do
+                    echo "Link Name: $link"
+                    mac=$(jq -r '.links[] | select(.id == '$link') | .ethernet_mac_address'  $NW_DATA)
+                    if [ -n $mac ]; then
+                        pci=$(bindDriver $mac)
+                        pci_ret=$?
+                        if [[ "$pci_ret" -eq 0 ]]; then
+                            echo "$pci bind succesful"
                         fi
-                    done
-                fi
-            }
-            
-            function bindDriver() {
-                local mac=$1
-                for file in /sys/class/net/*; do
-                    dev_mac=$(cat $file/address)
-                    if [[ "$mac" == "$dev_mac" ]]; then
-                        name=${file##*\/}
-                        bus_str=$(ethtool -i $name | grep bus)
-                        dev_t=${bus_str#*:}
-                        dev=${dev_t#[[:space:]]}
-            
-                        echo $dev
-            
-                        devlink="/sys/bus/pci/devices/$dev"
-                        syspath=$(realpath "$devlink")
-                        if [ ! -f "$syspath/driver/unbind" ]; then
-                            echo "File $syspath/driver/unbind not found"
-                            return 1
-                        fi
-                        if ! echo "$dev">"$syspath/driver/unbind"; then
-                            return 1
-                        fi
-            
-                        if [ ! -f "$syspath/driver_override" ]; then
-                            echo "File $syspath/driver_override not found"
-                            return 1
-                        fi
-                        if ! echo "vfio-pci">"$syspath/driver_override"; then
-                            return 1
-                        fi
-            
-                        if [ ! -f "/sys/bus/pci/drivers/vfio-pci/bind" ]; then
-                            echo "File /sys/bus/pci/drivers/vfio-pci/bind not found"
-                            return 1
-                        fi
-                        if ! echo "$dev">"/sys/bus/pci/drivers/vfio-pci/bind"; then
-                          return 1
-                        fi
-                        return 0
                     fi
                 done
-                return 1
-            }
-            
-            for nwid in "$@"; do
-                parseNetwork $nwid
+            fi
+        }
+        
+        function bindDriver() {
+            local mac=$1
+            for file in /sys/class/net/*; do
+                dev_mac=$(cat $file/address)
+                if [[ "$mac" == "$dev_mac" ]]; then
+                    name=${file##*\/}
+                    bus_str=$(ethtool -i $name | grep bus)
+                    dev_t=${bus_str#*:}
+                    dev=${dev_t#[[:space:]]}
+        
+                    echo $dev
+        
+                    devlink="/sys/bus/pci/devices/$dev"
+                    syspath=$(realpath "$devlink")
+                    if [ ! -f "$syspath/driver/unbind" ]; then
+                        echo "File $syspath/driver/unbind not found"
+                        return 1
+                    fi
+                    if ! echo "$dev">"$syspath/driver/unbind"; then
+                        return 1
+                    fi
+        
+                    if [ ! -f "$syspath/driver_override" ]; then
+                        echo "File $syspath/driver_override not found"
+                        return 1
+                    fi
+                    if ! echo "vfio-pci">"$syspath/driver_override"; then
+                        return 1
+                    fi
+        
+                    if [ ! -f "/sys/bus/pci/drivers/vfio-pci/bind" ]; then
+                        echo "File /sys/bus/pci/drivers/vfio-pci/bind not found"
+                        return 1
+                    fi
+                    if ! echo "$dev">"/sys/bus/pci/drivers/vfio-pci/bind"; then
+                      return 1
+                    fi
+                    return 0
+                fi
             done
-        filesystem: root
-        mode: 0744
-        path: /usr/local/bin/vhostuser
-      - contents:
-          inline: |
-            ARG="be22563c-041e-44a0-9cbd-aa391b439a39,ec200105-fb85-4181-a6af-35816da6baf7" <1> 
-        filesystem: root
-        mode: 0644
-        path: /etc/vhostuser-bind.conf
+            return 1
+        }
+        
+        for nwid in "$@"; do
+            parseNetwork $nwid
+        done
+    mode: 0744
+    path: /usr/local/bin/vhostuser
+  - contents:
+      inline: |
+        ARG="be22563c-041e-44a0-9cbd-aa391b439a39,ec200105-fb85-4181-a6af-35816da6baf7" <2> 
+    mode: 0644
+    path: /etc/vhostuser-bind.conf
 ----
-<1> Replace this value with a comma-separated list of VFIO network UUIDs. 
+<1> This label applies the new kernel argument to worker nodes only.
+<2> Replace this value with a comma-separated list of VFIO network UUIDs. 
 ====
 +
 On boot for machines that are part of this set, the MAC addresses of ports are translated into PCI bus IDs. The `vfio-pci` module is bound to any port that is assocated with a network that is identified by the {rh-openstack} network ID.
+
+. From a command line, use Butane to generate a `MachineConfig` object file, `99-vhostuser-bind.yaml`, that contains a configuration to deliver to worker nodes:
++
+[source,terminal]
+----
+$ butane 99-vhostuser-bind.bu -o 99-vhostuser-bind.yaml
+----
+
+. Apply the `MachineConfig` object to the worker nodes:
++
+[source,terminal]
+----
+$ oc apply -f 99-vhostuser-bind.yaml
+----
+
+. Verify that the `MachineConfig` object was added:
++
+[source,terminal]
+----
+$ oc get MachineConfig
+----
++
+.Example output
+[source, terminal]
+----
+NAME                             GENERATEDBYCONTROLLER                      IGNITIONVERSION  AGE
+00-master                        d3da910bfa9f4b599af4ed7f5ac270d55950a3a1   3.2.0            25h
+00-worker                        d3da910bfa9f4b599af4ed7f5ac270d55950a3a1   3.2.0            25h
+01-master-container-runtime      d3da910bfa9f4b599af4ed7f5ac270d55950a3a1   3.2.0            25h
+01-master-kubelet                d3da910bfa9f4b599af4ed7f5ac270d55950a3a1   3.2.0            25h
+01-worker-container-runtime      d3da910bfa9f4b599af4ed7f5ac270d55950a3a1   3.2.0            25h
+01-worker-kubelet                d3da910bfa9f4b599af4ed7f5ac270d55950a3a1   3.2.0            25h
+99-vhostuser-bind                                                           3.2.0            30s
+----
 
 .Verification
 
