@@ -9,37 +9,201 @@
 .Prerequisites
 
 * Install the Topology Aware Lifecycle Operator.
-* Provision one or more managed clusters.
+* Update ZTP to the latest version.
+* Provision one or more managed clusters with ZTP.
+* Mirror the desired index image, bundle images, and all Operator images referenced in the bundle images.
 * Log in as a user with `cluster-admin` privileges.
 * Create {rh-rhacm} policies in the Hub cluster.
 
 .Procedure
 
-. Create or update a Policy which updates a Subscription channel to the desired release version. This can be done by manually creating the Policy CR or using automated flows such as generation from `PolicyGenTemplate` CRD.
-//Sample CR needed
+. Update the `PolicyGenTemplate` CR for the Operator update.
+.. Update the `du-upgrade` `PolicyGenTemplate` CR with the following additional contents in the `du-upgrade.yaml` file.
++
+[source,yaml]
+----
+apiVersion: ran.openshift.io/v1
+kind: PolicyGenTemplate
+metadata:
+  name: "du-upgrade"
+  namespace: "ztp-group-du-sno"
+spec:
+  bindingRules:
+    group-du-sno: ""
+  mcp: "master"
+  remediationAction: inform
+  sourceFiles:
+       …
+    - fileName: DefaultCatsrc.yaml
+      remediationAction: inform
+      policyName: "operator-catsrc-policy"
+      metadata:
+        name: redhat-operators
+      spec:
+        displayName: Red Hat Operators Catalog
+        image: registry.example.com:5000/olm/redhat-operators:v4.10 <1>
+        updateStrategy: <2>
+          registryPoll:
+            interval: 10m
+----
+<1> The index image URL contains the desired Operator images. If the index images are always pushed to the same image name and tag, this change is not needed.
+<2> Set how frequently OLM pulls the index image for new Operator versions with the `registrypoll.interval` field. This change is not needed if a new index image tag is always pushed for y-stream and z-stream Pperator updates.
++
+This update generates one policy, `du-upgrade-operator-catsrc-policy`, to update the `redhat-operators` catalog source with the new index images that contain the desired Operators images. 
++
+If the desired Operators are not from one catalog source, all catalog sources need to be properly updated with the new index image or registry poll interval. In order to use the image pre-caching for Operators later on, the updates for the different catalog sources must be applied in different policies. In addition, the separated subscription policies are required for the desired Operators from different catalog sources.
++
+For example, the desired SRIOV-FEC Operator is available in the `certified-operators` catalog source. Add the following contents to generate two policies, `du-upgrade-fec-catsrc-policy` and `du-upgrade-subscriptions-fec-policy`, that are used to update the catalog source and the Operator subscription:
++
+[source,yaml]
+----
+apiVersion: ran.openshift.io/v1
+kind: PolicyGenTemplate
+metadata:
+  name: "du-upgrade"
+  namespace: "ztp-group-du-sno"
+spec:
+  bindingRules:
+    group-du-sno: ""
+  mcp: "master"
+  remediationAction: inform
+  sourceFiles:
+       …
+    - fileName: DefaultCatsrc.yaml
+      remediationAction: inform
+      policyName: "fec-catsrc-policy"
+      metadata:
+        name: certified-operators
+      spec:
+        displayName: Intel SRIOV-FEC Operator
+        image: registry.example.com:5000/olm/far-edge-sriov-fec:v4.10
+        updateStrategy:
+          registryPoll:
+            interval: 10m
+    - fileName: AcceleratorsSubscription.yaml
+      policyName: "subscriptions-fec-policy"
+      spec:
+        channel: "stable"
+        source: certified-operators
+----
 
-. Save the `ClusterGroupUpgrade` CR with the desired Operator update policies to the `cgu-operator-update.yaml` file.
-// Disabled sample CR is needed with image precacing that updates Operators only
+.. Remove the specified subscriptions channels in the common `PolicyGenTemplate` CR, if they exist. The default subscriptions channels from the ZTP image are used for the update.
++
+[NOTE]
+====
+The default channel for the Operators applied through ZTP 4.10 is `stable`, except for the `performance-addon-operator`. The default channel for PAO is `4.10`. You could also explicitly specify the default channels in the common `PolicyGenTemplate` CR.
+====
 
-. Start the update process by running the following command:
+.. Push the `PolicyGenTemplate` CRs updates to the ZTP git repository.
++
+ArgoCD pulls the changes from the git repository and generates the policies on the Hub cluster.
+
+.. Check the created policies by running the following command:
 +
 [source,terminal]
 ----
-$ oc --namespace=default patch clustergroupupgrade.ran.openshift.io/<name> \
---type merge -p '{"spec":{"enable":true}}'
+$ oc get policies -A | grep platform-upgrade
 ----
 
-. Check the status of the policies by running the following command:
+
+. Apply the required catalog sources updates before starting the Operator update.
+
+.. Save the content of the `operator-upgrade-prep` `ClusterGroupUpgrade` CR with the catalog source policies and the target spoke clusters to the `cgu-operator-upgrade-prep.yml` file.
++
+[source,yaml]
+----
+apiVersion: ran.openshift.io/v1alpha1
+kind: ClusterGroupUpgrade
+metadata:
+  name: cgu-operator-upgrade-prep
+  namespace: default
+spec:
+  clusters:
+  - spoke1
+  enable: true
+  managedPolicies:
+  - du-upgrade-operator-catsrc-policy
+  remediationStrategy:
+    maxConcurrency: 1
+----
+
+.. Apply the policy to the Hub cluster by running the following command:
++
+[source,terminal]
+----
+$ oc apply -f cgu-operator-upgrade-prep.yml
+----
+
+.. Monitor the update process and wait for completion. Then ensure that the policy becomes compliant by running the following command:
 +
 [source,terminal]
 ----
 $ oc get policies --all-namespaces
 ----
 
-[IMPORTANT]
-====
-After a cluster update performed by TALO is complete, the cluster will not be updated again under the control of the same `ClusterGroupUpgrade` CR. You need to create a new `ClusterGroupUpgrade` CR in the following cases:
+. Pre-cache the images for the Operator update.
 
-* You want to update the cluster again
-* The cluster changes to non-compliant with the `inform` policy after being updated
+.. Save the content of the Operator upgrade `ClusterGroupUpgrade` CR with the `du-upgrade-operator-catsrc-policy`, the subscription policies created from the common `PolicyGenTemplate` CR, and the target clusters to the `cgu-operator-upgrade.yml file`. This 
+`ClusterGroupUpgrade` CR is configured to only perform the pre-caching job without the actual Operator update.
++
+[source,yaml]
+----
+apiVersion: ran.openshift.io/v1alpha1
+kind: ClusterGroupUpgrade
+metadata:
+  name: cgu-operator-upgrade
+  namespace: default
+spec:
+  managedPolicies:
+  - du-upgrade-operator-catsrc-policy <1>
+  - common-subscriptions-policy <2>
+  preCaching: true
+  clusters:
+  - spoke1
+  remediationStrategy:
+    maxConcurrency: 1
+  enable: false
+  actions:
+    afterCompletion:
+      deleteObjects: true
+----
+<1> The policy that updates the catalog source
+<2> The policy contains the Operator subscriptions. If you have upgraded ZTP from 4.9 to 4.10 by following the xref:../scalability_and_performance/ztp-deploying-disconnected.adoc#ztp-upgrading-gitops-ztp_ztp-deploying-disconnected[Upgrading GitOps ZTP] procedure, all Operator subscriptions should be grouped into the `common-subscriptions-policy` policy.
++
+[NOTE]
 ====
+One `ClusterGroupUpgrade` CR can only pre-cache the images of the desired Operators defined in the subscription policy from one catalog source included in the `ClusterGroupUpgrade` CR. If the desired Operators are from different catalog sources, like in the example of the SRIOV-FEC Operator, another `ClusterGroupUpgrade` CR should be created with `du-upgrade-fec-catsrc-policy` and `du-upgrade-subscriptions-fec-policy` policies for the SRIOV-FEC Operator images pre-caching and update.
+====
+
+.. Verify the subscription policy is `NonCompliant` at this point because the subscription is not at `AtLatestKnown` state by running the following command:
+
+.. Apply the `cgu-operator-upgrade.yaml` to the Hub cluster by running the following command:
++
+[source,terminal]
+----
+$ oc apply -f cgu-operator-upgrade.yml
+----
+
+.. Monitor the process and wait for the pre-caching to complete. Check the status of pre-caching by running the following command:
++
+[source,terminal]
+----
+$ oc get jobs,pods -n openshift-talo-pre-cache
+----
+
+. Start the Operator update.
+
+.. Enable the `cgu-operator-upgrade` `ClusterGroupUpgrade` CR and disable the preCaching to start the Operator update by running the following command:
++
+[source,terminal]
+----
+$ oc --namespace=default patch clustergroupupgrade.ran.openshift.io/cgu-operator-upgrade \
+--patch '{"spec":{"enable":true}}' --type=merge
+----
+
+.. Monitor the process and wait for completion. Then ensure that the policy becomes compliant by running the following command:
++
+[source,terminal]
+----
+$ oc get policies --all-namespaces
+----
