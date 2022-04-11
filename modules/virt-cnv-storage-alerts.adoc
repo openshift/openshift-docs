@@ -1,0 +1,478 @@
+// Module included in the following assemblies:
+//
+// * virt/logging_events_monitoring/virt-events.html/virt-virtualization-alerts.adoc
+:_content-type: REFERENCE
+
+[id="virt-cnv-storage-alerts_{context}"]
+= Storage Alerts
+
+Storage alerts provide information about problems for the {VirtProductName} Containerized Data Importer (CDI) Operator and the Host Path Provisioner (HPP) Operator.
+
+//CDIDataImportCronOutdated Alert
+[id="CDIDataImportCronOutdated_{context}"]
+== CDIDataImportCronOutdated alert
+
+.Description
+
+DataImportCron polls the latest versions of disk images such as persistent volume claims (PVCs), most commonly into a golden image namespace.
+
+The `latest` version always updates in the PVCs, serving as a trustworthy clone source for a virtual machine (VM) created from the latest image of an operating system.
+
+This alert occurs when a DataImportCron fails to create a corresponding PVC or keep its corresponding PVC updated because it already has the `latest` version.
+
+[NOTE]
+====
+If you use a golden image, then `latest` is the latest operating system version of the distribution.
+If you do not use a golden image, then `latest` is the latest hash of the image that is available.
+====
+
+.Reason
+
+Using outdated disk images or VMs creates VMs that fail to start because there is no source PVC from which to clone.
+
+.Troubleshoot
+
+*Distinguish between golden images and regular crons*
+
+Golden images often use DataImportCrons and serve as a common source to create VM disks.
+
+. Find the erroneous DataImportCron’s namespace & name.
++
+[source,terminal]
+----
+$ oc get dataimportcron -A -o json | jq -r '.items[] | select(.status.conditions[] | select(.type == "UpToDate" and .status == "False")) | .metadata.namespace + "/" + .metadata.name'
+----
+
+The output appears as `namespace/name - golden image crons` residing in the `openshift-virtualization-os-images` namespace.
+
+. With golden image crons, verify configuration of a default storage class.
++
+[source,terminal]
+----
+$ oc get sc
+----
+
+Do not mark a single storage class with (default) next to its name.
+
+*Troubleshoot artifacts*
+
+. Replace `<cron_namespace>` and `<cron_name>` to find the DataImportCron’s corresponding DataVolume that resides in same namespace as cron.
++
+[source,terminal]
+----
+$ oc -n <cron_namespace> get dataimportcron <cron_name> -o json | jq .status.lastImportedPVC.name
+----
+
+. Replace `<dv_name>` with the previous output to check for error messages using this command:
++
+[source,terminal]
+----
+$ oc -n <cron_namespace> get dv <dv_name> -o yaml
+----
+
+. Find the cdi-operator’s pod namespace.
++
+[source,terminal]
+----
+$ export NAMESPACE="$(oc get deployment -A | grep cdi-operator | awk '{print $1}')"
+----
+
+. Check the cdi controller logs for error messages.
++
+[source,terminal]
+----
+$ oc logs -n $NAMESPACE deployment/cdi-deployment
+----
+
+.Resolution
+
+There are two primary causes for this alert:
+
+* You do not have a default storage class defined.
+* Your cluster is in a disconnected environment.
+
+*No storage class defined*
+
+A common issue when opting into golden images auto-polling is not having a default storage class set.
+
+Ensure you have a default storage class set in the cluster. However, if you’re using a custom DataImportCron, then verify that there is an explicit storage class set in the DataImportCron definition.
+[source,yaml]
+----
+$ oc get dataimportcron cron-test -o yaml | grep -B 5 storageClassName
+          url: docker://.../cdi-func-test-tinycore
+      storage:
+        resources:
+          requests:
+            storage: 5Gi
+        storageClassName: rook-ceph-block
+----
+
+If there is no defined storage class, then the DataVolume controller fails to create PVCs and triggers an event:
+[source,terminal]
+----
+DataVolume.storage spec is missing accessMode and no storageClass to choose profile
+----
+
+Once you define a storage class, updated versions of CDI resolve this issue automatically. If the alert does not resolve within a few seconds:
+
+. Find all of the affected DataImportCrons
+. Determine the DV associated with each DataImportCron
+. Make sure each DV has an empty status which is an indicator of the issue
+. Delete each of these DVs
+
+CDI then recreates the DVs with proper reference to the default storage class.
+
+*Disconnected Environment*
+
+If your cluster is in a restricted network, then the default golden images are out of reach, causing this alert to occur.
+
+Disable the feature gate `enableCommonBootImageImport` to opt-out from automatic updates of the common data import cron templates and to prevent this alert using this command:
+[source,terminal]
+----
+$ oc patch hco kubevirt-hyperconverged -n $CDI_NAMESPACE --type json -p '[{"op": "replace", "path": "/spec/featureGates/enableCommonBootImageImport", "value": false}]'
+----
+
+Otherwise, open a support issue and provide the information gathered in the troubleshooting process.
+
+//CDIDataVolumeUnusualRestartCount Alert
+[id="CDIDataVolumeUnusualRestartCount_{context}"]
+== CDIDataVolumeUnusualRestartCount alert
+
+.Description
+
+A DataVolume's (DV) `.RestartCount` field shows the number of times that a CDI ephemeral workload pod restarts.
+
+For example, when an HTTP import occurs, the `.RestartCount` field indicates the amount of times the CDI importer pod restarts.
+
+This alert occurs if any DV's restart count is greater than three.
+
+.Reason
+
+If the restart count is greater than three, the DataVolume fails to create a VM on a PVC.
+
+.Troubleshoot
+
+. Find the erroneous DV's name and namespace.
++
+[source,terminal]
+----
+$ oc get dv -A -o json | jq -r '.items[] | select(.status.restartCount>3)' | jq '.metadata.name, .metadata.namespace'
+----
+
+. Change the `<dv_name>` and `<dv_namespace>` fields based on the erroneous DV's name and namespace to find the corresponding worker pod.
++
+[source,terminal]
+----
+$ oc get pods -n <dv_namespace> -o json | jq -r '.items[] | select(.metadata.ownerReferences[] | select(.name=="<dv_name>")).metadata.name'
+----
+
+. Change the `<worker_pod>` field that corresponds to the erroneous DV's namespace to check the failing deployments’ corresponding description and logs.
++
+[source,terminal]
+----
+$ oc -n <dv_namespace> describe pods <worker_pod>
+----
++
+[source,terminal]
+----
+$ oc -n <dv_namespace> logs <worker_pod>
+----
+
+.Resolution
+
+In some cases, the error is an incorrect URL, indicated by a 404 error when troubleshooting the problem. If an incorrect URL is the cause, then you can restart by deleting the DV, correcting the URL in the DV manifest, and recreating the DV.
+
+Open a support issue and provide the information gathered in the troubleshooting process.
+
+//CDINotReady Alert
+[id="CDINotReady_{context}"]
+== CDINotReady alert
+
+.Description
+
+If a CDI installation is in a degraded state, then the installation is not progressing or is unavailable to use.
+
+.Reason
+
+If the CDI is unusable, then you cannot build virtual machine disks on PVCs using CDI’s DataVolumes (DVs). Additionally, components are not ready and stop progressing toward a ready state.
+
+.Troubleshoot
+
+. Check the cdi-operator’s pod namespace.
++
+[source,terminal]
+----
+$ export NAMESPACE="$(oc get deployment -A | grep cdi-operator | awk '{print $1}')"
+----
+In this example, the kind of operand is `kubevirt` and the operand's name is `kubevirt-kubevirt-hyperconverged`.
+
+. Verify if any of the CDI components are currently not ready.
++
+[source,terminal]
+----
+$ oc -n $NAMESPACE get deploy -l cdi.kubevirt.io
+----
+
+. Check the failing deployments’ corresponding pod logs and description.
++
+[source,terminal]
+----
+$ oc -n $NAMESPACE describe pods <corresponding_pod_name>
+----
++
+[source,terminal]
+----
+$ oc -n $NAMESPACE logs <corresponding_pod_name>
+----
+
+.Resolution
+
+Open a support issue and provide the information gathered in the troubleshooting process.
+
+//CDIOperatorDown Alert
+[id="CDIOperatorDown_{context}"]
+== CDIOperatorDown alert
+
+.Description
+
+The CDI Operator deploys and manages the CDI infrastructure components such as the DataVolume or PVC controllers that help you build virtual machine disks on PVCs.
+
+This alert fires when the CDI Operator is down.
+
+.Reason
+
+If the CDI Operators is down, then the dependent infrastructure components do not deploy at all or fail to stay in a required state. As a result, the CDI installation is not fully operational in the cluster.
+
+.Troubleshoot
+
+. Check the cdi-operator’s pod namespace.
++
+[source,terminal]
+----
+export NAMESPACE="$(oc get deployment -A | grep cdi-operator | awk '{print $1}')"
+----
+
+. Verify the cdi-operator’s pod is currently down.
++
+[source,terminal]
+----
+$ oc -n $NAMESPACE get pods -l name=cdi-operator
+----
+
+. Check the cdi-operator’s pod description and logs.
++
+[source,terminal]
+----
+$ oc -n $NAMESPACE describe pods -l name=cdi-operator
+----
++
+[source,terminal]
+----
+$ oc -n $NAMESPACE logs -l name=cdi-operator
+----
+
+.Resolution
+
+Open a support issue and provide the information gathered in the troubleshooting process.
+
+//CDIStorageProfilesIncomplete Alert
+[id="CDIStorageProfilesIncomplete_{context}"]
+== CDIStorageProfilesIncomplete alert
+
+.Description
+
+An incomplete StorageProfile indicates the CDI cannot automatically obtain persistent volume claim (PVC) fields such as volumeMode or accessMode for your disk request.
+
+.Reason
+
+The DataVolume fails to create a VM on a PVC.
+
+.Troubleshoot
+
+. Find the storage profile that cannot be fully populated by CDI using the name of your desired storage class from the DataVolume.
++
+[source,terminal]
+----
+$ oc get storageprofile <your_storage_class_name>
+----
+
+.Resolution
+
+Open a support issue and provide the needed information in the StorageProfile spec section. For example:
+
+*Before*
+
+[source,terminal]
+----
+apiVersion: cdi.kubevirt.io/v1beta1
+kind: StorageProfile
+metadata:
+  name: local
+spec: {}
+status:
+  provisioner: kubernetes.io/no-provisioner
+  storageClass: local
+----
+
+*Addition*
+
+[source,terminal]
+----
+$ oc patch storageprofile local --type=merge -p '{"spec": {"claimPropertySets": [{"accessModes": ["ReadWriteOnce"], "volumeMode": "Filesystem"}]}}'
+----
+
+*After*
+
+[source,terminal]
+----
+apiVersion: cdi.kubevirt.io/v1beta1
+kind: StorageProfile
+metadata:
+  name: local
+spec:
+  claimPropertySets:
+  - accessModes:
+    - ReadWriteOnce
+    volumeMode: Filesystem
+status:
+  claimPropertySets:
+  - accessModes:
+    - ReadWriteOnce
+    volumeMode: Filesystem
+  provisioner: kubernetes.io/no-provisioner
+  storageClass: local
+----
+
+//HPPNotReady Alert
+[id="HPPNotReady_{context}"]
+== HPPNotReady alert
+
+.Description
+
+The hostpath-provisioner (HPP) dynamically provisions hostPath volumes to provide storage for PVCs.
+
+.Reason
+
+If an HPP installation is in a degraded state, then the installation is not progressing or unavailable to use.
+
+.Troubleshoot
+
+. Check the hostpath-provisioner-operator’s pod namespace.
++
+[source,terminal]
+----
+$ export HPP_NAMESPACE="$(oc get deployment -A | grep hostpath-provisioner-operator | awk '{print $1}')"
+----
+
+. Verify if any of the HPP components are currently not ready.
++
+[source,terminal]
+----
+$ oc -n $HPP_NAMESPACE get all -l k8s-app=hostpath-provisioner
+----
+
+. Check the failing corresponding pod description and logs.
++
+[source,terminal]
+----
+$ oc -n $HPP_NAMESPACE describe pods <corresponding_pod_name>
+----
++
+[source,terminal]
+----
+$ oc -n $HPP_NAMESPACE logs <corresponding_pod_name>
+----
+
+.Resolution
+
+Open a support issue and provide the information gathered in the troubleshooting process.
+
+//HPPOperatorDown Alert
+[id="HPPOperatorDown_{context}"]
+== HPPOperatorDown alert
+
+.Description
+
+The Host Path Provider (HPP) Operator deploys and manages the HPP infrastructure components, such as the DaemonSet in charge of provisioning hostPath volumes.
+
+.Reason
+
+If the HPP Operator is down, then the dependent infrastructure components do not deploy at all or fail to stay in a required state. As a result, the HPP installation is not fully operational in the cluster.
+
+.Troubleshoot
+
+. Check the hostpath-provisioner-operator’s pod namespace.
++
+[source,terminal]
+----
+$ export HPP_NAMESPACE="$(oc get deployment -A | grep hostpath-provisioner-operator | awk '{print $1}')"
+----
+
+. Verify the hostpath-provisioner-operator’s pod is currently down.
++
+[source,terminal]
+----
+$ oc -n $HPP_NAMESPACE get pods -l name=hostpath-provisioner-operator
+----
+
+. Check the hostpath-provisioner-operator’s pod description and logs.
++
+[source,terminal]
+----
+$ oc -n $HPP_NAMESPACE describe pods -l name=hostpath-provisioner-operator
+----
++
+[source,terminal]
+----
+$ oc -n $HPP_NAMESPACE logs -l name=hostpath-provisioner-operator
+----
+
+.Resolution
+
+Open a support issue and provide the information gathered in the troubleshooting process.
+
+//HPPSharingPoolPathWithOS Alert
+[id="HPPSharingPoolPathWithOS_{context}"]
+== HPPSharingPoolPathWithOS alert
+
+.Description
+
+The hostpath-provisioner dynamically provisions hostPath volumes to provide storage for PVCs.
+
+.Reason
+
+If HPP is sharing a filesystem with other critical components such as an operating system (OS), then HPP PVs may cause node disk pressure.
+
+.Troubleshoot
+
+. Examine the DaemonSet logs to determine which HPP pool shares with an OS.
++
+[source,terminal]
+----
+$ export HPP_NAMESPACE="$(kubectl get deployment -A | grep hostpath-provisioner-operator | awk '{print $1}')"
+----
+
+. Find the CSI DaemonSet pods.
++
+[source,terminal]
+----
+$ oc -n $HPP_NAMESPACE get pods | grep hostpath-provisioner-csi
+----
+
+. Check the CSI pod logs to determine which pool and path share with an OS.
++
+[source,terminal]
+----
+$ oc -n $HPP_NAMESPACE logs <csi_daemonset_pod> -c hostpath-provisioner
+----
++
+The relevant log lines are similar to this example:
++
+[source,terminal]
+----
+I0208 15:21:03.769731 1 utils.go:221] pool (legacy, csi-data-dir/csi) shares path with OS which can lead to node disk pressure
+----
+
+.Resolution
+
+Open a support issue and provide the information gathered in the troubleshooting process.
