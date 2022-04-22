@@ -14,9 +14,11 @@ Link to docs preview:
   - Review the preview build to make sure your changes are rendering properly. --->
 
 Additional information:
-<!--- Optional: Include additional context or expand the description here.
+<!--- Optional: Include additional context or expand the description here.--->
 
-Next steps after opening your PR:
+
+
+<!--- Next steps after opening your PR:
 
 * Ask for peer review from the OpenShift docs team:
   - For Red Hat associates: Ping @peer-review-squad requesting a review in the #forum-docs-review channel (CoreOS Slack workspace) and provide the following information:
