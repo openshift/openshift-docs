@@ -606,7 +606,10 @@ def _fix_links(content, book_dir, src_file, info, tag=None, cwd=None):
 
                 # We are dealing with a cross reference to another book here
                 external_link = EXTERNAL_LINK_RE.search(link_file)
-                book_dir_name = external_link.group(1)
+                try:
+                    book_dir_name = external_link.group(1)
+                except AttributeError as error:
+                    print(f"Error ({src_file}): {link.group()} appears to be an invalid cross-reference")
 
                 # Find the book name
                 book_name = book_dir_name
