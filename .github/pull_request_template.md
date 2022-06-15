@@ -1,17 +1,26 @@
 <!--- PR title format: [GH#<gh-issue-id>][BZ#<bz-issue-id>][OSDOCS-<jira-issue-id>]: <short-description-of-the-pr> --->
 
+<!--- If your changes apply to the latest release and/or in-development version of OpenShift, open your PR against the `main` branch. --->
+
 Version(s):
 <!--- Specify the version or versions of OpenShift your PR applies to.
-If your changes apply to the latest release and/or in-development version of OpenShift, open your PR against the `main` branch. --->
+
+Examples:
+  * PR applies to all versions after a specific version (e.g. 4.8): 4.8+
+  * PR applies to the in-development version (e.g. 4.11) and future versions: 4.11+
+  * PR applies only to a specific single version (e.g. 4.10): 4.10
+  * PR applies to multiple specific versions (e.g. 4.6-4.8): 4.6, 4.7, 4.8 --->
 
 Issue:
 <!--- Add a link to the Bugzilla, Jira, or GitHub issue, if applicable. --->
 
 Link to docs preview:
 <!--- Add direct link(s) to the exact page(s) with updated content from the preview build.
-  - The preview will be generated after you open the PR.
-  - You will need to edit the comment to add the link after the preview builds.
-  - Review the preview build to make sure your changes are rendering properly. --->
+
+NOTE:
+Automatic preview functionality is currently not available.
+  * OpenShift documentation team members (core and aligned) must include a link to a locally generated preview for PRs that update the rendered build in any way.
+  * External contributors can request a generated preview from the OpenShift documentation team. --->
 
 Additional information:
 <!--- Optional: Include additional context or expand the description here.--->
