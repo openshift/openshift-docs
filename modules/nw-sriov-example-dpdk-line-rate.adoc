@@ -1,0 +1,278 @@
+// Module included in the following assemblies:
+//
+// * networking/hardware_networks/using-dpdk-and-rdma.adoc
+
+:_content-type: PROCEDURE
+[id="nw-example-dpdk-line-rate_{context}"]
+= Using SR-IOV and the Node Tuning Operator to achieve a DPDK line rate
+
+.Prerequisites
+
+* You have installed the OpenShift CLI (`oc`).
+* You have installed the SR-IOV Network Operator.
+* You have logged in as a user with `cluster-admin` privileges.
+* You have deployed a standalone Node Tuning Operator.
+
+The Node Tuning Operator is used to configure isolated CPUs, hugepages, and a topology scheduler.
+You can then use the Node Tuning Operator with SR-IOV to achieve a specific DPDK line rate networking.
+
+[NOTE]
+====
+In previous versions of {product-title}, the Performance Addon Operator was used to implement automatic tuning to achieve low latency performance for OpenShift applications. In {product-title}{product-version} 4.11, this functionality is part of the Node Tuning Operator.
+====
+
+.Procedure
+
+== Using the Node Tuning Operator to optimize line rate
+
+.Procedure
+. Create a `PerformanceProfile` object based on the following example:
++
+[source,yaml]
+----
+    apiVersion: performance.openshift.io/v2
+    kind: PerformanceProfile
+    metadata:
+     name: performance
+    spec:
+     globallyDisableIrqLoadBalancing: true
+     cpu:
+       isolated: 21-51,73-103 <1>
+       reserved: 0-20,52-72 <2>
+     hugepages:
+       defaultHugepagesSize: 1G <3>
+       pages:
+       - count: 32
+         size: 1G
+     net:
+        userLevelNetworking: true
+     numa:
+       topologyPolicy: "single-numa-node"
+     nodeSelector:
+       node-role.kubernetes.io/worker-cnf: ""
+----
+<1> If hyperthreading is enabled on the system, allocate the symbolic link to the same CPU group (isolated/reserved). If the system contains multiple NUMAs, allocate CPUs from both NUMAs to both groups. You can also use the Performance Profile Creator for this task: see "Creating a performance profile" for more information.
+<2> You can also specify a list of devices that will have the queues set to the reserved CPU count. See "Reducing NIC queues using the Node Tuning Operator" for more information.
+<3> Allocate the number and size of hugepages needed. You can specify the NUMA for the hugepages. By default, the system allocates an even number to every NUMA on the system. If needed, you can request the use of a realtime kernel for the nodes. See "Provisioning a worker with real-time capabilities" for more information.
+. Save the `yaml` file as `mlx-dpdk-perfprofile-policy.yaml`.
+. Apply the performance profile.
+
+== Configuring an SR-IOV Network Operator
+The SR-IOV network operator is used to allocate and configure Virtual Functions from SR-IOV-supporting Physical Function NICs on the nodes.
+
+For more information on deploying the operator, see "Installing the SR-IOV Network Operator".
+For more information on configuring an SR-IOV network device, see "Configuring an SR-IOV network device".
+
+There are some differences between running DPDK workloads on Intel VFs or Mellanox VFs. We will look at both cases.
+
+The following is an example of an `sriovNetworkNodePolicy` object used to run DPDK applications on Intel NICs:
+[source,yaml]
+----
+    apiVersion: sriovnetwork.openshift.io/v1
+    kind: SriovNetworkNodePolicy
+    metadata:
+     name: dpdk-nic-1
+     namespace: openshift-sriov-network-operator
+    spec:
+     deviceType: vfio-pci <1>
+     needVhostNet: true <2>
+     nicSelector:
+       pfNames: ["ens3f0"]
+     nodeSelector:
+       node-role.kubernetes.io/worker-cnf: ""
+     numVfs: 10
+     priority: 99
+     resourceName: dpdk_nic_1
+    ---
+    apiVersion: sriovnetwork.openshift.io/v1
+    kind: SriovNetworkNodePolicy
+    metadata:
+     name: dpdk-nic-1
+     namespace: openshift-sriov-network-operator
+    spec:
+     deviceType: vfio-pci
+     needVhostNet: true
+     nicSelector:
+         pfNames: ["ens3f1"]
+     nodeSelector:
+     node-role.kubernetes.io/worker-cnf: ""
+     numVfs: 10
+     priority: 99
+     resourceName: dpdk_nic_2
+
+----
+<1> For Intel NICs, `deviceType` must be `vfio-pci`.
+<2> If kernel communication with DPDK workloads is required, add `needVhostNet: true`. This will mount the `/dev/net/tun` and `/dev/vhost-net` devices into the container so the application can create a tap device and connect the tap device to the DPDK workload.
+
+The following is an example of `sriovNetworkNodePolicy` for Mellanox NICs:
+[source,yaml]
+----
+    apiVersion: sriovnetwork.openshift.io/v1
+    kind: SriovNetworkNodePolicy
+    metadata:
+     name: dpdk-nic-1
+     namespace: openshift-sriov-network-operator
+    spec:
+     deviceType: netdevice <1>
+     isRdma: true <2>
+     nicSelector:
+       rootDevices:
+         - "0000:5e:00.1"
+     nodeSelector:
+       node-role.kubernetes.io/worker-cnf: ""
+     numVfs: 5
+     priority: 99
+     resourceName: dpdk_nic_1
+    ---
+    apiVersion: sriovnetwork.openshift.io/v1
+    kind: SriovNetworkNodePolicy
+    metadata:
+     name: dpdk-nic-2
+     namespace: openshift-sriov-network-operator
+    spec:
+     deviceType: netdevice
+     isRdma: true
+     nicSelector:
+       rootDevices:
+         - "0000:5e:00.0"
+     nodeSelector:
+       node-role.kubernetes.io/worker-cnf: ""
+     numVfs: 5
+     priority: 99
+     resourceName: dpdk_nic_2
+----
+<1> For Mellanox devices the `deviceType` must be `netdevice`.
+<2> For Mellanox devices `isRDMA` must be `true`.
+Mellanox cards are connected to DPDK applications using Flow Bifurcation. This mechanism splits traffic between Linux user space and kernel space, and can enhance line rate processing capability.
+
+== Using the SR-IOV network operator to create the `sriovNetwork` object
+The following is an example definition of an `sriovNetwork` object. In this case Intel and Mellanox configurations are identical.
+[source,yaml]
+----
+    apiVersion: sriovnetwork.openshift.io/v1
+    kind: SriovNetwork
+    metadata:
+     name: dpdk-network-1
+     namespace: openshift-sriov-network-operator
+    spec:
+     ipam: '{"type": "host-local","ranges": [[{"subnet": "10.0.1.0/24"}]],"dataDir":
+       "/run/my-orchestrator/container-ipam-state-1"}' <1>
+     networkNamespace: dpdk-test <2>
+     spoofChk: "off"
+     trust: "on"
+     resourceName: dpdk_nic_1 <3>
+    ---
+    apiVersion: sriovnetwork.openshift.io/v1
+    kind: SriovNetwork
+    metadata:
+     name: dpdk-network-2
+     namespace: openshift-sriov-network-operator
+    spec:
+     ipam: '{"type": "host-local","ranges": [[{"subnet": "10.0.2.0/24"}]],"dataDir":
+       "/run/my-orchestrator/container-ipam-state-1"}'
+     networkNamespace: dpdk-test
+     spoofChk: "off"
+     trust: "on"
+     resourceName: dpdk_nic_2
+----
+<1> You can use a different IPAM, such as Whereabouts. See "Dynamic IP address assignment configuration with Whereabouts" for more information.
+<2> You must request the `networkNamespace` where the network attachment definition will be created. The `sriovNetwork` CR must be created under the `openshift-sriov-network-operator` namespace.
+<3> The `resourceName` value must match that of the `resourceName` created under the `sriovNetworkNodePolicy`.
+
+== Running a DPDK base workload
+The following is an example of a DPDK container:
+[source,yaml]
+----
+    ---
+    apiVersion: v1
+    kind: Namespace
+    metadata:
+      name: dpdk-test
+    ---
+    apiVersion: v1
+    kind: Pod
+    metadata:
+     annotations:
+       k8s.v1.cni.cncf.io/networks: '[ <1>
+         {
+          "name": "dpdk-network-1",
+          "namespace": "dpdk-test"
+         },
+         {
+          "name": "dpdk-network-2",
+          "namespace": "dpdk-test"
+         }
+       ]'
+       irq-load-balancing.crio.io: "disable" <2>
+       cpu-load-balancing.crio.io: "disable"
+       cpu-quota.crio.io: "disable"
+     labels:
+       app: dpdk
+     name: testpmd
+     namespace: dpdk-test
+    spec:
+     runtimeClassName: performance-performance <3>
+     containers:
+       - command:
+           - /bin/bash
+           - -c
+           - sleep INF
+         image: registry.redhat.io/openshift4/dpdk-base-rhel8
+         imagePullPolicy: Always
+         name: dpdk
+         resources:
+           limits:
+             cpu: "16"
+             hugepages-1Gi: 8Gi
+             memory: 2Gi
+           requests:
+             cpu: "16"
+             hugepages-1Gi: 8Gi
+             memory: 2Gi
+         securityContext:
+           capabilities:
+             add:
+               - IPC_LOCK
+               - SYS_RESOURCE
+               - NET_RAW
+               - NET_ADMIN
+           runAsUser: 0
+         volumeMounts:
+           - mountPath: /mnt/huge
+             name: hugepages
+     terminationGracePeriodSeconds: 5
+     volumes:
+       - emptyDir:
+           medium: HugePages
+         name: hugepages
+----
+<1> Request the SR-IOV networks you need: resources for the devices will be injected automatically.
+<2> Disable the CPU and IRQ load balancing base. See "Disabling interrupt processing for individual pods" for more information.
+<3> Set the `runtimeClass` to `performance-performance`.
+[NOTE]
+====
+Do not use `HostNetwork` or `privileged`.
+====
+[NOTE]
+====
+Request an equal number of resources for requests and limits to start the pod with guaranteed QOS.
+====
+[NOTE]
+====
+Do not start the pod with `SLEEP` and then exec into the pod to start the testpmd or the DPDK workload. This can add additional interrupts as the `exec` process is not pinned to any CPU.
+====
+
+== Running `testpmd`
+
+The following is an example script for running `testpmd`:
+
+[source,yaml]
+----
+    set -ex
+    export CPU=$(cat /sys/fs/cgroup/cpuset/cpuset.cpus)
+    echo ${CPU}
+
+    dpdk-testpmd -l ${CPU} -a ${PCIDEVICE_OPENSHIFT_IO_DPDK_NIC_1} -a ${PCIDEVICE_OPENSHIFT_IO_DPDK_NIC_2} -n 4 -- -i --nb-cores=15 --rxd=4096 --txd=4096 --rxq=7 --txq=7 --forward-mode=mac --eth-peer=0,50:00:00:00:00:01 --eth-peer=1,50:00:00:00:00:02
+----
+This example uses two different `sriovNetwork` CRs. The environment variable contains the VF PCI address that was allocated for the pod. If you use the same network in the pod definition, you must split the `pciAddress`.
+It is important to configure the correct MAC addresses of the traffic generator. In this example, custom MACs are used.
