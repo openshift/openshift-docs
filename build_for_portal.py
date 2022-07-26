@@ -44,7 +44,8 @@ MASTER_FILE_BASE = "= {title}\n\
 :{distro}:\n\
 :imagesdir: images\n\
 :idseparator: -\n\
-{preface-title}\n"
+{preface-title}\n\
+{inclusive}\n\n"
 
 DOCINFO_BASE = "<title>{title}</title>\n\
 <productname>{{product-title}}</productname>\n\
@@ -281,9 +282,7 @@ def build_master_files(info):
     if all_in_one:
         master_file = os.path.join(dest_dir, 'master.adoc')
         docinfo_file = os.path.join(dest_dir, 'docinfo.xml')
-
         master_base = MASTER_FILE_BASE.format(**info)
-
         log.debug("Writing " + master_file)
         with open(master_file, "w") as f:
             f.write(master_base + all_in_one_text)
@@ -963,7 +962,8 @@ def main():
         'book_nodes': book_nodes,
         'all_in_one': args.all_in_one,
         'preface-title': "",
-        "upstream_branch": args.upstream_branch
+        "upstream_branch": args.upstream_branch,
+        'inclusive': "= Making open source more inclusive\n\nRed Hat is committed to replacing problematic language in our code, documentation, and web properties. We are beginning with these four terms: master, slave, blacklist, and whitelist. Because of the enormity of this endeavor, these changes will be implemented gradually over several upcoming releases. For more details, see link:https://www.redhat.com/en/blog/making-open-source-more-inclusive-eradicating-problematic-language[our CTO Chris Wright's message].\n"
     }
 
     # Build the master files
