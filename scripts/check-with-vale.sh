@@ -2,10 +2,10 @@
 
 set -e
 
-# list of *.adoc files ignoring files in /rest_api and generated files
-FILES=$(git diff-tree HEAD HEAD~1 --no-commit-id -r --name-only "*.adoc" ':(exclude)rest_api/*' ':(exclude)modules/example-content.adoc' ':(exclude)modules/oc-adm-by-example-content.adoc')
+# list of *.adoc files excluding files in /rest_api, generated files, and deleted files
+FILES=$(git diff --name-only HEAD~1 HEAD --diff-filter=d "*.adoc" ':(exclude)rest_api/*' ':(exclude)modules/example-content.adoc' ':(exclude)modules/oc-adm-by-example-content.adoc')
 
-if [ -n "${FILES}" ]
+if [ -n "${FILES}" ] ;
     then
         echo "Validating language usage in added or modified asciidoc files with $(vale -v)"
         echo ""
@@ -16,8 +16,9 @@ if [ -n "${FILES}" ]
         #clean out conditional markup
         sed -i -e 's/ifdef::.*\|ifndef::.*\|ifeval::.*\|endif::.*/ /' ${FILES}
         vale ${FILES} --minAlertLevel=error --glob='*.adoc' --no-exit 
-        #run again, and this time send to pipedream
+        echo ""
         set -x
+        #run again, and this time send to pipedream
         PR_DATA=''
         if [ "$1" == false ] ; then
             PR_DATA='{"PR": [{"Number": "None", "SHA": "None"}],'
