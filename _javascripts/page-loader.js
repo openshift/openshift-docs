@@ -6,6 +6,11 @@ currentVersion = "";
 // the fileRequested
 fileRequested = "";
 
+//Array prototype to check if an element is in an array
+Array.prototype.contains = function(obj) {
+  return this.indexOf(obj) > -1;
+}
+
 function versionSelector(list) {
 
   // the version we want
@@ -33,8 +38,13 @@ function versionSelector(list) {
   // alert(fileRequested);
 
   // in 3.3 and above, we changed to container-platform
-  if(newVersion == '3.0' || newVersion == '3.1' || newVersion == '3.2') {
+  if(['3.0', '3.1', '3.2'].contains(newVersion)) {
     newLink = "https://docs.openshift.com/enterprise/" +
+      newVersion +
+      fileRequested;
+  } else if (['3.65', '3.66', '3.67', '3.68', '3.69', '3.70', '3.71'].contains(newVersion)) {
+    // check and handle links for RHACS versions
+    newLink = "https://docs.openshift.com/acs/" +
       newVersion +
       fileRequested;
   } else {
@@ -57,7 +67,10 @@ function versionSelector(list) {
       if(jqXHR.status == 404) {
         list.value = currentVersion;
         if(confirm("This page doesn't exist in version " + newVersion + ". Click OK to search the " + newVersion + " docs OR Cancel to stay on this page.")) {
-          window.location = "https://google.com/search?q=site:https://docs.openshift.com/container-platform/" + newVersion + " " + document.title.split(" | ")[0];
+          if (['3.65', '3.66', '3.67', '3.68', '3.69', '3.70', '3.71'].contains(newVersion)) {
+          window.location = "https://google.com/search?q=site:https://docs.openshift.com/acs/" + newVersion + " " + document.title;} else {
+            window.location = "https://google.com/search?q=site:https://docs.openshift.com/enterprise/" + newVersion + " " + document.title;
+          }
         } else {
           // do nothing, user doesn't want to search
         }
@@ -157,8 +170,8 @@ function selectVersion(currentVersion) {
 
   // main file to edit is the file path after the version to the html at
   // the end.
-  // Example: https://docs.openshift.com/container-platform/4.4/updating/updating-cluster-between-minor.html
-  // file path is updating/updating-cluster-between-minor.adoc
+  // Example: https://docs.openshift.com/container-platform/4.4/updating/updating-cluster-within-minor.html
+  // file path is updating/updating-cluster-within-minor.adoc
 
   mainFileToEdit =
     window.location.pathname.substring(
