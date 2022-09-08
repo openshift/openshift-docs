@@ -13,12 +13,12 @@ if [ -n "${FILES}" ] ;
         echo "Read about the error terms that cause the build to fail at https://redhat-documentation.github.io/vale-at-red-hat/docs/reference-guide/termserrors/"
         echo "==============================================================================================================================="
         echo ""
-        #clean out conditional markup
-        sed -i -e 's/ifdef::.*\|ifndef::.*\|ifeval::.*\|endif::.*/ /' ${FILES}
         vale ${FILES} --minAlertLevel=error --glob='*.adoc' --no-exit
         echo ""
         if [ "$TRAVIS" = true ] ; then
             set -x
+            #clean out conditional markup in Travis CI
+            sed -i -e 's/ifdef::.*\|ifndef::.*\|ifeval::.*\|endif::.*/ /' ${FILES}
             #run vale again, and this time send to pipedream
             PR_DATA=''
             if [ "$1" == false ] ; then
