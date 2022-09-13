@@ -7,9 +7,9 @@ Version(s):
 
 <!-- Version examples:
   * PR applies to all versions after a specific version (e.g. 4.8): 4.8+
-  * PR applies to the in-development version (e.g. 4.11) and future versions: 4.11+
+  * PR applies to the in-development version (e.g. 4.12) and future versions: 4.12+
   * PR applies only to a specific single version (e.g. 4.10): 4.10
-  * PR applies to multiple specific versions (e.g. 4.6-4.8): 4.6, 4.7, 4.8 --->
+  * PR applies to multiple specific versions (e.g. 4.8-4.10): 4.8, 4.9, 4.10 --->
 
 Issue:
 <!--- Add a link to the Bugzilla, Jira, or GitHub issue, if applicable. --->
@@ -18,8 +18,8 @@ Link to docs preview:
 <!--- Add direct link(s) to the exact page(s) with updated content from the preview build. -->
 
 <!-- NOTE:
-Automatic preview functionality is currently not available.
-  * OpenShift documentation team members (core and aligned) must include a link to a locally generated preview for PRs that update the rendered build in any way.
+Automatic preview functionality is currently only available for some branches. For PRs that update the rendered build in any way against branches that do not create an automated preview:
+  * OpenShift documentation team members (core and aligned) must include a link to a locally generated preview.
   * External contributors can request a generated preview from the OpenShift documentation team. --->
 
 Additional information:
