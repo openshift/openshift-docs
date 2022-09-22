@@ -13,7 +13,7 @@ if [ -n "${FILES}" ] ;
         echo "Read about the error terms that cause the build to fail at https://redhat-documentation.github.io/vale-at-red-hat/docs/reference-guide/termserrors/"
         echo "==============================================================================================================================="
         echo ""
-        vale ${FILES} --minAlertLevel=error --glob='*.adoc' --no-exit
+        vale ${FILES} --glob='*.adoc'
         echo ""
         if [ "$TRAVIS" = true ] ; then
             set -x
