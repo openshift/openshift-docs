@@ -48,9 +48,17 @@ function versionSelector(list) {
       newVersion +
       fileRequested;
   } else {
+    //if distro key is openshift enterprise
+    if (dk == "openshift-enterprise") {
     newLink = "https://docs.openshift.com/container-platform/" +
       newVersion +
       fileRequested;
+    }
+    else if (dk == "openshift-origin"){
+      newLink = "https://docs.okd.io/" +
+      newVersion +
+      fileRequested;
+    }
   }
 
   // without doing async loads, there is no way to know if the path actually
@@ -68,8 +76,15 @@ function versionSelector(list) {
         list.value = currentVersion;
         if(confirm("This page doesn't exist in version " + newVersion + ". Click OK to search the " + newVersion + " docs OR Cancel to stay on this page.")) {
           if (['3.65', '3.66', '3.67', '3.68', '3.69', '3.70', '3.71'].contains(newVersion)) {
-          window.location = "https://google.com/search?q=site:https://docs.openshift.com/acs/" + newVersion + " " + document.title;} else {
-            window.location = "https://google.com/search?q=site:https://docs.openshift.com/enterprise/" + newVersion + " " + document.title;
+            window.location = "https://google.com/search?q=site:https://docs.openshift.com/acs/" + newVersion + " " + document.title;}
+          else {
+            if (dk == "openshift-enterprise"){
+              window.location = "https://google.com/search?q=site:https://docs.openshift.com/enterprise/" + newVersion + " " + document.title;
+            } else {
+              if (dk == "openshift-origin"){
+                window.location = "https://google.com/search?q=site:https://docs.okd.io/" + newVersion + " " + document.title;
+              }
+            }
           }
         } else {
           // do nothing, user doesn't want to search
