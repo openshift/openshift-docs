@@ -12,13 +12,13 @@ if [ -n "${FILES}" ] ;
         echo "==============================================================================================================================="
         echo "Read about the error terms that cause the build to fail at https://redhat-documentation.github.io/vale-at-red-hat/docs/reference-guide/termserrors/"
         echo "==============================================================================================================================="
-        echo ""
-        vale ${FILES} --glob='*.adoc'
-        echo ""
         if [ "$TRAVIS" = true ] ; then
-            set -x
             #clean out conditional markup in Travis CI
             sed -i -e 's/ifdef::.*\|ifndef::.*\|ifeval::.*\|endif::.*/ /' ${FILES}
+            echo ""
+            vale ${FILES} --glob='*.adoc' --no-exit
+            echo ""
+            set -x
             #run vale again, and this time send to pipedream
             PR_DATA=''
             if [ "$1" == false ] ; then
@@ -35,6 +35,10 @@ if [ -n "${FILES}" ] ;
             else
                 curl -H "Content-Type: text/json" --data "@vale_errors.json" https://eox4isrzuh8pnai.m.pipedream.net
             fi
+        else
+            echo ""
+            vale ${FILES} --glob='*.adoc'
+            echo ""
         fi
     else
         echo "No asciidoc files added or modified."
