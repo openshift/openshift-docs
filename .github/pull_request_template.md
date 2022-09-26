@@ -15,7 +15,11 @@ Issue:
 <!--- Add a link to the Bugzilla, Jira, or GitHub issue, if applicable. --->
 
 Link to docs preview:
-<!--- Add direct link(s) to the exact page(s) with updated content from the preview build. -->
+<!--- Add direct link(s) to the exact page(s) with updated content from the preview build. --->
+
+QE review:
+- [ ] QE has approved this change.
+<!--- QE approval is required to merge a PR except for changes that do not impact the meaning of the docs. --->
 
 <!-- NOTE:
 Automatic preview functionality is currently only available for some branches. For PRs that update the rendered build in any way against branches that do not create an automated preview:
@@ -25,18 +29,19 @@ Automatic preview functionality is currently only available for some branches. F
 Additional information:
 <!--- Optional: Include additional context or expand the description here.--->
 
-
-
 <!--- Next steps after opening your PR:
 
-* Ask for peer review from the OpenShift docs team:
-  - For Red Hat associates: Ping @peer-review-squad requesting a review in the #forum-docs-review channel (CoreOS Slack workspace) and provide the following information:
-    * A link to the PR.
-    * The size of the PR that the GitHub bot assigns (ex: XS, S, M, L, XL).
-    * If there is urgency or a deadline for the review.
+* Ask for review from the OpenShift docs team:
   - For community authors: Request a review by tagging @openshift/team-documentation in a GitHub comment.
-
-  Slack is the quickest and preferred way to request a review.
+  - For Red Hat associates:
+    * For normal peer requests, add a comment that contains this text: /label peer-review-needed
+    * For normal merge review requests, add a comment that contains this text: /label merge-review-needed
+    * For urgent peer review requests, ping @peer-review-squad requesting a review in the #forum-docs-review channel (CoreOS Slack workspace) and provide the following information:
+      * A link to the PR.
+      * The size of the PR that the GitHub bot assigns (ex: XS, S, M, L, XL).
+      * Details about how the PR is urgent.
+    * For urgent merge requests, ping @merge-review-squad in the #forum-docs-review channel (CoreOS Slack workspace).
+    * Except for changes that do not impact the meaning of the content, QE review is required before content is merged.
 
 * IMPORTANT:
   - All documentation changes must be verified by a QE team associate before merging.
