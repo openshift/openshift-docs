@@ -3,15 +3,15 @@
 set -e
 
 # list of *.adoc files excluding files in /rest_api, generated files, and deleted files
-FILES=$(git diff --name-only HEAD~1 HEAD --diff-filter=d "*.adoc" ':(exclude)rest_api/*' ':(exclude)modules/example-content.adoc' ':(exclude)modules/oc-adm-by-example-content.adoc')
+FILES=$(git diff --name-only HEAD~2 HEAD~1 --diff-filter=d "*.adoc" ':(exclude)rest_api/*' ':(exclude)modules/example-content.adoc' ':(exclude)modules/oc-adm-by-example-content.adoc')
 
 if [ -n "${FILES}" ] ;
     then
-        echo "Validating language usage in added or modified asciidoc files with $(vale -v)"
-        echo ""
-        echo "==============================================================================================================================="
-        echo "Read about the error terms that cause the build to fail at https://redhat-documentation.github.io/vale-at-red-hat/docs/reference-guide/termserrors/"
-        echo "==============================================================================================================================="
+        # echo "Validating language usage in added or modified asciidoc files with $(vale -v)"
+        # echo ""
+        # echo "==============================================================================================================================="
+        # echo "Read about the error terms that cause the build to fail at https://redhat-documentation.github.io/vale-at-red-hat/docs/reference-guide/termserrors/"
+        # echo "==============================================================================================================================="
         if [ "$TRAVIS" = true ] ; then
             #clean out conditional markup in Travis CI
             sed -i -e 's/ifdef::.*\|ifndef::.*\|ifeval::.*\|endif::.*/ /' ${FILES}
@@ -37,7 +37,7 @@ if [ -n "${FILES}" ] ;
             fi
         else
             echo ""
-            vale ${FILES} --glob='*.adoc'
+            vale ${FILES} --glob='*.adoc' --minAlertLevel=error --glob='*.adoc' --output=line > vale-errors.txt
             echo ""
         fi
     else
