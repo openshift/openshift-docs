@@ -13,8 +13,6 @@ import subprocess
 import sys
 import tempfile
 import time
-from typing import Union, Any, List
-
 import requests
 import yaml
 
@@ -274,7 +272,7 @@ def ensure_directory(directory):
         os.mkdir(directory)
 
 
-def build_master_files(info: dict[Union[str, Any], Union[Union[str, list[Any]], Any]]):
+def build_master_files(info):
     """
     Builds the master.adoc and docinfo.xml files for each guide specified in the config.
     """
@@ -348,7 +346,6 @@ def build_master_files(info: dict[Union[str, Any], Union[Union[str, list[Any]], 
 
                     master_base = MASTER_FILE_BASE.format(**book_info)
                     docinfo_node = topic["Name"]
-                    print(docinfo_node)
 
                     ensure_directory(os.path.join(book_dest_dir, topic["Dir"]))
                     sub_master = generate_master_entry(
@@ -1122,7 +1119,7 @@ def main():
     elif not os.path.exists(dest_dir):
         os.makedirs(dest_dir)
 
-    info: dict[Union[str, Any], Union[Union[str, list[Any]], Any]] = {
+    info = {
         "title": args.title,
         "product-author": args.author,
         "product-version": args.version,
