@@ -46,7 +46,7 @@ TAG_CONTENT_RE = re.compile(
 )
 CMP_IGNORE_FILES = [".git", ".gitignore", "README.md", "build.cfg"]
 DEVNULL = open(os.devnull, "wb")
-LIST_OF_HUGE_BOOKS: list[str] = ["Installing", "API reference"]
+LIST_OF_HUGE_BOOKS: list = ["Installing", "API reference"]
 
 MASTER_FILE_BASE = "= {title}\n\
 :product-author: {product-author}\n\
