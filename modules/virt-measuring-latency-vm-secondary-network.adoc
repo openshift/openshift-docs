@@ -54,16 +54,38 @@ rules:
       - create
       - update
       - patch
-      - delete
-  - apiGroups: [ "rbac.authorization.k8s.io" ]
-    resources:
-      - roles
-      - rolebindings
+  - apiGroups: [ "" ]
+    resources: [ "namespaces" ]
     verbs:
       - get
       - list
       - create
       - delete
+      - watch
+  - apiGroups: [ "" ]
+    resources: [ "serviceaccounts" ]
+    verbs:
+      - get
+      - list
+      - create
+  - apiGroups: [ "rbac.authorization.k8s.io" ]
+    resources:
+      - roles
+      - rolebindings
+      - clusterrolebindings
+    verbs:
+      - get
+      - list
+      - create
+      - delete
+  - apiGroups: [ "rbac.authorization.k8s.io" ]
+    resources:
+      - clusterroles
+    verbs:
+      - get
+      - list
+      - create
+      - bind
   - apiGroups: [ "batch" ]
     resources: [ "jobs" ]
     verbs:
@@ -96,25 +118,15 @@ subjects:
 $ oc apply -f <framework_manifest>.yaml
 ----
 
-. Create a manifest file that contains the `ServiceAccount`, `Role`, and `RoleBinding` objects with permissions that the checkup requires for cluster access:
+. Create a configuration file that contains the `ClusterRole` and `Role` objects with permissions that the checkup requires for cluster access:
 +
-.Example role manifest file
-[%collapsible]
-====
+.Example cluster role manifest file
 [source,yaml]
 ----
----
-apiVersion: v1
-kind: ServiceAccount
-metadata:
-  name: vm-latency-checkup-sa
-  namespace: <target_namespace> <1>
----
 apiVersion: rbac.authorization.k8s.io/v1
-kind: Role
+kind: ClusterRole
 metadata:
   name: kubevirt-vm-latency-checker
-  namespace: <target_namespace>
 rules:
 - apiGroups: ["kubevirt.io"]
   resources: ["virtualmachineinstances"]
@@ -125,22 +137,7 @@ rules:
 - apiGroups: ["k8s.cni.cncf.io"]
   resources: ["network-attachment-definitions"]
   verbs: ["get"]
----
-apiVersion: rbac.authorization.k8s.io/v1
-kind: RoleBinding
-metadata:
-  name: kubevirt-vm-latency-checker
-  namespace: <target_namespace>
-subjects:
-- kind: ServiceAccount
-  name: vm-latency-checkup-sa
-roleRef:
-  kind: Role
-  name: kubevirt-vm-latency-checker
-  apiGroup: rbac.authorization.k8s.io
 ----
-====
-<1> Specify the namespace where the checkup is to be executed. This must be an existing namespace where the `NetworkAttachmentDefinition` object resides.
 
 . Apply the checkup roles manifest:
 +
@@ -157,28 +154,24 @@ $ oc apply -f <latency_roles>.yaml
 apiVersion: v1
 kind: ConfigMap
 metadata:
-  name: kubevirt-vm-latency-checkup-config
-  namespace: <target_namespace> <1>
+  name: kubevirt-vm-latency-checkup
+  namespace: kiagnose
 data:
-  spec.image: registry.redhat.io/container-native-virtualization/vm-network-latency-checkup:v4.12.0
-  spec.timeout: 5m
-  spec.serviceAccountName: vm-latency-checkup-sa
-  spec.param.network_attachment_definition_namespace: <target_namespace> <2>
-  spec.param.network_attachment_definition_name: "bridge-network" <3>
-  spec.param.max_desired_latency_milliseconds: "10" <4>
-  spec.param.sample_duration_seconds: "5" <5>
-  spec.param.source_node: "worker1" <6>
-  spec.param.target_node: "worker2" <7>
+  spec.image: registry.redhat.io/container-native-virtualization/vm-network-latency-checkup:v4.11.0
+  spec.timeout: 10m
+  spec.clusterRoles: |
+    kubevirt-vmis-manager
+  spec.param.network_attachment_definition_namespace: "default" <1>
+  spec.param.network_attachment_definition_name: "bridge-network" <2>
+  spec.param.max_desired_latency_milliseconds: "10" <3>
+  spec.param.sample_duration_seconds: "5" <4>
 ----
-<1> The namespace where the checkup is to be executed. This must be an existing namespace where the `NetworkAttachmentDefinition` object resides.
-<2> The namespace where the `NetworkAttachmentDefinition` object resides.
-<3> The name of the `NetworkAttachmentDefinition` object.
-<4> Optional: The maximum desired latency, in milliseconds, between the virtual machines. If the measured latency exceeds this value, the checkup fails.
-<5> Optional: The duration of the latency check, in seconds.
-<6> Optional: When specified, latency is measured from this node to the target node. If the source node is specified, the `spec.param.target_node` field cannot be empty.
-<7> Optional: When specified, latency is measured from the source node to this node.
+<1> The namespace where the `NetworkAttachmentDefinition` object resides.
+<2> The name of the `NetworkAttachmentDefinition` object.
+<3> Optional: The maximum desired latency, in milliseconds, between the virtual machines. If the measured latency exceeds this value, the check fails.
+<4> Optional: The duration of the latency check, in seconds.
 
-. Apply the config map manifest in the framework’s namespace:
+. Create the config map in the framework’s namespace:
 +
 [source,terminal]
 ----
@@ -203,12 +196,12 @@ spec:
       restartPolicy: Never
       containers:
         - name: framework
-          image: registry.redhat.io/container-native-virtualization/checkup-framework:v4.12.0
+          image: registry.redhat.io/container-native-virtualization/checkup-framework:v4.11.0
           env:
             - name: CONFIGMAP_NAMESPACE
-              value: <target_namespace>
+              value: kiagnose
             - name: CONFIGMAP_NAME
-              value: kubevirt-vm-latency-checkup-config
+              value: kubevirt-vm-latency-checkup
 ----
 
 . Apply the `Job` manifest. The checkup uses the ping utility to verify connectivity and measure latency.
@@ -222,14 +215,14 @@ $ oc apply -f <latency_job>.yaml
 +
 [source,terminal]
 ----
-$ oc wait job kubevirt-vm-latency-checkup -n kiagnose --for condition=complete --timeout 6m
+$ oc wait --for=condition=complete --timeout=10m job.batch/kubevirt-vm-latency-checkup -n kiagnose
 ----
 
-. Review the results of the latency checkup by retrieving the status of the `ConfigMap` object. If the maximum measured latency is greater than the value of the `spec.param.max_desired_latency_milliseconds` attribute, the checkup fails and returns an error.
+. Review the results of the latency checkup by retrieving the status of the `ConfigMap` object. If the measured latency is greater than the value of the `spec.param.max_desired_latency_milliseconds` attribute, the checkup fails and returns an error.
 +
 [source,terminal]
 ----
-$ oc get configmap kubevirt-vm-latency-checkup-config -n <target_namespace> -o yaml
+$ oc get configmap kubevirt-vm-latency-checkup -n kiagnose -o yaml
 ----
 +
 .Example output config map (success)
@@ -238,51 +231,24 @@ $ oc get configmap kubevirt-vm-latency-checkup-config -n <target_namespace> -o y
 apiVersion: v1
 kind: ConfigMap
 metadata:
-  name: kubevirt-vm-latency-checkup-config
-  namespace: <target_namespace>
-data:
-  spec.image: registry.redhat.io/container-native-virtualization/vm-network-latency-checkup:v4.12.0
-  spec.timeout: 5m
-  spec.serviceAccountName: vm-latency-checkup-sa
-  spec.param.network_attachment_definition_namespace: <target_namespace>
-  spec.param.network_attachment_definition_name: "bridge-network"
-  spec.param.max_desired_latency_milliseconds: "10"
-  spec.param.sample_duration_seconds: "5"
-  spec.param.source_node: "worker1"
-  spec.param.target_node: "worker2"
+  name: kubevirt-vm-latency-checkup
+  namespace: kiagnose
+...
   status.succeeded: "true"
   status.failureReason: ""
-  status.completionTimestamp: "2022-01-01T09:00:00Z"
-  status.startTimestamp: "2022-01-01T09:00:07Z"
-  status.result.avgLatencyNanoSec: "177000"
-  status.result.maxLatencyNanoSec: "244000" <1>
-  status.result.measurementDurationSec: "5"
-  status.result.minLatencyNanoSec: "135000"
-  status.result.sourceNode: "worker1"
-  status.result.targetNode: "worker2"
-----
-<1> The maximum measured latency in nanoseconds.
-
-. Optional: To view the detailed job log in case of checkup failure, use the following command:
-+
-[source,terminal]
-----
-$ oc logs job.batch/kubevirt-vm-latency-checkup -n kiagnose
+  status.result.minLatencyNanoSec: 2000
+  status.result.maxLatencyNanoSec: 3000
+  status.result.avgLatencyNanoSec: 2500
+  status.results.measurementDurationSec: 300
+...
 ----
 
-. Delete the job and config map resources that you previously created.
+. Delete the framework and checkup resources that you previously created. This includes the job, config map, cluster role, and framework manifest files.
 +
-[source,terminal]
-----
-$ oc delete job -n kiagnose kubevirt-vm-latency-checkup
-----
-+
-[source,terminal]
-----
-$ oc delete config-map -n <target_namespace> kubevirt-vm-latency-checkup-config
-----
-
-. Optional: If you do not plan to run another checkup, delete the checkup role and framework manifest files.
+[NOTE]
+====
+Do not delete the framework and cluster role manifest files if you plan to run another checkup.
+====
 +
 [source,terminal]
 ----
