@@ -6,6 +6,7 @@ import argparse
 import configparser
 import filecmp
 import fnmatch
+import glob
 import os
 import re
 import shutil
@@ -19,9 +20,9 @@ import yaml
 import logging
 
 # See manual and pip3 install aura.tar.gz for logging
-from aura import cli
-
-cli.init_logging(False, True)
+# from aura import cli
+#
+# cli.init_logging(False, True)
 
 has_errors = False
 CLONE_DIR = "."
@@ -54,7 +55,11 @@ MASTER_FILE_BASE = "= {title}\n\
 :{distro}:\n\
 :imagesdir: images\n\
 :idseparator: -\n\
-{preface-title}\n"
+{preface-title}\n\
+:context: {unique_id_from_title}\n\
+:portal_modules_placeholder:\n\
+:!context: {unique_id_from_title}\n\
+\n"
 
 DOCINFO_BASE = '<title>{title}</title>\n\
 <productname>{{product-title}}</productname>\n\
@@ -322,6 +327,8 @@ def build_master_files(info):
 
         book_info = dict(info)
         book_info["title"] = book["Name"]
+        unique_id = book["Dir"] + "_" + book_info["title"].lower().replace(" ", "-")
+        book_info["unique_id_from_title"] = unique_id
 
         master: str = generate_master_entry(
             book, book["Dir"], info["distro"], all_in_one, all_in_one=all_in_one
@@ -361,6 +368,43 @@ def build_master_files(info):
                     info["preface-title"] = ":preface-title: " + preface_title
             all_in_one_text += master
 
+        if book["Name"] in LIST_OF_HUGE_BOOKS:
+            huge_book_topics = book["Topics"]
+
+            for topic in huge_book_topics:
+                if "Dir" in topic.keys():
+                    topic_master_file = os.path.join(
+                        book_dest_dir, topic["Dir"], "master.adoc"
+                    )
+                    topic_docinfo_file = os.path.join(
+                        book_dest_dir, topic["Dir"], "docinfo.xml"
+                    )
+
+                    # TODO: Make less hacky.
+                    book_info["title"] = topic["Name"]
+                    info["title"] = topic["Name"]
+                    unique_id = (
+                        book["Dir"] + "_" + book_info["title"].lower().replace(" ", "-")
+                    )
+                    book_info["unique_id_from_title"] = unique_id
+
+                    master_base = MASTER_FILE_BASE.format(**book_info)
+
+                    ensure_directory(os.path.join(book_dest_dir, topic["Dir"]))
+                    sub_master = generate_master_entry(
+                        topic,
+                        topic["Dir"],
+                        info["distro"],
+                        all_in_one,
+                        all_in_one=all_in_one,
+                    )
+
+                    log.debug("Writing " + topic_master_file)
+                    with open(topic_master_file, "w") as f:
+                        f.write(master_base + sub_master)
+                    log.debug("Writing " + topic_docinfo_file)
+                    with open(topic_docinfo_file, "w") as f:
+                        f.write(DOCINFO_BASE.format(**info))
     # TODO: And is this ever used?
     if all_in_one:
         master_file = os.path.join(dest_dir, "master.adoc")
@@ -1125,6 +1169,38 @@ def parse_repo_config(config_file, distro, version):
     return repo_urls
 
 
+def insert_ddf_and_inclusive_modules():
+    """
+    Walk project for all master.adoc files and then insert portal-exclusive DDF and inclusivity modules at the top
+    of those files.
+    """
+
+    replacement = """
+include::includes/making-open-source-more-inclusive.adoc[leveloffset=+1]
+
+include::includes/providing-direct-documentation-feedback.adoc[leveloffset=+1]
+    """
+
+    project_path = os.path.abspath(os.curdir)
+
+    master_adoc_collection = []
+
+    for project_dir, dirs, files in os.walk(project_path, topdown=True):
+        if "master.adoc" in files:
+            master_path = os.path.join(project_dir, "master.adoc")
+            master_adoc_collection.append(master_path)
+
+    for file in master_adoc_collection:
+        with open(file, "r") as master_adoc_file:
+            file_content = master_adoc_file.read()
+            replaced_content = file_content.replace(
+                ":portal_modules_placeholder:", replacement
+            )
+
+        with open(file, "w") as master_adoc_file:
+            master_adoc_file.write(replaced_content)
+
+
 def main():
     parser = setup_parser()
     args = parser.parse_args()
@@ -1208,6 +1284,7 @@ def main():
                 if e.output:
                     sys.stdout.write(e.output)
                 raise
+    insert_ddf_and_inclusive_modules()
 
 
 if __name__ == "__main__":
