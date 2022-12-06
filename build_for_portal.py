@@ -13,6 +13,8 @@ import subprocess
 import sys
 import tempfile
 import time
+from typing import Set
+
 import requests
 import yaml
 
@@ -210,13 +212,13 @@ def parse_build_config(config):
 
 
 def iter_tree(
-    node,
-    distro,
-    dir_callback=None,
-    topic_callback=None,
-    include_path=True,
-    parent_dir="",
-    depth=0,
+        node,
+        distro,
+        dir_callback=None,
+        topic_callback=None,
+        include_path=True,
+        parent_dir="",
+        depth=0,
 ):
     """
     Iterates over a build config tree starting from a specific node, skipping content where the distro doesn't match.
@@ -378,7 +380,7 @@ def build_master_files(info):
 
 
 def generate_master_entry(
-    node: dict, book_dir: str, distro: str, include_name=True, all_in_one=False
+        node: dict, book_dir: str, distro: str, include_name=True, all_in_one=False
 ):
     """
     Given a node (book dict), generate content for that node's master.adoc file.
@@ -502,14 +504,14 @@ def copy_files(node, book_src_dir, src_dir, dest_dir, info):
 
 
 def copy_file(
-    info,
-    book_src_dir,
-    src_file,
-    dest_dir,
-    dest_file,
-    include_check=True,
-    tag=None,
-    cwd=None,
+        info,
+        book_src_dir,
+        src_file,
+        dest_dir,
+        dest_file,
+        include_check=True,
+        tag=None,
+        cwd=None,
 ):
     """
     Copies a source file to destination, making sure to scrub the content, add id's where the content is referenced elsewhere and fix any
@@ -550,6 +552,7 @@ def copy_file(
 
             # If the path is in another book, copy it into this one
             relative_book_path = os.path.relpath(include_file, book_src_dir)
+
             if relative_book_path.startswith("../"):
                 path, src_book_name = os.path.split(book_src_dir)
                 dest_include_dir = os.path.join(dest_dir, src_book_name, "includes")
@@ -656,9 +659,9 @@ def scrub_file(info, book_src_dir, src_file, tag=None, cwd=None):
                 header_found = True
 
                 if (
-                    info["all_in_one"]
-                    and base_src_file in ALL_IN_ONE_SCRAP_TITLE
-                    and line.startswith("= ")
+                        info["all_in_one"]
+                        and base_src_file in ALL_IN_ONE_SCRAP_TITLE
+                        and line.startswith("= ")
                 ):
                     continue
                 # Add a section id if one doesn't exist, so we have something to link to
@@ -669,9 +672,9 @@ def scrub_file(info, book_src_dir, src_file, tag=None, cwd=None):
             elif line.startswith("=") and current_id is None:
                 for title in title_ids:
                     title_re = (
-                        r"^=+ "
-                        + title.replace(".", "\\.").replace("?", "\\?")
-                        + "( (anchor|\[).*?)?(\n)?$"
+                            r"^=+ "
+                            + title.replace(".", "\\.").replace("?", "\\?")
+                            + "( (anchor|\[).*?)?(\n)?$"
                     )
                     if re.match(title_re, line):
                         content += "[[" + title_ids[title] + "]]\n"
@@ -765,8 +768,8 @@ def _fix_links(content, book_dir, src_file, info, tag=None, cwd=None):
                 book_name = book_dir_name
                 for book in info["data"]:
                     if (
-                        check_node_distro_matches(book, info["distro"])
-                        and book["Dir"] == book_dir_name
+                            check_node_distro_matches(book, info["distro"])
+                            and book["Dir"] == book_dir_name
                     ):
                         book_name = book["Name"]
                         break
@@ -775,11 +778,11 @@ def _fix_links(content, book_dir, src_file, info, tag=None, cwd=None):
 
                 if link_anchor is None:
                     fixed_link = (
-                        "link:"
-                        + fixed_link_file
-                        + "#"
-                        + file_to_id_map[fixed_link_file_abs]
-                        + link_title
+                            "link:"
+                            + fixed_link_file
+                            + "#"
+                            + file_to_id_map[fixed_link_file_abs]
+                            + link_title
                     )
                 else:
                     fixed_link = "link:" + fixed_link_file + link_anchor + link_title
@@ -929,12 +932,12 @@ def build_portal_url(info, book_name):
     version = info["product-version"]
 
     return (
-        generate_url_from_name(product)
-        + "/"
-        + generate_url_from_name(version)
-        + "/html-single/"
-        + generate_url_from_name(book_name)
-        + "/"
+            generate_url_from_name(product)
+            + "/"
+            + generate_url_from_name(version)
+            + "/html-single/"
+            + generate_url_from_name(book_name)
+            + "/"
     )
 
 
@@ -1090,6 +1093,94 @@ def parse_repo_config(config_file, distro, version):
     return repo_urls
 
 
+def collect_master_adoc_files(project_path=os.path.abspath(os.curdir)):
+    """Given the project path, return a list of all master.adoc file paths."""
+
+    master_adoc_collection = []
+
+    for project_dir, dirs, files in os.walk(project_path, topdown=True):
+        if "master.adoc" in files:
+            master_path = os.path.join(project_dir, "master.adoc")
+            master_adoc_collection.append(master_path)
+
+    return master_adoc_collection
+
+
+def create_symlinks_to_project_root_from_master_files(
+        list_of_master_file_paths, distro="openshift-enterprise"
+):
+    """Create symlinks for every master.adoc-containing
+    directory to the openshift-docs project root."""
+
+    drupal_build_path_includes_dir = os.path.join(
+        os.path.abspath(os.curdir), "drupal-build", distro, "includes"
+    )
+
+    if not os.path.exists(drupal_build_path_includes_dir):
+        os.mkdir(drupal_build_path_includes_dir)
+
+    for path in list_of_master_file_paths:
+        directory = os.path.split(path)[0]
+        book_includes_dir = os.path.join(directory, "includes")
+        if not os.path.isdir(book_includes_dir):
+            os.symlink(drupal_build_path_includes_dir, book_includes_dir)
+
+
+def guarantee_symlinks_to_project_root(distro="openshift-enterprise"):
+    """For dirs that have assemblies in them that are not master.adoc or index.adoc files, create symlinks to the
+    project root. """
+
+    drupal_build_path_includes_dir = os.path.join(
+        os.path.abspath(os.curdir), "drupal-build", distro, "includes"
+    )
+
+    if not os.path.exists(drupal_build_path_includes_dir):
+        os.mkdir(drupal_build_path_includes_dir)
+
+    for dir_path, dir_names, files in os.walk(os.path.join(
+        os.path.abspath(os.curdir), "drupal-build", distro
+    ), topdown=True):
+        combo_files = '\t'.join(files)
+
+        if ".adoc" in combo_files:
+            target_includes_dir = os.path.join(dir_path, "includes")
+            if not os.path.isdir(target_includes_dir):
+                os.symlink(drupal_build_path_includes_dir, target_includes_dir)
+
+
+def retrieve_all_drupal_build_adoc_files(distro="openshift-enterprise"):
+    """Retrieve all AsciiDoc files from drupal-build directory."""
+
+    drupal_build_path = os.path.join(
+        os.path.abspath(os.curdir),
+        "drupal-build",
+        distro,
+    )
+
+    adoc_collection = set()
+
+    for build_dir, dirs, files in os.walk(drupal_build_path, topdown=True):
+        for file in files:
+            if file.endswith(".adoc"):
+                location = os.path.join(build_dir, file)
+                adoc_collection.add(location)
+
+    return adoc_collection
+
+
+def rewrite_include_statements(adoc_file_set):
+    """Given a set of fully qualified file paths, find and replace jail-inducing `include` paths with same-dir
+    symlink paths."""
+
+    for adoc_file in adoc_file_set:
+        with open(adoc_file, "r") as file:
+            file_content = file.read()
+            altered_content = re.sub("::[./]*", "::", file_content)
+
+        with open(adoc_file, "w") as file:
+            file.write(altered_content)
+
+
 def main():
     parser = setup_parser()
     args = parser.parse_args()
@@ -1138,8 +1229,21 @@ def main():
     log.info("Building the drupal files")
     build_master_files(info)
 
+    create_symlinks_to_project_root_from_master_files(
+        collect_master_adoc_files(), args.distro
+    )
+
+    # guarantee_symlinks_to_project_root()
+
     # Copy the original data and reformat for drupal
     reformat_for_drupal(info)
+
+    guarantee_symlinks_to_project_root()
+
+    # Hack symlink references into assemblies.
+    adoc_files: set = retrieve_all_drupal_build_adoc_files()
+
+    rewrite_include_statements(adoc_files)
 
     if has_errors:
         sys.exit(1)

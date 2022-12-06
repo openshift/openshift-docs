@@ -102,6 +102,10 @@ for distro in os.listdir("drupal-build"):
         if book == "rest_api":
           continue
 
+        # includes dir in project root is not something to process
+        if book == "includes":
+            continue
+
         os.chdir("drupal-build/" + distro + "/" + book)
         #print(os.getcwd() + "\n")
 
