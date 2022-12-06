@@ -1090,39 +1090,6 @@ def parse_repo_config(config_file, distro, version):
     return repo_urls
 
 
-def collect_master_adoc_files(project_path=os.path.abspath(os.curdir)):
-    """Given the project path, return a list of all master.adoc file paths."""
-
-    master_adoc_collection = []
-
-    for project_dir, dirs, files in os.walk(project_path, topdown=True):
-        if "master.adoc" in files:
-            master_path = os.path.join(project_dir, "master.adoc")
-            master_adoc_collection.append(master_path)
-
-    return master_adoc_collection
-
-
-def create_symlinks_to_project_root_from_master_files(
-    list_of_master_file_paths, distro="openshift-enterprise"
-):
-    """Create symlinks for every master.adoc-containing
-    directory to the openshift-docs project root."""
-
-    drupal_build_path_includes_dir = os.path.join(
-        os.path.abspath(os.curdir), "drupal-build", distro, "includes"
-    )
-
-    if not os.path.exists(drupal_build_path_includes_dir):
-        os.mkdir(drupal_build_path_includes_dir)
-
-    for path in list_of_master_file_paths:
-        directory = os.path.split(path)[0]
-        book_includes_dir = os.path.join(directory, "includes")
-        if not os.path.isdir(book_includes_dir):
-            os.symlink(drupal_build_path_includes_dir, book_includes_dir)
-
-
 def main():
     parser = setup_parser()
     args = parser.parse_args()
@@ -1170,10 +1137,6 @@ def main():
     # Build the master files
     log.info("Building the drupal files")
     build_master_files(info)
-
-    create_symlinks_to_project_root_from_master_files(
-        collect_master_adoc_files(), args.distro
-    )
 
     # Copy the original data and reformat for drupal
     reformat_for_drupal(info)
