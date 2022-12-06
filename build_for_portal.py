@@ -19,9 +19,9 @@ import yaml
 import logging
 
 # See manual and pip3 install aura.tar.gz for logging
-# from aura import cli
-#
-# cli.init_logging(False, True)
+from aura import cli
+
+cli.init_logging(False, True)
 
 has_errors = False
 CLONE_DIR = "."
