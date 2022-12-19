@@ -16,14 +16,27 @@ The {cgu-operator-first} builds the remediation plan from the `ClusterGroupUpgra
 * Actions to perform before and after the update
 * Update timing
 
-As {cgu-operator} works through remediation of the policies to the specified clusters, the `ClusterGroupUpgrade` CR can have the following states:
+You can control the start time of an update using the `enable` field in the `ClusterGroupUpgrade` CR.
+For example, if you have a scheduled maintenance window of four hours, you can prepare a `ClusterGroupUpgrade` CR with the `enable` field set to `false`.
 
-* `UpgradeNotStarted`
-* `UpgradeCannotStart`
-* `UpgradeNotComplete`
-* `UpgradeTimedOut`
-* `UpgradeCompleted`
-* `PrecachingRequired`
+You can set the timeout by configuring the `spec.remediationStrategy.timeout` setting as follows:
+[source,yaml]
+----
+spec
+  remediationStrategy:
+          maxConcurrency: 1
+          timeout: 240
+----
+
+You can use the `batchTimeoutAction` to determine what happens if an update fails for a cluster.
+You can specify `continue` to skip the failing cluster and continue to upgrade other clusters, or `abort` to stop policy remediation for all clusters.
+Once the timeout elapses, {cgu-operator} removes all `enforce` policies to ensure that no further updates are made to clusters.
+
+To apply the changes, you set the `enabled` field to `true`.
+
+For more information see the "Applying update policies to managed clusters" section.
+
+As {cgu-operator} works through remediation of the policies to the specified clusters, the `ClusterGroupUpgrade` CR can report true or false statuses for a number of conditions.
 
 [NOTE]
 ====
@@ -33,218 +46,424 @@ After {cgu-operator} completes a cluster update, the cluster does not update aga
 * When the cluster changes to non-compliant with the `inform` policy after being updated
 ====
 
-[id="upgrade_not_started"]
-== The UpgradeNotStarted state
+[id="selecting_clusters_{context}"]
+== Selecting clusters
 
-The initial state of the `ClusterGroupUpgrade` CR is `UpgradeNotStarted`.
+{cgu-operator} builds a remediation plan and selects clusters based on the following fields:
 
-{cgu-operator} builds a remediation plan based on the following fields:
-
-* The `clusterSelector` field specifies the labels of the clusters that you want to update.
+* The `clusterLabelSelector` field specifies the labels of the clusters that you want to update. This consists of a list of the standard label selectors from `k8s.io/apimachinery/pkg/apis/meta/v1`. Each selector in the list uses either label value pairs or label expressions. Matches from each selector are added to the final list of clusters along with the matches from the `clusterSelector` field and the `cluster` field.
 * The `clusters` field specifies a list of clusters to update.
 * The `canaries` field specifies the clusters for canary updates.
 * The `maxConcurrency` field specifies the number of clusters to update in a batch.
 
-You can use the `clusters` and the `clusterSelector` fields together to create a combined list of clusters.
+You can use the `clusters`, `clusterLabelSelector`, and `clusterSelector` fields together to create a combined list of clusters.
 
 The remediation plan starts with the clusters listed in the `canaries` field. Each canary cluster forms a single-cluster batch.
+
+.Sample `ClusterGroupUpgrade` CR with the enabled `field` set to `false`
+
+[source,yaml]
+----
+apiVersion: ran.openshift.io/v1alpha1
+kind: ClusterGroupUpgrade
+metadata:
+  creationTimestamp: '2022-11-18T16:27:15Z'
+  finalizers:
+    - ran.openshift.io/cleanup-finalizer
+  generation: 1
+  name: talm-cgu
+  namespace: talm-namespace
+  resourceVersion: '40451823'
+  uid: cca245a5-4bca-45fa-89c0-aa6af81a596c
+Spec:
+  actions:
+    afterCompletion:
+      deleteObjects: true
+    beforeEnable: {}
+  backup: false
+  clusters: <1>
+    - spoke1
+  enable: false <2>
+  managedPolicies: <3>
+    - talm-policy
+  preCaching: false
+  remediationStrategy: <4>
+    canaries: <5>
+        - spoke1
+    maxConcurrency: 2 <6>
+    timeout: 240
+  clusterLabelSelectors: <7>
+    - matchExpressions:
+      - key: label1
+      operator: In
+      values:
+        - value1a
+        - value1b
+  batchTimeoutAction: <8>
+status: <9>
+    computedMaxConcurrency: 2
+    conditions:
+      - lastTransitionTime: '2022-11-18T16:27:15Z'
+        message: All selected clusters are valid
+        reason: ClusterSelectionCompleted
+        status: 'True'
+        type: ClustersSelected <10>
+      - lastTransitionTime: '2022-11-18T16:27:15Z'
+        message: Completed validation
+        reason: ValidationCompleted
+        status: 'True'
+        type: Validated <11>
+      - lastTransitionTime: '2022-11-18T16:37:16Z'
+        message: Not enabled
+        reason: NotEnabled
+        status: 'False'
+        type: Progressing
+    managedPoliciesForUpgrade:
+      - name: talm-policy
+        namespace: talm-namespace
+    managedPoliciesNs:
+      talm-policy: talm-namespace
+    remediationPlan:
+      - - spoke1
+      - - spoke2
+        - spoke3
+    status:
+----
+<1> Defines the list of clusters to update.
+<2> The `enable` field is set to `false`.
+<3> Lists the user-defined set of policies to remediate.
+<4> Defines the specifics of the cluster updates.
+<5> Defines the clusters for canary updates.
+<6> Defines the maximum number of concurrent updates in a batch. The number of remediation batches is the number of canary clusters, plus the number of clusters, except the canary clusters, divided by the maxConcurrency value. The clusters that are already compliant with all the managed policies are excluded from the remediation plan.
+<7> Displays the parameters for selecting clusters.
+<8> Controls what happens if a batch times out. Possible values are `abort` or `continue`. If unspecified, the default is `continue`.
+<9> Displays information about the status of the updates.
+<10> The `ClustersSelected` condition shows that all selected clusters are valid.
+<11> The `Validated` condition shows that all selected clusters have been validated.
 
 [NOTE]
 ====
 Any failures during the update of a canary cluster stops the update process.
 ====
 
-The `ClusterGroupUpgrade` CR transitions to the `UpgradeNotCompleted` state after the remediation plan is successfully created and after the `enable` field is set to `true`. At this point, {cgu-operator} starts to update the non-compliant clusters with the specified managed policies.
+When the remediation plan is successfully created, you can you set the `enable` field to `true` and {cgu-operator} starts to update the non-compliant clusters with the specified managed policies.
 
 [NOTE]
 ====
-You can only make changes to the `spec` fields if the `ClusterGroupUpgrade` CR is either in the `UpgradeNotStarted` or the `UpgradeCannotStart` state.
+You can only make changes to the `spec` fields if the `enable` field of the `ClusterGroupUpgrade` CR is is set to `false`.
 ====
 
-.Sample `ClusterGroupUpgrade` CR in the `UpgradeNotStarted` state
+[id="validating_{context}"]
+== Validating
+
+{cgu-operator} checks that all specified managed policies are available and correct, and uses the `Validated` condition to report the status and reasons as follows:
+
+* `true`
++
+Validation is completed.
+* `false`
++
+Policies are missing or invalid, or an invalid platform image has been specified.
+
+[id="precaching_{context}"]
+== Pre-caching
+
+Clusters might have limited bandwidth to access the container image registry, which can cause a timeout before the updates are completed. You can use pre-caching to avoid this. The container image pre-caching starts when you create a `ClusterGroupUpgrade` CR with the `preCaching` field set to `true`.
+
+{cgu-operator} uses the `PrecacheSpecValid` condition to report status information as follows:
+
+* `true`
++
+The pre-caching spec is valid and consistent.
+* `false`
++
+The pre-caching spec is incomplete.
+
+{cgu-operator} uses the `PrecachingSucceeded` condition to report status information as follows:
+
+* `true`
++
+TALM has concluded the pre-caching process. If pre-caching fails for any cluster, the update fails for that cluster but proceeds for all other clusters. A message informs you if pre-caching has failed for any clusters.
+* `false`
++
+Pre-caching is still in progress for one or more clusters or has failed for all clusters.
+
+For more information see the "Using the container image pre-cache feature" section.
+
+[id="creating_backup_{context}"]
+== Creating a backup
+For {sno}, {cgu-operator} can create a backup of a deployment before an update. If the update fails, you can recover the previous version and restore a cluster to a working state without requiring a reprovision of applications. To use the backup feature you first create a `ClusterGroupUpgrade` CR with the `backup` field set to `true`. To ensure that the contents of the backup are up to date, the backup is not taken until you set the `enable` field in the `ClusterGroupUpgrade` CR to `true`.
+
+{cgu-operator} uses the `BackupSucceeded` condition to report the status and reasons as follows:
+
+* `true`
++
+Backup is completed for all clusters or the backup run has completed but failed for one or more clusters. If backup fails for any cluster, the update fails for that cluster but proceeds for all other clusters.
+* `false`
++
+Backup is still in progress for one or more clusters or has failed for all clusters.
+
+For more information, see the "Creating a backup of cluster resources before upgrade" section.
+
+[id="updating_clusters_{context}"]
+== Updating clusters
+{cgu-operator} enforces the policies following the remediation plan.
+Enforcing the policies for subsequent batches starts immediately after all the clusters of the current batch are compliant with all the managed policies. If the batch times out, {cgu-operator} moves on to the next batch. The timeout value of a batch is the `spec.timeout` field divided by the number of batches in the remediation plan.
+
+{cgu-operator} uses the `Progressing` condition to report the status and reasons as follows:
+
+* `true`
++
+{cgu-operator} is remediating non-compliant policies.
+* `false`
++
+The update is not in progress. Possible reasons for this are:
++
+** All clusters are compliant with all the managed policies.
+** The update has timed out as policy remediation took too long.
+** Blocking CRs are missing from the system or have not yet completed.
+** The `ClusterGroupUpgrade` CR is not enabled.
+** Backup is still in progress.
+
+[NOTE]
+====
+The managed policies apply in the order that they are listed in the `managedPolicies` field in the `ClusterGroupUpgrade` CR. One managed policy is applied to the specified clusters at a time. When a cluster complies with the current policy, the next managed policy is applied to it.
+====
+
+.Sample `ClusterGroupUpgrade` CR in the `Progressing` state
 
 [source,yaml]
 ----
 apiVersion: ran.openshift.io/v1alpha1
 kind: ClusterGroupUpgrade
 metadata:
-  name: cgu-upgrade-complete
-  namespace: default
-spec:
-  clusters: <1>
-  - spoke1
-  enable: false
-  managedPolicies: <2>
-  - policy1-common-cluster-version-policy
-  - policy2-common-nto-sub-policy
-  remediationStrategy: <3>
-    canaries: <4>
-      - spoke1
-    maxConcurrency: 1 <5>
-    timeout: 240
-status: <6>
-  conditions:
-  - message: The ClusterGroupUpgrade CR is not enabled
-    reason: UpgradeNotStarted
-    status: "False"
-    type: Ready
-  copiedPolicies:
-  - cgu-upgrade-complete-policy1-common-cluster-version-policy
-  - cgu-upgrade-complete-policy2-common-nto-sub-policy
-  managedPoliciesForUpgrade:
-  - name: policy1-common-cluster-version-policy
-    namespace: default
-  - name: policy2-common-nto-sub-policy
-    namespace: default
-  placementBindings:
-  - cgu-upgrade-complete-policy1-common-cluster-version-policy
-  - cgu-upgrade-complete-policy2-common-nto-sub-policy
-  placementRules:
-  - cgu-upgrade-complete-policy1-common-cluster-version-policy
-  - cgu-upgrade-complete-policy2-common-nto-sub-policy
-  remediationPlan:
-  - - spoke1
-----
-<1> Defines the list of clusters to update.
-<2> Lists the user-defined set of policies to remediate.
-<3> Defines the specifics of the cluster updates.
-<4> Defines the clusters for canary updates.
-<5> Defines the maximum number of concurrent updates in a batch. The number of remediation batches is the number of canary clusters, plus the number of clusters, except the canary clusters, divided by the `maxConcurrency` value. The clusters that are already compliant with all the managed policies are excluded from the remediation plan.
-<6> Displays information about the status of the updates.
-
-[id="upgrade_cannot_start"]
-== The UpgradeCannotStart state
-
-In the `UpgradeCannotStart` state, the update cannot start because of the following reasons:
-
-* Blocking CRs are missing from the system
-* Blocking CRs have not yet finished
-
-[id="upgrade_not_completed"]
-== The UpgradeNotCompleted state
-
-In the `UpgradeNotCompleted` state, {cgu-operator} enforces the policies following the remediation plan defined in the `UpgradeNotStarted` state.
-
-Enforcing the policies for subsequent batches starts immediately after all the clusters of the current batch are compliant with all the managed policies. If the batch times out, {cgu-operator} moves on to the next batch. The timeout value of a batch  is the `spec.timeout` field divided by the number of batches in the remediation plan.
-
-[NOTE]
-====
-The managed policies apply in the order that they are listed in the `managedPolicies` field in the `ClusterGroupUpgrade` CR. One managed policy is applied to the specified clusters at a time. After the specified clusters comply with the current policy, the next managed policy is applied to the next non-compliant cluster.
-====
-
-.Sample `ClusterGroupUpgrade` CR in the `UpgradeNotCompleted` state
-
-[source,yaml]
-----
-apiVersion: ran.openshift.io/v1alpha1
-kind: ClusterGroupUpgrade
-metadata:
-  name: cgu-upgrade-complete
-  namespace: default
-spec:
+  creationTimestamp: '2022-11-18T16:27:15Z'
+  finalizers:
+    - ran.openshift.io/cleanup-finalizer
+  generation: 1
+  name: talm-cgu
+  namespace: talm-namespace
+  resourceVersion: '40451823'
+  uid: cca245a5-4bca-45fa-89c0-aa6af81a596c
+Spec:
+  actions:
+    afterCompletion:
+      deleteObjects: true
+    beforeEnable: {}
+  backup: false
   clusters:
-  - spoke1
-  enable: true <1>
+    - spoke1
+  enable: true
   managedPolicies:
-  - policy1-common-cluster-version-policy
-  - policy2-common-nto-sub-policy
+    - talm-policy
+  preCaching: true
   remediationStrategy:
-    maxConcurrency: 1
+    canaries:
+        - spoke1
+    maxConcurrency: 2
     timeout: 240
-status: <2>
-  conditions:
-  - message: The ClusterGroupUpgrade CR has upgrade policies that are still non compliant
-    reason: UpgradeNotCompleted
-    status: "False"
-    type: Ready
-  copiedPolicies:
-  - cgu-upgrade-complete-policy1-common-cluster-version-policy
-  - cgu-upgrade-complete-policy2-common-nto-sub-policy
-  managedPoliciesForUpgrade:
-  - name: policy1-common-cluster-version-policy
-    namespace: default
-  - name: policy2-common-nto-sub-policy
-    namespace: default
-  placementBindings:
-  - cgu-upgrade-complete-policy1-common-cluster-version-policy
-  - cgu-upgrade-complete-policy2-common-nto-sub-policy
-  placementRules:
-  - cgu-upgrade-complete-policy1-common-cluster-version-policy
-  - cgu-upgrade-complete-policy2-common-nto-sub-policy
-  remediationPlan:
-  - - spoke1
-  status:
-    currentBatch: 1
-    remediationPlanForBatch: <3>
-      spoke1: 0
+  clusterLabelSelectors:
+    - matchExpressions:
+      - key: label1
+      operator: In
+      values:
+        - value1a
+        - value1b
+  batchTimeoutAction:
+status:
+    clusters:
+      - name: spoke1
+        state: complete
+    computedMaxConcurrency: 2
+    conditions:
+      - lastTransitionTime: '2022-11-18T16:27:15Z'
+        message: All selected clusters are valid
+        reason: ClusterSelectionCompleted
+        status: 'True'
+        type: ClustersSelected
+      - lastTransitionTime: '2022-11-18T16:27:15Z'
+        message: Completed validation
+        reason: ValidationCompleted
+        status: 'True'
+        type: Validated
+      - lastTransitionTime: '2022-11-18T16:37:16Z'
+        message: Remediating non-compliant policies
+        reason: InProgress
+        status: 'True'
+        type: Progressing <1>
+    managedPoliciesForUpgrade:
+      - name: talm-policy
+        namespace: talm-namespace
+    managedPoliciesNs:
+      talm-policy: talm-namespace
+    remediationPlan:
+      - - spoke1
+      - - spoke2
+        - spoke3
+    status:
+      currentBatch: 2
+      currentBatchRemediationProgress:
+        spoke2:
+          state: Completed
+        spoke3:
+          policyIndex: 0
+          state: InProgress
+      currentBatchStartedAt: '2022-11-18T16:27:16Z'
+      startedAt: '2022-11-18T16:27:15Z'
 ----
-<1> The update starts when the value of the `spec.enable` field is `true`.
-<2> The `status` fields change accordingly when the update begins.
-<3> Lists the clusters in the batch and the index of the policy that is being currently applied to each cluster. The index of the policies starts with `0` and the index follows the order of the `status.managedPoliciesForUpgrade` list.
+<1> The `Progressing` fields show that {cgu-operator} is in the process of remediating policies.
 
-[id="upgrade_timed_out"]
-== The UpgradeTimedOut state
+[id="update_status_{context}"]
+== Update status
 
-In the `UpgradeTimedOut` state, {cgu-operator} checks every hour if all the policies for the `ClusterGroupUpgrade` CR are compliant. The checks continue until the `ClusterGroupUpgrade` CR is deleted or the updates are completed.
-The periodic checks allow the updates to complete if they get prolonged due to network, CPU, or other issues. 
+{cgu-operator} uses the `Succeeded` condition to report the status and reasons as follows:
 
-{cgu-operator} transitions to the `UpgradeTimedOut` state in two cases:
+* `true`
++
+All clusters are compliant with the specified managed policies.
+* `false`
++
+Policy remediation failed as there were no clusters available for remediation, or because policy remediation took too long for one of the following reasons:
++
+** The current batch contains canary updates and the cluster in the batch does not comply with all the managed policies within the batch timeout.
+** Clusters did not comply with the managed policies within the `timeout` value specified in the `remediationStrategy` field.
 
-* When the current batch contains canary updates and the cluster in the batch does not comply with all the managed policies within the batch timeout.
-* When the clusters do not comply with the managed policies within the `timeout` value specified in the `remediationStrategy` field.
 
-If the policies are compliant, {cgu-operator} transitions to the `UpgradeCompleted` state.
+.Sample `ClusterGroupUpgrade` CR in the `Succeeded` state
 
-[id="upgrade_completed"]
-== The UpgradeCompleted state
+[source,yaml]
+----
+    apiVersion: ran.openshift.io/v1alpha1
+    kind: ClusterGroupUpgrade
+    metadata:
+      name: cgu-upgrade-complete
+      namespace: default
+    spec:
+      clusters:
+      - spoke1
+      - spoke4
+      enable: true
+      managedPolicies:
+      - policy1-common-cluster-version-policy
+      - policy2-common-pao-sub-policy
+      remediationStrategy:
+        maxConcurrency: 1
+        timeout: 240
+    status:
+      clusters:
+        - name: spoke1
+          state: complete
+        - name: spoke4
+          state: complete
+      conditions:
+      - message: All selected clusters are valid
+        reason: ClusterSelectionCompleted
+        status: "True"
+        type: ClustersSelected
+      - message: Completed validation
+        reason: ValidationCompleted
+        status: "True"
+        type: Validated
+      - message: All clusters are compliant with all the managed policies
+        reason: Completed
+        status: "False"
+        type: Progressing <1>
+      - message: All clusters are compliant with all the managed policies
+        reason: Completed
+        status: "True"
+        type: Succeeded <2>
+      managedPoliciesForUpgrade:
+      - name: policy1-common-cluster-version-policy
+        namespace: default
+      - name: policy2-common-pao-sub-policy
+        namespace: default
+      remediationPlan:
+      - - spoke1
+      - - spoke4
+      status:
+        completedAt: '2022-11-18T16:27:16Z'
+        startedAt: '2022-11-18T16:27:15Z'
 
-In the `UpgradeCompleted` state, the cluster updates are complete.
+----
+<1> In the `Progressing` fields, the status is `false` as the update has completed; clusters are compliant with all the managed policies.
+<2> The `Succeeded` fields show that the validations completed successfully.
+<3> Displays that all the policies are applied to the cluster.
 
-.Sample `ClusterGroupUpgrade` CR in the `UpgradeCompleted` state
+The status field includes a list of clusters and their respective status. The status of a cluster can be `complete` or `timedout`. If a cluster is `timedout`, the `currentPolicy` field shows the name of the policy that was being applied and the status of that policy.
+
+.Sample `ClusterGroupUpgrade` CR in the `timedout` state
 
 [source,yaml]
 ----
 apiVersion: ran.openshift.io/v1alpha1
 kind: ClusterGroupUpgrade
 metadata:
-  name: cgu-upgrade-complete
-  namespace: default
+  creationTimestamp: '2022-11-18T16:27:15Z'
+  finalizers:
+    - ran.openshift.io/cleanup-finalizer
+  generation: 1
+  name: talm-cgu
+  namespace: talm-namespace
+  resourceVersion: '40451823'
+  uid: cca245a5-4bca-45fa-89c0-aa6af81a596c
 spec:
   actions:
     afterCompletion:
-      deleteObjects: true <1>
+      deleteObjects: true
+    beforeEnable: {}
+  backup: false
   clusters:
-  - spoke1
+    - spoke1
+    - spoke2
   enable: true
   managedPolicies:
-  - policy1-common-cluster-version-policy
-  - policy2-common-nto-sub-policy
+    - talm-policy
+  preCaching: false
   remediationStrategy:
-    maxConcurrency: 1
+    maxConcurrency: 2
     timeout: 240
-status: <2>
+status:
+  clusters:
+    - name: spoke1
+      state: complete
+    - currentPolicy: <1>
+        name: talm-policy
+        status: NonCompliant
+      name: spoke2
+      state: timedout
+  computedMaxConcurrency: 2
   conditions:
-  - message: The ClusterGroupUpgrade CR has all clusters compliant with all the managed policies
-    reason: UpgradeCompleted
-    status: "True"
-    type: Ready
+    - lastTransitionTime: '2022-11-18T16:27:15Z'
+      message: All selected clusters are valid
+      reason: ClusterSelectionCompleted
+      status: 'True'
+      type: ClustersSelected
+    - lastTransitionTime: '2022-11-18T16:27:15Z'
+      message: Completed validation
+      reason: ValidationCompleted
+      status: 'True'
+      type: Validated
+    - lastTransitionTime: '2022-11-18T16:37:16Z'
+      message: Policy remediation took too long
+      reason: TimedOut
+      status: 'False'
+      type: Progressing
+    - lastTransitionTime: '2022-11-18T16:37:16Z'
+      message: Policy remediation took too long
+      reason: TimedOut
+      status: 'False'
+      type: Succeeded <2>
   managedPoliciesForUpgrade:
-  - name: policy1-common-cluster-version-policy
-    namespace: default
-  - name: policy2-common-nto-sub-policy
-    namespace: default
+    - name: talm-policy
+      namespace: talm-namespace
+  managedPoliciesNs:
+    talm-policy: talm-namespace
   remediationPlan:
-  - - spoke1
+    - - spoke1
+      - spoke2
   status:
-    remediationPlanForBatch:
-      spoke1: -2 <3>
+        startedAt: '2022-11-18T16:27:15Z'
+        completedAt: '2022-11-18T20:27:15Z'
 ----
-<1> The value of `spec.action.afterCompletion.deleteObjects` field is `true` by default. After the update is completed, {cgu-operator} deletes the underlying {rh-rhacm} objects that were created during the update. This option is to prevent the {rh-rhacm} hub from continuously checking for compliance after a successful update.
-<2> The `status` fields show that the updates completed successfully.
-<3> Displays that all the policies are applied to the cluster.
-
-[id="precaching-required"]
-[discreet]
-== The PrecachingRequired state
-
-In the `PrecachingRequired` state, the clusters need to have images pre-cached before the update can start. For more information about pre-caching, see the "Using the container image pre-cache feature" section.
+<1> If a cluster’s state is `timedout`, the `currentPolicy` field shows the name of the policy and the policy status.
+<2> The status for `succeeded` is `false` and the message indicates that policy remediation took too long.
