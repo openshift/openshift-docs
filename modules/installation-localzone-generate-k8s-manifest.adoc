@@ -1,0 +1,151 @@
+// Module included in the following assemblies:
+//
+// * installing/installing_aws/installing-aws-localzone.adoc
+
+:_content-type: PROCEDURE
+[id="installation-localzone-generate-k8s-manifest{context}"]
+= Creating the Kubernetes manifest files
+
+Because you must modify some cluster definition files and manually start the cluster machines, you must generate the Kubernetes manifest files that the cluster needs to configure the machines.
+
+.Prerequisites
+
+* You obtained the {product-title} installation program.
+* You created the `install-config.yaml` installation configuration file.
+* You installed the `jq` package.
+
+.Procedure
+
+. Change to the directory that contains the {product-title} installation program and generate the Kubernetes manifests for the cluster by running the following command:
++
+[source,terminal]
+----
+$ ./openshift-install create manifests --dir <installation_directory> <1>
+----
++
+<1> For `<installation_directory>`, specify the installation directory that
+contains the `install-config.yaml` file you created.
+
+. Create the machine set manifests for the worker nodes in your Local Zone.
+
+.. Export a local variable that contains the name of the Local Zone that you opted your AWS account into by running the following command:
++
+[source,terminal]
+----
+$ export LZ_ZONE_NAME="<local_zone_name>" <1>
+----
+<1> For `<local_zone_name>`, specify the Local Zone that you opted your AWS account into, such as `us-east-1-nyc-1a`.
+
+.. Review the instance types for the location that you will deploy to by running the following command:
++
+[source,terminal]
+----
+$ aws ec2 describe-instance-type-offerings \
+    --location-type availability-zone \
+    --filters Name=location,Values=${LZ_ZONE_NAME}
+    --region <region> <1>
+----
+<1> For `<region>`, specify the name of the region that you will deploy to, such as `us-east-1`.
+
+.. Export a variable to define the instance type for the worker machines to deploy on the Local Zone subnet by running the following command:
++
+[source,terminal]
+----
+$ export INSTANCE_TYPE="<instance_type>" <1>
+----
+<1> Set `<instance_type>` to a tested instance type, such as `c5d.2xlarge`.
+
+.. Store the AMI ID as a local variable by running the following command:
++
+[source,terminal]
+----
+$ export AMI_ID=$(grep ami
+  <installation_directory>/openshift/99_openshift-cluster-api_worker-machineset-0.yaml \
+  | tail -n1 | awk '{print$2}')
+----
+
+.. Store the subnet ID as a local variable by running the following command:
++
+[source,terminal]
+----
+$ export SUBNET_ID=$(aws cloudformation describe-stacks \
+  --stack-name "<subnet_stack_name>" \ <1>
+  | jq -r .Stacks[0].Outputs[0].OutputValue)
+----
+<1> For `<subnet_stack_name>`, specify the name of the subnet stack that you created.
+
+.. Store the cluster ID as local variable by running the following command:
++
+[source,terminal]
+----
+$ export CLUSTER_ID="$(awk '/infrastructureName: / {print $2}' 	<installation_directory>/manifests/cluster-infrastructure-02-config.yml)"
+----
+
+.. Create the worker manifest file for the Local Zone that your VPC uses by running the following command:
++
+[source,terminal]
+----
+$ cat <<EOF > <installation_directory>/openshift/99_openshift-cluster-api_worker-machineset-nyc1.yaml
+apiVersion: machine.openshift.io/v1beta1
+kind: MachineSet
+metadata:
+  labels:
+    machine.openshift.io/cluster-api-cluster: ${CLUSTER_ID}
+  name: ${CLUSTER_ID}-edge-${LZ_ZONE_NAME}
+  namespace: openshift-machine-api
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      machine.openshift.io/cluster-api-cluster: ${CLUSTER_ID}
+      machine.openshift.io/cluster-api-machineset: ${CLUSTER_ID}-edge-${LZ_ZONE_NAME}
+  template:
+    metadata:
+      labels:
+        machine.openshift.io/cluster-api-cluster: ${CLUSTER_ID}
+        machine.openshift.io/cluster-api-machine-role: edge
+        machine.openshift.io/cluster-api-machine-type: edge
+        machine.openshift.io/cluster-api-machineset: ${CLUSTER_ID}-edge-${LZ_ZONE_NAME}
+    spec:
+      metadata:
+        labels:
+          zone_type: local-zone
+          zone_group: ${LZ_ZONE_NAME::-1}
+          node-role.kubernetes.io/edge: ""
+      taints:
+        - key: node-role.kubernetes.io/edge
+          effect: NoSchedule
+      providerSpec:
+        value:
+          ami:
+            id: ${AMI_ID}
+          apiVersion: machine.openshift.io/v1beta1
+          blockDevices:
+          - ebs:
+              volumeSize: 120
+              volumeType: gp2
+          credentialsSecret:
+            name: aws-cloud-credentials
+          deviceIndex: 0
+          iamInstanceProfile:
+            id: ${CLUSTER_ID}-worker-profile
+          instanceType: ${INSTANCE_TYPE}
+          kind: AWSMachineProviderConfig
+          placement:
+            availabilityZone: ${LZ_ZONE_NAME}
+            region: ${CLUSTER_REGION}
+          securityGroups:
+          - filters:
+            - name: tag:Name
+              values:
+              - ${CLUSTER_ID}-worker-sg
+          subnet:
+            id: ${SUBNET_ID}
+          publicIp: true
+          tags:
+          - name: kubernetes.io/cluster/${CLUSTER_ID}
+            value: owned
+          userDataSecret:
+            name: worker-user-data
+EOF
+----
