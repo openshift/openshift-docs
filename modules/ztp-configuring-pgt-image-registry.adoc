@@ -1,0 +1,181 @@
+// Module included in the following assemblies:
+//
+// * scalability_and_performance/ztp_far_edge/ztp-advanced-policy-config.adoc
+
+:_module-type: PROCEDURE
+[id="ztp-configuring-pgt-image-registry_{context}"]
+= Configuring the image registry using PolicyGenTemplate CRs
+
+Use `PolicyGenTemplate` (PGT) CRs to apply the CRs required to configure the image registry and patch the `imageregistry` configuration.
+
+.Prerequisites
+
+* You have configured a disk partition in the managed cluster.
+
+* You have installed the OpenShift CLI (`oc`).
+
+* You have logged in to the hub cluster as a user with `cluster-admin` privileges.
+
+* You have created a Git repository where you manage your custom site configuration data for use with GitOps Zero Touch Provisioning (ZTP).
+
+.Procedure
+
+. Configure the storage class, persistent volume claim, persistent volume, and image registry configuration in the appropriate `PolicyGenTemplate` CR. For example, to configure an individual site, add the following YAML to the file `example-sno-site.yaml`:
++
+[source,yaml]
+----
+sourceFiles:
+  # storage class
+  - fileName: StorageClass.yaml
+    policyName: "sc-for-image-registry"
+    metadata:
+      name: image-registry-sc
+      annotations:
+        ran.openshift.io/ztp-deploy-wave: "100" <1>
+  # persistent volume claim
+  - fileName: StoragePVC.yaml
+    policyName: "pvc-for-image-registry"
+    metadata:
+      name: image-registry-pvc
+      namespace: openshift-image-registry
+      annotations:
+        ran.openshift.io/ztp-deploy-wave: "100"
+    spec:
+      accessModes:
+        - ReadWriteMany
+      resources:
+        requests:
+          storage: 100Gi
+      storageClassName: image-registry-sc
+      volumeMode: Filesystem
+  # persistent volume
+  - fileName: ImageRegistryPV.yaml <2>
+    policyName: "pv-for-image-registry"
+    metadata:
+      annotations:
+        ran.openshift.io/ztp-deploy-wave: "100"
+  - fileName: ImageRegistryConfig.yaml
+    policyName: "config-for-image-registry"
+    complianceType: musthave
+    metadata:
+      annotations:
+        ran.openshift.io/ztp-deploy-wave: "100"
+    spec:
+      storage:
+        pvc:
+          claim: "image-registry-pvc"
+----
+<1> Set the appropriate value for `ztp-deploy-wave` depending on whether you are configuring image registries at the site, common, or group level. `ztp-deploy-wave: "100"` is suitable for development or testing because it allows you to group the referenced source files together.
+<2> In `ImageRegistryPV.yaml`, ensure that the `spec.local.path` field is set to `/var/imageregistry` to match the value set for the `mount_point` field in the `SiteConfig` CR.
+
++
+[IMPORTANT]
+====
+Do not set `complianceType: mustonlyhave` for the `- fileName: ImageRegistryConfig.yaml` configuration. This can cause the registry pod deployment to fail.
+====
+
+. Commit the `PolicyGenTemplate` change in Git, and then push to the Git repository being monitored by the GitOps ZTP ArgoCD application.
+
+.Verification
+
+Use the following steps to troubleshoot errors with the local image registry on the managed clusters:
+
+* Verify successful login to the registry while logged in to the managed cluster. Run the following commands:
+
+.. Export the managed cluster name:
++
+[source,terminal]
+----
+$ cluster=<managed_cluster_name>
+----
+
+.. Get the managed cluster `kubeconfig` details:
++
+[source,terminal]
+----
+$ oc get secret -n $cluster $cluster-admin-password -o jsonpath='{.data.password}' | base64 -d > kubeadmin-password-$cluster
+----
+
+.. Download and export the cluster `kubeconfig`:
++
+[source,terminal]
+----
+$ oc get secret -n $cluster $cluster-admin-kubeconfig -o jsonpath='{.data.kubeconfig}' | base64 -d > kubeconfig-$cluster && export KUBECONFIG=./kubeconfig-$cluster
+----
+
+.. Verify access to the image registry from the managed cluster. See "Accessing the registry".
+
+* Check that the `Config` CRD in the `imageregistry.operator.openshift.io` group instance is not reporting errors. Run the following command while logged in to the managed cluster:
++
+[source,terminal]
+----
+$ oc get image.config.openshift.io cluster -o yaml
+----
++
+.Example output
+[source,yaml]
+----
+apiVersion: config.openshift.io/v1
+kind: Image
+metadata:
+  annotations:
+    include.release.openshift.io/ibm-cloud-managed: "true"
+    include.release.openshift.io/self-managed-high-availability: "true"
+    include.release.openshift.io/single-node-developer: "true"
+    release.openshift.io/create-only: "true"
+  creationTimestamp: "2021-10-08T19:02:39Z"
+  generation: 5
+  name: cluster
+  resourceVersion: "688678648"
+  uid: 0406521b-39c0-4cda-ba75-873697da75a4
+spec:
+  additionalTrustedCA:
+    name: acm-ice
+----
+
+* Check that the `PersistentVolumeClaim` on the managed cluster is populated with data. Run the following command while logged in to the managed cluster:
++
+[source,terminal]
+----
+$ oc get pv image-registry-sc
+----
+
+* Check that the `registry*` pod is running and is located under the `openshift-image-registry` namespace.
++
+[source,terminal]
+----
+$ oc get pods -n openshift-image-registry | grep registry*
+----
++
+.Example output
+[source,terminal]
+----
+cluster-image-registry-operator-68f5c9c589-42cfg   1/1     Running     0          8d
+image-registry-5f8987879-6nx6h                     1/1     Running     0          8d
+----
+
+* Check that the disk partition on the managed cluster is correct:
+
+.. Open a debug shell to the managed cluster:
++
+[source,terminal]
+----
+$ oc debug node/sno-1.example.com
+----
+
+.. Run `lsblk` to check the host disk partitions:
++
+[source,terminal]
+----
+sh-4.4# lsblk
+NAME   MAJ:MIN RM   SIZE RO TYPE MOUNTPOINT
+sda      8:0    0 446.6G  0 disk
+  |-sda1   8:1    0     1M  0 part
+  |-sda2   8:2    0   127M  0 part
+  |-sda3   8:3    0   384M  0 part /boot
+  |-sda4   8:4    0 336.3G  0 part /sysroot
+  `-sda5   8:5    0 100.1G  0 part /var/imageregistry <1>
+sdb      8:16   0 446.6G  0 disk
+sr0     11:0    1   104M  0 rom
+----
+<1> `/var/imageregistry` indicates that the disk is correctly partitioned.

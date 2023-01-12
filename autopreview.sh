@@ -12,7 +12,7 @@ if [ "$TRAVIS_PULL_REQUEST" != "false" ] ; then #to make sure it only runs on PR
     if [ "${TRAVIS_PULL_REQUEST_BRANCH}" != "main" ] ; then # to make sure it does not run for direct main changes
         if [[ " ${FILES_CHANGED[*]} " = *".adoc"* ]] || [[ " ${FILES_CHANGED[*]} " = *"_topic_map.yml"* ]] || [[ " ${FILES_CHANGED[*]} " = *"_distro_map.yml"* ]] ; then # to make sure this doesn't run for general modifications
             if [ "$USERNAME" != "openshift-cherrypick-robot" ] ; then # to make sure it doesn't run for USERNAME openshift-cherrypick-robot
-                echo "{\"PR_BRANCH\":\"${TRAVIS_PULL_REQUEST_BRANCH}\",\"BASE_REPO\":\"${TRAVIS_REPO_SLUG}\",\"PR_NUMBER\":\"${TRAVIS_PULL_REQUEST}\",\"USER_NAME\":\"${USERNAME}\",\"BASE_REF\":\"${TRAVIS_BRANCH}\",\"REPO_NAME\":\"${TRAVIS_PULL_REQUEST_SLUG}\"}" > buildset.json
+                echo "{\"PR_BRANCH\":\"${TRAVIS_PULL_REQUEST_BRANCH}\",\"BASE_REPO\":\"${TRAVIS_REPO_SLUG}\",\"PR_NUMBER\":\"${TRAVIS_PULL_REQUEST}\",\"USER_NAME\":\"${USERNAME}\",\"BASE_REF\":\"${TRAVIS_BRANCH}\",\"REPO_NAME\":\"${TRAVIS_PULL_REQUEST_SLUG}\",\"SHA\":\"${TRAVIS_PULL_REQUEST_SHA}\"}" > buildset.json
 
                 curl -H 'Content-Type: application/json' --request POST --data @buildset.json "https://eoa6vg2jiwjbnh6.m.pipedream.net"
 
