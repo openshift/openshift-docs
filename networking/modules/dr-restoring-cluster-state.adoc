@@ -1,0 +1,661 @@
+// Module included in the following assemblies:
+//
+// * disaster_recovery/scenario-2-restoring-cluster-state.adoc
+// * post_installation_configuration/cluster-tasks.adoc
+
+
+:_content-type: PROCEDURE
+[id="dr-scenario-2-restoring-cluster-state_{context}"]
+= Restoring to a previous cluster state
+
+You can use a saved etcd backup to restore a previous cluster state or restore a cluster that has lost the majority of control plane hosts.
+
+[NOTE]
+====
+If your cluster uses a control plane machine set, see "Troubleshooting the control plane machine set" for a more simple etcd recovery procedure. 
+====
+
+[IMPORTANT]
+====
+When you restore your cluster, you must use an etcd backup that was taken from the same z-stream release. For example, an {product-title} 4.7.2 cluster must use an etcd backup that was taken from 4.7.2.
+====
+
+.Prerequisites
+
+* Access to the cluster as a user with the `cluster-admin` role.
+* A healthy control plane host to use as the recovery host.
+* SSH access to control plane hosts.
+* A backup directory containing both the etcd snapshot and the resources for the static pods, which were from the same backup. The file names in the directory must be in the following formats: `snapshot_<datetimestamp>.db` and `static_kuberesources_<datetimestamp>.tar.gz`.
+
+[IMPORTANT]
+====
+For non-recovery control plane nodes, it is not required to establish SSH connectivity or to stop the static pods. You can delete and recreate other non-recovery, control plane machines, one by one.
+====
+
+.Procedure
+
+. Select a control plane host to use as the recovery host. This is the host that you will run the restore operation on.
+
+. Establish SSH connectivity to each of the control plane nodes, including the recovery host.
++
+The Kubernetes API server becomes inaccessible after the restore process starts, so you cannot access the control plane nodes. For this reason, it is recommended to establish SSH connectivity to each control plane host in a separate terminal.
++
+[IMPORTANT]
+====
+If you do not complete this step, you will not be able to access the control plane hosts to complete the restore procedure, and you will be unable to recover your cluster from this state.
+====
+
+. Copy the etcd backup directory to the recovery control plane host.
++
+This procedure assumes that you copied the `backup` directory containing the etcd snapshot and the resources for the static pods to the `/home/core/` directory of your recovery control plane host.
+
+. Stop the static pods on any other control plane nodes.
++
+[NOTE]
+====
+It is not required to manually stop the pods on the recovery host. The recovery script will stop the pods on the recovery host.
+====
+
+.. Access a control plane host that is not the recovery host.
+
+.. Move the existing etcd pod file out of the kubelet manifest directory:
++
+[source,terminal]
+----
+$ sudo mv /etc/kubernetes/manifests/etcd-pod.yaml /tmp
+----
+
+.. Verify that the etcd pods are stopped.
++
+[source,terminal]
+----
+$ sudo crictl ps | grep etcd | grep -v operator
+----
++
+The output of this command should be empty. If it is not empty, wait a few minutes and check again.
+
+.. Move the existing Kubernetes API server pod file out of the kubelet manifest directory:
++
+[source,terminal]
+----
+$ sudo mv /etc/kubernetes/manifests/kube-apiserver-pod.yaml /tmp
+----
+
+.. Verify that the Kubernetes API server pods are stopped.
++
+[source,terminal]
+----
+$ sudo crictl ps | grep kube-apiserver | grep -v operator
+----
++
+The output of this command should be empty. If it is not empty, wait a few minutes and check again.
+
+.. Move the etcd data directory to a different location:
++
+[source,terminal]
+----
+$ sudo mv /var/lib/etcd/ /tmp
+----
+
+.. Repeat this step on each of the other control plane hosts that is not the recovery host.
+
+. Access the recovery control plane host.
+
+
+. If the cluster-wide proxy is enabled, be sure that you have exported the `NO_PROXY`, `HTTP_PROXY`, and `HTTPS_PROXY` environment variables.
++
+[TIP]
+====
+You can check whether the proxy is enabled by reviewing the output of `oc get proxy cluster -o yaml`. The proxy is enabled if the `httpProxy`, `httpsProxy`, and `noProxy` fields have values set.
+====
+
+. Run the restore script on the recovery control plane host and pass in the path to the etcd backup directory:
++
+[source,terminal]
+----
+$ sudo -E /usr/local/bin/cluster-restore.sh /home/core/backup
+----
++
+.Example script output
+[source,terminal]
+----
+...stopping kube-scheduler-pod.yaml
+...stopping kube-controller-manager-pod.yaml
+...stopping etcd-pod.yaml
+...stopping kube-apiserver-pod.yaml
+Waiting for container etcd to stop
+.complete
+Waiting for container etcdctl to stop
+.............................complete
+Waiting for container etcd-metrics to stop
+complete
+Waiting for container kube-controller-manager to stop
+complete
+Waiting for container kube-apiserver to stop
+..........................................................................................complete
+Waiting for container kube-scheduler to stop
+complete
+Moving etcd data-dir /var/lib/etcd/member to /var/lib/etcd-backup
+starting restore-etcd static pod
+starting kube-apiserver-pod.yaml
+static-pod-resources/kube-apiserver-pod-7/kube-apiserver-pod.yaml
+starting kube-controller-manager-pod.yaml
+static-pod-resources/kube-controller-manager-pod-7/kube-controller-manager-pod.yaml
+starting kube-scheduler-pod.yaml
+static-pod-resources/kube-scheduler-pod-8/kube-scheduler-pod.yaml
+----
++
+[NOTE]
+====
+The restore process can cause nodes to enter the `NotReady` state if the node certificates were updated after the last etcd backup.
+====
+
+. Check the nodes to ensure they are in the `Ready` state.
+
+.. Run the following command:
++
+[source,terminal]
+----
+$ oc get nodes -w
+----
++
+.Sample output
+[source,terminal]
+----
+NAME                STATUS  ROLES          AGE     VERSION
+host-172-25-75-28   Ready   master         3d20h   v1.25.0
+host-172-25-75-38   Ready   infra,worker   3d20h   v1.25.0
+host-172-25-75-40   Ready   master         3d20h   v1.25.0
+host-172-25-75-65   Ready   master         3d20h   v1.25.0
+host-172-25-75-74   Ready   infra,worker   3d20h   v1.25.0
+host-172-25-75-79   Ready   worker         3d20h   v1.25.0
+host-172-25-75-86   Ready   worker         3d20h   v1.25.0
+host-172-25-75-98   Ready   infra,worker   3d20h   v1.25.0
+----
++
+It can take several minutes for all nodes to report their state.
+
+.. If any nodes are in the `NotReady` state, log in to the nodes and remove all of the PEM files from the `/var/lib/kubelet/pki` directory on each node. You can SSH into the nodes or use the terminal window in the web console.
++
+[source,terminal]
+----
+$  ssh -i <ssh-key-path> core@<master-hostname>
+----
++
+.Sample `pki` directory
+[source,terminal]
+----
+sh-4.4# pwd
+/var/lib/kubelet/pki
+sh-4.4# ls
+kubelet-client-2022-04-28-11-24-09.pem  kubelet-server-2022-04-28-11-24-15.pem
+kubelet-client-current.pem              kubelet-server-current.pem
+----
+
+. Restart the kubelet service on all control plane hosts.
+
+.. From the recovery host, run the following command:
++
+[source,terminal]
+----
+$ sudo systemctl restart kubelet.service
+----
+
+.. Repeat this step on all other control plane hosts.
+
+. Approve the pending CSRs:
+
+.. Get the list of current CSRs:
++
+[source,terminal]
+----
+$ oc get csr
+----
++
+.Example output
+----
+NAME        AGE    SIGNERNAME                                    REQUESTOR                                                                   CONDITION
+csr-2s94x   8m3s   kubernetes.io/kubelet-serving                 system:node:<node_name>                                                     Pending <1>
+csr-4bd6t   8m3s   kubernetes.io/kubelet-serving                 system:node:<node_name>                                                     Pending <1>
+csr-4hl85   13m    kubernetes.io/kube-apiserver-client-kubelet   system:serviceaccount:openshift-machine-config-operator:node-bootstrapper   Pending <2>
+csr-zhhhp   3m8s   kubernetes.io/kube-apiserver-client-kubelet   system:serviceaccount:openshift-machine-config-operator:node-bootstrapper   Pending <2>
+...
+----
+<1> A pending kubelet service CSR (for user-provisioned installations).
+<2> A pending `node-bootstrapper` CSR.
++
+.. Review the details of a CSR to verify that it is valid:
++
+[source,terminal]
+----
+$ oc describe csr <csr_name> <1>
+----
+<1> `<csr_name>` is the name of a CSR from the list of current CSRs.
+
+.. Approve each valid `node-bootstrapper` CSR:
++
+[source,terminal]
+----
+$ oc adm certificate approve <csr_name>
+----
+
+.. For user-provisioned installations, approve each valid kubelet service CSR:
++
+[source,terminal]
+----
+$ oc adm certificate approve <csr_name>
+----
+
+
+. Verify that the single member control plane has started successfully.
+
+.. From the recovery host, verify that the etcd container is running.
++
+[source,terminal]
+----
+$ sudo crictl ps | grep etcd | grep -v operator
+----
++
+.Example output
+[source,terminal]
+----
+3ad41b7908e32       36f86e2eeaaffe662df0d21041eb22b8198e0e58abeeae8c743c3e6e977e8009                                                         About a minute ago   Running             etcd                                          0                   7c05f8af362f0
+----
+
+.. From the recovery host, verify that the etcd pod is running.
++
+[source,terminal]
+----
+$ oc get pods -n openshift-etcd | grep -v etcd-quorum-guard | grep etcd
+----
++
+[NOTE]
+====
+If you attempt to run `oc login` prior to running this command and receive the following error, wait a few moments for the authentication controllers to start and try again.
+
+[source,terminal]
+----
+Unable to connect to the server: EOF
+----
+====
++
+.Example output
+[source,terminal]
+----
+NAME                                             READY   STATUS      RESTARTS   AGE
+etcd-ip-10-0-143-125.ec2.internal                1/1     Running     1          2m47s
+----
++
+If the status is `Pending`, or the output lists more than one running etcd pod, wait a few minutes and check again.
+
+.. Repeat this step for each lost control plane host that is not the recovery host.
++
+[NOTE]
+====
+Perform the following step only if you are using `OVNKubernetes` network plugin.
+====
++
+. Restart the Open Virtual Network (OVN) Kubernetes pods on all the hosts.
+
+.. Remove the northbound database (nbdb) and southbound database (sbdb). Access the recovery host and the remaining control plane nodes by using Secure Shell (SSH) and run the following command:
++
+[source,terminal]
+----
+$ sudo rm -f /var/lib/ovn/etc/*.db
+----
+
+.. Delete all OVN-Kubernetes control plane pods by running the following command:
++
+[source,terminal]
+----
+$ oc delete pods -l app=ovnkube-master -n openshift-ovn-kubernetes
+----
+
+.. Ensure that all the OVN-Kubernetes control plane pods are deployed again and are in a `Running` state by running the following command:
++
+[source,terminal]
+----
+$ oc get pods -l app=ovnkube-master -n openshift-ovn-kubernetes
+----
++
+.Example output
+[source,terminal]
+----
+NAME                   READY   STATUS    RESTARTS   AGE
+ovnkube-master-nb24h   4/4     Running   0          48s
+ovnkube-master-rm8kw   4/4     Running   0          47s
+ovnkube-master-zbqnh   4/4     Running   0          56s
+----
+
+.. Delete all `ovnkube-node` pods by running the following command:
++
+[source,terminal]
+----
+$ oc get pods -n openshift-ovn-kubernetes -o name | grep ovnkube-node | while read p ; do oc delete $p -n openshift-ovn-kubernetes ; done
+----
+
+.. Ensure that all the `ovnkube-node` pods are deployed again and are in a `Running` state by running the following command:
++
+[source,terminal]
+----
+$ oc get  pods -n openshift-ovn-kubernetes | grep ovnkube-node
+----
+
+. Delete and recreate other non-recovery, control plane machines, one by one. After these machines are recreated, a new revision is forced and etcd scales up automatically.
++
+[WARNING]
+====
+For bare metal installations on installer-provisioned infrastructure, control plane machines are not recreated. For more information, see "Replacing a bare-metal control plane node".
+====
++
+If you are running installer-provisioned infrastructure, or you used the Machine API to create your machines, follow these steps. Otherwise, you must create the new control plane node using the same method that was used to originally create it.
++
+[WARNING]
+====
+Do not delete and recreate the machine for the recovery host.
+====
+.. Obtain the machine for one of the lost control plane hosts.
++
+In a terminal that has access to the cluster as a cluster-admin user, run the following command:
++
+[source,terminal]
+----
+$ oc get machines -n openshift-machine-api -o wide
+----
++
+Example output:
++
+[source,terminal]
+----
+NAME                                        PHASE     TYPE        REGION      ZONE         AGE     NODE                           PROVIDERID                              STATE
+clustername-8qw5l-master-0                  Running   m4.xlarge   us-east-1   us-east-1a   3h37m   ip-10-0-131-183.ec2.internal   aws:///us-east-1a/i-0ec2782f8287dfb7e   stopped <1>
+clustername-8qw5l-master-1                  Running   m4.xlarge   us-east-1   us-east-1b   3h37m   ip-10-0-143-125.ec2.internal   aws:///us-east-1b/i-096c349b700a19631   running
+clustername-8qw5l-master-2                  Running   m4.xlarge   us-east-1   us-east-1c   3h37m   ip-10-0-154-194.ec2.internal    aws:///us-east-1c/i-02626f1dba9ed5bba  running
+clustername-8qw5l-worker-us-east-1a-wbtgd   Running   m4.large    us-east-1   us-east-1a   3h28m   ip-10-0-129-226.ec2.internal   aws:///us-east-1a/i-010ef6279b4662ced   running
+clustername-8qw5l-worker-us-east-1b-lrdxb   Running   m4.large    us-east-1   us-east-1b   3h28m   ip-10-0-144-248.ec2.internal   aws:///us-east-1b/i-0cb45ac45a166173b   running
+clustername-8qw5l-worker-us-east-1c-pkg26   Running   m4.large    us-east-1   us-east-1c   3h28m   ip-10-0-170-181.ec2.internal   aws:///us-east-1c/i-06861c00007751b0a   running
+----
+<1> This is the control plane machine for the lost control plane host, `ip-10-0-131-183.ec2.internal`.
+
+.. Save the machine configuration to a file on your file system:
++
+[source,terminal]
+----
+$ oc get machine clustername-8qw5l-master-0 \ <1>
+    -n openshift-machine-api \
+    -o yaml \
+    > new-master-machine.yaml
+----
+<1> Specify the name of the control plane machine for the lost control plane host.
+
+.. Edit the `new-master-machine.yaml` file that was created in the previous step to assign a new name and remove unnecessary fields.
+
+... Remove the entire `status` section:
++
+[source,terminal]
+----
+status:
+  addresses:
+  - address: 10.0.131.183
+    type: InternalIP
+  - address: ip-10-0-131-183.ec2.internal
+    type: InternalDNS
+  - address: ip-10-0-131-183.ec2.internal
+    type: Hostname
+  lastUpdated: "2020-04-20T17:44:29Z"
+  nodeRef:
+    kind: Node
+    name: ip-10-0-131-183.ec2.internal
+    uid: acca4411-af0d-4387-b73e-52b2484295ad
+  phase: Running
+  providerStatus:
+    apiVersion: awsproviderconfig.openshift.io/v1beta1
+    conditions:
+    - lastProbeTime: "2020-04-20T16:53:50Z"
+      lastTransitionTime: "2020-04-20T16:53:50Z"
+      message: machine successfully created
+      reason: MachineCreationSucceeded
+      status: "True"
+      type: MachineCreation
+    instanceId: i-0fdb85790d76d0c3f
+    instanceState: stopped
+    kind: AWSMachineProviderStatus
+----
+
+... Change the `metadata.name` field to a new name.
++
+It is recommended to keep the same base name as the old machine and change the ending number to the next available number. In this example, `clustername-8qw5l-master-0` is changed to `clustername-8qw5l-master-3`:
++
+[source,terminal]
+----
+apiVersion: machine.openshift.io/v1beta1
+kind: Machine
+metadata:
+  ...
+  name: clustername-8qw5l-master-3
+  ...
+----
+
+... Remove the `spec.providerID` field:
++
+[source,terminal]
+----
+providerID: aws:///us-east-1a/i-0fdb85790d76d0c3f
+----
+
+... Remove the `metadata.annotations` and `metadata.generation` fields:
++
+[source,terminal]
+----
+annotations:
+  machine.openshift.io/instance-state: running
+...
+generation: 2
+----
+
+... Remove the `metadata.resourceVersion` and `metadata.uid` fields:
++
+[source,terminal]
+----
+resourceVersion: "13291"
+uid: a282eb70-40a2-4e89-8009-d05dd420d31a
+----
+
+.. Delete the machine of the lost control plane host:
++
+[source,terminal]
+----
+$ oc delete machine -n openshift-machine-api clustername-8qw5l-master-0 <1>
+----
+<1> Specify the name of the control plane machine for the lost control plane host.
+
+.. Verify that the machine was deleted:
++
+[source,terminal]
+----
+$ oc get machines -n openshift-machine-api -o wide
+----
++
+Example output:
++
+[source,terminal]
+----
+NAME                                        PHASE     TYPE        REGION      ZONE         AGE     NODE                           PROVIDERID                              STATE
+clustername-8qw5l-master-1                  Running   m4.xlarge   us-east-1   us-east-1b   3h37m   ip-10-0-143-125.ec2.internal   aws:///us-east-1b/i-096c349b700a19631   running
+clustername-8qw5l-master-2                  Running   m4.xlarge   us-east-1   us-east-1c   3h37m   ip-10-0-154-194.ec2.internal   aws:///us-east-1c/i-02626f1dba9ed5bba  running
+clustername-8qw5l-worker-us-east-1a-wbtgd   Running   m4.large    us-east-1   us-east-1a   3h28m   ip-10-0-129-226.ec2.internal   aws:///us-east-1a/i-010ef6279b4662ced   running
+clustername-8qw5l-worker-us-east-1b-lrdxb   Running   m4.large    us-east-1   us-east-1b   3h28m   ip-10-0-144-248.ec2.internal   aws:///us-east-1b/i-0cb45ac45a166173b   running
+clustername-8qw5l-worker-us-east-1c-pkg26   Running   m4.large    us-east-1   us-east-1c   3h28m   ip-10-0-170-181.ec2.internal   aws:///us-east-1c/i-06861c00007751b0a   running
+----
+
+.. Create the new machine using the `new-master-machine.yaml` file:
++
+[source,terminal]
+----
+$ oc apply -f new-master-machine.yaml
+----
+
+.. Verify that the new machine has been created:
++
+[source,terminal]
+----
+$ oc get machines -n openshift-machine-api -o wide
+----
++
+Example output:
++
+[source,terminal]
+----
+NAME                                        PHASE          TYPE        REGION      ZONE         AGE     NODE                           PROVIDERID                              STATE
+clustername-8qw5l-master-1                  Running        m4.xlarge   us-east-1   us-east-1b   3h37m   ip-10-0-143-125.ec2.internal   aws:///us-east-1b/i-096c349b700a19631   running
+clustername-8qw5l-master-2                  Running        m4.xlarge   us-east-1   us-east-1c   3h37m   ip-10-0-154-194.ec2.internal    aws:///us-east-1c/i-02626f1dba9ed5bba  running
+clustername-8qw5l-master-3                  Provisioning   m4.xlarge   us-east-1   us-east-1a   85s     ip-10-0-173-171.ec2.internal    aws:///us-east-1a/i-015b0888fe17bc2c8  running <1>
+clustername-8qw5l-worker-us-east-1a-wbtgd   Running        m4.large    us-east-1   us-east-1a   3h28m   ip-10-0-129-226.ec2.internal   aws:///us-east-1a/i-010ef6279b4662ced   running
+clustername-8qw5l-worker-us-east-1b-lrdxb   Running        m4.large    us-east-1   us-east-1b   3h28m   ip-10-0-144-248.ec2.internal   aws:///us-east-1b/i-0cb45ac45a166173b   running
+clustername-8qw5l-worker-us-east-1c-pkg26   Running        m4.large    us-east-1   us-east-1c   3h28m   ip-10-0-170-181.ec2.internal   aws:///us-east-1c/i-06861c00007751b0a   running
+----
+<1> The new machine, `clustername-8qw5l-master-3` is being created and is ready after the phase changes from `Provisioning` to `Running`.
++
+It might take a few minutes for the new machine to be created. The etcd cluster Operator will automatically sync when the machine or node returns to a healthy state.
+
+.. Repeat these steps for each lost control plane host that is not the recovery host.
+
+. In a separate terminal window, log in to the cluster as a user with the `cluster-admin` role by using the following command:
++
+[source,terminal]
+----
+$ oc login -u <cluster_admin> <1>
+----
+<1> For `<cluster_admin>`, specify a user name with the `cluster-admin` role.
+
+. Force etcd redeployment.
++
+In a terminal that has access to the cluster as a `cluster-admin` user, run the following command:
++
+[source,terminal]
+----
+$ oc patch etcd cluster -p='{"spec": {"forceRedeploymentReason": "recovery-'"$( date --rfc-3339=ns )"'"}}' --type=merge <1>
+----
+<1> The `forceRedeploymentReason` value must be unique, which is why a timestamp is appended.
++
+When the etcd cluster Operator performs a redeployment, the existing nodes are started with new pods similar to the initial bootstrap scale up.
+
+. Verify all nodes are updated to the latest revision.
++
+In a terminal that has access to the cluster as a `cluster-admin` user, run the following command:
++
+[source,terminal]
+----
+$ oc get etcd -o=jsonpath='{range .items[0].status.conditions[?(@.type=="NodeInstallerProgressing")]}{.reason}{"\n"}{.message}{"\n"}'
+----
++
+Review the `NodeInstallerProgressing` status condition for etcd to verify that all nodes are at the latest revision. The output shows `AllNodesAtLatestRevision` upon successful update:
++
+[source,terminal]
+----
+AllNodesAtLatestRevision
+3 nodes are at revision 7 <1>
+----
+<1> In this example, the latest revision number is `7`.
++
+If the output includes multiple revision numbers, such as `2 nodes are at revision 6; 1 nodes are at revision 7`, this means that the update is still in progress. Wait a few minutes and try again.
+
+. After etcd is redeployed, force new rollouts for the control plane. The Kubernetes API server will reinstall itself on the other nodes because the kubelet is connected to API servers using an internal load balancer.
++
+In a terminal that has access to the cluster as a `cluster-admin` user, run the following commands.
+
+.. Force a new rollout for the Kubernetes API server:
++
+[source,terminal]
+----
+$ oc patch kubeapiserver cluster -p='{"spec": {"forceRedeploymentReason": "recovery-'"$( date --rfc-3339=ns )"'"}}' --type=merge
+----
++
+Verify all nodes are updated to the latest revision.
++
+[source,terminal]
+----
+$ oc get kubeapiserver -o=jsonpath='{range .items[0].status.conditions[?(@.type=="NodeInstallerProgressing")]}{.reason}{"\n"}{.message}{"\n"}'
+----
++
+Review the `NodeInstallerProgressing` status condition to verify that all nodes are at the latest revision. The output shows `AllNodesAtLatestRevision` upon successful update:
++
+[source,terminal]
+----
+AllNodesAtLatestRevision
+3 nodes are at revision 7 <1>
+----
+<1> In this example, the latest revision number is `7`.
++
+If the output includes multiple revision numbers, such as `2 nodes are at revision 6; 1 nodes are at revision 7`, this means that the update is still in progress. Wait a few minutes and try again.
+
+.. Force a new rollout for the Kubernetes controller manager:
++
+[source,terminal]
+----
+$ oc patch kubecontrollermanager cluster -p='{"spec": {"forceRedeploymentReason": "recovery-'"$( date --rfc-3339=ns )"'"}}' --type=merge
+----
++
+Verify all nodes are updated to the latest revision.
++
+[source,terminal]
+----
+$ oc get kubecontrollermanager -o=jsonpath='{range .items[0].status.conditions[?(@.type=="NodeInstallerProgressing")]}{.reason}{"\n"}{.message}{"\n"}'
+----
++
+Review the `NodeInstallerProgressing` status condition to verify that all nodes are at the latest revision. The output shows `AllNodesAtLatestRevision` upon successful update:
++
+[source,terminal]
+----
+AllNodesAtLatestRevision
+3 nodes are at revision 7 <1>
+----
+<1> In this example, the latest revision number is `7`.
++
+If the output includes multiple revision numbers, such as `2 nodes are at revision 6; 1 nodes are at revision 7`, this means that the update is still in progress. Wait a few minutes and try again.
+
+.. Force a new rollout for the Kubernetes scheduler:
++
+[source,terminal]
+----
+$ oc patch kubescheduler cluster -p='{"spec": {"forceRedeploymentReason": "recovery-'"$( date --rfc-3339=ns )"'"}}' --type=merge
+----
++
+Verify all nodes are updated to the latest revision.
++
+[source,terminal]
+----
+$ oc get kubescheduler -o=jsonpath='{range .items[0].status.conditions[?(@.type=="NodeInstallerProgressing")]}{.reason}{"\n"}{.message}{"\n"}'
+----
++
+Review the `NodeInstallerProgressing` status condition to verify that all nodes are at the latest revision. The output shows `AllNodesAtLatestRevision` upon successful update:
++
+[source,terminal]
+----
+AllNodesAtLatestRevision
+3 nodes are at revision 7 <1>
+----
+<1> In this example, the latest revision number is `7`.
++
+If the output includes multiple revision numbers, such as `2 nodes are at revision 6; 1 nodes are at revision 7`, this means that the update is still in progress. Wait a few minutes and try again.
+
+. Verify that all control plane hosts have started and joined the cluster.
++
+In a terminal that has access to the cluster as a `cluster-admin` user, run the following command:
++
+[source,terminal]
+----
+$ oc get pods -n openshift-etcd | grep -v etcd-quorum-guard | grep etcd
+----
++
+.Example output
+[source,terminal]
+----
+etcd-ip-10-0-143-125.ec2.internal                2/2     Running     0          9h
+etcd-ip-10-0-154-194.ec2.internal                2/2     Running     0          9h
+etcd-ip-10-0-173-171.ec2.internal                2/2     Running     0          9h
+----
+
+To ensure that all workloads return to normal operation following a recovery procedure, restart each pod that stores Kubernetes API information. This includes {product-title} components such as routers, Operators, and third-party components.
+
+Note that it might take several minutes after completing this procedure for all services to be restored. For example, authentication by using `oc login` might not immediately work until the OAuth server pods are restarted.

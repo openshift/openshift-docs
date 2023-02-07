@@ -1,0 +1,216 @@
+// Module included in the following assemblies:
+//
+// * operators/admin/managing-custom-catalogs.adoc
+
+:_content-type: PROCEDURE
+[id="olm-accessing-images-private-registries_{context}"]
+= Accessing images for Operators from private registries
+
+If certain images relevant to Operators managed by Operator Lifecycle Manager (OLM) are hosted in an authenticated container image registry, also known as a private registry, OLM and OperatorHub are unable to pull the images by default. To enable access, you can create a pull secret that contains the authentication credentials for the registry. By referencing one or more pull secrets in a catalog source, OLM can handle placing the secrets in the Operator and catalog namespace to allow installation.
+
+Other images required by an Operator or its Operands might require access to private registries as well. OLM does not handle placing the secrets in target tenant namespaces for this scenario, but authentication credentials can be added to the global cluster pull secret or individual namespace service accounts to enable the required access.
+
+The following types of images should be considered when determining whether Operators managed by OLM have appropriate pull access:
+
+Index images:: A `CatalogSource` object can reference an index image, which use the Operator bundle format and are catalog sources packaged as container images hosted in images registries. If an index image is hosted in a private registry, a secret can be used to enable pull access.
+
+Bundle images:: Operator bundle images are metadata and manifests packaged as container images that represent a unique version of an Operator. If any bundle images referenced in a catalog source are hosted in one or more private registries, a secret can be used to enable pull access.
+
+Operator and Operand images:: If an Operator installed from a catalog source uses a private image, either for the Operator image itself or one of the Operand images it watches, the Operator will fail to install because the deployment will not have access to the required registry authentication. Referencing secrets in a catalog source does not enable OLM to place the secrets in target tenant namespaces in which Operands are installed.
++
+Instead, the authentication details can be added to the global cluster pull secret in the `openshift-config` namespace, which provides access to all namespaces on the cluster. Alternatively, if providing access to the entire cluster is not permissible, the pull secret can be added to the `default` service accounts of the target tenant namespaces.
+
+.Prerequisites
+
+* At least one of the following hosted in a private registry:
+** An index image or catalog image.
+** An Operator bundle image.
+** An Operator or Operand image.
+
+.Procedure
+
+. Create a secret for each required private registry.
+
+.. Log in to the private registry to create or update your registry credentials file:
++
+[source,terminal]
+----
+$ podman login <registry>:<port>
+----
++
+[NOTE]
+====
+The file path of your registry credentials can be different depending on the container tool used to log in to the registry. For the `podman` CLI, the default location is `${XDG_RUNTIME_DIR}/containers/auth.json`. For the `docker` CLI, the default location is `/root/.docker/config.json`.
+====
+
+.. It is recommended to include credentials for only one registry per secret, and manage credentials for multiple registries in separate secrets. Multiple secrets can be included in a `CatalogSource` object in later steps, and {product-title} will merge the secrets into a single virtual credentials file for use during an image pull.
++
+A registry credentials file can, by default, store details for more than one registry or for multiple repositories in one registry. Verify the current contents of your file. For example:
++
+.File storing credentials for multiple registries
+[source,json]
+----
+{
+    "auths": {
+        "registry.redhat.io": {
+            "auth": "FrNHNydQXdzclNqdg=="
+        },
+        "quay.io": {
+            "auth": "fegdsRib21iMQ=="
+        },
+        "https://quay.io/my-namespace/my-user/my-image": {
+            "auth": "eWfjwsDdfsa221=="
+        },
+        "https://quay.io/my-namespace/my-user": {
+            "auth": "feFweDdscw34rR=="
+        },
+        "https://quay.io/my-namespace": {
+            "auth": "frwEews4fescyq=="
+        }
+    }
+}
+----
++
+Because this file is used to create secrets in later steps, ensure that you are storing details for only one registry per file. This can be accomplished by using either of the following methods:
++
+--
+* Use the `podman logout <registry>` command to remove credentials for additional registries until only the one registry you want remains.
+* Edit your registry credentials file and separate the registry details to be stored in multiple files. For example:
++
+.File storing credentials for one registry
+[source,json]
+----
+{
+        "auths": {
+                "registry.redhat.io": {
+                        "auth": "FrNHNydQXdzclNqdg=="
+                }
+        }
+}
+----
++
+.File storing credentials for another registry
+[source,json]
+----
+{
+        "auths": {
+                "quay.io": {
+                        "auth": "Xd2lhdsbnRib21iMQ=="
+                }
+        }
+}
+----
+--
+
+.. Create a secret in the `openshift-marketplace` namespace that contains the authentication credentials for a private registry:
++
+[source,terminal]
+----
+$ oc create secret generic <secret_name> \
+    -n openshift-marketplace \
+    --from-file=.dockerconfigjson=<path/to/registry/credentials> \
+    --type=kubernetes.io/dockerconfigjson
+----
++
+Repeat this step to create additional secrets for any other required private registries, updating the `--from-file` flag to specify another registry credentials file path.
+
+. Create or update an existing `CatalogSource` object to reference one or more secrets:
++
+[source,yaml]
+----
+apiVersion: operators.coreos.com/v1alpha1
+kind: CatalogSource
+metadata:
+  name: my-operator-catalog
+  namespace: openshift-marketplace
+spec:
+  sourceType: grpc
+  secrets: <1>
+  - "<secret_name_1>"
+  - "<secret_name_2>"
+  grpcPodConfig:
+    securityContextConfig: <security_mode> <2>
+  image: <registry>:<port>/<namespace>/<image>:<tag>
+  displayName: My Operator Catalog
+  publisher: <publisher_name>
+  updateStrategy:
+    registryPoll:
+      interval: 30m
+----
+<1> Add a `spec.secrets` section and specify any required secrets.
+<2> Specify the value of `legacy` or `restricted`. If the field is not set, the default value is `legacy`. In a future {product-title} release, it is planned that the default value will be `restricted`. If your catalog cannot run with `restricted` permissions, it is recommended that you manually set this field to `legacy`.
+
+. If any Operator or Operand images that are referenced by a subscribed Operator require access to a private registry, you can either provide access to all namespaces in the cluster, or individual target tenant namespaces.
+
+* To provide access to all namespaces in the cluster, add authentication details to the global cluster pull secret in the `openshift-config` namespace.
++
+[WARNING]
+====
+Cluster resources must adjust to the new global pull secret, which can temporarily limit the usability of the cluster.
+====
+
+.. Extract the `.dockerconfigjson` file from the global pull secret:
++
+[source,terminal]
+----
+$ oc extract secret/pull-secret -n openshift-config --confirm
+----
+
+.. Update the `.dockerconfigjson` file with your authentication credentials for the required private registry or registries and save it as a new file:
++
+[source,terminal]
+----
+$ cat .dockerconfigjson | \
+    jq --compact-output '.auths["<registry>:<port>/<namespace>/"] |= . + {"auth":"<token>"}' \//<1>
+    > new_dockerconfigjson
+----
+<1> Replace `<registry>:<port>/<namespace>` with the private registry details and `<token>` with your authentication credentials.
+
+.. Update the global pull secret with the new file:
++
+[source,terminal]
+----
+$ oc set data secret/pull-secret -n openshift-config \
+    --from-file=.dockerconfigjson=new_dockerconfigjson
+----
+
+* To update an individual namespace, add a pull secret to the service account for the Operator that requires access in the target tenant namespace.
+
+.. Recreate the secret that you created for the `openshift-marketplace` in the tenant namespace:
++
+[source,terminal]
+----
+$ oc create secret generic <secret_name> \
+    -n <tenant_namespace> \
+    --from-file=.dockerconfigjson=<path/to/registry/credentials> \
+    --type=kubernetes.io/dockerconfigjson
+----
+
+.. Verify the name of the service account for the Operator by searching the tenant namespace:
++
+[source,terminal]
+----
+$ oc get sa -n <tenant_namespace> <1>
+----
+<1> If the Operator was installed in an individual namespace, search that namespace. If the Operator was installed for all namespaces, search the `openshift-operators` namespace.
++
+.Example output
+[source,terminal]
+----
+NAME            SECRETS   AGE
+builder         2         6m1s
+default         2         6m1s
+deployer        2         6m1s
+etcd-operator   2         5m18s <1>
+----
+<1> Service account for an installed etcd Operator.
+
+.. Link the secret to the service account for the Operator:
++
+[source,terminal]
+----
+$ oc secrets link <operator_sa> \
+    -n <tenant_namespace> \
+     <secret_name> \
+    --for=pull
+----

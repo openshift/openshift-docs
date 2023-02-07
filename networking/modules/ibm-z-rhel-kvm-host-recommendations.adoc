@@ -1,0 +1,187 @@
+// Module included in the following assemblies:
+//
+// * scalability_and_performance/ibm-z-recommended-host-practices.adoc
+
+:_content-type: PROCEDURE
+[id="ibm-z-rhel-kvm-host-recommendations_{context}"]
+= {op-system-base} KVM on IBM Z host recommendations
+
+Optimizing a KVM virtual server environment strongly depends on the workloads of the virtual servers and on the available resources. The same action that enhances performance in one environment can have adverse effects in another. Finding the best balance for a particular setting can be a challenge and often involves experimentation.
+
+The following section introduces some best practices when using {product-title} with {op-system-base} KVM on IBM Z and LinuxONE environments.
+
+[id="use-multiple-queues-for-your-virtio-network-interfaces_{context}"]
+== Use multiple queues for your VirtIO network interfaces
+
+With multiple virtual CPUs, you can transfer packages in parallel if you provide multiple queues for incoming and outgoing packets. Use the `queues` attribute of the `driver` element to configure multiple queues. Specify an integer of at least 2 that does not exceed the number of virtual CPUs of the virtual server.
+
+The following example specification configures two input and output queues for a network interface:
+
+[source,xml]
+----
+<interface type="direct">
+    <source network="net01"/>
+    <model type="virtio"/>
+    <driver ... queues="2"/>
+</interface>
+----
+
+Multiple queues are designed to provide enhanced performance for a network interface, but they also use memory and CPU resources. Start with defining two queues for busy interfaces. Next, try two queues for interfaces with less traffic or more than two queues for busy interfaces.
+
+[id="use-io-threads-for-your-virtual-block-devices_{context}"]
+== Use I/O threads for your virtual block devices
+
+To make virtual block devices use I/O threads, you must configure one or more I/O threads for the virtual server and each virtual block device to use one of these I/O threads.
+
+The following example specifies `<iothreads>3</iothreads>`  to configure three I/O threads, with consecutive decimal thread IDs 1, 2, and 3. The `iothread="2"` parameter specifies the driver element of the disk device to use the I/O thread with ID 2.
+
+
+.Sample I/O thread specification
+[source,xml]
+----
+...
+<domain>
+ 	<iothreads>3</iothreads><1>
+  	 ...
+    	<devices>
+       ...
+          <disk type="block" device="disk"><2>
+<driver ... iothread="2"/>
+    </disk>
+       ...
+    	</devices>
+   ...
+</domain>
+----
+<1> The number of I/O threads.
+<2> The driver element of the disk device.
+
+Threads can increase the performance of I/O operations for disk devices, but they also use memory and CPU resources. You can configure multiple devices to use the same thread. The best mapping of threads to devices depends on the available resources and the workload.
+
+Start with a small number of I/O threads. Often, a single I/O thread for all disk devices is sufficient. Do not configure more threads than the number of virtual CPUs, and do not configure idle threads.
+
+You can use the `virsh iothreadadd` command to add I/O threads with specific thread IDs to a running virtual server.
+
+[id="avoid-virtual-scsi-devices_{context}"]
+== Avoid virtual SCSI devices
+
+Configure virtual SCSI devices only if you need to address the device through SCSI-specific interfaces. Configure disk space as virtual block devices rather than virtual SCSI devices, regardless of the backing on the host.
+
+However, you might need SCSI-specific interfaces for:
+
+* A LUN for a SCSI-attached tape drive on the host.
+
+* A DVD ISO file on the host file system that is mounted on a virtual DVD drive.
+
+[id="configure-guest-caching-for-disk_{context}"]
+== Configure guest caching for disk
+
+Configure your disk devices to do caching by the guest and not by the host.
+
+Ensure that the driver element of the disk device includes the `cache="none"` and `io="native"` parameters.
+
+[source,xml]
+----
+<disk type="block" device="disk">
+    <driver name="qemu" type="raw" cache="none" io="native" iothread="1"/>
+...
+</disk>
+----
+
+[id="exclude-the-memory-ballon-device_{context}"]
+== Exclude the memory balloon device
+
+Unless you need a dynamic memory size, do not define a memory balloon device and ensure that libvirt does not create one for you. Include the `memballoon` parameter as a child of the devices element in your domain configuration XML file.
+
+* Check the list of active profiles:
++
+[source,xml]
+----
+<memballoon model="none"/>
+----
+
+[id="tune-the-cpu-migration-algorithm-of-the-host-scheduler_{context}"]
+== Tune the CPU migration algorithm of the host scheduler
+
+[IMPORTANT]
+====
+Do not change the scheduler settings unless you are an expert who understands the implications. Do not apply changes to production systems without testing them and confirming that they have the intended effect.
+====
+
+The `kernel.sched_migration_cost_ns` parameter specifies a time interval in nanoseconds. After the last execution of a task, the CPU cache is considered to have useful content until this interval expires. Increasing this interval results in fewer task migrations. The default value is 500000 ns.
+
+If the CPU idle time is higher than expected when there are runnable processes, try reducing this interval. If tasks bounce between CPUs or nodes too often, try increasing it.
+
+To dynamically set the interval to 60000 ns, enter the following command:
+
+[source,terminal]
+----
+# sysctl kernel.sched_migration_cost_ns=60000
+----
+
+To persistently change the value to 60000 ns, add the following entry to `/etc/sysctl.conf`:
+
+[source,config]
+----
+kernel.sched_migration_cost_ns=60000
+----
+
+[id="disable-the-cpuset-cgroup-controller_{context}"]
+== Disable the cpuset cgroup controller
+
+[NOTE]
+====
+This setting applies only to KVM hosts with cgroups version 1. To enable CPU hotplug on the host, disable the cgroup controller.
+====
+
+.Procedure
+
+. Open `/etc/libvirt/qemu.conf` with an editor of your choice.
+
+. Go to the `cgroup_controllers` line.
+
+. Duplicate the entire line and remove the leading number sign (#) from the copy. 
+
+. Remove the `cpuset` entry, as follows:
++
+[source,config]
+----
+cgroup_controllers = [ "cpu", "devices", "memory", "blkio", "cpuacct" ]
+----
+
+. For the new setting to take effect, you must restart the libvirtd daemon:
+
+.. Stop all virtual machines.
+
+.. Run the following command:
++
+[source,terminal]
+----
+# systemctl restart libvirtd
+----
+
+.. Restart the virtual machines.
+
+This setting persists across host reboots.
+
+[id="tune-the-polling-period-for-idle-virtual-cpus_{context}"]
+== Tune the polling period for idle virtual CPUs
+
+When a virtual CPU becomes idle, KVM polls for wakeup conditions for the virtual CPU before allocating the host resource. You can specify the time interval, during which polling takes place in sysfs at `/sys/module/kvm/parameters/halt_poll_ns`. During the specified time, polling reduces the wakeup latency for the virtual CPU at the expense of resource usage. Depending on the workload, a longer or shorter time for polling can be beneficial. The time interval is specified in nanoseconds. The default is 50000 ns.
+
+* To optimize for low CPU consumption, enter a small value or write 0 to disable polling:
+
++
+[source,terminal]
+----
+# echo 0 > /sys/module/kvm/parameters/halt_poll_ns
+----
+
+* To optimize for low latency, for example for transactional workloads, enter a large value:
+
++
+[source,terminal]
+----
+# echo 80000 > /sys/module/kvm/parameters/halt_poll_ns
+----
+

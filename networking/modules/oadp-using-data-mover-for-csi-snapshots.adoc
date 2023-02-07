@@ -1,0 +1,214 @@
+// Module included in the following assemblies:
+//
+// * backup_and_restore/application_backup_and_restore/backing_up_and_restoring/backing-up-applications.adoc
+
+:_content-type: PROCEDURE
+[id="oadp-using-data-mover-for-csi-snapshots_{context}"]
+= Using Data Mover for CSI snapshots
+
+:FeatureName: Data Mover for CSI snapshots
+include::snippets/technology-preview.adoc[]
+
+The OADP 1.1.0 Data Mover enables customers to back up container storage interface (CSI) volume snapshots to a remote object store.  When Data Mover is enabled, you can restore stateful applications from the store if a failure, accidental deletion, or corruption of the cluster occurs. The OADP 1.1.0 Data Mover solution uses the Restic option of VolSync.
+
+[NOTE]
+=====
+Data Mover supports backup and restore of CSI volume snapshots only.
+
+Currently, Data Mover does not support Google Cloud Storage (GCS) buckets.
+=====
+
+.Prerequisites
+
+* You have verified that the `StorageClass` and `VolumeSnapshotClass` custom resources (CRs) support CSI.
+
+* You have verified that only one `volumeSnapshotClass` CR has the annotation `snapshot.storage.kubernetes.io/is-default-class: true`.
+
+* You have verified that only one `storageClass` CR has the annotation `storageclass.kubernetes.io/is-default-class: true`.
+
+* You have included the label `{velero-domain}/csi-volumesnapshot-class: 'true'` in your `VolumeSnapshotClass` CR.
+
+* You have installed the VolSync Operator by using the Operator Lifecycle Manager (OLM).
++
+[NOTE]
+====
+The VolSync Operator is required only for use with the Technology Preview Data Mover. The Operator is not required for using OADP production features.
+====
+
+* You have installed the OADP operator by using OLM.
+
+.Procedure
+
+. Configure a Restic secret by creating a `.yaml` file as following:
++
+[source,yaml]
+----
+apiVersion: v1
+kind: Secret
+metadata:
+  name: <secret_name>
+  namespace: openshift-adp
+type: Opaque
+stringData:
+  RESTIC_PASSWORD: <secure_restic_password>
+----
++
+[NOTE]
+====
+By default, the Operator looks for a secret named `dm-credential`. If you are using a different name, you need to specify the name through a Data Protection Application (DPA) CR using `dpa.spec.features.dataMover.credentialName`.
+====
+
+. Create a DPA CR similar to the following example. The default plugins include CSI.
++
+.Example Data Protection Application (DPA) CR
+[source,yaml]
+----
+apiVersion: oadp.openshift.io/v1alpha1
+kind: DataProtectionApplication
+metadata:
+  name: velero-sample
+  namespace: openshift-adp
+spec:
+  features:
+    dataMover:
+      enable: true
+      credentialName: <secret_name> <1>
+  backupLocations:
+    - velero:
+        config:
+          profile: default
+          region: us-east-1
+        credential:
+          key: cloud
+          name: cloud-credentials
+        default: true
+        objectStorage:
+          bucket: <bucket_name>
+          prefix: <bucket_prefix>
+        provider: aws
+  configuration:
+    restic:
+      enable: <true_or_false>
+    velero:
+      defaultPlugins:
+        - openshift
+        - aws
+        - csi
+----
+<1> Add the Restic secret name from the previous step. If this is not done, the default secret name `dm-credential` is used.
++
+The OADP Operator installs two custom resource definitions (CRDs), `VolumeSnapshotBackup` and `VolumeSnapshotRestore`.
++
+.Example `VolumeSnapshotBackup` CRD
+[source,yaml]
+----
+apiVersion: datamover.oadp.openshift.io/v1alpha1
+kind: VolumeSnapshotBackup
+metadata:
+  name: <vsb_name>
+  namespace: <namespace_name> <1>
+spec:
+  volumeSnapshotContent:
+    name: <snapcontent_name>
+  protectedNamespace: <adp_namespace>
+  resticSecretRef:
+    name: <restic_secret_name>
+----
+<1> Specify the namespace where the volume snapshot exists.
++
+.Example `VolumeSnapshotRestore` CRD
+[source,yaml]
+----
+apiVersion: datamover.oadp.openshift.io/v1alpha1
+kind: VolumeSnapshotRestore
+metadata:
+  name: <vsr_name>
+  namespace: <namespace_name> <1>
+spec:
+  protectedNamespace: <protected_ns> <2>
+  resticSecretRef:
+    name: <restic_secret_name>
+  volumeSnapshotMoverBackupRef:
+    sourcePVCData:
+      name: <source_pvc_name>
+      size: <source_pvc_size>
+    resticrepository: <your_restic_repo>
+    volumeSnapshotClassName: <vsclass_name>
+----
+<1> Specify the namespace where the volume snapshot exists.
+<2> Specify the namespace where the Operator is installed. The default is `openshift-adp`.
+
+. You can back up a volume snapshot by performing the following steps:
+
+.. Create a backup CR:
++
+[source,yaml]
+----
+apiVersion: velero.io/v1
+kind: Backup
+metadata:
+  name: <backup_name>
+  namespace: <protected_ns> <1>
+spec:
+  includedNamespaces:
+  - <app_ns>
+  storageLocation: velero-sample-1
+----
+<1> Specify the namespace where the Operator is installed. The default namespace is `openshift-adp`.
+
+.. Wait up to 10 minutes and check whether the `VolumeSnapshotBackup` CR status is `Completed` by entering the following commands:
++
+[source,terminal]
+----
+$ oc get vsb -n <app_ns>
+----
++
+[source,terminal]
+----
+$ oc get vsb <vsb_name> -n <app_ns> -o jsonpath="{.status.phase}"
+----
++
+A snapshot is created in the object store was configured in the DPA.
++
+[NOTE]
+====
+If the status of the `VolumeSnapshotBackup` CR becomes `Failed`, refer to the Velero logs for troubleshooting.
+====
+
+. You can restore a volume snapshot by performing the following steps:
+
+.. Delete the application namespace and the `volumeSnapshotContent` that was created by the Velero CSI plugin.
+
+.. Create a `Restore` CR and set `restorePVs` to `true`.
++
+.Example `Restore` CR
+[source,yaml]
+----
+apiVersion: velero.io/v1
+kind: Restore
+metadata:
+  name: <restore_name>
+  namespace: <protected_ns>
+spec:
+  backupName: <previous_backup_name>
+  restorePVs: true
+----
+
+.. Wait up to 10 minutes and check whether the `VolumeSnapshotRestore` CR status is `Completed` by entering the following command:
++
+[source,terminal]
+----
+$ oc get vsr -n <app_ns>
+----
++
+[source,terminal]
+----
+$ oc get vsr <vsr_name> -n <app_ns> -o jsonpath="{.status.phase}"
+----
+
+.. Check whether your application data and resources have been restored.
++
+[NOTE]
+====
+If the status of the `VolumeSnapshotRestore` CR becomes 'Failed', refer to the Velero logs for troubleshooting.
+====

@@ -1,0 +1,13 @@
+// Module included in the following assemblies:
+//
+// * cli_reference/developer_cli_odo/odo-architecture.adoc
+
+[id="developer-setup_{context}"]
+
+= Developer setup
+
+With {odo-title} you can create and deploy application on {product-title} clusters from a terminal.  Code editor plugins use {odo-title} which allows users to interact with {product-title} clusters from their IDE terminals. Examples of plugins that use {odo-title}: VS Code OpenShift Connector, OpenShift Connector for Intellij, Codewind for Eclipse Che. 
+
+{odo-title} works on Windows, macOS, and Linux operating systems and from any terminal. {odo-title} provides autocompletion for bash and zsh command line shells.
+
+{odo-title} supports Node.js and Java components.

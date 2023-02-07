@@ -1,0 +1,178 @@
+// Module included in the following assemblies:
+//
+// * scalability_and_performance/cnf-performing-platform-verification-latency-tests.adoc
+
+:_content-type: PROCEDURE
+[id="cnf-performing-end-to-end-tests-disconnected-mode_{context}"]
+= Running latency tests in a disconnected cluster
+
+The CNF tests image can run tests in a disconnected cluster that is not able to reach external registries. This requires two steps:
+
+. Mirroring the `cnf-tests` image to the custom disconnected registry.
+
+. Instructing the tests to consume the images from the custom disconnected registry.
+
+[discrete]
+[id="cnf-performing-end-to-end-tests-mirroring-images-to-custom-registry_{context}"]
+== Mirroring the images to a custom registry accessible from the cluster
+
+A `mirror` executable is shipped in the image to provide the input required by `oc` to mirror the test image to a local registry.
+
+. Run this command from an intermediate machine that has access to the cluster and link:https://catalog.redhat.com/software/containers/explore[registry.redhat.io]:
++
+[source,terminal,subs="attributes+"]
+----
+$ podman run -v $(pwd)/:/kubeconfig:Z -e KUBECONFIG=/kubeconfig/kubeconfig \
+registry.redhat.io/openshift4/cnf-tests-rhel8:v{product-version} \
+/usr/bin/mirror -registry <disconnected_registry> | oc image mirror -f -
+----
++
+where:
++
+--
+<disconnected_registry> :: Is the disconnected mirror registry you have configured, for example, `my.local.registry:5000/`.
+--
+
+. When you have mirrored the `cnf-tests` image into the disconnected registry, you must override the original registry used to fetch the images when running the tests, for example:
++
+[source,terminal,subs="attributes+"]
+----
+$ podman run -v $(pwd)/:/kubeconfig:Z -e KUBECONFIG=/kubeconfig/kubeconfig \
+-e DISCOVERY_MODE=true -e FEATURES=performance -e IMAGE_REGISTRY="<disconnected_registry>" \
+-e CNF_TESTS_IMAGE="cnf-tests-rhel8:v{product-version}" \
+/usr/bin/test-run.sh -ginkgo.focus="\[performance\]\ Latency\ Test"
+----
+
+[discrete]
+[id="cnf-performing-end-to-end-tests-image-parameters_{context}"]
+== Configuring the tests to consume images from a custom registry
+
+You can run the latency tests using a custom test image and image registry using `CNF_TESTS_IMAGE` and `IMAGE_REGISTRY` variables.
+
+* To configure the latency tests to use a custom test image and image registry, run the following command:
++
+[source,terminal,subs="attributes+"]
+----
+$ podman run -v $(pwd)/:/kubeconfig:Z -e KUBECONFIG=/kubeconfig/kubeconfig \
+-e IMAGE_REGISTRY="<custom_image_registry>" \
+-e CNF_TESTS_IMAGE="<custom_cnf-tests_image>" \
+-e FEATURES=performance \
+registry.redhat.io/openshift4/cnf-tests-rhel8:v{product-version} /usr/bin/test-run.sh
+----
++
+where:
++
+--
+<custom_image_registry> :: is the custom image registry, for example, `custom.registry:5000/`.
+<custom_cnf-tests_image> :: is the custom cnf-tests image, for example, `custom-cnf-tests-image:latest`.
+--
+
+[discrete]
+[id="cnf-performing-end-to-end-tests-mirroring-to-cluster-internal-registry_{context}"]
+== Mirroring images to the cluster internal registry
+
+{product-title} provides a built-in container image registry, which runs as a standard workload on the cluster.
+
+.Procedure
+
+. Gain external access to the registry by exposing it with a route:
++
+[source,terminal]
+----
+$ oc patch configs.imageregistry.operator.openshift.io/cluster --patch '{"spec":{"defaultRoute":true}}' --type=merge
+----
+
+. Fetch the registry endpoint by running the following command:
++
+[source,terminal]
+----
+$ REGISTRY=$(oc get route default-route -n openshift-image-registry --template='{{ .spec.host }}')
+----
+
+. Create a namespace for exposing the images:
++
+[source,terminal]
+----
+$ oc create ns cnftests
+----
+
+. Make the image stream available to all the namespaces used for tests. This is required to allow the tests namespaces to fetch the images from the `cnf-tests` image stream. Run the following commands:
++
+[source,terminal]
+----
+$ oc policy add-role-to-user system:image-puller system:serviceaccount:cnf-features-testing:default --namespace=cnftests
+----
++
+[source,terminal]
+----
+$ oc policy add-role-to-user system:image-puller system:serviceaccount:performance-addon-operators-testing:default --namespace=cnftests
+----
+
+. Retrieve the docker secret name and auth token by running the following commands:
++
+[source,terminal]
+----
+$ SECRET=$(oc -n cnftests get secret | grep builder-docker | awk {'print $1'}
+----
++
+[source,terminal]
+----
+$ TOKEN=$(oc -n cnftests get secret $SECRET -o jsonpath="{.data['\.dockercfg']}" | base64 --decode | jq '.["image-registry.openshift-image-registry.svc:5000"].auth')
+----
+
+. Create a `dockerauth.json` file, for example:
++
+[source,bash]
+----
+$ echo "{\"auths\": { \"$REGISTRY\": { \"auth\": $TOKEN } }}" > dockerauth.json
+----
+
+. Do the image mirroring:
++
+[source,terminal,subs="attributes+"]
+----
+$ podman run -v $(pwd)/:/kubeconfig:Z -e KUBECONFIG=/kubeconfig/kubeconfig \
+registry.redhat.io/openshift4/cnf-tests-rhel8:{product-version} \
+/usr/bin/mirror -registry $REGISTRY/cnftests |  oc image mirror --insecure=true \
+-a=$(pwd)/dockerauth.json -f -
+----
+
+. Run the tests:
++
+[source,terminal,subs="attributes+"]
+----
+$ podman run -v $(pwd)/:/kubeconfig:Z -e KUBECONFIG=/kubeconfig/kubeconfig \
+-e DISCOVERY_MODE=true -e FEATURES=performance -e IMAGE_REGISTRY=image-registry.openshift-image-registry.svc:5000/cnftests \
+cnf-tests-local:latest /usr/bin/test-run.sh -ginkgo.focus="\[performance\]\ Latency\ Test"
+----
+
+[discrete]
+[id="mirroring-different-set-of-images_{context}"]
+== Mirroring a different set of test images
+
+You can optionally change the default upstream images that are mirrored for the latency tests.
+
+.Procedure
+
+. The `mirror` command tries to mirror the upstream images by default. This can be overridden by passing a file with the following format to the image:
++
+
+[source,yaml,subs="attributes+"]
+----
+[
+    {
+        "registry": "public.registry.io:5000",
+        "image": "imageforcnftests:{product-version}"
+    }
+]
+----
+
+. Pass the file to the `mirror` command, for example saving it locally as `images.json`. With the following command, the local path is mounted in `/kubeconfig` inside the container and that can be passed to the mirror command.
++
+[source,terminal,subs="attributes+"]
+----
+$ podman run -v $(pwd)/:/kubeconfig:Z -e KUBECONFIG=/kubeconfig/kubeconfig \
+registry.redhat.io/openshift4/cnf-tests-rhel8:v{product-version} /usr/bin/mirror \
+--registry "my.local.registry:5000/" --images "/kubeconfig/images.json" \
+|  oc image mirror -f -
+----

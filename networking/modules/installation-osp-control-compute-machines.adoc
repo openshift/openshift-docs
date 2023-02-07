@@ -1,0 +1,71 @@
+// Module included in the following assemblies:
+//
+// * installing/installing_openstack/installing-openstack-installer-custom.adoc
+// * installing/installing_openstack/installing-openstack-installer-kuryr.adoc
+// * installing/installing_openstack/installing-openstack-installer-sr-iov.adoc
+
+ifeval::["{context}" == "installing-openstack-user-sr-iov"]
+:osp-sr-iov:
+endif::[]
+ifeval::["{context}" == "installing-openstack-installer-sr-iov"]
+:osp-sr-iov:
+endif::[]
+ifeval::["{context}" == "installing-openstack-installer-ovs-dpdk"]
+:osp-sr-iov:
+endif::[]
+
+[id="installation-osp-control-machines_{context}"]
+= Control plane machines
+
+By default, the {product-title} installation process creates three control
+plane machines.
+
+Each machine requires:
+
+* An instance from the {rh-openstack} quota
+* A port from the {rh-openstack} quota
+* A flavor with at least 16 GB memory and 4 vCPUs
+* At least 100 GB storage space from the {rh-openstack} quota
+
+[id="installation-osp-compute-machines_{context}"]
+= Compute machines
+
+By default, the {product-title} installation process creates three compute
+machines.
+
+Each machine requires:
+
+* An instance from the {rh-openstack} quota
+* A port from the {rh-openstack} quota
+* A flavor with at least 8 GB memory and 2 vCPUs
+* At least 100 GB storage space from the {rh-openstack} quota
+
+[TIP]
+====
+Compute machines host the applications that you run on {product-title}; aim to
+run as many as you can.
+====
+
+ifdef::osp-sr-iov[]
+Additionally, for clusters that use single-root input/output virtualization (SR-IOV), {rh-openstack} compute nodes require a flavor that supports link:https://access.redhat.com/documentation/en-us/red_hat_openstack_platform/16.1/html/configuring_the_compute_service_for_instance_creation/assembly_configuring-compute-nodes-for-performance_compute-performance#proc_configuring-huge-pages-on-compute-nodes_compute-performance[huge pages].
+
+[IMPORTANT]
+====
+SR-IOV deployments often employ performance optimizations, such as dedicated or isolated CPUs. For maximum performance, configure your underlying {rh-openstack} deployment to use these optimizations, and then run {product-title} compute machines on the optimized infrastructure.
+====
+
+[role="_additional-resources"]
+.Additional resources
+
+* For more information about configuring performant {rh-openstack} compute nodes, see link:https://access.redhat.com/documentation/en-us/red_hat_openstack_platform/16.1/html-single/configuring_the_compute_service_for_instance_creation/configuring-compute-nodes-for-performance#configuring-compute-nodes-for-performance[Configuring Compute nodes for performance].
+endif::osp-sr-iov[]
+
+ifeval::["{context}" == "installing-openstack-user-sr-iov"]
+:!osp-sr-iov:
+endif::[]
+ifeval::["{context}" == "installing-openstack-installer-sr-iov"]
+:!osp-sr-iov:
+endif::[]
+ifeval::["{context}" == "installing-openstack-installer-ovs-dpdk"]
+:!osp-sr-iov:
+endif::[]

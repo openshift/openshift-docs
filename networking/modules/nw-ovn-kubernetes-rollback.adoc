@@ -1,0 +1,305 @@
+// Module included in the following assemblies:
+//
+// * networking/ovn_kubernetes_network_provider/rollback-to-openshift-sdn.adoc
+
+:_content-type: PROCEDURE
+[id="nw-ovn-kubernetes-rollback_{context}"]
+= Rolling back the network plugin to OpenShift SDN
+
+As a cluster administrator, you can rollback your cluster to the OpenShift SDN Container Network Interface (CNI) network plugin.
+During the rollback, you must reboot every node in your cluster.
+
+[IMPORTANT]
+====
+Only rollback to OpenShift SDN if the migration to OVN-Kubernetes fails.
+====
+
+.Prerequisites
+
+* Install the OpenShift CLI (`oc`).
+* Access to the cluster as a user with the `cluster-admin` role.
+* A cluster installed on infrastructure configured with the OVN-Kubernetes network plugin.
+
+.Procedure
+
+. Stop all of the machine configuration pools managed by the Machine Config Operator (MCO):
+
+** Stop the master configuration pool:
++
+[source,terminal]
+----
+$ oc patch MachineConfigPool master --type='merge' --patch \
+  '{ "spec": { "paused": true } }'
+----
+
+** Stop the worker machine configuration pool:
++
+[source,terminal]
+----
+$ oc patch MachineConfigPool worker --type='merge' --patch \
+  '{ "spec":{ "paused" :true } }'
+----
+
+. To start the migration, set the network plugin back to OpenShift SDN by entering the following commands:
++
+[source,terminal]
+----
+$ oc patch Network.operator.openshift.io cluster --type='merge' \
+  --patch '{ "spec": { "migration": { "networkType": "OpenShiftSDN" } } }'
+
+$ oc patch Network.config.openshift.io cluster --type='merge' \
+  --patch '{ "spec": { "networkType": "OpenShiftSDN" } }'
+----
+
+. Optional: You can disable automatic migration of several OVN-Kubernetes capabilities to the OpenShift SDN equivalents:
++
+--
+* Egress IPs
+* Egress firewall
+* Multicast
+--
++
+To disable automatic migration of the configuration for any of the previously noted OpenShift SDN features, specify the following keys:
++
+[source,terminal]
+----
+$ oc patch Network.operator.openshift.io cluster --type='merge' \
+  --patch '{
+    "spec": {
+      "migration": {
+        "networkType": "OpenShiftSDN",
+        "features": {
+          "egressIP": <bool>,
+          "egressFirewall": <bool>,
+          "multicast": <bool>
+        }
+      }
+    }
+  }'
+----
++
+where:
++
+--
+`bool`: Specifies whether to enable migration of the feature. The default is `true`.
+--
+
+. Optional: You can customize the following settings for OpenShift SDN to meet your network infrastructure requirements:
++
+--
+* Maximum transmission unit (MTU)
+* VXLAN port
+--
++
+To customize either or both of the previously noted settings, customize and enter the following command. If you do not need to change the default value, omit the key from the patch.
++
+[source,terminal]
+----
+$ oc patch Network.operator.openshift.io cluster --type=merge \
+  --patch '{
+    "spec":{
+      "defaultNetwork":{
+        "openshiftSDNConfig":{
+          "mtu":<mtu>,
+          "vxlanPort":<port>
+    }}}}'
+----
++
+--
+`mtu`::
+The MTU for the VXLAN overlay network. This value is normally configured automatically, but if the nodes in your cluster do not all use the same MTU, then you must set this explicitly to `50` less than the smallest node MTU value.
+`port`::
+The UDP port for the VXLAN overlay network. If a value is not specified, the default is `4789`. The port cannot be the same as the Geneve port that is used by OVN-Kubernetes. The default value for the Geneve port is `6081`.
+--
++
+.Example patch command 
+[source,terminal]
+----
+$ oc patch Network.operator.openshift.io cluster --type=merge \
+  --patch '{
+    "spec":{
+      "defaultNetwork":{
+        "openshiftSDNConfig":{
+          "mtu":1200
+    }}}}'
+----
+
+. Wait until the Multus daemon set rollout completes.
++
+[source,terminal]
+----
+$ oc -n openshift-multus rollout status daemonset/multus
+----
++
+The name of the Multus pods is in form of `multus-<xxxxx>` where `<xxxxx>` is a random sequence of letters. It might take several moments for the pods to restart.
++
+.Example output
+[source,text]
+----
+Waiting for daemon set "multus" rollout to finish: 1 out of 6 new pods have been updated...
+...
+Waiting for daemon set "multus" rollout to finish: 5 of 6 updated pods are available...
+daemon set "multus" successfully rolled out
+----
+
+. To complete the rollback, reboot each node in your cluster. For example, you could use a bash script similar to the following. The script assumes that you can connect to each host by using `ssh` and that you have configured `sudo` to not prompt for a password.
++
+[source,bash]
+----
+#!/bin/bash
+
+for ip in $(oc get nodes  -o jsonpath='{.items[*].status.addresses[?(@.type=="InternalIP")].address}')
+do
+   echo "reboot node $ip"
+   ssh -o StrictHostKeyChecking=no core@$ip sudo shutdown -r -t 3
+done
+----
++
+If ssh access is not available, you might be able to reboot each node through the management portal for your infrastructure provider.
+
+. After the nodes in your cluster have rebooted, start all of the machine configuration pools:
++
+--
+* Start the master configuration pool:
++
+[source,terminal]
+----
+$ oc patch MachineConfigPool master --type='merge' --patch \
+  '{ "spec": { "paused": false } }'
+----
+
+* Start the worker configuration pool:
++
+[source,terminal]
+----
+$ oc patch MachineConfigPool worker --type='merge' --patch \
+  '{ "spec": { "paused": false } }'
+----
+--
++
+As the MCO updates machines in each config pool, it reboots each node.
++
+By default the MCO updates a single machine per pool at a time, so the time that the migration requires to complete grows with the size of the cluster.
+
+. Confirm the status of the new machine configuration on the hosts:
+.. To list the machine configuration state and the name of the applied machine configuration, enter the following command:
++
+[source,terminal]
+----
+$ oc describe node | egrep "hostname|machineconfig"
+----
++
+.Example output
+[source,terminal]
+----
+kubernetes.io/hostname=master-0
+machineconfiguration.openshift.io/currentConfig: rendered-master-c53e221d9d24e1c8bb6ee89dd3d8ad7b
+machineconfiguration.openshift.io/desiredConfig: rendered-master-c53e221d9d24e1c8bb6ee89dd3d8ad7b
+machineconfiguration.openshift.io/reason:
+machineconfiguration.openshift.io/state: Done
+----
++
+Verify that the following statements are true:
++
+--
+ * The value of `machineconfiguration.openshift.io/state` field is `Done`.
+ * The value of the `machineconfiguration.openshift.io/currentConfig` field is equal to the value of the `machineconfiguration.openshift.io/desiredConfig` field.
+--
+
+.. To confirm that the machine config is correct, enter the following command:
++
+[source,terminal]
+----
+$ oc get machineconfig <config_name> -o yaml
+----
++
+where `<config_name>` is the name of the machine config from the `machineconfiguration.openshift.io/currentConfig` field.
+
+. Confirm that the migration succeeded:
+
+.. To confirm that the network plugin is OpenShift SDN, enter the following command.  The value of `status.networkType` must be `OpenShiftSDN`.
++
+[source,terminal]
+----
+$ oc get network.config/cluster -o jsonpath='{.status.networkType}{"\n"}'
+----
+
+.. To confirm that the cluster nodes are in the `Ready` state, enter the following command:
++
+[source,terminal]
+----
+$ oc get nodes
+----
+
+.. If a node is stuck in the `NotReady` state, investigate the machine config daemon pod logs and resolve any errors.
+
+... To list the pods, enter the following command:
++
+[source,terminal]
+----
+$ oc get pod -n openshift-machine-config-operator
+----
++
+.Example output
+[source,terminal]
+----
+NAME                                         READY   STATUS    RESTARTS   AGE
+machine-config-controller-75f756f89d-sjp8b   1/1     Running   0          37m
+machine-config-daemon-5cf4b                  2/2     Running   0          43h
+machine-config-daemon-7wzcd                  2/2     Running   0          43h
+machine-config-daemon-fc946                  2/2     Running   0          43h
+machine-config-daemon-g2v28                  2/2     Running   0          43h
+machine-config-daemon-gcl4f                  2/2     Running   0          43h
+machine-config-daemon-l5tnv                  2/2     Running   0          43h
+machine-config-operator-79d9c55d5-hth92      1/1     Running   0          37m
+machine-config-server-bsc8h                  1/1     Running   0          43h
+machine-config-server-hklrm                  1/1     Running   0          43h
+machine-config-server-k9rtx                  1/1     Running   0          43h
+----
++
+The names for the config daemon pods are in the following format: `machine-config-daemon-<seq>`. The `<seq>` value is a random five character alphanumeric sequence.
+
+... To display the pod log for each machine config daemon pod shown in the previous output, enter the following command:
++
+[source,terminal]
+----
+$ oc logs <pod> -n openshift-machine-config-operator
+----
++
+where `pod` is the name of a machine config daemon pod.
+
+... Resolve any errors in the logs shown by the output from the previous command.
+
+.. To confirm that your pods are not in an error state, enter the following command:
++
+[source,terminal]
+----
+$ oc get pods --all-namespaces -o wide --sort-by='{.spec.nodeName}'
+----
++
+If pods on a node are in an error state, reboot that node.
+
+. Complete the following steps only if the migration succeeds and your cluster is in a good state:
+
+.. To remove the migration configuration from the Cluster Network Operator configuration object, enter the following command:
++
+[source,terminal]
+----
+$ oc patch Network.operator.openshift.io cluster --type='merge' \
+  --patch '{ "spec": { "migration": null } }'
+----
+
+.. To remove the OVN-Kubernetes configuration, enter the following command:
++
+[source,terminal]
+----
+$ oc patch Network.operator.openshift.io cluster --type='merge' \
+  --patch '{ "spec": { "defaultNetwork": { "ovnKubernetesConfig":null } } }'
+----
+
+.. To remove the OVN-Kubernetes network provider namespace, enter the following command:
++
+[source,terminal]
+----
+$ oc delete namespace openshift-ovn-kubernetes
+----

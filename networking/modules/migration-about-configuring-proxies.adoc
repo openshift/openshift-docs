@@ -1,0 +1,183 @@
+// Module included in the following assemblies:
+//
+// * migrating_from_ocp_3_to_4/installing-3-4.adoc
+// * migrating_from_ocp_3_to_4/installing-restricted-3-4.adoc
+// * migration_toolkit_for_containers/installing-mtc.adoc
+// * migration_toolkit_for_containers/installing-mtc-restricted.adoc
+
+:_content-type: CONCEPT
+[id="migration-about-configuring-proxies_{context}"]
+= Proxy configuration
+
+For {product-title} 4.1 and earlier versions, you must configure proxies in the `MigrationController` custom resource (CR) manifest after you install the {mtc-full} Operator because these versions do not support a cluster-wide `proxy` object.
+
+For {product-title} 4.2 to {product-version}, the {mtc-full} ({mtc-short}) inherits the cluster-wide proxy settings. You can change the proxy parameters if you want to override the cluster-wide proxy settings.
+
+[id="direct-volume-migration_{context}"]
+== Direct volume migration
+
+Direct Volume Migration (DVM) was introduced in MTC 1.4.2. DVM supports only one proxy. The source cluster cannot access the route of the target cluster if the target cluster is also behind a proxy.
+
+If you want to perform a DVM from a source cluster behind a proxy, you must configure a TCP proxy that works at the transport layer and forwards the SSL connections transparently without decrypting and re-encrypting them with their own SSL certificates. A Stunnel proxy is an example of such a proxy.
+
+[id="tcp-proxy-setup-for-dvm_{context}"]
+=== TCP proxy setup for DVM
+
+You can set up a direct connection between the source and the target cluster through a TCP proxy and configure the `stunnel_tcp_proxy` variable in the `MigrationController` CR to use the proxy:
+
+[source, yaml]
+----
+apiVersion: migration.openshift.io/v1alpha1
+kind: MigrationController
+metadata:
+  name: migration-controller
+  namespace: openshift-migration
+spec:
+  [...]
+  stunnel_tcp_proxy: http://username:password@ip:port
+----
+
+Direct volume migration (DVM) supports only basic authentication for the proxy. Moreover, DVM works only from behind proxies that can tunnel a TCP connection transparently. HTTP/HTTPS proxies in man-in-the-middle mode do not work. The existing cluster-wide proxies might not support this behavior. As a result, the proxy settings for DVM are intentionally kept different from the usual proxy configuration in {mtc-short}.
+
+[id="why-tcp-proxy-instead-of-an-http-https-proxy_{context}"]
+=== Why use a TCP proxy instead of an HTTP/HTTPS proxy?
+
+You can enable DVM by running Rsync between the source and the target cluster over an OpenShift route.  Traffic is encrypted using Stunnel, a TCP proxy. The Stunnel running on the source cluster initiates a TLS connection with the target Stunnel and transfers data over an encrypted channel.
+
+Cluster-wide HTTP/HTTPS proxies in OpenShift are usually configured in man-in-the-middle mode where they negotiate their own TLS session with the outside servers. However, this does not work with Stunnel. Stunnel requires that its TLS session be untouched by the proxy, essentially making the proxy a transparent tunnel which simply forwards the TCP connection as-is. Therefore, you must use a TCP proxy.
+
+[id="dvm-known-issues_{context}"]
+=== Known issue
+
+.Migration fails with error `Upgrade request required`
+
+The migration Controller uses the SPDY protocol to execute commands within remote pods. If the remote cluster is behind a proxy or a firewall that does not support the SPDY protocol, the migration controller fails to execute remote commands. The migration fails with the error message `Upgrade request required`.
+Workaround: Use a proxy that supports the SPDY protocol.
+
+In addition to supporting the SPDY protocol, the proxy or firewall also must pass the `Upgrade` HTTP header to the API server. The client uses this header to open a websocket connection with the API server. If the `Upgrade` header is blocked by the proxy or firewall, the migration fails with the error message `Upgrade request required`.
+Workaround: Ensure that the proxy forwards the `Upgrade` header.
+
+[id="tuning-network-policies-for-migrations_{context}"]
+== Tuning network policies for migrations
+
+OpenShift supports restricting traffic to or from pods using _NetworkPolicy_ or _EgressFirewalls_ based on the network plugin used by the cluster. If any of the source namespaces involved in a migration use such mechanisms to restrict network traffic to pods, the restrictions might inadvertently stop traffic to Rsync pods during migration.
+
+Rsync pods running on both the source and the target clusters must connect to each other over an OpenShift Route. Existing _NetworkPolicy_ or _EgressNetworkPolicy_ objects can be configured to automatically exempt Rsync pods from these traffic restrictions.
+
+[id="dvm-network-policy-configuration_{context}"]
+=== NetworkPolicy configuration
+
+[id="egress-traffic-from-rsync-pods_{context}"]
+==== Egress traffic from Rsync pods
+
+You can use the unique labels of Rsync pods to allow egress traffic to pass from them if the `NetworkPolicy` configuration in the source or destination namespaces blocks this type of traffic. The following policy allows *all* egress traffic from Rsync pods in the namespace:
+
+[source, yaml]
+----
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: allow-all-egress-from-rsync-pods
+spec:
+  podSelector:
+    matchLabels:
+      owner: directvolumemigration
+      app: directvolumemigration-rsync-transfer
+  egress:
+  - {}
+  policyTypes:
+  - Egress
+----
+
+[id="ingress-traffic-to-rsync-pods_{context}"]
+==== Ingress traffic to Rsync pods
+
+[source, yaml]
+----
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: allow-all-egress-from-rsync-pods
+spec:
+  podSelector:
+    matchLabels:
+      owner: directvolumemigration
+      app: directvolumemigration-rsync-transfer
+  ingress:
+  - {}
+  policyTypes:
+  - Ingress
+----
+
+[id="egressnetworkpolicy-config_{context}"]
+=== EgressNetworkPolicy configuration
+
+The `EgressNetworkPolicy` object or _Egress Firewalls_ are OpenShift constructs designed to block egress traffic leaving the cluster.
+
+Unlike the `NetworkPolicy` object, the Egress Firewall works at a project level because it applies to all pods in the namespace. Therefore, the unique labels of Rsync pods do not exempt only Rsync pods from the restrictions. However, you can add the CIDR ranges of the source or target cluster to the _Allow_ rule of the policy so that a direct connection can be setup between two clusters.
+
+Based on which cluster the Egress Firewall is present in, you can add the CIDR range of the other cluster to allow egress traffic between the two:
+
+[source, yaml]
+----
+apiVersion: network.openshift.io/v1
+kind: EgressNetworkPolicy
+metadata:
+  name: test-egress-policy
+  namespace: <namespace>
+spec:
+  egress:
+  - to:
+      cidrSelector: <cidr_of_source_or_target_cluster>
+    type: Deny
+----
+
+[id="choosing-alternate-endpoints-for-data-transfer_{context}"]
+=== Choosing alternate endpoints for data transfer
+
+By default, DVM uses an {product-title} route as an endpoint to transfer PV data to destination clusters. You can choose another type of supported endpoint, if cluster topologies allow.
+
+For each cluster, you can configure an endpoint by setting the `rsync_endpoint_type` variable on the appropriate *destination* cluster in your `MigrationController` CR:
+
+[source, yaml]
+----
+apiVersion: migration.openshift.io/v1alpha1
+kind: MigrationController
+metadata:
+  name: migration-controller
+  namespace: openshift-migration
+spec:
+  [...]
+  rsync_endpoint_type: [NodePort|ClusterIP|Route]
+----
+
+[id="configuring-supplemental-groups-for-rsync-pods_{context}"]
+=== Configuring supplemental groups for Rsync pods
+When your PVCs use a shared storage, you can configure the access to that storage by adding supplemental groups to Rsync pod definitions in order for the pods to allow access:
+
+.Supplementary groups for Rsync pods
+[option="header"]
+|===
+|Variable|Type|Default|Description
+
+|`src_supplemental_groups`
+|string
+|Not set
+|Comma-separated list of supplemental groups for source Rsync pods
+
+|`target_supplemental_groups`
+|string
+|Not set
+|Comma-separated list of supplemental groups for target Rsync pods
+|===
+
+.Example usage
+
+The `MigrationController` CR can be updated to set values for these supplemental groups:
+
+[source, yaml]
+----
+spec:
+  src_supplemental_groups: "1000,2000"
+  target_supplemental_groups: "2000,3000"
+----

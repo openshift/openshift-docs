@@ -1,0 +1,232 @@
+// Module included in the following assemblies:
+//
+// * virt/logging_events_monitoring/virt-running-cluster-checkups.adoc
+
+:_content-type: PROCEDURE
+[id="virt-measuring-latency-vm-secondary-network_{context}"]
+= Checking network connectivity and latency for virtual machines on a secondary network
+
+You use a predefined checkup to verify network connectivity and measure latency between two virtual machines (VMs) that are attached to a secondary network interface.
+
+To run a checkup for the first time, follow the steps in the procedure.
+
+If you have previously run a checkup, skip to step 5 of the procedure because the steps to install the framework and enable permissions for the checkup are not required.
+
+.Prerequisites
+
+* You installed the OpenShift CLI (`oc`).
+* The cluster has at least two worker nodes.
+* The Multus Container Network Interface (CNI) plugin is installed on the cluster.
+* You configured a network attachment definition for a namespace.
+
+.Procedure
+
+. Create a manifest file that contains the `ServiceAccount`, `Role`, and `RoleBinding` objects with permissions that the checkup requires for cluster access:
++
+.Example role manifest file
+[%collapsible]
+====
+[source,yaml]
+----
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: vm-latency-checkup-sa
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: kubevirt-vm-latency-checker
+rules:
+- apiGroups: ["kubevirt.io"]
+  resources: ["virtualmachineinstances"]
+  verbs: ["get", "create", "delete"]
+- apiGroups: ["subresources.kubevirt.io"]
+  resources: ["virtualmachineinstances/console"]
+  verbs: ["get"]
+- apiGroups: ["k8s.cni.cncf.io"]
+  resources: ["network-attachment-definitions"]
+  verbs: ["get"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: kubevirt-vm-latency-checker
+subjects:
+- kind: ServiceAccount
+  name: vm-latency-checkup-sa
+roleRef:
+  kind: Role
+  name: kubevirt-vm-latency-checker
+  apiGroup: rbac.authorization.k8s.io
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: kiagnose-configmap-access
+rules:
+- apiGroups: [ "" ]
+  resources: [ "configmaps" ]
+  verbs: ["get", "update"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: kiagnose-configmap-access
+subjects:
+- kind: ServiceAccount
+  name: vm-latency-checkup-sa
+roleRef:
+  kind: Role
+  name: kiagnose-configmap-access
+  apiGroup: rbac.authorization.k8s.io
+----
+====
+
+. Apply the checkup roles manifest:
++
+[source,terminal]
+----
+$ oc apply -n <target_namespace> -f <latency_roles>.yaml <1>
+----
+<1> `<target_namespace>` is the namespace where the checkup is to be run. This must be an existing namespace where the `NetworkAttachmentDefinition` object resides.
+
+. Create a `ConfigMap` manifest that contains the input parameters for the checkup. The config map provides the input for the framework to run the checkup and also stores the results of the checkup.
++
+.Example input config map
+[source,yaml]
+----
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: kubevirt-vm-latency-checkup-config
+data:
+  spec.timeout: 5m
+  spec.param.network_attachment_definition_namespace: <target_namespace>
+  spec.param.network_attachment_definition_name: "blue-network" <1>
+  spec.param.max_desired_latency_milliseconds: "10" <2>
+  spec.param.sample_duration_seconds: "5" <3>
+  spec.param.source_node: "worker1" <4>
+  spec.param.target_node: "worker2" <5>
+----
+<1> The name of the `NetworkAttachmentDefinition` object.
+<2> Optional: The maximum desired latency, in milliseconds, between the virtual machines. If the measured latency exceeds this value, the checkup fails.
+<3> Optional: The duration of the latency check, in seconds.
+<4> Optional: When specified, latency is measured from this node to the target node. If the source node is specified, the `spec.param.target_node` field cannot be empty.
+<5> Optional: When specified, latency is measured from the source node to this node.
+
+. Apply the config map manifest in the target namespace:
++
+[source,terminal]
+----
+$ oc apply -n <target_namespace> -f <latency_config_map>.yaml
+----
+
+. Create a `Job` object to run the checkup:
++
+.Example job manifest
+[source,yaml]
+----
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: kubevirt-vm-latency-checkup
+spec:
+  backoffLimit: 0
+  template:
+    spec:
+      serviceAccountName: vm-latency-checkup-sa
+      restartPolicy: Never
+      containers:
+        - name: vm-latency-checkup
+          image: registry.redhat.io/container-native-virtualization/vm-network-latency-checkup:v4.12.0
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop: ["ALL"]
+            runAsNonRoot: true
+            seccompProfile:
+              type: "RuntimeDefault"
+          env:
+            - name: CONFIGMAP_NAMESPACE
+              value: <target_namespace>
+            - name: CONFIGMAP_NAME
+              value: kubevirt-vm-latency-checkup-config
+----
+
+. Apply the `Job` manifest. The checkup uses the ping utility to verify connectivity and measure latency.
++
+[source,terminal]
+----
+$ oc apply -n <target_namespace> -f <latency_job>.yaml
+----
+
+. Wait for the job to complete:
++
+[source,terminal]
+----
+$ oc wait job kubevirt-vm-latency-checkup -n <target_namespace> --for condition=complete --timeout 6m
+----
+
+. Review the results of the latency checkup by running the following command. If the maximum measured latency is greater than the value of the `spec.param.max_desired_latency_milliseconds` attribute, the checkup fails and returns an error.
++
+[source,terminal]
+----
+$ oc get configmap kubevirt-vm-latency-checkup-config -n <target_namespace> -o yaml
+----
++
+.Example output config map (success)
+[source,yaml]
+----
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: kubevirt-vm-latency-checkup-config
+  namespace: <target_namespace>
+data:
+  spec.timeout: 5m
+  spec.param.network_attachment_definition_namespace: <target_namespace>
+  spec.param.network_attachment_definition_name: "blue-network"
+  spec.param.max_desired_latency_milliseconds: "10"
+  spec.param.sample_duration_seconds: "5"
+  spec.param.source_node: "worker1"
+  spec.param.target_node: "worker2"
+  status.succeeded: "true"
+  status.failureReason: ""
+  status.completionTimestamp: "2022-01-01T09:00:00Z"
+  status.startTimestamp: "2022-01-01T09:00:07Z"
+  status.result.avgLatencyNanoSec: "177000"
+  status.result.maxLatencyNanoSec: "244000" <1>
+  status.result.measurementDurationSec: "5"
+  status.result.minLatencyNanoSec: "135000"
+  status.result.sourceNode: "worker1"
+  status.result.targetNode: "worker2"
+----
+<1> The maximum measured latency in nanoseconds.
+
+. Optional: To view the detailed job log in case of checkup failure, use the following command:
++
+[source,terminal]
+----
+$ oc logs job.batch/kubevirt-vm-latency-checkup -n <target_namespace>
+----
+
+. Delete the job and config map resources that you previously created by running the following commands:
++
+[source,terminal]
+----
+$ oc delete job -n <target_namespace> kubevirt-vm-latency-checkup
+----
++
+[source,terminal]
+----
+$ oc delete config-map -n <target_namespace> kubevirt-vm-latency-checkup-config
+----
+
+. Optional: If you do not plan to run another checkup, delete the checkup role and framework manifest files.
++
+[source,terminal]
+----
+$ oc delete -f <file_name>.yaml
+----

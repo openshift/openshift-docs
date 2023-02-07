@@ -1,0 +1,382 @@
+// Module included in the following assemblies:
+//
+// * applications/pruning-objects.adoc
+
+:_content-type: PROCEDURE
+[id="pruning-images-manual_{context}"]
+= Manually pruning images
+
+The pruning custom resource enables automatic image pruning for the images from the internal registry. However, administrators can manually prune images that are no longer required by the system due to age, status, or exceed limits. There are two methods to manually prune images:
+
+* Running image pruning as a `Job` or `CronJob` on the cluster.
+* Running the `oc adm prune images` command.
+
+.Prerequisites
+
+* To prune images, you must first log in to the CLI as a user with an access token. The user must also have the `system:image-pruner` cluster role or greater (for example, `cluster-admin`).
+* Expose the image registry.
+
+.Procedure
+
+To manually prune images that are no longer required by the system due to age, status, or exceed limits, use one of the following methods:
+
+* Run image pruning as a `Job` or `CronJob` on the cluster by creating a YAML file for the `pruner` service account, for example:
++
+[source,terminal]
+----
+$ oc create -f <filename>.yaml
+----
++
+.Example output
++
+[source,yaml]
+----
+kind: List
+apiVersion: v1
+items:
+- apiVersion: v1
+  kind: ServiceAccount
+  metadata:
+    name: pruner
+    namespace: openshift-image-registry
+- apiVersion: rbac.authorization.k8s.io/v1
+  kind: ClusterRoleBinding
+  metadata:
+    name: openshift-image-registry-pruner
+  roleRef:
+    apiGroup: rbac.authorization.k8s.io
+    kind: ClusterRole
+    name: system:image-pruner
+  subjects:
+  - kind: ServiceAccount
+    name: pruner
+    namespace: openshift-image-registry
+- apiVersion: batch/v1
+  kind: CronJob
+  metadata:
+    name: image-pruner
+    namespace: openshift-image-registry
+  spec:
+    schedule: "0 0 * * *"
+    concurrencyPolicy: Forbid
+    successfulJobsHistoryLimit: 1
+    failedJobsHistoryLimit: 3
+    jobTemplate:
+      spec:
+        template:
+          spec:
+            restartPolicy: OnFailure
+            containers:
+            - image: "quay.io/openshift/origin-cli:4.1"
+              resources:
+                requests:
+                  cpu: 1
+                  memory: 1Gi
+              terminationMessagePolicy: FallbackToLogsOnError
+              command:
+              - oc
+              args:
+              - adm
+              - prune
+              - images
+              - --certificate-authority=/var/run/secrets/kubernetes.io/serviceaccount/service-ca.crt
+              - --keep-tag-revisions=5
+              - --keep-younger-than=96h
+              - --confirm=true
+              name: image-pruner
+            serviceAccountName: pruner
+----
+
+* Run the `oc adm prune images [<options>]` command:
++
+[source,terminal]
+----
+$ oc adm prune images [<options>]
+----
++
+Pruning images removes data from the integrated registry unless `--prune-registry=false` is used.
++
+Pruning images with the `--namespace` flag does not remove images, only image streams. Images are non-namespaced resources. Therefore, limiting pruning to a particular namespace makes it impossible to calculate its current usage.
++
+By default, the integrated registry caches metadata of blobs to reduce the number of requests to storage, and to increase the request-processing speed. Pruning does not update the integrated registry cache. Images that still contain pruned layers after pruning will be broken because the pruned layers that have metadata in the cache will not be pushed. Therefore, you must redeploy the registry to clear the cache after pruning:
++
+[source,terminal]
+----
+$ oc rollout restart deployment/image-registry -n openshift-image-registry
+----
++
+If the integrated registry uses a Redis cache, you must clean the database manually.
++
+If redeploying the registry after pruning is not an option, then you must permanently disable the cache.
++
+`oc adm prune images` operations require a route for your registry. Registry routes are not created by default.
++
+The *Prune images CLI configuration options* table describes the options you can use with the `oc adm prune images <options>` command.
++
+.Prune images CLI configuration options
+[cols="4,8",options="header"]
+|===
+
+|Option |Description
+
+.^|`--all`
+|Include images that were not pushed to the registry, but have been mirrored by
+pullthrough. This is on by default. To limit the pruning to images that were
+pushed to the integrated registry, pass `--all=false`.
+
+.^|`--certificate-authority`
+|The path to a certificate authority file to use when communicating with the
+{product-title}-managed registries. Defaults to the certificate authority data
+from the current user's configuration file. If provided, a secure connection is
+initiated.
+
+.^|`--confirm`
+|Indicate that pruning should occur, instead of performing a test-run. This
+requires a valid route to the integrated container image registry. If this
+command is run outside of the cluster network, the route must be provided
+using `--registry-url`.
+
+.^|`--force-insecure`
+|Use caution with this option. Allow an insecure connection to the container
+registry that is hosted via HTTP or has an invalid HTTPS certificate.
+
+.^|`--keep-tag-revisions=<N>`
+|For each imagestream, keep up to at most `N` image revisions per tag (default
+`3`).
+
+.^|`--keep-younger-than=<duration>`
+|Do not prune any image that is younger than `<duration>` relative to the
+current time. Alternately, do not prune any image that is referenced by any other object that
+is younger than `<duration>` relative to the current time (default `60m`).
+
+.^|`--prune-over-size-limit`
+|Prune each image that exceeds the smallest limit defined in the same project.
+This flag cannot be combined with `--keep-tag-revisions` nor
+`--keep-younger-than`.
+
+.^|`--registry-url`
+|The address to use when contacting the registry. The command attempts to use a
+cluster-internal URL determined from managed images and image streams. In case
+it fails (the registry cannot be resolved or reached), an alternative route that
+works needs to be provided using this flag. The registry hostname can be
+prefixed by `https://` or `http://`, which enforces particular connection
+protocol.
+
+.^|`--prune-registry`
+|In conjunction with the conditions stipulated by the other options, this option
+controls whether the data in the registry corresponding to the {product-title}
+image API object is pruned. By default, image pruning processes both the image
+API objects and corresponding data in the registry.
+
+This option is useful when you are only concerned with removing etcd content, to reduce the number of image objects but are not concerned with cleaning up registry storage, or if you intend to do that separately by hard pruning the registry during an appropriate maintenance window for the registry.
+|===
+
+[id="pruning-images-conditions_{context}"]
+== Image prune conditions
+
+You can apply conditions to your manually pruned images.
+
+* To remove any image managed by {product-title}, or images with the annotation `openshift.io/image.managed`:
+** Created at least `--keep-younger-than` minutes ago and are not currently referenced by any:
+*** Pods created less than `--keep-younger-than` minutes ago
+*** Image streams created less than `--keep-younger-than` minutes ago
+*** Running pods
+*** Pending pods
+*** Replication controllers
+*** Deployments
+*** Deployment configs
+*** Replica sets
+*** Build configurations
+*** Builds
+*** `--keep-tag-revisions` most recent items in `stream.status.tags[].items`
+** That are exceeding the smallest limit defined in the same project and are not currently referenced by any:
+*** Running pods
+*** Pending pods
+*** Replication controllers
+*** Deployments
+*** Deployment configs
+*** Replica sets
+*** Build configurations
+*** Builds
+* There is no support for pruning from external registries.
+* When an image is pruned, all references to the image are removed from all
+image streams that have a reference to the image in `status.tags`.
+* Image layers that are no longer referenced by any images are removed.
+
+[NOTE]
+====
+The `--prune-over-size-limit` flag cannot be combined with the `--keep-tag-revisions` flag nor the `--keep-younger-than` flags. Doing so returns
+information that this operation is not allowed.
+====
+
+Separating the removal of {product-title} image API objects and image data from the registry by using `--prune-registry=false`, followed by hard pruning the registry, can narrow timing windows and is safer when compared to trying to prune both through one command. However, timing windows are not completely removed.
+
+For example, you can still create a pod referencing an image as pruning identifies that image for pruning. You should still keep track of an API object created during the pruning operations that might reference images so that you can mitigate any references to deleted content.
+
+Re-doing the pruning without the `--prune-registry` option or with `--prune-registry=true` does not lead to pruning the associated storage in the image registry for images previously pruned by `--prune-registry=false`. Any images that were pruned with `--prune-registry=false` can only be deleted from registry storage by hard pruning the registry.
+
+[id="pruning-images-running-operation_{context}"]
+== Running the image prune operation
+
+.Procedure
+
+. To see what a pruning operation would delete:
+
+.. Keeping up to three tag revisions, and keeping resources (images, image streams, and pods) younger than 60 minutes:
++
+[source,terminal]
+----
+$ oc adm prune images --keep-tag-revisions=3 --keep-younger-than=60m
+----
+
+.. Pruning every image that exceeds defined limits:
++
+[source,terminal]
+----
+$ oc adm prune images --prune-over-size-limit
+----
+
+. To perform the prune operation with the options from the previous step:
++
+[source,terminal]
+----
+$ oc adm prune images --keep-tag-revisions=3 --keep-younger-than=60m --confirm
+----
++
+[source,terminal]
+----
+$ oc adm prune images --prune-over-size-limit --confirm
+----
+
+[id="pruning-images-secure-insecure_{context}"]
+== Using secure or insecure connections
+
+The secure connection is the preferred and recommended approach. It is done over
+HTTPS protocol with a mandatory certificate verification. The `prune` command
+always attempts to use it if possible. If it is not possible, in some cases it
+can fall-back to insecure connection, which is dangerous. In this case, either
+certificate verification is skipped or plain HTTP protocol is used.
+
+The fall-back to insecure connection is allowed in the following cases unless
+`--certificate-authority` is specified:
+
+. The `prune` command is run with the `--force-insecure` option.
+. The provided `registry-url` is prefixed with the `http://` scheme.
+. The provided `registry-url` is a local-link address or `localhost`.
+. The configuration of the current user allows for an insecure connection. This
+can be caused by the user either logging in using `--insecure-skip-tls-verify`
+or choosing the insecure connection when prompted.
+
+[IMPORTANT]
+====
+If the registry is secured by a certificate authority different from the one used by {product-title}, it must be specified using the
+`--certificate-authority` flag. Otherwise, the `prune` command fails with an error.
+====
+
+[id="pruning-images-problems_{context}"]
+== Image pruning problems
+
+[discrete]
+[id="pruning-images-not-being-pruned_{context}"]
+==== Images not being pruned
+
+If your images keep accumulating and the `prune` command removes just a small
+portion of what you expect, ensure that you understand the image prune
+conditions that must apply for an image to be considered a candidate for
+pruning.
+
+Ensure that images you want removed occur at higher positions in each tag
+history than your chosen tag revisions threshold. For example, consider an old
+and obsolete image named `sha:abz`. By running the following command in
+namespace `N`, where the image is tagged, the image is tagged three times in a
+single image stream named `myapp`:
+
+[source,terminal]
+----
+$ oc get is -n N -o go-template='{{range $isi, $is := .items}}{{range $ti, $tag := $is.status.tags}}'\
+  '{{range $ii, $item := $tag.items}}{{if eq $item.image "'"sha:abz"\
+  $'"}}{{$is.metadata.name}}:{{$tag.tag}} at position {{$ii}} out of {{len $tag.items}}\n'\
+  '{{end}}{{end}}{{end}}{{end}}'
+----
+
+.Example output
+[source,terminal]
+----
+myapp:v2 at position 4 out of 5
+myapp:v2.1 at position 2 out of 2
+myapp:v2.1-may-2016 at position 0 out of 1
+----
+
+When default options are used, the image is never pruned because it occurs at
+position `0` in a history of `myapp:v2.1-may-2016` tag. For an image to be
+considered for pruning, the administrator must either:
+
+* Specify `--keep-tag-revisions=0` with the `oc adm prune images` command.
++
+[WARNING]
+====
+This action removes all the tags from all the namespaces with underlying images, unless they are younger or they are referenced by objects younger than the specified threshold.
+====
+
+* Delete all the `istags` where the position is below the revision threshold,
+which means `myapp:v2.1` and `myapp:v2.1-may-2016`.
+
+* Move the image further in the history, either by running new builds pushing to
+the same `istag`, or by tagging other image. This is not always
+desirable for old release tags.
+
+Tags having a date or time of a particular image's build in their names should
+be avoided, unless the image must be preserved for an undefined amount of time.
+Such tags tend to have just one image in their history, which prevents
+them from ever being pruned.
+
+[discrete]
+[id="pruning-images-secure-against-insecure_{context}"]
+==== Using a secure connection against insecure registry
+
+If you see a message similar to the following in the output of the `oc adm prune images`
+command, then your registry is not secured and the `oc adm prune images`
+client attempts to use a secure connection:
+
+[source,terminal]
+----
+error: error communicating with registry: Get https://172.30.30.30:5000/healthz: http: server gave HTTP response to HTTPS client
+----
+
+* The recommended solution is to secure the registry. Otherwise, you can force the
+client to use an insecure connection by appending `--force-insecure`  to the
+command; however, this is not recommended.
+
+[discrete]
+[id="pruning-images-insecure-against-secure_{context}"]
+==== Using an insecure connection against a secured registry
+
+If you see one of the following errors in the output of the `oc adm prune images`
+command, it means that your registry is secured using a certificate signed by a
+certificate authority other than the one used by `oc adm prune images` client for
+connection verification:
+
+[source,terminal]
+----
+error: error communicating with registry: Get http://172.30.30.30:5000/healthz: malformed HTTP response "\x15\x03\x01\x00\x02\x02"
+error: error communicating with registry: [Get https://172.30.30.30:5000/healthz: x509: certificate signed by unknown authority, Get http://172.30.30.30:5000/healthz: malformed HTTP response "\x15\x03\x01\x00\x02\x02"]
+----
+
+By default, the certificate authority data stored in the user's configuration files is used; the same is true for communication with the master API.
+
+Use the `--certificate-authority` option to provide the right certificate authority for the container image registry server.
+
+[discrete]
+[id="pruning-images-wrong-ca_{context}"]
+==== Using the wrong certificate authority
+
+The following error means that the certificate authority used to sign the certificate of the secured container image registry is different from the authority used by the client:
+
+[source,terminal]
+----
+error: error communicating with registry: Get https://172.30.30.30:5000/: x509: certificate signed by unknown authority
+----
+
+Make sure to provide the right one with the flag `--certificate-authority`.
+
+As a workaround, the `--force-insecure` flag can be added instead. However, this is not recommended.

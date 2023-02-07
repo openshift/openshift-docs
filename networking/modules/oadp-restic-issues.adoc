@@ -1,0 +1,138 @@
+// Module included in the following assemblies:
+//
+// * backup_and_restore/application_backup_and_restore/troubleshooting.adoc
+
+:_content-type: CONCEPT
+[id="oadp-restic-issues_{context}"]
+= Restic issues
+
+You might encounter these issues when you back up applications with Restic.
+
+[id="restic-permission-error-nfs-root-squash-enabled_{context}"]
+== Restic permission error for NFS data volumes with root_squash enabled
+
+The `Restic` pod log displays the error message: `controller=pod-volume-backup error="fork/exec/usr/bin/restic: permission denied"`.
+
+.Cause
+
+If your NFS data volumes have `root_squash` enabled, `Restic` maps to `nfsnobody` and does not have permission to create backups.
+
+.Solution
+
+You can resolve this issue by creating a supplemental group for `Restic` and adding the group ID to the `DataProtectionApplication` manifest:
+
+. Create a supplemental group for `Restic` on the NFS data volume.
+. Set the `setgid` bit on the NFS directories so that group ownership is inherited.
+. Add the `spec.configuration.restic.supplementalGroups` parameter and the group ID to the `DataProtectionApplication` manifest, as in the following example:
++
+[source,yaml]
+----
+spec:
+  configuration:
+    restic:
+      enable: true
+      supplementalGroups:
+      - <group_id> <1>
+----
+<1> Specify the supplemental group ID.
+
+. Wait for the `Restic` pods to restart so that the changes are applied.
+
+[id="restic-restore-deploymentconfig-issue_{context}"]
+== Restore CR of Restic backup is "PartiallyFailed", "Failed", or remains "InProgress"
+
+The `Restore` CR of a Restic backup completes with a `PartiallyFailed` or `Failed` status or it remains `InProgress` and does not complete.
+
+If the status is `PartiallyFailed` or `Failed`, the `Velero` pod log displays the error message, `level=error msg="unable to successfully complete restic restores of pod's volumes"`.
+
+If the status is `InProgress`, the `Restore` CR logs are unavailable and no errors appear in the `Restic` pod logs.
+
+.Cause
+
+The `DeploymentConfig` object redeploys the `Restore` pod, causing the `Restore` CR to fail.
+
+.Solution
+
+. Create a `Restore` CR that excludes the `ReplicationController`, `DeploymentConfig`, and `TemplateInstances` resources:
++
+[source,terminal]
+----
+$ velero restore create --from-backup=<backup> -n openshift-adp \ <1>
+  --include-namespaces <namespace> \ <2>
+  --exclude-resources replicationcontroller,deploymentconfig,templateinstances.template.openshift.io \
+  --restore-volumes=true
+----
+<1> Specify the name of the `Backup` CR.
+<2> Specify the `include-namespaces` in the `Backup` CR.
+
+. Verify that the status of the `Restore` CR is `Completed`:
++
+[source,terminal]
+----
+$ oc get restore -n openshift-adp <restore> -o jsonpath='{.status.phase}'
+----
+
+. Create a `Restore` CR that includes the `ReplicationController` and `DeploymentConfig` resources:
++
+[source,terminal]
+----
+$ velero restore create --from-backup=<backup> -n openshift-adp \
+  --include-namespaces <namespace> \
+  --include-resources replicationcontroller,deploymentconfig \
+  --restore-volumes=true
+----
+
+. Verify that the status of the `Restore` CR is `Completed`:
++
+[source,terminal]
+----
+$ oc get restore -n openshift-adp <restore> -o jsonpath='{.status.phase}'
+----
+
+. Verify that the backup resources have been restored:
++
+[source,terminal]
+----
+$ oc get all -n <namespace>
+----
+
+[id="restic-backup-cannot-be-recreated-after-s3-bucket-emptied_{context}"]
+== Restic Backup CR cannot be recreated after bucket is emptied
+
+If you create a Restic `Backup` CR for a namespace, empty the object storage bucket, and then recreate the `Backup` CR for the same namespace, the recreated `Backup` CR fails.
+
+The `velero` pod log displays the following error message: `stderr=Fatal: unable to open config file: Stat: The specified key does not exist.\nIs there a repository at the following location?`.
+
+.Cause
+
+Velero does not recreate or update the Restic repository from the `ResticRepository` manifest if the Restic directories are deleted from object storage. See link:https://github.com/vmware-tanzu/velero/issues/4421[Velero issue 4421] for more information.
+
+.Solution
+
+* Remove the related Restic repository from the namespace by running the following command:
++
+[source,terminal]
+----
+$ oc delete resticrepository openshift-adp <name_of_the_restic_repository>
+----
++
+
+In the following error log, `mysql-persistent` is the problematic Restic repository. The name of the repository appears in italics for clarity.
++
+[source,text,options="nowrap",subs="+quotes,verbatim"]
+----
+ time="2021-12-29T18:29:14Z" level=info msg="1 errors
+ encountered backup up item" backup=velero/backup65
+ logSource="pkg/backup/backup.go:431" name=mysql-7d99fc949-qbkds
+ time="2021-12-29T18:29:14Z" level=error msg="Error backing up item"
+ backup=velero/backup65 error="pod volume backup failed: error running
+ restic backup, stderr=Fatal: unable to open config file: Stat: The
+ specified key does not exist.\nIs there a repository at the following
+ location?\ns3:http://minio-minio.apps.mayap-oadp-
+ veleo-1234.qe.devcluster.openshift.com/mayapvelerooadp2/velero1/
+ restic/_mysql-persistent_\n: exit status 1" error.file="/remote-source/
+ src/github.com/vmware-tanzu/velero/pkg/restic/backupper.go:184"
+ error.function="github.com/vmware-tanzu/velero/
+ pkg/restic.(*backupper).BackupPodVolumes"
+ logSource="pkg/backup/backup.go:435" name=mysql-7d99fc949-qbkds
+----

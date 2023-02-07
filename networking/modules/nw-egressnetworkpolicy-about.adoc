@@ -1,0 +1,164 @@
+// Module included in the following assemblies:
+//
+// * networking/openshift_sdn/configuring-egress-firewall.adoc
+// * networking/ovn_kubernetes_network_provider/configuring-egress-firewall-ovn.adoc
+
+ifeval::["{context}" == "configuring-egress-firewall-ovn"]
+:ovn:
+:kind: EgressFirewall
+:api: k8s.ovn.org/v1
+endif::[]
+ifeval::["{context}" == "openshift-sdn-egress-firewall"]
+:openshift-sdn:
+:kind: EgressNetworkPolicy
+:api: network.openshift.io/v1
+endif::[]
+
+[id="nw-egressnetworkpolicy-about_{context}"]
+= How an egress firewall works in a project
+
+As a cluster administrator, you can use an _egress firewall_ to
+limit the external hosts that some or all pods can access from within the
+cluster. An egress firewall supports the following scenarios:
+
+- A pod can only connect to internal hosts and cannot initiate connections to
+the public internet.
+- A pod can only connect to the public internet and cannot initiate connections
+to internal hosts that are outside the {product-title} cluster.
+- A pod cannot reach specified internal subnets or hosts outside the {product-title} cluster.
+- A pod can connect to only specific external hosts.
+
+For example, you can allow one project access to a specified IP range but deny the same access to a different project. Or you can restrict application developers from updating from Python pip mirrors, and force updates to come only from approved sources.
+
+[NOTE]
+====
+Egress firewall does not apply to the host network namespace. Pods with host networking enabled are unaffected by egress firewall rules.
+====
+
+You configure an egress firewall policy by creating an {kind} custom resource (CR) object. The egress firewall matches network traffic that meets any of the following criteria:
+
+- An IP address range in CIDR format
+- A DNS name that resolves to an IP address
+ifdef::ovn[]
+- A port number
+- A protocol that is one of the following protocols: TCP, UDP, and SCTP
+endif::ovn[]
+
+[IMPORTANT]
+====
+If your egress firewall includes a deny rule for `0.0.0.0/0`, access to your {product-title} API servers is blocked. You must include the IP address range that the API servers listen on in your egress firewall rules.
+
+ifdef::ovn[]
+If you use the OVN-Kubernetes network plugin, you must include the built-in join network `100.64.0.0/16` to allow access when using node ports together with an egress firewall. If you changed this join network during cluster installation, use the value that you specified instead of `100.64.0.0/16`.
+endif::ovn[]
+
+The following example illustrates the order of the egress firewall rules necessary to ensure API server access:
+
+[source,yaml,subs="attributes+"]
+----
+apiVersion: {api}
+kind: {kind}
+metadata:
+  name: default
+  namespace: <namespace> <1>
+spec:
+  egress:
+  - to:
+      cidrSelector: <api_server_address_range> <2>
+    type: Allow
+# ...
+  - to:
+      cidrSelector: 0.0.0.0/0 <3>
+    type: Deny
+----
+<1> The namespace for the egress firewall.
+<2> The IP address range that includes your {product-title} API servers.
+<3> A global deny rule prevents access to the {product-title} API servers.
+
+To find the IP address for your API servers, run `oc get ep kubernetes -n default`.
+
+For more information, see link:https://bugzilla.redhat.com/show_bug.cgi?id=1988324[BZ#1988324].
+====
+
+ifdef::openshift-sdn[]
+[IMPORTANT]
+====
+You must have OpenShift SDN configured to use either the network policy or multitenant mode to configure an egress firewall.
+
+If you use network policy mode, an egress firewall is compatible with only one policy per namespace and will not work with projects that share a network, such as global projects.
+====
+endif::openshift-sdn[]
+
+[WARNING]
+====
+Egress firewall rules do not apply to traffic that goes through routers. Any user with permission to create a Route CR object can bypass egress firewall policy rules by creating a route that points to a forbidden destination.
+====
+
+[id="limitations-of-an-egress-firewall_{context}"]
+== Limitations of an egress firewall
+
+An egress firewall has the following limitations:
+
+* No project can have more than one {kind} object.
+
+ifdef::ovn[]
+* A maximum of one {kind} object with a maximum of 8,000 rules can be defined per project.
+
+* If you are using the OVN-Kubernetes network plugin with shared gateway mode in Red Hat OpenShift Networking, return ingress replies are affected by egress firewall rules. If the egress firewall rules drop the ingress reply destination IP, the traffic is dropped.
+endif::ovn[]
+ifdef::openshift-sdn[]
+* A maximum of one {kind} object with a maximum of 1,000 rules can be defined per project.
+
+* The `default` project cannot use an egress firewall.
+
+* When using the OpenShift SDN network plugin in multitenant mode, the following limitations apply:
+
+  - Global projects cannot use an egress firewall. You can make a project global by using the `oc adm pod-network make-projects-global` command.
+
+  - Projects merged by using the `oc adm pod-network join-projects` command cannot use an egress firewall in any of the joined projects.
+endif::openshift-sdn[]
+
+Violating any of these restrictions results in a broken egress firewall for the project, and might cause all external network traffic to be dropped.
+
+An Egress Firewall resource can be created in the `kube-node-lease`, `kube-public`, `kube-system`, `openshift` and `openshift-` projects.
+
+[id="policy-rule-order_{context}"]
+== Matching order for egress firewall policy rules
+
+The egress firewall policy rules are evaluated in the order that they are defined, from first to last. The first rule that matches an egress connection from a pod applies. Any subsequent rules are ignored for that connection.
+
+[id="domain-name-server-resolution_{context}"]
+== How Domain Name Server (DNS) resolution works
+
+If you use DNS names in any of your egress firewall policy rules, proper resolution of the domain names is subject to the following restrictions:
+
+ifdef::openshift-sdn[]
+* Domain name updates are polled based on a time-to-live (TTL) duration. By default, the duration is 30 seconds. When the egress firewall controller queries the local name servers for a domain name, if the response includes a TTL that is less than 30 seconds, the controller sets the duration to the returned value. If the TTL in the response is greater than 30 minutes, the controller sets the duration to 30 minutes. If the TTL is between 30 seconds and 30 minutes, the controller ignores the value and sets the duration to 30 seconds.
+endif::openshift-sdn[]
+ifdef::ovn[]
+* Domain name updates are polled based on a time-to-live (TTL) duration. By default, the duration is 30 minutes. When the egress firewall controller queries the local name servers for a domain name, if the response includes a TTL and the TTL is less than 30 minutes, the controller sets the duration for that DNS name to the returned value. Each DNS name is queried after the TTL for the DNS record expires.
+endif::ovn[]
+
+* The pod must resolve the domain from the same local name servers when necessary. Otherwise the IP addresses for the domain known by the egress firewall controller and the pod can be different. If the IP addresses for a hostname differ, the egress firewall might not be enforced consistently.
+
+* Because the egress firewall controller and pods asynchronously poll the same local name server, the pod might obtain the updated IP address before the egress controller does, which causes a race condition. Due to this current limitation, domain name usage in {kind} objects is only recommended for domains with infrequent IP address changes.
+
+[NOTE]
+====
+The egress firewall always allows pods access to the external interface of the node that the pod is on for DNS resolution.
+
+If you use domain names in your egress firewall policy and your DNS resolution is not handled by a DNS server on the local node, then you must add egress firewall rules that allow access to your DNS server's IP addresses. if you are using domain names in your pods.
+====
+
+ifdef::ovn[]
+:!ovn:
+endif::[]
+ifdef::openshift-sdn[]
+:!openshift-sdn:
+endif::[]
+ifdef::kind[]
+:!kind:
+endif::[]
+ifdef::api[]
+:!api:
+endif::[]

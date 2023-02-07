@@ -1,0 +1,386 @@
+// Module included in the following assemblies:
+//
+// * architecture/admission-plug-ins.adoc
+
+:_content-type: PROCEDURE
+[id="configuring-dynamic-admission_{context}"]
+= Configuring dynamic admission
+
+This procedure outlines high-level steps to configure dynamic admission. The functionality of the admission chain is extended by configuring a webhook admission plugin to call out to a webhook server.
+
+The webhook server is also configured as an aggregated API server. This allows other {product-title} components to communicate with the webhook using internal credentials and facilitates testing using the `oc` command. Additionally, this enables role based access control (RBAC) into the webhook and prevents token information from other API servers from being disclosed to the webhook.
+
+.Prerequisites
+
+* An {product-title} account with cluster administrator access.
+* The {product-title} CLI (`oc`) installed.
+* A published webhook server container image.
+
+.Procedure
+
+. Build a webhook server container image and make it available to the cluster using an image registry.
+
+. Create a local CA key and certificate and use them to sign the webhook server's certificate signing request (CSR).
+
+. Create a new project for webhook resources:
++
+[source,terminal]
+----
+$ oc new-project my-webhook-namespace  <1>
+----
+<1> Note that the webhook server might expect a specific name.
+
+. Define RBAC rules for the aggregated API service in a file called `rbac.yaml`:
++
+[source,yaml]
+----
+apiVersion: v1
+kind: List
+items:
+
+- apiVersion: rbac.authorization.k8s.io/v1  <1>
+  kind: ClusterRoleBinding
+  metadata:
+    name: auth-delegator-my-webhook-namespace
+  roleRef:
+    kind: ClusterRole
+    apiGroup: rbac.authorization.k8s.io
+    name: system:auth-delegator
+  subjects:
+  - kind: ServiceAccount
+    namespace: my-webhook-namespace
+    name: server
+
+- apiVersion: rbac.authorization.k8s.io/v1  <2>
+  kind: ClusterRole
+  metadata:
+    annotations:
+    name: system:openshift:online:my-webhook-server
+  rules:
+  - apiGroups:
+    - online.openshift.io
+    resources:
+    - namespacereservations  <3>
+    verbs:
+    - get
+    - list
+    - watch
+
+- apiVersion: rbac.authorization.k8s.io/v1  <4>
+  kind: ClusterRole
+  metadata:
+    name: system:openshift:online:my-webhook-requester
+  rules:
+  - apiGroups:
+    - admission.online.openshift.io
+    resources:
+    - namespacereservations <5>
+    verbs:
+    - create
+
+- apiVersion: rbac.authorization.k8s.io/v1  <6>
+  kind: ClusterRoleBinding
+  metadata:
+    name: my-webhook-server-my-webhook-namespace
+  roleRef:
+    kind: ClusterRole
+    apiGroup: rbac.authorization.k8s.io
+    name: system:openshift:online:my-webhook-server
+  subjects:
+  - kind: ServiceAccount
+    namespace: my-webhook-namespace
+    name: server
+
+- apiVersion: rbac.authorization.k8s.io/v1  <7>
+  kind: RoleBinding
+  metadata:
+    namespace: kube-system
+    name: extension-server-authentication-reader-my-webhook-namespace
+  roleRef:
+    kind: Role
+    apiGroup: rbac.authorization.k8s.io
+    name: extension-apiserver-authentication-reader
+  subjects:
+  - kind: ServiceAccount
+    namespace: my-webhook-namespace
+    name: server
+
+- apiVersion: rbac.authorization.k8s.io/v1  <8>
+  kind: ClusterRole
+  metadata:
+    name: my-cluster-role
+  rules:
+  - apiGroups:
+    - admissionregistration.k8s.io
+    resources:
+    - validatingwebhookconfigurations
+    - mutatingwebhookconfigurations
+    verbs:
+    - get
+    - list
+    - watch
+  - apiGroups:
+    - ""
+    resources:
+    - namespaces
+    verbs:
+    - get
+    - list
+    - watch
+
+- apiVersion: rbac.authorization.k8s.io/v1
+  kind: ClusterRoleBinding
+  metadata:
+    name: my-cluster-role
+  roleRef:
+    kind: ClusterRole
+    apiGroup: rbac.authorization.k8s.io
+    name: my-cluster-role
+  subjects:
+  - kind: ServiceAccount
+    namespace: my-webhook-namespace
+    name: server
+----
+<1> Delegates authentication and authorization to the webhook server API.
+<2> Allows the webhook server to access cluster resources.
+<3> Points to resources. This example points to the `namespacereservations` resource.
+<4> Enables the aggregated API server to create admission reviews.
+<5> Points to resources. This example points to the `namespacereservations` resource.
+<6> Enables the webhook server to access cluster resources.
+<7> Role binding to read the configuration for terminating authentication.
+<8> Default cluster role and cluster role bindings for an aggregated API server.
+
+. Apply those RBAC rules to the cluster:
++
+[source,terminal]
+----
+$ oc auth reconcile -f rbac.yaml
+----
+
+. Create a YAML file called `webhook-daemonset.yaml` that is used to deploy a webhook as a daemon set server in a namespace:
++
+[source,yaml]
+----
+apiVersion: apps/v1
+kind: DaemonSet
+metadata:
+  namespace: my-webhook-namespace
+  name: server
+  labels:
+    server: "true"
+spec:
+  selector:
+    matchLabels:
+      server: "true"
+  template:
+    metadata:
+      name: server
+      labels:
+        server: "true"
+    spec:
+      serviceAccountName: server
+      containers:
+      - name: my-webhook-container  <1>
+        image: <image_registry_username>/<image_path>:<tag>  <2>
+        imagePullPolicy: IfNotPresent
+        command:
+        - <container_commands>  <3>
+        ports:
+        - containerPort: 8443 <4>
+        volumeMounts:
+        - mountPath: /var/serving-cert
+          name: serving-cert
+        readinessProbe:
+          httpGet:
+            path: /healthz
+            port: 8443 <5>
+            scheme: HTTPS
+      volumes:
+      - name: serving-cert
+        secret:
+          defaultMode: 420
+          secretName: server-serving-cert
+----
+<1> Note that the webhook server might expect a specific container name.
+<2> Points to a webhook server container image. Replace `<image_registry_username>/<image_path>:<tag>` with the appropriate value.
+<3> Specifies webhook container run commands. Replace `<container_commands>` with the appropriate value.
+<4> Defines the target port within pods. This example uses port 8443.
+<5> Specifies the port used by the readiness probe. This example uses port 8443.
+
+. Deploy the daemon set:
++
+[source,terminal]
+----
+$ oc apply -f webhook-daemonset.yaml
+----
+
+. Define a secret for the service serving certificate signer, within a YAML file called `webhook-secret.yaml`:
++
+[source,yaml]
+----
+apiVersion: v1
+kind: Secret
+metadata:
+  namespace: my-webhook-namespace
+  name: server-serving-cert
+type: kubernetes.io/tls
+data:
+  tls.crt: <server_certificate>  <1>
+  tls.key: <server_key>  <2>
+----
+<1> References the signed webhook server certificate. Replace `<server_certificate>` with the appropriate certificate in base64 format.
+<2> References the signed webhook server key. Replace `<server_key>` with the appropriate key in base64 format.
+
+. Create the secret:
++
+[source,terminal]
+----
+$ oc apply -f webhook-secret.yaml
+----
+
+. Define a service account and service, within a YAML file called `webhook-service.yaml`:
++
+[source,yaml]
+----
+apiVersion: v1
+kind: List
+items:
+
+- apiVersion: v1
+  kind: ServiceAccount
+  metadata:
+    namespace: my-webhook-namespace
+    name: server
+
+- apiVersion: v1
+  kind: Service
+  metadata:
+    namespace: my-webhook-namespace
+    name: server
+    annotations:
+      service.beta.openshift.io/serving-cert-secret-name: server-serving-cert
+  spec:
+    selector:
+      server: "true"
+    ports:
+    - port: 443  <1>
+      targetPort: 8443  <2>
+----
+<1> Defines the port that the service listens on. This example uses port 443.
+<2> Defines the target port within pods that the service forwards connections to. This example uses port 8443.
+
+. Expose the webhook server within the cluster:
++
+[source,terminal]
+----
+$ oc apply -f webhook-service.yaml
+----
+
+. Define a custom resource definition for the webhook server, in a file called `webhook-crd.yaml`:
++
+[source,yaml]
+----
+apiVersion: apiextensions.k8s.io/v1beta1
+kind: CustomResourceDefinition
+metadata:
+  name: namespacereservations.online.openshift.io  <1>
+spec:
+  group: online.openshift.io  <2>
+  version: v1alpha1  <3>
+  scope: Cluster  <4>
+  names:
+    plural: namespacereservations  <5>
+    singular: namespacereservation  <6>
+    kind: NamespaceReservation  <7>
+----
+<1> Reflects `CustomResourceDefinition` `spec` values and is in the format `<plural>.<group>`. This example uses the `namespacereservations` resource.
+<2> REST API group name.
+<3> REST API version name.
+<4> Accepted values are `Namespaced` or `Cluster`.
+<5> Plural name to be included in URL.
+<6> Alias seen in `oc` output.
+<7> The reference for resource manifests.
+
+. Apply the custom resource definition:
++
+[source,terminal]
+----
+$ oc apply -f webhook-crd.yaml
+----
+
+. Configure the webhook server also as an aggregated API server, within a file called `webhook-api-service.yaml`:
++
+[source,yaml]
+----
+apiVersion: apiregistration.k8s.io/v1beta1
+kind: APIService
+metadata:
+  name: v1beta1.admission.online.openshift.io
+spec:
+  caBundle: <ca_signing_certificate>  <1>
+  group: admission.online.openshift.io
+  groupPriorityMinimum: 1000
+  versionPriority: 15
+  service:
+    name: server
+    namespace: my-webhook-namespace
+  version: v1beta1
+----
+<1> A PEM-encoded CA certificate that signs the server certificate that is used by the webhook server. Replace `<ca_signing_certificate>` with the appropriate certificate in base64 format.
+
+. Deploy the aggregated API service:
++
+[source,terminal]
+----
+$ oc apply -f webhook-api-service.yaml
+----
+
+. Define the webhook admission plugin configuration within a file called `webhook-config.yaml`. This example uses the validating admission plugin:
++
+[source,yaml]
+----
+apiVersion: admissionregistration.k8s.io/v1beta1
+kind: ValidatingWebhookConfiguration
+metadata:
+  name: namespacereservations.admission.online.openshift.io  <1>
+webhooks:
+- name: namespacereservations.admission.online.openshift.io  <2>
+  clientConfig:
+    service:  <3>
+      namespace: default
+      name: kubernetes
+      path: /apis/admission.online.openshift.io/v1beta1/namespacereservations  <4>
+    caBundle: <ca_signing_certificate>  <5>
+  rules:
+  - operations:
+    - CREATE
+    apiGroups:
+    - project.openshift.io
+    apiVersions:
+    - "*"
+    resources:
+    - projectrequests
+  - operations:
+    - CREATE
+    apiGroups:
+    - ""
+    apiVersions:
+    - "*"
+    resources:
+    - namespaces
+  failurePolicy: Fail
+----
+<1> Name for the `ValidatingWebhookConfiguration` object. This example uses the `namespacereservations` resource.
+<2> Name of the webhook to call. This example uses the `namespacereservations` resource.
+<3> Enables access to the webhook server through the aggregated API.
+<4> The webhook URL used for admission requests. This example uses the `namespacereservation` resource.
+<5> A PEM-encoded CA certificate that signs the server certificate that is used by the webhook server. Replace `<ca_signing_certificate>` with the appropriate certificate in base64 format.
+
+. Deploy the webhook:
++
+[source,terminal]
+----
+$ oc apply -f webhook-config.yaml
+----
+
+. Verify that the webhook is functioning as expected. For example, if you have configured dynamic admission to reserve specific namespaces, confirm that requests to create those namespaces are rejected and that requests to create non-reserved namespaces succeed.
