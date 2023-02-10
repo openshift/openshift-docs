@@ -1147,6 +1147,11 @@ def guarantee_symlinks_to_project_root(distro="openshift-enterprise"):
             if not os.path.isdir(target_includes_dir):
                 os.symlink(drupal_build_path_includes_dir, target_includes_dir)
 
+    includes_within_includes_path = os.path.join(os.path.abspath(os.curdir), "drupal-build", distro, "includes", "includes")
+    if os.path.exists(includes_within_includes_path):
+        os.unlink(includes_within_includes_path)
+
+
 
 def retrieve_all_drupal_build_adoc_files(distro="openshift-enterprise"):
     """Retrieve all AsciiDoc files from drupal-build directory."""
