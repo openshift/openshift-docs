@@ -42,7 +42,7 @@ function versionSelector(list) {
     newLink = "https://docs.openshift.com/enterprise/" +
       newVersion +
       fileRequested;
-  } else if (['3.65', '3.66', '3.67', '3.68', '3.69', '3.70', '3.71', '3.72', '3.73'].contains(newVersion)) {
+  } else if (['3.65', '3.66', '3.67', '3.68', '3.69', '3.70', '3.71', '3.72', '3.73', '3.74'].contains(newVersion)) {
     // check and handle links for RHACS versions
     newLink = "https://docs.openshift.com/acs/" +
       newVersion +
@@ -75,7 +75,7 @@ function versionSelector(list) {
       if(jqXHR.status == 404) {
         list.value = currentVersion;
         if(confirm("This page doesn't exist in version " + newVersion + ". Click OK to search the " + newVersion + " docs OR Cancel to stay on this page.")) {
-          if (['3.65', '3.66', '3.67', '3.68', '3.69', '3.70', '3.71', '3.72', '3.73'].contains(newVersion)) {
+          if (['3.65', '3.66', '3.67', '3.68', '3.69', '3.70', '3.71', '3.72', '3.73', '3.74'].contains(newVersion)) {
             window.location = "https://google.com/search?q=site:https://docs.openshift.com/acs/" + newVersion + " " + document.title;}
           else {
             if (dk == "openshift-enterprise"){
