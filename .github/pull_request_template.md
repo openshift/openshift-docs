@@ -1,4 +1,4 @@
-<!--- PR title format: [GH#<gh-issue-id>][BZ#<bz-issue-id>][OCPBUGS#<jira-issue-id>][OSDOCS-<jira-issue-id>]: <short-description-of-the-pr> --->
+<!--- PR title format: [GH#<gh-issue-id>][BZ#<bz-issue-id>][OCPBUGS#<jira-issue-id>][OSDOCS#<jira-issue-id>]: <short-description-of-the-pr> --->
 
 <!--- If your changes apply to the latest release and/or in-development version of OpenShift, open your PR against the `main` branch.
 
