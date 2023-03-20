@@ -8,64 +8,123 @@
 
 
 
-To achieve such performance, run etcd on machines that are backed by SSD or NVMe disks with low latency and high throughput. Consider single-level cell (SLC) solid-state drives (SSDs), which provide 1 bit per memory cell, are durable and reliable, and are ideal for write-intensive workloads.
-
-The following hard disk features provide optimal etcd performance:
-
-* Low latency to support fast read operation.
-* High-bandwidth writes for faster compactions and defragmentation.
-* High-bandwidth reads for faster recovery from failures.
-* Solid state drives as a minimum selection, however NVMe drives are preferred.
-* Server-grade hardware from various manufacturers for increased reliability.
-* RAID 0 technology for increased performance.
-* Dedicated etcd drives. Do not place log files or other heavy workloads on etcd drives.
-
-Avoid NAS or SAN setups and spinning drives. Always benchmark by using utilities such as fio. Continuously monitor the cluster performance as it increases.
-
-[NOTE]
-====
-Avoid using the Network File System (NFS) protocol or other network based file systems.
-====
-
-Some key metrics to monitor on a deployed {product-title} cluster are p99 of etcd disk write ahead log duration and the number of etcd leader changes. Use Prometheus to track these metrics.
-
-[NOTE]
-====
-The etcd member database sizes can vary in a cluster during normal operations. This difference does not affect cluster upgrades, even if the leader size is different from the other members.
-====
-
-To validate the hardware for etcd before or after you create the {product-title} cluster, you can use fio.
+You can move etcd from a shared disk to a separate disk to prevent or resolve performance issues.
 
 .Prerequisites
 
-* Container runtimes such as Podman or Docker are installed on the machine that you're testing.
-* Data is written to the `/var/lib/etcd` path.
+* The `MachineConfigPool` must match `metadata.labels[“machineconfiguration.openshift.io/role]`. This applies to a controller, worker, or a custom pool.
+* The node's auxiliary storage device, such as `/dev/sdb`, must match the sdb. Change this reference in all places in the file.
+
+[NOTE]
+====
+This procedure cannot move parts of the root filesystem, such as /var/, to another disk or partition on an installed node.
+====
+
+To mount a secondary disk for a {product-title} {product-version} container storage, use the `MachineConfig` Operator at link:https://docs.openshift.com/container-platform/4.11/architecture/architecture-rhcos.html [Red Hat Enterprise Linux CoreOS (RHCOS)].
+
+Use the following steps to move etcd to a different device:
 
 .Procedure
-* Run fio and analyze the results:
-+
---
-** If you use Podman, run this command:
+. Create a `machineconfig` yaml file named `etcd-mc.yml` and add the following information:
+
+[source,input]
+----
+apiVersion: machineconfiguration.openshift.io/v1
+kind: MachineConfig
+metadata:
+  labels:
+    machineconfiguration.openshift.io/role: master
+  name: 98-var-lib-etcd
+spec:
+  config:
+    ignition:
+      version: 3.2.0
+    systemd:
+      units:
+      - contents: |
+          [Unit]
+          Description=Make File System on /dev/sdb
+          DefaultDependencies=no
+          BindsTo=dev-sdb.device
+          After=dev-sdb.device var.mount
+          Before=systemd-fsck@dev-sdb.service
+
+          [Service]
+          Type=oneshot
+          RemainAfterExit=yes
+          ExecStart=/usr/lib/systemd/systemd-makefs xfs /dev/sdb
+          TimeoutSec=0
+
+          [Install]
+          WantedBy=var-lib-containers.mount
+        enabled: true
+        name: systemd-mkfs@dev-sdb.service
+      - contents: |
+          [Unit]
+          Description=Mount /dev/sdb to /var/lib/etcd
+          Before=local-fs.target
+          Requires=systemd-mkfs@dev-sdb.service
+          After=systemd-mkfs@dev-sdb.service var.mount
+
+          [Mount]
+          What=/dev/sdb
+          Where=/var/lib/etcd
+          Type=xfs
+          Options=defaults,prjquota
+
+          [Install]
+          WantedBy=local-fs.target
+        enabled: true
+        name: var-lib-etcd.mount
+      - contents: |
+          [Unit]
+          Description=Sync etcd data if new mount is empty
+          DefaultDependencies=no
+          After=var-lib-etcd.mount var.mount
+          Before=crio.service
+
+          [Service]
+          Type=oneshot
+          RemainAfterExit=yes
+          ExecCondition=/usr/bin/test ! -d /var/lib/etcd/member
+          ExecStart=/usr/sbin/setenforce 0
+          ExecStart=/bin/rsync -ar /sysroot/ostree/deploy/rhcos/var/lib/etcd/ /var/lib/etcd/
+          ExecStart=/usr/sbin/setenforce 1
+          TimeoutSec=0
+
+          [Install]
+          WantedBy=multi-user.target graphical.target
+        enabled: true
+        name: sync-var-lib-etcd-to-etcd.service
+      - contents: |
+          [Unit]
+          Description=Restore recursive SELinux security contexts
+          DefaultDependencies=no
+          After=var-lib-etcd.mount
+          Before=crio.service
+
+          [Service]
+          Type=oneshot
+          RemainAfterExit=yes
+          ExecStart=/sbin/restorecon -R /var/lib/etcd/
+          TimeoutSec=0
+
+          [Install]
+          WantedBy=multi-user.target graphical.target
+        enabled: true
+        name: restorecon-var-lib-etcd.service
+
+----
+
+. Create the machine configuration.
+
 [source,terminal]
-+
 ----
-$ sudo podman run --volume /var/lib/etcd:/var/lib/etcd:Z quay.io/openshift-scale/etcd-perf
+$ oc login -u ${ADMIN} -p ${ADMINPASSWORD} ${API}
+[... output omitted ...]
+$ oc create -f etcd-mc.yml
+machineconfig.machineconfiguration.openshift.io/98-var-lib-etcd created
+$ oc login -u ${ADMIN} -p ${ADMINPASSWORD} ${API} [... output omitted ...] $ oc create -f etcd-mc.yml machineconfig.machineconfiguration.openshift.io/98-var-lib-etcd created
 ----
-
-** If you use Docker, run this command:
-[source,terminal]
-+
-----
-$ sudo docker run --volume /var/lib/etcd:/var/lib/etcd:Z quay.io/openshift-scale/etcd-perf
-----
---
-
-The output reports whether the disk is fast enough to host etcd by comparing the 99th percentile of the fsync metric captured from the run to see if it is less than 10 ms. A few of the most important etcd metrics that might affected by I/O performance are as follow:
-
-* `etcd_disk_wal_fsync_duration_seconds_bucket` metric reports the etcd's WAL fsync duration
-* `etcd_disk_backend_commit_duration_seconds_bucket`  metric reports the etcd backend commit latency duration
-* `etcd_server_leader_changes_seen_total` metric reports the leader changes
-
-Because etcd replicates the requests among all the members, its performance strongly depends on network input/output (I/O) latency. High network latencies result in etcd heartbeats taking longer than the election timeout, which results in leader elections that are disruptive to the cluster. A key metric to monitor on a deployed {product-title} cluster is the 99th percentile of etcd network peer latency on each etcd cluster member. Use Prometheus to track the metric.
-
-The `histogram_quantile(0.99, rate(etcd_network_peer_round_trip_time_seconds_bucket[2m]))` metric reports the round trip time for etcd to finish replicating the client requests between the members. Ensure that it is less than 50 ms.
+The nodes update and reboot. After the reboot completed, the following events occur:
+ 
