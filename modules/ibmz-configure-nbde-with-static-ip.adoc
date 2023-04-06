@@ -1,0 +1,162 @@
+// Module included in the following assemblies:
+//
+// * installing/installing_ibm_z/installing-ibm-z.adoc
+// * installing/installing_ibm_z/installing-restricted-networks-ibm-z.adoc
+// * installing/installing_ibm_z/installing-ibm-z-kvm.adoc
+// * installing/installing_ibm_z/installing-restricted-networks-ibm-z-kvm.adoc
+
+ifeval::["{context}" == "installing-ibm-z"]
+:ibm-z:
+endif::[]
+ifeval::["{context}" == "installing-ibm-z-kvm"]
+:ibm-z-kvm:
+endif::[]
+ifeval::["{context}" == "installing-restricted-networks-ibm-z"]
+:ibm-z:
+endif::[]
+ifeval::["{context}" == "installing-restricted-networks-ibm-z-kvm"]
+:ibm-z-kvm:
+endif::[]
+
+:_content-type: PROCEDURE
+[id="configuring-nbde-static-ip-ibmz-linuxone-environment_{context}"]
+= Configuring NBDE with static IP in an {ibmzProductName} or {linuxoneProductName} environment
+
+Enabling NBDE disk encryption in an {ibmzProductName} or {linuxoneProductName} environment requires additional steps, which are described in detail in this section.
+
+.Prerequisites
+
+* You have set up the External Tang Server. See link:https://access.redhat.com/documentation/en-us/red_hat_enterprise_linux/8/html/security_hardening/configuring-automated-unlocking-of-encrypted-volumes-using-policy-based-decryption_security-hardening#network-bound-disk-encryption_configuring-automated-unlocking-of-encrypted-volumes-using-policy-based-decryption[Network-bound disk encryption] for instructions.
+* You have installed the `butane` utility.
+* You have reviewed the instructions for how to create machine configs with Butane.
+
+.Procedure
+
+. Create Butane configuration files for the control plane and compute nodes.
++
+The following example of a Butane configuration for a control plane node creates a file named `master-storage.bu` for disk encryption:
++
+[source,yaml]
+----
+variant: openshift
+version: 4.13.0
+metadata:
+  name: master-storage
+  labels:
+    machineconfiguration.openshift.io/role: master
+storage:
+  luks:
+    - clevis:
+        tang:
+          - thumbprint: QcPr_NHFJammnRCA3fFMVdNBwjs
+            url: http://clevis.example.com:7500
+        options: <1>
+           - --cipher
+           - aes-cbc-essiv:sha256
+ifndef::ibm-z-kvm[]
+      device: /dev/disk/by-partlabel/root <2>
+endif::ibm-z-kvm[]
+ifdef::ibm-z-kvm[]
+      device: /dev/disk/by-partlabel/root
+endif::ibm-z-kvm[]
+      label: luks-root
+      name: root
+      wipe_volume: true
+  filesystems:
+    - device: /dev/mapper/root
+      format: xfs
+      label: root
+      wipe_filesystem: true
+openshift:
+ifndef::ibm-z-kvm[]
+  fips: true <3>
+endif::ibm-z-kvm[]
+ifdef::ibm-z-kvm[]
+  fips: true <2>
+endif::ibm-z-kvm[]
+----
+ifdef::ibm-z-kvm[]
+<1>  The cipher option is only required if FIPS mode is enabled. Omit the entry if FIPS is disabled.
+<2> Whether to enable or disable FIPS mode. By default, FIPS mode is not enabled. If FIPS mode is enabled, the {op-system-first} machines that {product-title} runs on bypass the default Kubernetes cryptography suite and use the cryptography modules that are provided with {op-system} instead.
+endif::ibm-z-kvm[]
+ifndef::ibm-z-kvm[]
+<1>  The cipher option is only required if FIPS mode is enabled. Omit the entry if FIPS is disabled.
+<2> For installations on DASD-type disks, replace with `device: /dev/disk/by-label/root`.
+<3> Whether to enable or disable FIPS mode. By default, FIPS mode is not enabled. If FIPS mode is enabled, the {op-system-first} machines that {product-title} runs on bypass the default Kubernetes cryptography suite and use the cryptography modules that are provided with {op-system} instead.
+endif::ibm-z-kvm[]
+
+. Create a customized initramfs file to boot the machine, by running the following command:
++
+[source,terminal]
+----
+$ coreos-installer pxe customize \
+    /root/rhcos-bootfiles/rhcos-<release>-live-initramfs.s390x.img \
+    --dest-device /dev/sda --dest-karg-append \
+    ip=<ip-address>::<gateway-ip>:<subnet-mask>::<network-device>:none \
+    --dest-karg-append nameserver=<nameserver-ip> \
+    --dest-karg-append rd.neednet=1 -o \
+    /root/rhcos-bootfiles/<Node-name>-initramfs.s390x.img
+----
++
+[NOTE]
+====
+Before first boot, you must customize the initramfs for each node in the cluster, and add PXE kernel parameters.
+====
+
+. Create a parameter file that includes `ignition.platform.id=metal` and `ignition.firstboot`.
++
+.Example kernel parameter file for the control plane machine:
++
+ifndef::ibm-z-kvm[]
+[source,terminal]
+----
+rd.neednet=1 \
+console=ttysclp0 \
+coreos.inst.install_dev=/dev/dasda \ <1>
+ignition.firstboot ignition.platform.id=metal \
+coreos.live.rootfs_url=http://10.19.17.25/redhat/ocp/rhcos-413.86.202302201445-0/rhcos-413.86.202302201445-0-live-rootfs.s390x.img \
+coreos.inst.ignition_url=http://bastion.ocp-cluster1.example.com:8080/ignition/master.ign \
+ip=10.19.17.2::10.19.17.1:255.255.255.0::enbdd0:none nameserver=10.19.17.1 \
+zfcp.allow_lun_scan=0 \ <2>
+rd.znet=qeth,0.0.bdd0,0.0.bdd1,0.0.bdd2,layer2=1 \
+rd.zfcp=0.0.5677,0x600606680g7f0056,0x034F000000000000 \ <3>
+zfcp.allow_lun_scan=0 \
+rd.znet=qeth,0.0.bdd0,0.0.bdd1,0.0.bdd2,layer2=1 \
+rd.zfcp=0.0.5677,0x600606680g7f0056,0x034F000000000000
+----
+<1> For installations on DASD-type disks, add `coreos.inst.install_dev=/dev/dasda`. Omit this value for FCP-type disks.
+<2> For installations on FCP-type disks, add `zfcp.allow_lun_scan=0`. Omit this value for DASD-type disks.
+<3> For installations on DASD-type disks, replace with `rd.dasd=0.0.3490` to specify the DASD device.
+endif::ibm-z-kvm[]
+ifdef::ibm-z-kvm[]
+[source,terminal]
+----
+rd.neednet=1 \
+console=ttysclp0 \
+ignition.firstboot ignition.platform.id=metal \
+coreos.live.rootfs_url=http://10.19.17.25/redhat/ocp/rhcos-413.86.202302201445-0/rhcos-413.86.202302201445-0-live-rootfs.s390x.img \
+coreos.inst.ignition_url=http://bastion.ocp-cluster1.example.com:8080/ignition/master.ign \
+ip=10.19.17.2::10.19.17.1:255.255.255.0::enbdd0:none nameserver=10.19.17.1 \
+zfcp.allow_lun_scan=0 \
+rd.znet=qeth,0.0.bdd0,0.0.bdd1,0.0.bdd2,layer2=1 \
+rd.zfcp=0.0.5677,0x600606680g7f0056,0x034F000000000000
+----
+endif::ibm-z-kvm[]
++
+[NOTE]
+====
+Write all options in the parameter file as a single line and make sure you have no newline characters.
+====
+
+ifeval::["{context}" == "installing-ibm-z"]
+:!ibm-z:
+endif::[]
+ifeval::["{context}" == "installing-ibm-z-kvm"]
+:!ibm-z-kvm:
+endif::[]
+ifeval::["{context}" == "installing-restricted-networks-ibm-z"]
+:!ibm-z:
+endif::[]
+ifeval::["{context}" == "installing-restricted-networks-ibm-z-kvm"]
+:!ibm-z-kvm:
+endif::[]
