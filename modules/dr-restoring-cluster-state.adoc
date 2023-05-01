@@ -69,7 +69,7 @@ $ sudo mv /etc/kubernetes/manifests/etcd-pod.yaml /tmp
 +
 [source,terminal]
 ----
-$ sudo crictl ps | grep etcd | grep -v operator
+$ sudo crictl ps | grep etcd | egrep -v "operator|etcd-guard"
 ----
 +
 The output of this command should be empty. If it is not empty, wait a few minutes and check again.
@@ -85,7 +85,7 @@ $ sudo mv /etc/kubernetes/manifests/kube-apiserver-pod.yaml /tmp
 +
 [source,terminal]
 ----
-$ sudo crictl ps | grep kube-apiserver | grep -v operator
+$ sudo crictl ps | grep kube-apiserver | egrep -v "operator|guard"
 ----
 +
 The output of this command should be empty. If it is not empty, wait a few minutes and check again.
@@ -100,7 +100,6 @@ $ sudo mv /var/lib/etcd/ /tmp
 .. Repeat this step on each of the other control plane hosts that is not the recovery host.
 
 . Access the recovery control plane host.
-
 
 . If the cluster-wide proxy is enabled, be sure that you have exported the `NO_PROXY`, `HTTP_PROXY`, and `HTTPS_PROXY` environment variables.
 +
@@ -204,6 +203,11 @@ $ sudo systemctl restart kubelet.service
 .. Repeat this step on all other control plane hosts.
 
 . Approve the pending CSRs:
++
+[NOTE]
+====
+Clusters with no worker nodes, such as single-node clusters or clusters consisting of three schedulable control plane nodes, will not have any pending CSRs to approve. In those scenarios, you can skip this step.
+====
 
 .. Get the list of current CSRs:
 +
@@ -223,7 +227,7 @@ csr-zhhhp   3m8s   kubernetes.io/kube-apiserver-client-kubelet   system:servicea
 ----
 <1> A pending kubelet service CSR (for user-provisioned installations).
 <2> A pending `node-bootstrapper` CSR.
-+
+
 .. Review the details of a CSR to verify that it is valid:
 +
 [source,terminal]
@@ -246,7 +250,6 @@ $ oc adm certificate approve <csr_name>
 $ oc adm certificate approve <csr_name>
 ----
 
-
 . Verify that the single member control plane has started successfully.
 
 .. From the recovery host, verify that the etcd container is running.
@@ -266,7 +269,7 @@ $ sudo crictl ps | grep etcd | grep -v operator
 +
 [source,terminal]
 ----
-$ oc get pods -n openshift-etcd | grep -v etcd-quorum-guard | grep etcd
+$ oc -n openshift-etcd get pods -l k8s-app=etcd
 ----
 +
 [NOTE]
@@ -288,14 +291,47 @@ etcd-ip-10-0-143-125.ec2.internal                1/1     Running     1          
 +
 If the status is `Pending`, or the output lists more than one running etcd pod, wait a few minutes and check again.
 
-.. Repeat this step for each lost control plane host that is not the recovery host.
 +
 [NOTE]
 ====
 Perform the following step only if you are using `OVNKubernetes` network plugin.
 ====
+
+. Delete the node objects that are associated with control plane hosts that are not the recovery control plane host.
 +
+[source,terminal]
+----
+$ oc delete node <non-recovery-controlplane-host-1> <non-recovery-controlplane-host-2>
+----
+
+. Verify that the Cluster Network Operator (CNO) redeploys the OVN-Kubernetes control plane and that it no longer references the wrong controller IP addresses. To verify this result, regularly check the output of the following command. Wait until it returns an empty result before you proceed with the next step.
++
+[source,terminal]
+----
+$ oc -n openshift-ovn-kubernetes get ds/ovnkube-master -o yaml | grep -E '<wrong_master_ip_1>|<wrong_master_ip_2>'
+----
++
+[NOTE]
+====
+It can take at least 5-10 minutes for the OVN-Kubernetes control plane to be redeployed and the previous command to return empty output.
+====
+. Turn off the quorum guard by entering the following command:
++
+[source,terminal]
+----
+$ oc patch etcd/cluster --type=merge -p '{"spec": {"unsupportedConfigOverrides": {"useUnsupportedUnsafeNonHANonProductionUnstableEtcd": true}}}'
+----
++
+This command ensures that you can successfully re-create secrets and roll out the static pods.
+
 . Restart the Open Virtual Network (OVN) Kubernetes pods on all the hosts.
++
+[NOTE]
+====
+Validating and mutating admission webhooks can reject pods. If you add any additional webhooks with the `failurePolicy` set to `Fail`, then they can reject pods and the restoration process can fail. You can avoid this by saving and deleting webhooks while restoring the cluster state. After the cluster state is restored successfully, you can enable the webhooks again.
+
+Alternatively, you can temporarily set the `failurePolicy` to `Ignore` while restoring the cluster state. After the cluster state is restored successfully, you can set the `failurePolicy` to `Fail`.
+====
 
 .. Remove the northbound database (nbdb) and southbound database (sbdb). Access the recovery host and the remaining control plane nodes by using Secure Shell (SSH) and run the following command:
 +
@@ -341,18 +377,22 @@ $ oc get pods -n openshift-ovn-kubernetes -o name | grep ovnkube-node | while re
 $ oc get  pods -n openshift-ovn-kubernetes | grep ovnkube-node
 ----
 
-. Delete and recreate other non-recovery, control plane machines, one by one. After these machines are recreated, a new revision is forced and etcd scales up automatically.
+. Delete and re-create other non-recovery, control plane machines, one by one. After the machines are re-created, a new revision is forced and etcd automatically scales up.
++
+** If you use a user-provisioned bare metal installation, you can re-create a control plane machine by using the same method that you used to originally create it. For more information, see "Installing a user-provisioned cluster on bare metal". 
 +
 [WARNING]
 ====
-For bare metal installations on installer-provisioned infrastructure, control plane machines are not recreated. For more information, see "Replacing a bare-metal control plane node".
+Do not delete and re-create the machine for the recovery host.
 ====
 +
-If you are running installer-provisioned infrastructure, or you used the Machine API to create your machines, follow these steps. Otherwise, you must create the new control plane node using the same method that was used to originally create it.
+** If you are running installer-provisioned infrastructure, or you used the Machine API to create your machines, follow these steps:
 +
 [WARNING]
 ====
-Do not delete and recreate the machine for the recovery host.
+Do not delete and re-create the machine for the recovery host.
+
+For bare metal installations on installer-provisioned infrastructure, control plane machines are not re-created. For more information, see "Replacing a bare-metal control plane node".
 ====
 .. Obtain the machine for one of the lost control plane hosts.
 +
@@ -488,7 +528,7 @@ clustername-8qw5l-worker-us-east-1b-lrdxb   Running   m4.large    us-east-1   us
 clustername-8qw5l-worker-us-east-1c-pkg26   Running   m4.large    us-east-1   us-east-1c   3h28m   ip-10-0-170-181.ec2.internal   aws:///us-east-1c/i-06861c00007751b0a   running
 ----
 
-.. Create the new machine using the `new-master-machine.yaml` file:
+.. Create a machine by using the `new-master-machine.yaml` file:
 +
 [source,terminal]
 ----
@@ -520,7 +560,7 @@ It might take a few minutes for the new machine to be created. The etcd cluster 
 
 .. Repeat these steps for each lost control plane host that is not the recovery host.
 
-. In a separate terminal window, log in to the cluster as a user with the `cluster-admin` role by using the following command:
+. In a separate terminal window, log in to the cluster as a user with the `cluster-admin` role by entering the following command:
 +
 [source,terminal]
 ----
@@ -539,6 +579,20 @@ $ oc patch etcd cluster -p='{"spec": {"forceRedeploymentReason": "recovery-'"$( 
 <1> The `forceRedeploymentReason` value must be unique, which is why a timestamp is appended.
 +
 When the etcd cluster Operator performs a redeployment, the existing nodes are started with new pods similar to the initial bootstrap scale up.
+
+. Turn the quorum guard back on by entering the following command:
++
+[source,terminal]
+----
+$ oc patch etcd/cluster --type=merge -p '{"spec": {"unsupportedConfigOverrides": null}}'
+----
+
+. You can verify that the `unsupportedConfigOverrides` section is removed from the object by entering this command:
++
+[source,terminal]
+----
+$ oc get etcd/cluster -oyaml
+----
 
 . Verify all nodes are updated to the latest revision.
 +
@@ -645,7 +699,7 @@ In a terminal that has access to the cluster as a `cluster-admin` user, run the 
 +
 [source,terminal]
 ----
-$ oc get pods -n openshift-etcd | grep -v etcd-quorum-guard | grep etcd
+$ oc -n openshift-etcd get pods -l k8s-app=etcd
 ----
 +
 .Example output
