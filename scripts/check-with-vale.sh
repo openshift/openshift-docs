@@ -15,7 +15,7 @@ if [ -n "${FILES}" ] ;
         if [ "$TRAVIS" = true ] ; then
             #clean out conditional markup in Travis CI
             sed -i -e 's/ifdef::.*\|ifndef::.*\|ifeval::.*\|endif::.*/ /' ${FILES}
-            vale ${FILES} --glob='*.adoc' --minAlertLevel=error
+            vale ${FILES} --glob='*.adoc' --minAlertLevel=suggestion
         else
             vale ${FILES} --glob='*.adoc' --minAlertLevel=suggestion
         fi
