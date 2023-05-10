@@ -14,7 +14,19 @@ if [ "$TRAVIS_PULL_REQUEST" != "false" ] ; then #to make sure it only runs on PR
             if [ "$USERNAME" != "openshift-cherrypick-robot" ] ; then # to make sure it doesn't run for USERNAME openshift-cherrypick-robot
                 echo "{\"PR_BRANCH\":\"${TRAVIS_PULL_REQUEST_BRANCH}\",\"BASE_REPO\":\"${TRAVIS_REPO_SLUG}\",\"PR_NUMBER\":\"${TRAVIS_PULL_REQUEST}\",\"USER_NAME\":\"${USERNAME}\",\"BASE_REF\":\"${TRAVIS_BRANCH}\",\"REPO_NAME\":\"${TRAVIS_PULL_REQUEST_SLUG}\",\"SHA\":\"${TRAVIS_PULL_REQUEST_SHA}\"}" > buildset.json
 
-                curl -H 'Content-Type: application/json' --request POST --data @buildset.json "https://ocpdocs-preview-receiver.vercel.app/api/buildPreview"
+                #curl -H 'Content-Type: application/json' --request POST --data @buildset.json "https://ocpdocs-preview-receiver.vercel.app/api/buildPreview"
+
+                if response=$(curl -s -X POST -H "Content-Type: application/json" --data @buildset.json https://ocpdocs-preview-receiver.vercel.app/api/buildPreview); then
+                    if echo "$response" | jq -e '.message == "Invalid data!"' >/dev/null; then
+                        echo "Curl request failed: Invalid data!"
+                        exit 1
+                    else
+                        echo "$response"
+                    fi
+                else
+                    echo "Curl request failed: $response"
+                    exit 1
+                fi
 
                 echo -e "\\n\\033[0;32m[✓] Sent request for building a preview.\\033[0m"
             else
