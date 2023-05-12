@@ -4,30 +4,25 @@
 
 :_content-type: PROCEDURE
 [id="ztp-creating-hwevents_{context}"]
-= Configuring bare-metal event monitoring using PolicyGenTemplate CRs
+= Configuring bare-metal events that use HTTP transport
 
-You can configure bare-metal hardware events for vRAN clusters that are deployed using the GitOps Zero Touch Provisioning (ZTP) pipeline.
+You can configure bare-metal events that use HTTP transport on managed clusters that you deploy with the {ztp-first} pipeline.
 
 .Prerequisites
 
-* Install the OpenShift CLI (`oc`).
-* Log in as a user with `cluster-admin` privileges.
-* Create a Git repository where you manage your custom site configuration data.
+* You have installed the OpenShift CLI (`oc`).
+
+* You have logged in as a user with `cluster-admin` privileges.
+
+* You have created a Git repository where you manage your custom site configuration data.
 
 .Procedure
 
-. To configure the AMQ Interconnect Operator and the {redfish-operator} Operator, add the following YAML to `spec.sourceFiles` in the `common-ranGen.yaml` file:
+. Configure the {redfish-operator} Operator by adding the following YAML to `spec.sourceFiles` in the `common-ranGen.yaml` file:
 +
 [source,yaml]
 ----
-# AMQ interconnect operator for fast events
-- fileName: AmqSubscriptionNS.yaml
-  policyName: "subscriptions-policy"
-- fileName: AmqSubscriptionOperGroup.yaml
-  policyName: "subscriptions-policy"
-- fileName: AmqSubscription.yaml
-  policyName: "subscriptions-policy"
-# Bare Metal Event Rely operator
+# Bare Metal Event Relay operator
 - fileName: BareMetalEventRelaySubscriptionNS.yaml
   policyName: "subscriptions-policy"
 - fileName: BareMetalEventRelaySubscriptionOperGroup.yaml
@@ -36,34 +31,96 @@ You can configure bare-metal hardware events for vRAN clusters that are deployed
   policyName: "subscriptions-policy"
 ----
 
-. Add the `Interconnect` CR to `.spec.sourceFiles` in the site configuration file, for example, the `example-sno-site.yaml` file:
-+
-[source,yaml]
-----
-- fileName: AmqInstance.yaml
-  policyName: "config-policy"
-----
-
 . Add the `HardwareEvent` CR to `spec.sourceFiles` in your specific group configuration file, for example, in the `group-du-sno-ranGen.yaml` file:
 +
 [source,yaml]
 ----
-- fileName: HardwareEvent.yaml
+- fileName: HardwareEvent.yaml <1>
   policyName: "config-policy"
   spec:
     nodeSelector: {}
-    transportHost: "amqp://<amq_interconnect_name>.<amq_interconnect_namespace>.svc.cluster.local" <1>
+    storageType: <storage_class_name> <2>
+    transportHost: "http://hw-event-publisher-service.openshift-bare-metal-events.svc.cluster.local:9043"
     logLevel: "info"
 ----
-<1>  The `transportHost` URL is composed of the existing AMQ Interconnect CR `name` and `namespace`. For example, in `transportHost: "amqp://amq-router.amq-router.svc.cluster.local"`, the AMQ Interconnect `name` and `namespace` are both set to `amq-router`.
-
+<1> Each baseboard management controller (BMC) requires a single `HardwareEvent` CR only.
+<2> The value that you set for `storageType` is used to populate the `StorageClassName` field for the `PersistentVolumeClaim` (`PVC`) CR that the {redfish-operator} Operator automatically deploys.
+The `PVC` CR is used to persist consumer event subscriptions.
 +
 [NOTE]
 ====
-Each baseboard management controller (BMC) requires a single `HardwareEvent` resource only.
+In {product-title} 4.13 or later, you do not need to set the `transportHost` field in the `HardwareEvent` custom resource (CR) when you use HTTP transport with bare-metal events.
 ====
 
-. Commit the `PolicyGenTemplate` change in Git, and then push the changes to your site configuration repository to deploy bare-metal events monitoring to new sites using GitOps ZTP.
+. Configure a `PersistentVolume` (`PV`) to persist the events subscription.
++
+[NOTE]
+====
+A `PersistentVolume` (`PV`) CR for persisting events subscriptions is required only when you use HTTP transport for events.
+====
++
+For example, add the following YAML to the `group-du-sno-ranGen.yaml` file:
++
+[source,yaml]
+----
+- fileName: StorageLV.yaml <1>
+  policyName: "config-policy"
+  spec:
+    storageClassDevices:
+      - storageClassName: "storage-class-http-events" <2>
+        volumeMode: Filesystem
+        fsType: xfs
+        devicePaths:
+          - /dev/disk/by-partlabel/httpevent1
+          - /dev/disk/by-partlabel/httpevent2
+- fileName: StoragePV.yaml  <3>
+  policyName: "config-policy"
+  metadata:
+    name: pv-storage-bmer
+  spec:
+    storageClassName: "storage-class-http-events" <4>
+      capacity:
+        storage: 10Mi
+----
++
+--
+<1> Bare-metal events with HTTP transport requires local storage on the cluster node provided by the Local Storage Operator.
+<2> You need `storage-class-http-events` to use HTTP transport with the {redfish-operator}.
+Use the `ignitionConfigOverride` field in the related `SiteConfig` CR to manage the disk labels.
+<3> Storage for the `cloud-event-proxy` pubsubstore.
++
+[NOTE]
+====
+You need the `StoragePV.yaml` YAML file that creates the `PV` CR only if the `PV` CR is not dynamically created by the Local Storage Operator.
+====
+<4> The `storageClassName` (`storage-class-http-events`) must match the name that is set in the `PVC` CR that the {redfish-operator} Operator deploys.
+--
+
+. Configure a namespace and Operator group for the persistent storage this is used by the HTTP message transporter.
+For example, add the following YAML to `spec.sourceFiles` in `common-ranGen.yaml` file:
++
+[source,yaml]
+----
+- fileName: StorageNS.yaml
+  policyName: "storage-sub-policy"
+- fileName: StorageOperGroup.yaml
+  policyName: "storage-sub-policy"
+- fileName: StorageOperatorStatus.yaml
+  policyName: "storage-sub-policy"
+----
+
+. Configure the individual site `SiteConfig` CR that you use to provision the managed cluster.
+For example, in `example-sno-site-1.yaml`, add the following YAML to the `spec.clusters.nodes` field:
++
+[source,yaml]
+----
+ignitionConfigOverride:
+  '{"ignition":{"version":"3.2.0"},"storage":{"disks":[{"device":"/dev/disk/by-id/wwn-0x11111000000asd123","wipeTable":false,"partitions":[{"sizeMiB":16,"label":"httpevent1","startMiB":350000},{"sizeMiB":16,"label":"httpevent2","startMiB":350016}]}],"filesystem":[{"device":"/dev/disk/by-partlabel/httpevent1","format":"xfs","wipeFilesystem":true},{"device":"/dev/disk/by-partlabel/httpevent2","format":"xfs","wipeFilesystem":true}]}}'
+----
+
+. Merge any other required changes and files with your custom site repository.
+
+. Push the changes to your site configuration repository to deploy bare-metal events to new sites with {ztp}.
 
 . Create the Redfish Secret by running the following command:
 +
