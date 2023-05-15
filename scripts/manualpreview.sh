@@ -14,6 +14,8 @@ if ! git rev-parse --is-inside-work-tree > /dev/null 2>&1; then
   exit 1
 fi
 
+#testing test
+
 PR_BRANCH="$(git rev-parse --abbrev-ref HEAD)"
 PR_NUMBER="$(gh pr list -H $PR_BRANCH --json number | jq -r '.number')"
 PR_COUNT="$(gh pr list -H $PR_BRANCH -s open | wc -l)"
