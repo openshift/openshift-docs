@@ -3,7 +3,7 @@
 set -e
 
 # list of *.adoc files excluding files in /rest_api, generated files, and deleted files
-FILES=$(git diff --name-only HEAD~1 HEAD --diff-filter=d "*.adoc" ':(exclude)rest_api/*' ':(exclude)modules/example-content.adoc' ':(exclude)modules/oc-adm-by-example-content.adoc')
+FILES=$(git diff --name-only HEAD@{0} HEAD@{1} --diff-filter=d "*.adoc" ':(exclude)rest_api/*' ':(exclude)modules/example-content.adoc' ':(exclude)modules/oc-adm-by-example-content.adoc')
 
 if [ -n "${FILES}" ] ;
     then
@@ -28,6 +28,7 @@ if [ -n "${FILES}" ] ;
             fi
             echo "${PR_DATA}" > vale_errors.json
             ERROR_DATA=$(vale ${FILES} --minAlertLevel=error --glob='*.adoc' --output=JSON --no-exit)
+            echo ${FILES}
             echo "${ERROR_DATA:1}" >> vale_errors.json
             LAST_LINE=$(tail -n1 vale_errors.json)
             if echo "$LAST_LINE" | grep -q ',.$'; then
