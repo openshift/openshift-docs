@@ -47,6 +47,11 @@ function versionSelector(list) {
     newLink = "https://docs.openshift.com/acs/" +
       newVersion +
       fileRequested;
+  } else if (['1.28', '1.29'].contains(newVersion)) {
+    // check and handle links for Serverless versions
+    newLink = "https://docs.openshift.com/serverless/" +
+      newVersion +
+      fileRequested;
   } else {
     //if distro key is openshift enterprise
     if (dk == "openshift-enterprise") {
@@ -77,6 +82,8 @@ function versionSelector(list) {
         if(confirm("This page doesn't exist in version " + newVersion + ". Click OK to search the " + newVersion + " docs OR Cancel to stay on this page.")) {
           if (['3.65', '3.66', '3.67', '3.68', '3.69', '3.70', '3.71', '3.72', '3.73', '3.74', '4.0'].contains(newVersion)) {
             window.location = "https://google.com/search?q=site:https://docs.openshift.com/acs/" + newVersion + " " + document.title;}
+          else if (['1.28', '1.29'].contains(newVersion)) {
+            window.location = "https://google.com/search?q=site:https://docs.openshift.com/serverless/" + newVersion + " " + document.title;}
           else {
             if (dk == "openshift-enterprise"){
               window.location = "https://google.com/search?q=site:https://docs.openshift.com/enterprise/" + newVersion + " " + document.title;
