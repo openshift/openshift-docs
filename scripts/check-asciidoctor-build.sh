@@ -10,7 +10,7 @@ then
 fi
 
 # get the *.adoc modules and assemblies in the pull request
-FILES=$(git diff --name-only HEAD~1 HEAD --diff-filter=d "*.adoc")
+FILES=$(git diff --name-only HEAD~1 HEAD --diff-filter=d "*.adoc" ':(exclude)_unused_topics/*')
 
 REPO_PATH=$(git rev-parse --show-toplevel)
 
@@ -28,9 +28,19 @@ check_updated_assemblies () {
     ASSEMBLIES=$(echo "$FILES" | awk '!/modules\/(.*)\.adoc/')
     # concatenate both lists and remove dupe entries
     ALL_ASSEMBLIES=$(echo "$UPDATED_ASSEMBLIES $ASSEMBLIES" | tr ' ' '\n' | sort -u)
-    # validate the assemblies
-    echo "Validating updated assemblies. Validation will fail with FAILED, ERROR, or WARNING messages..."
-    asciidoctor $ALL_ASSEMBLIES -a icons! -o /dev/null -v --failure-level WARN
+    # check that assemblies are in a topic_map
+    for ASSEMBLY in $ALL_ASSEMBLIES; do
+        # get the page name to search the topic_map
+        PAGE=$(basename "$ASSEMBLY" .adoc)
+        # don't validate the assembly if it is not in a topic map
+        if grep -rq "$PAGE" --include "*.yml" _topic_maps ; then
+            # validate the assembly
+            echo "Validating $ASSEMBLY. Validation will fail with FAILED, ERROR, or WARNING messages..."
+            asciidoctor "$ASSEMBLY" -a icons! -o /dev/null -v --failure-level WARN
+        else
+            echo "$ASSEMBLY is not in a topic_map"
+        fi
+    done
 }
 
 # check assemblies and fail if errors are reported
