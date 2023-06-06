@@ -1,0 +1,136 @@
+////
+Module included in the following assemblies:
+* service_mesh/v2x/ossm-observability.adoc
+////
+
+:_content-type: PROCEDURE
+[id="ossm-collecting-metrics_{context}"]
+= Integrating Service Mesh with monitoring stack for user-defined projects
+
+By default, OSSM installs SMCP with a dedicated instance of Prometheus for collecting metrics from a mesh.
+However, production systems need more advanced monitoring systems, like OpenShift Monitoring.
+
+The following steps show how to integrate Service Mesh with User-Workload Monitoring.
+
+.Procedure
+
+. Enable monitoring in user-defined projects.
+[source,yaml]
+----
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: cluster-monitoring-config
+  namespace: openshift-monitoring
+data:
+  config.yaml: |
+    enableUserWorkload: true
+----
+
+. Disable installation of the default Prometheus provided by the OSSM, configure Prometheus extension provider and
+disable managing network policies by service mesh to not block ingress traffic from external Prometheus.
+[source,yaml]
+----
+apiVersion: maistra.io/v2
+kind: ServiceMeshControlPlane
+metadata:
+  name: basic
+  namespace: istio-system
+spec:
+  addons:
+    prometheus:
+      enabled:  false
+  meshConfig:
+    extensionProviders:
+    - name: prometheus
+      prometheus: {}
+  security:
+    manageNetworkPolicy: false
+----
+
+. Apply a Telemetry object to enable traffic metrics in Istio proxies.
+[source,yaml]
+----
+apiVersion: telemetry.istio.io/v1alpha1
+kind: Telemetry
+metadata:
+  name: enable-prometheus-metrics
+  namespace: istio-system
+spec:
+  metrics:
+  - providers:
+    - name: prometheus
+----
+
+[NOTE]
+====
+When Telemetry object is created in the control plane namespace, then it applies to all workloads in a mesh.
+You can also apply this object only in selected namespaces or to selected workloads by setting `spec.selector.matchLabels`.
+====
+
+. Apply a ServiceMonitor to monitor Istio control plane.
+[source,yaml]
+----
+apiVersion: monitoring.coreos.com/v1
+kind: ServiceMonitor
+metadata:
+  name: istiod-monitor
+  namespace: istio-system
+spec:
+  targetLabels:
+  - app
+  selector:
+    matchLabels:
+      istio: pilot
+  endpoints:
+  - port: http-monitoring
+    interval: 30s
+----
+
+. Apply a PodMonitor to collect metrics from Istio proxies.
+[source,yaml]
+----
+apiVersion: monitoring.coreos.com/v1
+kind: PodMonitor
+metadata:
+  name: istio-proxies-monitor
+  namespace: istio-system <1>
+spec:
+  selector:
+    matchExpressions:
+    - key: istio-prometheus-ignore
+      operator: DoesNotExist
+  podMetricsEndpoints:
+  - path: /stats/prometheus
+    interval: 30s
+    relabelings:
+    - action: keep
+      sourceLabels: [__meta_kubernetes_pod_container_name]
+      regex: "istio-proxy"
+    - action: keep
+      sourceLabels: [__meta_kubernetes_pod_annotationpresent_prometheus_io_scrape]
+    - action: replace
+      regex: (\d+);(([A-Fa-f0-9]{1,4}::?){1,7}[A-Fa-f0-9]{1,4})
+      replacement: '[$2]:$1'
+      sourceLabels: [__meta_kubernetes_pod_annotation_prometheus_io_port, __meta_kubernetes_pod_ip]
+      targetLabel: __address__
+    - action: replace
+      regex: (\d+);((([0-9]+?)(\.|$)){4})
+      replacement: $2:$1
+      sourceLabels: [__meta_kubernetes_pod_annotation_prometheus_io_port, __meta_kubernetes_pod_ip]
+      targetLabel: __address__
+    - action: labeldrop
+      regex: "__meta_kubernetes_pod_label_(.+)"
+    - sourceLabels: [__meta_kubernetes_namespace]
+      action: replace
+      targetLabel: namespace
+    - sourceLabels: [__meta_kubernetes_pod_name]
+      action: replace
+      targetLabel: pod_name
+    - action: replace
+      replacement: "<SMCP_NAME>-<SMCP_NAMESPACE>" <2>
+      targetLabel: mesh_id
+----
+<1> OpenShift Monitoring ignores field `spec.namespaceSelector` in `ServiceMonitor` and `PodMonitor` objects,
+so you will have to apply the PodMonitor in all mesh namespaces, including the control plane namespace.
+<2> If you are going to deploy Kiali, you should add a unique mesh identifier to all metrics to narrow the query scope in Kiali.
