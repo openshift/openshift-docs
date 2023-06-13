@@ -4,38 +4,42 @@
 
 :_module-type: PROCEDURE
 [id="ztp-configuring-ptp-fast-events_{context}"]
-= Configuring PTP fast events using PolicyGenTemplate CRs
+= Configuring PTP events that use HTTP transport
 
-You can configure PTP fast events for vRAN clusters that are deployed using the GitOps Zero Touch Provisioning (ZTP) pipeline. Use `PolicyGenTemplate` custom resources (CRs) as the basis to create a hierarchy of configuration files tailored to your specific site requirements.
+You can configure PTP events that use HTTP transport on managed clusters that you deploy with the {ztp-first} pipeline.
 
 .Prerequisites
 
-* Create a Git repository where you manage your custom site configuration data.
+* You have installed the OpenShift CLI (`oc`).
+
+* You have logged in as a user with `cluster-admin` privileges.
+
+* You have created a Git repository where you manage your custom site configuration data.
 
 .Procedure
 
-. Add the following YAML into `.spec.sourceFiles` in the `common-ranGen.yaml` file to configure the AMQP Operator:
-+
-[source,yaml]
-----
-#AMQ interconnect operator for fast events
-- fileName: AmqSubscriptionNS.yaml
-  policyName: "subscriptions-policy"
-- fileName: AmqSubscriptionOperGroup.yaml
-  policyName: "subscriptions-policy"
-- fileName: AmqSubscription.yaml
-  policyName: "subscriptions-policy"
-----
-
 . Apply the following `PolicyGenTemplate` changes to `group-du-3node-ranGen.yaml`, `group-du-sno-ranGen.yaml`, or `group-du-standard-ranGen.yaml` files according to your requirements:
 
-.. In `.sourceFiles`, add the `PtpOperatorConfig` CR file that configures the AMQ transport host to the `config-policy`:
+.. In `.sourceFiles`, add the `PtpOperatorConfig` CR file that configures the transport host:
 +
 [source,yaml]
 ----
 - fileName: PtpOperatorConfigForEvent.yaml
   policyName: "config-policy"
+  spec:
+    daemonNodeSelector: {}
+    ptpEventConfig:
+      enableEventPublisher: true
+      storageType: "storage-class-http-events" <1>
+      transportHost: http://ptp-event-publisher-service-NODE_NAME.openshift-ptp.svc.cluster.local:9043
 ----
+<1> The value that you set for `storageType` is used to populate the `StorageClassName` field for the `PersistentVolumeClaim` (`PVC`) resource that the PTP Operator automatically deploys.
+The `PVC` resource is used to persist consumer event subscriptions.
++
+[NOTE]
+====
+In {product-title} 4.13 or later, you do not need to set the `transportHost` field in the `PtpOperatorConfig` resource when you use HTTP transport with PTP events.
+====
 
 .. Configure the `linuxptp` and `phc2sys` for the PTP clock type and interface. For example, add the following stanza into `.sourceFiles`:
 +
@@ -56,22 +60,64 @@ You can configure PTP fast events for vRAN clusters that are deployed using the 
       maxOffsetThreshold: 100  #nano secs
       minOffsetThreshold: -100 #nano secs
 ----
-<1> Can be one `PtpConfigMaster.yaml`, `PtpConfigSlave.yaml`, or `PtpConfigSlaveCvl.yaml` depending on your requirements. `PtpConfigSlaveCvl.yaml` configures `linuxptp` services for an Intel E810 Columbiaville NIC. For configurations based on `group-du-sno-ranGen.yaml` or `group-du-3node-ranGen.yaml`, use `PtpConfigSlave.yaml`.
+<1> Can be one of `PtpConfigMaster.yaml`, `PtpConfigSlave.yaml`, or `PtpConfigSlaveCvl.yaml` depending on your requirements. `PtpConfigSlaveCvl.yaml` configures `linuxptp` services for an Intel E810 Columbiaville NIC. For configurations based on `group-du-sno-ranGen.yaml` or `group-du-3node-ranGen.yaml`, use `PtpConfigSlave.yaml`.
 <2> Device specific interface name.
 <3> You must append the `--summary_interval -4` value to `ptp4lOpts` in `.spec.sourceFiles.spec.profile` to enable PTP fast events.
 <4> Required `phc2sysOpts` values. `-m` prints messages to `stdout`. The `linuxptp-daemon` `DaemonSet` parses the logs and generates Prometheus metrics.
 <5> Optional. If the `ptpClockThreshold` stanza is not present, default values are used for the `ptpClockThreshold` fields. The stanza shows default `ptpClockThreshold` values. The `ptpClockThreshold` values configure how long after the PTP master clock is disconnected before PTP events are triggered. `holdOverTimeout` is the time value in seconds before the PTP clock event state changes to `FREERUN` when the PTP master clock is disconnected. The `maxOffsetThreshold` and `minOffsetThreshold` settings configure offset values in nanoseconds that compare against the values for `CLOCK_REALTIME` (`phc2sys`) or master offset (`ptp4l`). When the `ptp4l` or `phc2sys` offset value is outside this range, the PTP clock state is set to `FREERUN`. When the offset value is within this range, the PTP clock state is set to `LOCKED`.
 
-. Apply the following `PolicyGenTemplate` changes to your specific site YAML files, for example, `example-sno-site.yaml`:
-
-.. In `.sourceFiles`, add the `Interconnect` CR file that configures the AMQ router to the `config-policy`:
+. Configure a `LocalVolume` (`LV`) to persist the PTP events subscription on the host.
++
+For example, add the following YAML to the `group-du-sno-ranGen.yaml` file:
 +
 [source,yaml]
 ----
-- fileName: AmqInstance.yaml
+- fileName: StorageLV.yaml <1>
   policyName: "config-policy"
+  spec:
+    storageClassDevices:
+      - storageClassName: "storage-class-http-events" <2>
+        volumeMode: Filesystem
+        fsType: xfs
+        devicePaths:
+          - /dev/disk/by-partlabel/httpevent1
+          - /dev/disk/by-partlabel/httpevent2
+- fileName: StoragePV.yaml <3>
+  policyName: "config-policy"
+  metadata:
+    name: pv-storage-ptp
+  spec:
+    storageClassName: "storage-class-http-events" <4>
+----
+<1> PTP events with HTTP transport requires local storage on the cluster node provided by the Local Storage Operator.
+<2> Set `storageClassName` to `storage-class-http-events` to use HTTP transport with the PTP Operator.
+Use the `ignitionConfigOverride` field in the related `SiteConfig` CR to manage the disk labels.
+<3> Optional. Configure storage for the `cloud-event-proxy` pubsubstore.
+`StoragePV.yaml` is required only if the `PersistentVolume` (`PV`) CR is not dynamically created by the Local Storage Operator.
+<4> Set the value of `storageClassName` to match the name set in the `PVC` CR that the PTP Operator deploys.
+
+. Configure a namespace and Operator group for the persistent storage this is used by the HTTP message transporter.
+For example, add the following YAML to `spec.sourceFiles` in `common-ranGen.yaml` file:
++
+[source,yaml]
+----
+- fileName: StorageNS.yaml
+  policyName: "storage-sub-policy"
+- fileName: StorageOperGroup.yaml
+  policyName: "storage-sub-policy"
+- fileName: StorageOperatorStatus.yaml
+  policyName: "storage-sub-policy"
+----
+
+. Configure the individual site `SiteConfig` CR that you use to provision the managed cluster.
+For example, in `example-sno-site-1.yaml`, add the following YAML to the `spec.clusters.nodes` field:
++
+[source,yaml]
+----
+ignitionConfigOverride:
+  '{"ignition":{"version":"3.2.0"},"storage":{"disks":[{"device":"/dev/disk/by-id/wwn-0x11111000000asd123","wipeTable":false,"partitions":[{"sizeMiB":16,"label":"httpevent1","startMiB":350000},{"sizeMiB":16,"label":"httpevent2","startMiB":350016}]}],"filesystem":[{"device":"/dev/disk/by-partlabel/httpevent1","format":"xfs","wipeFilesystem":true},{"device":"/dev/disk/by-partlabel/httpevent2","format":"xfs","wipeFilesystem":true}]}}'
 ----
 
 . Merge any other required changes and files with your custom site repository.
 
-. Push the changes to your site configuration repository to deploy PTP fast events to new sites using GitOps ZTP.
+. Push the changes to your site configuration repository to deploy PTP fast events to new sites using {ztp}.
