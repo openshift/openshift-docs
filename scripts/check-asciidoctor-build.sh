@@ -31,7 +31,8 @@ check_updated_assemblies () {
     # check that assemblies are in a topic_map
     for ASSEMBLY in $ALL_ASSEMBLIES; do
         # get the page name to search the topic_map
-        PAGE=$(basename "$ASSEMBLY" .adoc)
+        # search for files only, not folders
+        PAGE="File: $(basename "$ASSEMBLY" .adoc)"
         # don't validate the assembly if it is not in a topic map
         if grep -rq "$PAGE" --include "*.yml" _topic_maps ; then
             # validate the assembly
