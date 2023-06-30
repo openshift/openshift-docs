@@ -37,7 +37,7 @@ check_updated_assemblies () {
         if grep -rq "$PAGE" --include "*.yml" _topic_maps ; then
             # validate the assembly
             echo "Validating $ASSEMBLY. Validation will fail with FAILED, ERROR, or WARNING messages..."
-            asciidoctor "$ASSEMBLY" -a icons! -o /dev/null -v --failure-level WARN
+            asciidoctor "$ASSEMBLY" -a source-highlighter=rouge -a icons! -o /tmp/out.html -v --failure-level WARN --trace
         else
             echo "$ASSEMBLY is not in a topic_map"
         fi
