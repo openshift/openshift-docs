@@ -1,0 +1,99 @@
+// Module included in the following assemblies:
+//
+// * networking/ovn_kubernetes_network_provider/migrate-from-openshift-sdn.adoc
+// * networking/openshift_sdn/migrate-to-openshift-sdn.adoc
+
+ifeval::["{context}" == "migrate-to-openshift-sdn"]
+:sdn: OpenShift SDN
+:previous-sdn: OVN-Kubernetes
+:type: OpenShiftSDN
+endif::[]
+ifeval::["{context}" == "migrate-from-openshift-sdn"]
+:sdn: OVN-Kubernetes
+:previous-sdn: OpenShift SDN
+:type: OVNKubernetes
+endif::[]
+
+[id="how-the-migration-process-works_{context}"]
+= How the migration process works
+
+The following table summarizes the migration process by segmenting between the user-initiated steps in the process and the actions that the migration performs in response.
+
+.Migrating to {sdn} from {previous-sdn}
+[cols="1,1a",options="header"]
+|===
+
+|User-initiated steps|Migration activity
+
+|
+Set the `migration` field of the `Network.operator.openshift.io` custom resource (CR) named `cluster` to `{type}`. Make sure the `migration` field is `null` before setting it to a value.
+|
+Cluster Network Operator (CNO):: Updates the status of the `Network.config.openshift.io` CR named `cluster` accordingly.
+Machine Config Operator (MCO):: Rolls out an update to the systemd configuration necessary for {sdn}; the MCO updates a single machine per pool at a time by default, causing the total time the migration takes to increase with the size of the cluster.
+
+|Update the `networkType` field of the `Network.config.openshift.io` CR.
+|
+CNO:: Performs the following actions:
++
+--
+* Destroys the {previous-sdn} control plane pods.
+* Deploys the {sdn} control plane pods.
+* Updates the Multus objects to reflect the new network plugin.
+--
+
+|
+Reboot each node in the cluster.
+|
+Cluster:: As nodes reboot, the cluster assigns IP addresses to pods on the {sdn} cluster network.
+
+|===
+
+ifeval::["{context}" == "migrate-from-openshift-sdn"]
+If a rollback to OpenShift SDN is required, the following table describes the process.
+
+.Performing a rollback to OpenShift SDN
+[cols="1,1a",options="header"]
+|===
+
+|User-initiated steps|Migration activity
+
+|Suspend the MCO to ensure that it does not interrupt the migration.
+|The MCO stops.
+
+|
+Set the `migration` field of the `Network.operator.openshift.io` custom resource (CR) named `cluster` to `OpenShiftSDN`. Make sure the `migration` field is `null` before setting it to a value.
+|
+CNO:: Updates the status of the `Network.config.openshift.io` CR named `cluster` accordingly.
+
+|Update the `networkType` field.
+|
+CNO:: Performs the following actions:
++
+--
+* Destroys the OVN-Kubernetes control plane pods.
+* Deploys the OpenShift SDN control plane pods.
+* Updates the Multus objects to reflect the new network plugin.
+--
+
+|
+Reboot each node in the cluster.
+|
+Cluster:: As nodes reboot, the cluster assigns IP addresses to pods on the OpenShift-SDN network.
+
+|
+Enable the MCO after all nodes in the cluster reboot.
+|
+MCO:: Rolls out an update to the systemd configuration necessary for OpenShift SDN; the MCO updates a single machine per pool at a time by default, so the total time the migration takes increases with the size of the cluster.
+
+|===
+endif::[]
+
+ifdef::sdn[]
+:!sdn:
+endif::[]
+ifdef::previous-sdn[]
+:!previous-sdn:
+endif::[]
+ifdef::type[]
+:!type:
+endif::[]

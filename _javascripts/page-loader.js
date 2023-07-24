@@ -6,6 +6,11 @@ currentVersion = "";
 // the fileRequested
 fileRequested = "";
 
+//Array prototype to check if an element is in an array
+Array.prototype.contains = function(obj) {
+  return this.indexOf(obj) > -1;
+}
+
 function versionSelector(list) {
 
   // the version we want
@@ -33,14 +38,32 @@ function versionSelector(list) {
   // alert(fileRequested);
 
   // in 3.3 and above, we changed to container-platform
-  if(newVersion == '3.0' || newVersion == '3.1' || newVersion == '3.2') {
+  if(['3.0', '3.1', '3.2'].contains(newVersion)) {
     newLink = "https://docs.openshift.com/enterprise/" +
       newVersion +
       fileRequested;
+  } else if (['3.65', '3.66', '3.67', '3.68', '3.69', '3.70', '3.71', '3.72', '3.73', '3.74', '4.0'].contains(newVersion)) {
+    // check and handle links for RHACS versions
+    newLink = "https://docs.openshift.com/acs/" +
+      newVersion +
+      fileRequested;
+  } else if (['1.28', '1.29'].contains(newVersion)) {
+    // check and handle links for Serverless versions
+    newLink = "https://docs.openshift.com/serverless/" +
+      newVersion +
+      fileRequested;
   } else {
+    //if distro key is openshift enterprise
+    if (dk == "openshift-enterprise") {
     newLink = "https://docs.openshift.com/container-platform/" +
       newVersion +
       fileRequested;
+    }
+    else if (dk == "openshift-origin"){
+      newLink = "https://docs.okd.io/" +
+      newVersion +
+      fileRequested;
+    }
   }
 
   // without doing async loads, there is no way to know if the path actually
@@ -57,7 +80,19 @@ function versionSelector(list) {
       if(jqXHR.status == 404) {
         list.value = currentVersion;
         if(confirm("This page doesn't exist in version " + newVersion + ". Click OK to search the " + newVersion + " docs OR Cancel to stay on this page.")) {
-          window.location = "https://google.com/search?q=site:https://docs.openshift.com/container-platform/" + newVersion + " " + document.title;
+          if (['3.65', '3.66', '3.67', '3.68', '3.69', '3.70', '3.71', '3.72', '3.73', '3.74', '4.0'].contains(newVersion)) {
+            window.location = "https://google.com/search?q=site:https://docs.openshift.com/acs/" + newVersion + " " + document.title;}
+          else if (['1.28', '1.29'].contains(newVersion)) {
+            window.location = "https://google.com/search?q=site:https://docs.openshift.com/serverless/" + newVersion + " " + document.title;}
+          else {
+            if (dk == "openshift-enterprise"){
+              window.location = "https://google.com/search?q=site:https://docs.openshift.com/enterprise/" + newVersion + " " + document.title;
+            } else {
+              if (dk == "openshift-origin"){
+                window.location = "https://google.com/search?q=site:https://docs.okd.io/" + newVersion + " " + document.title;
+              }
+            }
+          }
         } else {
           // do nothing, user doesn't want to search
         }
