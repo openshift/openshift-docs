@@ -1,0 +1,138 @@
+:_content-type: PROCEDURE
+[id="distr-tracing-otel-forwarding"]
+= Forwarding traces to TempoStack by using OpenTelemetry Collector
+include::_attributes/common-attributes.adoc[]
+:context: distr-tracing-otel-forwarding
+
+To configure log forwarding to the TempoStack, you deploy and configure an OpenTelemetry collector.
+
+.Prerequisites
+
+* Tempo Operator is installed.
+* TempoStack is deployed on the cluster.
+* Red Hat OpenShift distributed tracing data collection operator is installed.
+
+.Procedure
+
+For the following steps, we will deploy an OpenTelemetry collector using the recomended processors/receivers/explorters, this example will deploy the collector in deployment mode, for other modes see the OpenTelemetry collector documentation.
+
+. Create a service account for the OpenTelemetry collector, here is an example:
++
+----
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: otel-collector-deployment
+----
+
+. Create a cluster role, this cluster role will  be associated with the service account created in the first step:
++
+----
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: otel-collector
+rules:
+# Permissions for pods and namespaces resources are needed for the k8sattributesprocessor
+# Permissions for infrastructures and infrastructures/status are needed for resourcedetectionprocessor
+- apiGroups: ["", "config.openshift.io"]
+  resources: ["pods", "namespaces", "infrastructures", "infrastructures/status"]
+  verbs: ["get", "watch", "list"]
+----
+
+Some permissions are neccesary to make the `k8sattributesprocessor` and `resourcedetectionprocessor` works, and those are recomended.
+
+. Bind the cluster role to the service account:
++
+----
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: otel-collector
+subjects:
+- kind: ServiceAccount
+  name: otel-collector-deployment
+  namespace: otel-collector-example
+roleRef:
+  kind: ClusterRole
+  name: otel-collector
+  apiGroup: rbac.authorization.k8s.io
+----
+
+. Create the YAML file that will define the `OpenTelemetryCollector` custom resource (CR):
++
+----
+apiVersion: opentelemetry.io/v1alpha1
+kind: OpenTelemetryCollector
+metadata:
+  name: otel
+spec:
+  mode: deployment
+  serviceAccount: otel-collector-deployment
+  config: |
+    receivers:
+      jaeger:
+        protocols:
+          grpc:
+          thrift_binary:
+          thrift_compact:
+          thrift_http:
+      opencensus:
+      otlp:
+        protocols:
+          grpc:
+          http:
+      zipkin:
+    processors:
+      batch:
+      k8sattributes:
+      memory_limiter:
+        check_interval: 1s
+        limit_percentage: 50
+        spike_limit_percentage: 30
+      resourcedetection:
+        detectors: [openshift]
+    exporters:
+      otlp:
+        endpoint: "tempo-simplest-distributor:4317" # Endpoint for the tempo distributor.
+        tls:
+          insecure: true
+    service:
+      pipelines:
+        traces:
+          receivers: [jaeger, opencensus, otlp, zipkin]
+          processors: [memory_limiter, k8sattributes, resourcedetection, batch]
+          exporters: [otlp]
+----
+
+The collector is configured with a receiver for Jaeger traces, OpenCensus traces over the OpenCensus protocol, Zipkin traces over the Zipkin protocol and OTLP traces over the GRPC protocol. The collector exporter is configured to export OTLP, and is pointing to the tempo distributor endpoint, in this case "tempo-simplest-distributor:4317" which should be already created.
+
+You can find more examples of how to deploy OpenTelemetry with tempo in sidecar mode and multitenant here: https://github.com/os-observability/redhat-rhosdt-samples
+
+[TIP]
+====
+You can deploy the `tracegen` as a test:
+----
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: tracegen
+spec:
+  template:
+    spec:
+      containers:
+        - name: tracegen
+          image: ghcr.io/open-telemetry/opentelemetry-collector-contrib/tracegen:latest
+          command:
+            - "./tracegen"
+          args:
+            - -otlp-endpoint=otel-collector:4317
+            - -otlp-insecure
+            - -duration=30s
+            - -workers=1
+      restartPolicy: Never
+  backoffLimit: 4
+ ----
+
+====
+
