@@ -932,7 +932,7 @@ def build_portal_url(info, book_name):
         generate_url_from_name(product)
         + "/"
         + generate_url_from_name(version)
-        + "/html-single/"
+        + "/html/"
         + generate_url_from_name(book_name)
         + "/"
     )

@@ -788,7 +788,7 @@ def build_portal_url(info, book_name):
     product = info['product']
     version = info['product-version']
 
-    return generate_url_from_name(product) + "/" + generate_url_from_name(version) + "/html-single/" + generate_url_from_name(book_name) + "/"
+    return generate_url_from_name(product) + "/" + generate_url_from_name(version) + "/html/" + generate_url_from_name(book_name) + "/"
 
 
 def replace_nbsp(val):
