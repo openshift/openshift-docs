@@ -21,6 +21,11 @@ check_updated_assemblies () {
     then
         # $UPDATED_ASSEMBLIES is the list of assemblies that contains changed modules
         UPDATED_ASSEMBLIES=$(grep -rnwl "$REPO_PATH" --include=\*.adoc --exclude-dir={snippets,modules} -e "$MODULES")
+        # Exit 0 if there are no modified assemblies
+        if [[ -z "${UPDATED_ASSEMBLIES}" ]]
+        then
+            exit 0
+        fi
         # subtract $REPO_PATH from path with bash substring replacement
         UPDATED_ASSEMBLIES=${UPDATED_ASSEMBLIES//"$REPO_PATH/"/}
     fi
@@ -51,15 +56,15 @@ check_updated_assemblies () {
 
 update_log () {
     echo ""
-    echo "************************************************************************"
+    echo "****************************************************************************"
     echo ""
-    echo "Validating all AsciiDoc files that are included in the pull request.  🕵"
-    echo "Other assemblies that include the modifed modules are also validated. 🙀"
-    echo "This might include assemblies that are not in the pull request.       🤬"
-    echo "Validation will fail with FAILED, ERROR, or WARNING messages.         ❌"
-    echo "Correct all reported AsciiDoc errors to pass the validation build.    🤟"
+    echo "Validating all AsciiDoc assemblies that are modifed by the pull request.  🕵"
+    echo "All assemblies that include modifed modules are validated.                🙀"
+    echo "This might include assemblies that are not in the pull request!           🤬"
+    echo "Validation will fail with FAILED, ERROR, or WARNING messages.             ❌"
+    echo "Correct all reported AsciiDoc errors to pass the validation build.        🤟"
     echo ""
-    echo "************************************************************************"
+    echo "****************************************************************************"
     echo ""
 }
 
