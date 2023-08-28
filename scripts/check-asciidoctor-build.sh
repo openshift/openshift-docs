@@ -24,7 +24,7 @@ check_updated_assemblies () {
         # Exit 0 if there are no modified assemblies
         if [[ -z "${UPDATED_ASSEMBLIES}" ]]
         then
-            exit 0
+            echo "No assemblies are modifed by this change! ✅" && exit 0
         fi
         # subtract $REPO_PATH from path with bash substring replacement
         UPDATED_ASSEMBLIES=${UPDATED_ASSEMBLIES//"$REPO_PATH/"/}
@@ -71,8 +71,8 @@ update_log () {
 # check assemblies and fail if errors are reported
 if [ -n "${FILES}" ] ;
 then
-    update_log
     check_updated_assemblies
+    update_log
 else
     echo "No modified AsciiDoc files found! 🥳"
 fi
