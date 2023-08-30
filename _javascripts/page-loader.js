@@ -52,6 +52,11 @@ function versionSelector(list) {
     newLink = "https://docs.openshift.com/serverless/" +
       newVersion +
       fileRequested;
+  } else if (['1.8', '1.9'].contains(newVersion)) {
+    // check and handle links for GitOps versions
+    newLink = "https://docs.openshift.com/gitops/" +
+      newVersion +
+      fileRequested;
   } else {
     //if distro key is openshift enterprise
     if (dk == "openshift-enterprise") {
@@ -84,6 +89,8 @@ function versionSelector(list) {
             window.location = "https://google.com/search?q=site:https://docs.openshift.com/acs/" + newVersion + " " + document.title;}
           else if (['1.28', '1.29'].contains(newVersion)) {
             window.location = "https://google.com/search?q=site:https://docs.openshift.com/serverless/" + newVersion + " " + document.title;}
+          else if (['1.8', '1.9'].contains(newVersion)) {
+            window.location = "https://google.com/search?q=site:https://docs.openshift.com/gitops/" + newVersion + " " + document.title;}            
           else {
             if (dk == "openshift-enterprise"){
               window.location = "https://google.com/search?q=site:https://docs.openshift.com/enterprise/" + newVersion + " " + document.title;
