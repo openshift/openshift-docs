@@ -1,7 +1,5 @@
 #!/bin/bash
 
-set -e
-
 # ensure asciidoctor is installed
 if ! command -v asciidoctor &>/dev/null ;
 then
@@ -24,8 +22,10 @@ check_updated_assemblies () {
         # Exit 0 if there are no modified assemblies
         if [[ -z "${UPDATED_ASSEMBLIES}" ]]
         then
+            echo "No updated assemblies found! ✅"
             exit 0
         fi
+        update_log
         # subtract $REPO_PATH from path with bash substring replacement
         UPDATED_ASSEMBLIES=${UPDATED_ASSEMBLIES//"$REPO_PATH/"/}
     fi
@@ -42,14 +42,22 @@ check_updated_assemblies () {
         if grep -q "$PAGE" _topic_map.yml; then
             # validate the assembly
             echo "Validating $ASSEMBLY ... 🚨"
-            VALIDATION_ERROR=$(asciidoctor "$ASSEMBLY" -a source-highlighter=rouge -a icons! -o /tmp/out.html -v --failure-level WARN --trace)
+            RED='\033[0;31m'
+            NC='\033[0m'
+            OUTPUT=$(asciidoctor "$ASSEMBLY" -a source-highlighter=rouge -a icons! -o /tmp/out.html -v --failure-level WARN --trace 2>&1)
             # check assemblies and fail if errors are reported
-            if [[ -z "$VALIDATION_ERROR" ]];
+            if [[ $? != 0 ]];
             then
+                echo -e "${RED}$OUTPUT${NC}"
+                echo "Validation errors found! ❌"
+                exit 1
+            else
                 echo "No errors found! ✅"
+                exit 0
             fi
         else
             echo "$ASSEMBLY is not in a topic_map, skipping validation... 😙"
+            exit 0
         fi
     done
 }
@@ -71,8 +79,8 @@ update_log () {
 # check assemblies and fail if errors are reported
 if [ -n "${FILES}" ] ;
 then
-    update_log
     check_updated_assemblies
 else
     echo "No modified AsciiDoc files found! 🥳"
+    exit 0
 fi
