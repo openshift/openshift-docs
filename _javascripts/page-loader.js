@@ -1,75 +1,39 @@
-// the new final link to load
-newLink = "";
-newVersion = "";
-currentVersion = "";
+let newLink = "";
+let newVersion = "";
+let currentVersion = "";
+let fileRequested = "";
 
-// the fileRequested
-fileRequested = "";
-
-//Array prototype to check if an element is in an array
-Array.prototype.contains = function(obj) {
-  return this.indexOf(obj) > -1;
-}
+const urlMappings = {
+  "openshift-acs": "https://docs.openshift.com/acs/",
+  "openshift-builds": "https://docs.openshift.com/builds/",
+  "openshift-enterprise": "https://docs.openshift.com/container-platform/",
+  "openshift-gitops": "https://docs.openshift.com/gitops/",
+  "openshift-origin": "https://docs.okd.io/",
+  "openshift-pipelines": "https://docs.openshift.com/pipelines/",
+  "openshift-serverless": "https://docs.openshift.com/serverless/",
+};
 
 function versionSelector(list) {
+  "use strict";
 
-  // the version we want
   newVersion = list[list.selectedIndex].value;
+  currentVersion = window.location.pathname.split("/")[2];
 
-  // spilt the current path
-  var pathArray = window.location.pathname.split( '/' );
+  let baseUrl = urlMappings[dk];
 
-  // so we can get the current version
-  currentVersion = pathArray[2];
+  //Handle special OCP case
+  if (["3.0", "3.1", "3.2"].includes(newVersion) && dk === "openshift-enterprise") {
+    baseUrl = "https://docs.openshift.com/enterprise/";
+  }
 
-  // if switching major versions, just take the user to the main landing page
-  // as files change a lot between major versions.
-
-  if(currentVersion.charAt(0) === newVersion.charAt(0)) {
-    // the file path is just the version number + the end of the path
-    fileRequested =
-      window.location.pathname.substring(
-        window.location.pathname.lastIndexOf(currentVersion) +
-        currentVersion.length);
-  } else {
+  if (dk === "openshift-enterprise" && currentVersion.charAt(0) !== newVersion.charAt(0)){
     fileRequested = "/welcome/index.html";
-  }
-
-  // alert(fileRequested);
-
-  // in 3.3 and above, we changed to container-platform
-  if(['3.0', '3.1', '3.2'].contains(newVersion)) {
-    newLink = "https://docs.openshift.com/enterprise/" +
-      newVersion +
-      fileRequested;
-  } else if (['3.65', '3.66', '3.67', '3.68', '3.69', '3.70', '3.71', '3.72', '3.73', '3.74', '4.0', '4.1'].contains(newVersion)) {
-    // check and handle links for RHACS versions
-    newLink = "https://docs.openshift.com/acs/" +
-      newVersion +
-      fileRequested;
-  } else if (['1.28', '1.29'].contains(newVersion)) {
-    // check and handle links for Serverless versions
-    newLink = "https://docs.openshift.com/serverless/" +
-      newVersion +
-      fileRequested;
-  } else if (['1.8', '1.9'].contains(newVersion)) {
-    // check and handle links for GitOps versions
-    newLink = "https://docs.openshift.com/gitops/" +
-      newVersion +
-      fileRequested;
   } else {
-    //if distro key is openshift enterprise
-    if (dk == "openshift-enterprise") {
-    newLink = "https://docs.openshift.com/container-platform/" +
-      newVersion +
-      fileRequested;
-    }
-    else if (dk == "openshift-origin"){
-      newLink = "https://docs.okd.io/" +
-      newVersion +
-      fileRequested;
-    }
+    const versionIndex = window.location.pathname.lastIndexOf(currentVersion) + currentVersion.length;
+    fileRequested = window.location.pathname.substring(versionIndex);
   }
+
+  newLink = `${baseUrl}${newVersion}${fileRequested}`;
 
   // without doing async loads, there is no way to know if the path actually
   // exists - so we will just have to load
@@ -79,36 +43,28 @@ function versionSelector(list) {
     type: 'HEAD',
     url: newLink,
     success: function() {
-      window.location = newLink;
+      window.location.href = newLink;
     },
     error: function(jqXHR, exception) {
       if(jqXHR.status == 404) {
         list.value = currentVersion;
-        if(confirm("This page doesn't exist in version " + newVersion + ". Click OK to search the " + newVersion + " docs OR Cancel to stay on this page.")) {
-          if (['3.65', '3.66', '3.67', '3.68', '3.69', '3.70', '3.71', '3.72', '3.73', '3.74', '4.0', '4.1'].contains(newVersion)) {
-            window.location = "https://google.com/search?q=site:https://docs.openshift.com/acs/" + newVersion + " " + document.title;}
-          else if (['1.28', '1.29'].contains(newVersion)) {
-            window.location = "https://google.com/search?q=site:https://docs.openshift.com/serverless/" + newVersion + " " + document.title;}
-          else if (['1.8', '1.9'].contains(newVersion)) {
-            window.location = "https://google.com/search?q=site:https://docs.openshift.com/gitops/" + newVersion + " " + document.title;}            
-          else {
-            if (dk == "openshift-enterprise"){
-              window.location = "https://google.com/search?q=site:https://docs.openshift.com/enterprise/" + newVersion + " " + document.title;
-            } else {
-              if (dk == "openshift-origin"){
-                window.location = "https://google.com/search?q=site:https://docs.okd.io/" + newVersion + " " + document.title;
-              }
-            }
+        const confirmMessage = `This page doesn't exist in version ${newVersion}. Click OK to search the ${newVersion} docs OR Cancel to stay on this page.`;
+        if(confirm(confirmMessage)) {
+          let searchUrl;
+          if (["3.0", "3.1", "3.2"].includes(newVersion) && dk === "openshift-enterprise") {
+            searchUrl = `https://google.com/search?q=site:${baseUrl}${newVersion} ${document.title}`;
+          } else {
+          searchUrl = `https://google.com/search?q=site:${urlMappings[dk]}${newVersion} ${document.title}`;
           }
+          window.location.href = searchUrl;
         } else {
           // do nothing, user doesn't want to search
         }
       } else {
-        window.location = newLink; // assumption here is that we can follow through with a redirect
+        window.location.href = newLink; // assumption here is that we can follow through with a redirect
       }
     }
   });
-
 }
 
 // checks what language was selected and then sends the user to the portal for their localized version
