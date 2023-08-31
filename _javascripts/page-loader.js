@@ -38,37 +38,38 @@ function versionSelector(list) {
   // alert(fileRequested);
 
   // in 3.3 and above, we changed to container-platform
-  if(['3.0', '3.1', '3.2'].contains(newVersion)) {
+  if ((dk == "openshift-enterprise") &&  (['3.0', '3.1','3.2'].contains(newVersion)) {
     newLink = "https://docs.openshift.com/enterprise/" +
       newVersion +
       fileRequested;
-  } else if (['3.65', '3.66', '3.67', '3.68', '3.69', '3.70', '3.71', '3.72', '3.73', '3.74', '4.0'].contains(newVersion)) {
+  } else if (dk == "openshift-enterprise") {
+      newLink = "https://docs.openshift.com/container-platform/" +
+      newVersion +
+      fileRequested;
+  } else if (dk == "openshift-acs") {
     // check and handle links for RHACS versions
     newLink = "https://docs.openshift.com/acs/" +
       newVersion +
       fileRequested;
-  } else if (['1.28', '1.29'].contains(newVersion)) {
+  } else if (dk == "openshift-serverless") {
     // check and handle links for Serverless versions
     newLink = "https://docs.openshift.com/serverless/" +
       newVersion +
       fileRequested;
-  } else if (['1.8', '1.9'].contains(newVersion)) {
+  } else if (dk == "openshift-gitops") {
     // check and handle links for GitOps versions
     newLink = "https://docs.openshift.com/gitops/" +
       newVersion +
       fileRequested;
-  } else {
-    //if distro key is openshift enterprise
-    if (dk == "openshift-enterprise") {
-    newLink = "https://docs.openshift.com/container-platform/" +
+    } else if (dk == "openshift-pipelines") {
+      // check and handle links for Pipelines versions
+      newLink = "https://docs.openshift.com/pipelines/" +
+        newVersion +
+        fileRequested;
+  } else if (dk == "openshift-origin"){
+    newLink = "https://docs.okd.io/" +
       newVersion +
       fileRequested;
-    }
-    else if (dk == "openshift-origin"){
-      newLink = "https://docs.okd.io/" +
-      newVersion +
-      fileRequested;
-    }
   }
 
   // without doing async loads, there is no way to know if the path actually
@@ -90,7 +91,7 @@ function versionSelector(list) {
           else if (['1.28', '1.29'].contains(newVersion)) {
             window.location = "https://google.com/search?q=site:https://docs.openshift.com/serverless/" + newVersion + " " + document.title;}
           else if (['1.8', '1.9'].contains(newVersion)) {
-            window.location = "https://google.com/search?q=site:https://docs.openshift.com/gitops/" + newVersion + " " + document.title;}            
+            window.location = "https://google.com/search?q=site:https://docs.openshift.com/gitops/" + newVersion + " " + document.title;}
           else {
             if (dk == "openshift-enterprise"){
               window.location = "https://google.com/search?q=site:https://docs.openshift.com/enterprise/" + newVersion + " " + document.title;
