@@ -1,0 +1,76 @@
+// Module included in the following assemblies:
+//
+// installing/installing_aws/installing-aws-china.adoc
+// installing/installing_aws/installing-aws-customizations.adoc
+// installing/installing_aws/installing-aws-government-region.adoc
+// installing/installing_aws/installing-aws-network-customizations.adoc
+// installing/installing_aws/installing-aws-private.adoc
+// installing/installing_aws/installing-aws-secret-region.adoc
+// installing/installing_aws/installing-aws-user-infra.adoc
+// installing/installing_aws/installing-aws-vpc.adoc
+// installing/installing_aws/installing-restricted-networks-aws.adoc
+// installing-aws-localzone
+
+ifeval::["{context}" == "installing-aws-localzone"]
+:localzone:
+endif::[]
+ifeval::["{context}" == "installing-aws-secret-region"]
+:secretregion:
+endif::[]
+
+[id="installation-aws-tested-machine-types_{context}"]
+= Tested instance types for AWS
+
+The following Amazon Web Services (AWS) instance types have been tested with
+ifndef::localzone[]
+{product-title}.
+endif::localzone[]
+ifdef::localzone[]
+{product-title} for use with AWS Local Zones.
+endif::localzone[]
+
+[NOTE]
+====
+Use the machine types included in the following charts for your AWS instances. If you use an instance type that is not listed in the chart, ensure that the instance size you use matches the minimum resource requirements that are listed in "Minimum resource requirements for cluster installation".
+====
+
+ifndef::localzone,secretregion[]
+.Machine types based on 64-bit x86 architecture
+[%collapsible]
+====
+include::https://raw.githubusercontent.com/openshift/installer/master/docs/user/aws/tested_instance_types_x86_64.md[]
+====
+endif::localzone,secretregion[]
+ifdef::localzone[]
+.Machine types based on 64-bit x86 architecture for AWS Local Zones
+[%collapsible]
+====
+* `c5.*`
+* `c5d.*`
+* `m6i.*`
+* `m5.*`
+* `r5.*`
+* `t3.*`
+====
+endif::localzone[]
+ifdef::secretregion[]
+.Machine types based on 64-bit x86 architecture for secret regions
+[%collapsible]
+====
+* `c4.*`
+* `c5.*`
+* `i3.*`
+* `m4.*`
+* `m5.*`
+* `r4.*`
+* `r5.*`
+* `t3.*`
+====
+endif::secretregion[]
+
+ifeval::["{context}" == "installing-aws-localzone"]
+:!localzone:
+endif::[]
+ifeval::["{context}" == "installing-aws-secret-region"]
+:!secretregion:
+endif::[]

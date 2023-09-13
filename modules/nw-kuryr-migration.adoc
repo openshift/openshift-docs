@@ -1,0 +1,346 @@
+// Module included in the following assemblies:
+//
+// * networking/ovn_kubernetes_network_provider/migrate-from-kuryr-sdn.adoc
+
+:_content-type: PROCEDURE
+[id="nw-kuryr-migration_{context}"]
+= Migrating to the OVN-Kubernetes network plugin
+
+As a cluster administrator, you can change the network plugin for your cluster to OVN-Kubernetes.
+
+[IMPORTANT]
+====
+During the migration, you must reboot every node in your cluster.
+Your cluster is unavailable and workloads might be interrupted.
+Perform the migration only if an interruption in service is acceptable.
+====
+
+.Prerequisites
+
+* You installed the OpenShift CLI (`oc`).
+* You have access to the cluster as a user with the `cluster-admin` role.
+* You have a recent backup of the etcd database is available.
+* You can manually reboot each node.
+* The cluster you plan to migrate is in a known good state, without any errors.
+* You installed the Python interpreter.
+* You installed the `openstacksdk` python package.
+* You installed the `openstack` CLI tool.
+* You have access to the underlying {rh-openstack} cloud.
+
+.Procedure
+
+. Back up the configuration for the cluster network by running the following command:
++
+[source,terminal]
+----
+$ oc get Network.config.openshift.io cluster -o yaml > cluster-kuryr.yaml
+----
+
+. To set the `CLUSTERID` variable, run the following command:
++
+[source,terminal]
+----
+$ CLUSTERID=$(oc get infrastructure.config.openshift.io cluster -o=jsonpath='{.status.infrastructureName}')
+----
+
+. To prepare all the nodes for the migration, set the `migration` field on the Cluster Network Operator configuration object by running the following command:
++
+[source,terminal]
+----
+$ oc patch Network.operator.openshift.io cluster --type='merge' \
+  --patch '{ "spec": { "migration": { "networkType": "OVNKubernetes" } } }'
+----
++
+[NOTE]
+====
+This step does not deploy OVN-Kubernetes immediately. Specifying the `migration` field triggers the Machine Config Operator (MCO) to apply new machine configs to all the nodes in the cluster. This prepares the cluster for the OVN-Kubernetes deployment.
+====
+
+. Optional: Customize the following settings for OVN-Kubernetes for your network infrastructure requirements:
++
+--
+* Maximum transmission unit (MTU)
+* Geneve (Generic Network Virtualization Encapsulation) overlay network port
+* OVN-Kubernetes IPv4 internal subnet
+* OVN-Kubernetes IPv6 internal subnet
+--
++
+To customize these settings, enter and customize the following command:
++
+[source,terminal]
+----
+$ oc patch Network.operator.openshift.io cluster --type=merge \
+  --patch '{
+    "spec":{
+      "defaultNetwork":{
+        "ovnKubernetesConfig":{
+          "mtu":<mtu>,
+          "genevePort":<port>,
+          "v4InternalSubnet":"<ipv4_subnet>",
+          "v6InternalSubnet":"<ipv6_subnet>"
+    }}}}'
+----
++
+where:
++
+--
+`mtu`::
+Specifies the MTU for the Geneve overlay network. This value is normally configured automatically, but if the nodes in your cluster do not all use the same MTU, then you must set this explicitly to `100` less than the smallest node MTU value.
+`port`::
+Specifies the UDP port for the Geneve overlay network. If a value is not specified, the default is `6081`. The port cannot be the same as the VXLAN port that is used by Kuryr. The default value for the VXLAN port is `4789`.
+`ipv4_subnet`::
+Specifies an IPv4 address range for internal use by OVN-Kubernetes. You must ensure that the IP address range does not overlap with any other subnet used by your {product-title} installation. The IP address range must be larger than the maximum number of nodes that can be added to the cluster. The default value is `100.64.0.0/16`.
+`ipv6_subnet`::
+Specifies an IPv6 address range for internal use by OVN-Kubernetes. You must ensure that the IP address range does not overlap with any other subnet used by your {product-title} installation. The IP address range must be larger than the maximum number of nodes that can be added to the cluster. The default value is `fd98::/48`.
+--
++
+If you do not need to change the default value, omit the key from the patch.
++
+.Example patch command to update `mtu` field
+[source,terminal]
+----
+$ oc patch Network.operator.openshift.io cluster --type=merge \
+  --patch '{
+    "spec":{
+      "defaultNetwork":{
+        "ovnKubernetesConfig":{
+          "mtu":1200
+    }}}}'
+----
+
+. Check the machine config pool status by entering the following command:
++
+[source,terminal]
+----
+$ oc get mcp
+----
++
+While the MCO updates machines in each machine config pool, it reboots each node one by one. You must wait until all the nodes are updated before continuing.
++
+A successfully updated node has the following status: `UPDATED=true`, `UPDATING=false`, `DEGRADED=false`.
++
+[NOTE]
+====
+By default, the MCO updates one machine per pool at a time. Large clusters take more time to migrate than small clusters.
+====
+
+. Confirm the status of the new machine configuration on the hosts:
+
+.. To list the machine configuration state and the name of the applied machine configuration, enter the following command:
++
+[source,terminal]
+----
+$ oc describe node | egrep "hostname|machineconfig"
+----
++
+.Example output
+[source,terminal]
+----
+kubernetes.io/hostname=master-0
+machineconfiguration.openshift.io/currentConfig: rendered-master-c53e221d9d24e1c8bb6ee89dd3d8ad7b <2>
+machineconfiguration.openshift.io/desiredConfig: rendered-master-c53e221d9d24e1c8bb6ee89dd3d8ad7b <3>
+machineconfiguration.openshift.io/reason:
+machineconfiguration.openshift.io/state: Done
+----
+
+.. Review the output from the previous step. The following statements must be true:
++
+--
+ * The value of `machineconfiguration.openshift.io/state` field is `Done`.
+ * The value of the `machineconfiguration.openshift.io/currentConfig` field is equal to the value of the `machineconfiguration.openshift.io/desiredConfig` field.
+--
+
+.. To confirm that the machine config is correct, enter the following command:
++
+[source,terminal]
+----
+$ oc get machineconfig <config_name> -o yaml | grep ExecStart
+----
++
+where:
+
+<config_name>:: Specifies the name of the machine config from the `machineconfiguration.openshift.io/currentConfig` field.
++
+The machine config must include the following update to the systemd configuration:
++
+.Example output
+[source,plain]
+----
+ExecStart=/usr/local/bin/configure-ovs.sh OVNKubernetes
+----
+
+.. If a node is stuck in the `NotReady` state, investigate the machine config daemon pod logs and resolve any errors:
+
+... To list the pods, enter the following command:
++
+[source,terminal]
+----
+$ oc get pod -n openshift-machine-config-operator
+----
++
+.Example output
+[source,terminal]
+----
+NAME                                         READY   STATUS    RESTARTS   AGE
+machine-config-controller-75f756f89d-sjp8b   1/1     Running   0          37m
+machine-config-daemon-5cf4b                  2/2     Running   0          43h
+machine-config-daemon-7wzcd                  2/2     Running   0          43h
+machine-config-daemon-fc946                  2/2     Running   0          43h
+machine-config-daemon-g2v28                  2/2     Running   0          43h
+machine-config-daemon-gcl4f                  2/2     Running   0          43h
+machine-config-daemon-l5tnv                  2/2     Running   0          43h
+machine-config-operator-79d9c55d5-hth92      1/1     Running   0          37m
+machine-config-server-bsc8h                  1/1     Running   0          43h
+machine-config-server-hklrm                  1/1     Running   0          43h
+machine-config-server-k9rtx                  1/1     Running   0          43h
+----
++
+The names for the config daemon pods are in the following format: `machine-config-daemon-<seq>`. The `<seq>` value is a random five character alphanumeric sequence.
+
+... Display the pod log for the first machine config daemon pod shown in the previous output by enter the following command:
++
+[source,terminal]
+----
+$ oc logs <pod> -n openshift-machine-config-operator
+----
++
+where:
+
+<pod>:: Specifies the name of a machine config daemon pod.
+
+... Resolve any errors in the logs shown by the output from the previous command.
+
+. To start the migration, configure the OVN-Kubernetes network plugin by using one of the following commands:
+
+** To specify the network provider without changing the cluster network IP address block, enter the following command:
++
+[source,terminal]
+----
+$ oc patch Network.config.openshift.io cluster \
+  --type='merge' --patch '{ "spec": { "networkType": "OVNKubernetes" } }'
+----
+
+** To specify a different cluster network IP address block, enter the following command:
++
+[source,terminal]
+----
+$ oc patch Network.config.openshift.io cluster \
+  --type='merge' --patch '{
+    "spec": {
+      "clusterNetwork": [
+        {
+          "cidr": "<cidr>",
+          "hostPrefix": "<prefix>"
+        }
+      ]
+      "networkType": "OVNKubernetes"
+    }
+  }'
+----
++
+where:
+
+<cidr>:: Specifies a CIDR block.
+<prefix>:: Specifies a slice of the CIDR block that is apportioned to each node in your cluster.
++
+[IMPORTANT]
+====
+You cannot change the service network address block during the migration.
+
+You cannot use any CIDR block that overlaps with the `100.64.0.0/16` CIDR block because the OVN-Kubernetes network provider uses this block internally.
+====
+
+. Verify that the Multus daemon set rollout is complete by entering the following command:
++
+[source,terminal]
+----
+$ oc -n openshift-multus rollout status daemonset/multus
+----
++
+The name of the Multus pods is in the form of `multus-<xxxxx>`, where `<xxxxx>` is a random sequence of letters. It might take several moments for the pods to restart.
++
+.Example output
+[source,text]
+----
+Waiting for daemon set "multus" rollout to finish: 1 out of 6 new pods have been updated...
+...
+Waiting for daemon set "multus" rollout to finish: 5 of 6 updated pods are available...
+daemon set "multus" successfully rolled out
+----
+
+. To complete the migration, reboot each node in your cluster. For example, you can use a bash script similar to the following example. The script assumes that you can connect to each host by using `ssh` and that you have configured `sudo` to not prompt for a password:
++
+[source,bash]
+----
+#!/bin/bash
+
+for ip in $(oc get nodes  -o jsonpath='{.items[*].status.addresses[?(@.type=="InternalIP")].address}')
+do
+   echo "reboot node $ip"
+   ssh -o StrictHostKeyChecking=no core@$ip sudo shutdown -r -t 3
+done
+----
++
+[NOTE]
+====
+If SSH access is not available, you can use the `openstack` command:
+[source,terminal]
+----
+$ for name in $(openstack server list --name ${CLUSTERID}\* -f value -c Name); do openstack server reboot $name; done
+----
+Alternatively, you might be able to to reboot each node through the management portal for
+your infrastructure provider. Otherwise, contact the appropriate authority to
+either gain access to the virtual machines through SSH or the management
+portal and OpenStack client.
+====
+
+.Verification
+. Confirm that the migration succeeded, and then remove the migration resources:
+
+.. To confirm that the network plugin is OVN-Kubernetes, enter the following command.
++
+[source,terminal]
+----
+$ oc get network.config/cluster -o jsonpath='{.status.networkType}{"\n"}'
+----
++
+The value of `status.networkType` must be `OVNKubernetes`.
+
+.. To confirm that the cluster nodes are in the `Ready` state, enter the following command:
++
+[source,terminal]
+----
+$ oc get nodes
+----
+
+.. To confirm that your pods are not in an error state, enter the following command:
++
+[source,terminal]
+----
+$ oc get pods --all-namespaces -o wide --sort-by='{.spec.nodeName}'
+----
++
+If pods on a node are in an error state, reboot that node.
+
+.. To confirm that all of the cluster Operators are not in an abnormal state, enter the following command:
++
+[source,terminal]
+----
+$ oc get co
+----
++
+The status of every cluster Operator must be the following: `AVAILABLE="True"`, `PROGRESSING="False"`, `DEGRADED="False"`. If a cluster Operator is not available or degraded, check the logs for the cluster Operator for more information.
++
+[IMPORTANT]
+====
+Do not proceed if any of the previous verification steps indicate errors.
+You might encounter pods that have a `Terminating` state due to finalizers that are removed during clean up. They are not an error indication.
+====
++
+. If the migration completed and your cluster is in a good state, remove the migration configuration from the CNO configuration object by entering the following command:
++
+[source,terminal]
+----
+$ oc patch Network.operator.openshift.io cluster --type='merge' \
+  --patch '{ "spec": { "migration": null } }'
+----

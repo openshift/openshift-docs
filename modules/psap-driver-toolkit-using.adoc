@@ -1,20 +1,27 @@
 // Module included in the following assemblies:
 //
-// * scalability_and_performance/psap-driver-toolkit.adoc
+// * hardware_enablement/psap-driver-toolkit.adoc
 
-[id="using-the-driver-toolkit"]
+:_content-type: PROCEDURE
+[id="using-the-driver-toolkit_{context}"]
 = Using the Driver Toolkit
 
-As an example, the Driver Toolkit can be used as the base image for building a very simple kernel module called simple-kmod.
+As an example, the Driver Toolkit can be used as the base image for building a very simple kernel module called `simple-kmod`.
 
-[id="create-simple-kmod-image"]
+[NOTE]
+====
+The Driver Toolkit includes the necessary dependencies, `openssl`, `mokutil`, and `keyutils`, needed to sign a kernel module. However, in this example, the `simple-kmod` kernel module is not signed and therefore cannot be loaded on systems with `Secure Boot` enabled.
+====
+
+[id="create-simple-kmod-image_{context}"]
 == Build and run the simple-kmod driver container on a cluster
 
 .Prerequisites
 
-* An {product-title} cluster
-* Install the OpenShift CLI (`oc`).
-* Log in as a user with `cluster-admin` privileges.
+* You have a running {product-title} cluster.
+* You set the Image Registry Operator state to `Managed` for your cluster.
+* You installed the OpenShift CLI (`oc`).
+* You are logged into the OpenShift CLI as a user with `cluster-admin` privileges.
 
 .Procedure
 
@@ -52,54 +59,47 @@ spec:
     - type: "ConfigChange"
     - type: "ImageChange"
   source:
-    git:
-      ref: "master"
-      uri: "https://github.com/openshift-psap/kvc-simple-kmod.git"
-    type: Git
     dockerfile: |
-      FROM DRIVER_TOOLKIT_IMAGE
+      ARG DTK
+      FROM ${DTK} as builder
+
+      ARG KVER
 
       WORKDIR /build/
 
-      RUN yum -y install git make sudo gcc \
-      && yum clean all \
-      && rm -rf /var/cache/dnf
-
-      # Expecting kmod software version as an input to the build
-      ARG KMODVER
-
-      # Grab the software from upstream
       RUN git clone https://github.com/openshift-psap/simple-kmod.git
-      WORKDIR simple-kmod
 
-      # Prep and build the module
-      RUN make buildprep KVER=$(rpm -q --qf "%{VERSION}-%{RELEASE}.%{ARCH}"  kernel-core) KMODVER=${KMODVER} \
-      && make all       KVER=$(rpm -q --qf "%{VERSION}-%{RELEASE}.%{ARCH}"  kernel-core) KMODVER=${KMODVER} \
-      && make install   KVER=$(rpm -q --qf "%{VERSION}-%{RELEASE}.%{ARCH}"  kernel-core) KMODVER=${KMODVER}
+      WORKDIR /build/simple-kmod
 
-      # Add the helper tools
-      WORKDIR /root/kvc-simple-kmod
-      ADD Makefile .
-      ADD simple-kmod-lib.sh .
-      ADD simple-kmod-wrapper.sh .
-      ADD simple-kmod.conf .
-      RUN mkdir -p /usr/lib/kvc/ \
-      && mkdir -p /etc/kvc/ \
-      && make install
+      RUN make all install KVER=${KVER}
 
-      RUN systemctl enable kmods-via-containers@simple-kmod
+      FROM registry.redhat.io/ubi8/ubi-minimal
+
+      ARG KVER
+
+      # Required for installing `modprobe`
+      RUN microdnf install kmod
+
+      COPY --from=builder /lib/modules/${KVER}/simple-kmod.ko /lib/modules/${KVER}/
+      COPY --from=builder /lib/modules/${KVER}/simple-procfs-kmod.ko /lib/modules/${KVER}/
+      RUN depmod ${KVER}
   strategy:
     dockerStrategy:
       buildArgs:
         - name: KMODVER
           value: DEMO
+          # $ oc adm release info quay.io/openshift-release-dev/ocp-release:<cluster version>-x86_64 --image-for=driver-toolkit
+        - name: DTK
+          value: quay.io/openshift-release-dev/ocp-v4.0-art-dev@sha256:34864ccd2f4b6e385705a730864c04a40908e57acede44457a783d739e377cae
+        - name: KVER
+          value: 4.18.0-372.26.1.el8_6.x86_64
   output:
     to:
       kind: ImageStreamTag
       name: simple-kmod-driver-container:demo
 ----
 
-. Substitute the correct driver toolkit image for the {product-title} version you are running in place of “DRIVER_TOOLKIT_IMAGE” with the following commands. 
+. Substitute the correct driver toolkit image for the {product-title} version you are running in place of “DRIVER_TOOLKIT_IMAGE” with the following commands.
 +
 [source,terminal]
 ----
@@ -115,11 +115,6 @@ $ DRIVER_TOOLKIT_IMAGE=$(oc adm release info $OCP_VERSION --image-for=driver-too
 ----
 $ sed "s#DRIVER_TOOLKIT_IMAGE#${DRIVER_TOOLKIT_IMAGE}#" 0000-buildconfig.yaml.template > 0000-buildconfig.yaml
 ----
-+
-[NOTE]
-====
-The driver toolkit was introduced to {product-title} 4.6 as of version 4.6.30, in 4.7 as of version 4.7.11, and in 4.8.
-====
 
 . Create the image stream and build config with
 +
@@ -128,7 +123,7 @@ The driver toolkit was introduced to {product-title} 4.6 as of version 4.6.30, i
 $ oc create -f 0000-buildconfig.yaml
 ----
 
-. After the builder pod completes successfully, deploy the driver container image as a `DaemonSet`. 
+. After the builder pod completes successfully, deploy the driver container image as a `DaemonSet`.
 
 .. The driver container must run with the privileged security context in order to load the kernel modules on the host. The following YAML file contains the RBAC rules and the `DaemonSet` for running the driver container. Save this YAML as `1000-drivercontainer.yaml`.
 +
@@ -186,11 +181,14 @@ spec:
       - image: image-registry.openshift-image-registry.svc:5000/simple-kmod-demo/simple-kmod-driver-container:demo
         name: simple-kmod-driver-container
         imagePullPolicy: Always
-        command: ["/sbin/init"]
+        command: [sleep, infinity]
         lifecycle:
+          postStart:
+            exec:
+              command: ["modprobe", "-v", "-a" , "simple-kmod", "simple-procfs-kmod"]
           preStop:
             exec:
-              command: ["/bin/sh", "-c", "systemctl stop kmods-via-containers@simple-kmod"]
+              command: ["modprobe", "-r", "-a" , "simple-kmod", "simple-procfs-kmod"]
         securityContext:
           privileged: true
       nodeSelector:
@@ -204,7 +202,7 @@ spec:
 $ oc create -f 1000-drivercontainer.yaml
 ----
 
-. After the pods are running on the worker nodes, verify that the `simple_kmod` kernel module is loaded successfully on the host machines with `lsmod`. 
+. After the pods are running on the worker nodes, verify that the `simple_kmod` kernel module is loaded successfully on the host machines with `lsmod`.
 
 .. Verify that the pods are running:
 +

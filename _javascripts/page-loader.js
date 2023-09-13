@@ -1,13 +1,20 @@
+// the new final link to load
+newLink = "";
+newVersion = "";
+currentVersion = "";
+
+// the fileRequested
+fileRequested = "";
+
+//Array prototype to check if an element is in an array
+Array.prototype.contains = function(obj) {
+  return this.indexOf(obj) > -1;
+}
+
 function versionSelector(list) {
 
   // the version we want
   newVersion = list[list.selectedIndex].value;
-
-  // the new final link to load
-  newLink = "";
-
-  // the fileRequested
-  var fileRequested = "";
 
   // spilt the current path
   var pathArray = window.location.pathname.split( '/' );
@@ -28,23 +35,79 @@ function versionSelector(list) {
     fileRequested = "/welcome/index.html";
   }
 
-
   // alert(fileRequested);
 
   // in 3.3 and above, we changed to container-platform
-  if(newVersion == '3.0' || newVersion == '3.1' || newVersion == '3.2') {
+  if(['3.0', '3.1', '3.2'].contains(newVersion)) {
     newLink = "https://docs.openshift.com/enterprise/" +
       newVersion +
       fileRequested;
+  } else if (['3.65', '3.66', '3.67', '3.68', '3.69', '3.70', '3.71', '3.72', '3.73', '3.74', '4.0'].contains(newVersion)) {
+    // check and handle links for RHACS versions
+    newLink = "https://docs.openshift.com/acs/" +
+      newVersion +
+      fileRequested;
+  } else if (['1.28', '1.29'].contains(newVersion)) {
+    // check and handle links for Serverless versions
+    newLink = "https://docs.openshift.com/serverless/" +
+      newVersion +
+      fileRequested;
+  } else if (['1.8', '1.9'].contains(newVersion)) {
+    // check and handle links for GitOps versions
+    newLink = "https://docs.openshift.com/gitops/" +
+      newVersion +
+      fileRequested;
   } else {
+    //if distro key is openshift enterprise
+    if (dk == "openshift-enterprise") {
     newLink = "https://docs.openshift.com/container-platform/" +
       newVersion +
       fileRequested;
+    }
+    else if (dk == "openshift-origin"){
+      newLink = "https://docs.okd.io/" +
+      newVersion +
+      fileRequested;
+    }
   }
 
   // without doing async loads, there is no way to know if the path actually
   // exists - so we will just have to load
-  window.location = newLink;
+  // window.location = newLink;
+  // testing async validations
+  $.ajax({
+    type: 'HEAD',
+    url: newLink,
+    success: function() {
+      window.location = newLink;
+    },
+    error: function(jqXHR, exception) {
+      if(jqXHR.status == 404) {
+        list.value = currentVersion;
+        if(confirm("This page doesn't exist in version " + newVersion + ". Click OK to search the " + newVersion + " docs OR Cancel to stay on this page.")) {
+          if (['3.65', '3.66', '3.67', '3.68', '3.69', '3.70', '3.71', '3.72', '3.73', '3.74', '4.0'].contains(newVersion)) {
+            window.location = "https://google.com/search?q=site:https://docs.openshift.com/acs/" + newVersion + " " + document.title;}
+          else if (['1.28', '1.29'].contains(newVersion)) {
+            window.location = "https://google.com/search?q=site:https://docs.openshift.com/serverless/" + newVersion + " " + document.title;}
+          else if (['1.8', '1.9'].contains(newVersion)) {
+            window.location = "https://google.com/search?q=site:https://docs.openshift.com/gitops/" + newVersion + " " + document.title;}            
+          else {
+            if (dk == "openshift-enterprise"){
+              window.location = "https://google.com/search?q=site:https://docs.openshift.com/enterprise/" + newVersion + " " + document.title;
+            } else {
+              if (dk == "openshift-origin"){
+                window.location = "https://google.com/search?q=site:https://docs.okd.io/" + newVersion + " " + document.title;
+              }
+            }
+          }
+        } else {
+          // do nothing, user doesn't want to search
+        }
+      } else {
+        window.location = newLink; // assumption here is that we can follow through with a redirect
+      }
+    }
+  });
 
 }
 
@@ -58,20 +121,41 @@ function selectLang(langList) {
   console.log("Win Path: " + winPath);
 
   var currentVersion = document.getElementById("version-selector").value;
-  // var currentVersion = "4.7";
   console.log("CurrentVersion: " + currentVersion);
 
   // path for the file to reference on portal (the last bit removes .html)
-  var path = winPath.substring(winPath.lastIndexOf(currentVersion) +   currentVersion.length, winPath.length - 5);
+  var path = winPath.substring(winPath.lastIndexOf(currentVersion) +   (currentVersion.length + 1), winPath.length - 5);
+
+  var parts = path.split("/");
+
+  console.log(parts);
+
+  // map things to html-single. While plain HTML is preferred, it is harder to map and get all anchors right. html-single ensures there is no 404 and the user at least lands on the right book
+  console.log(parts[parts.length-1]);
+
+  var anchorid = parts[parts.length-1];
+  var book = parts[0];
+
+  // add changed book names here
+  if(book == "updating") book = "updating_clusters";
+  if(book == "virt") book = "openshift_virtualization";
+  if(book == "post_installation_configuration") book = "post-installation_configuration";
+
+  // var section = parts[1].replace(/\_/g, "-"); // replace underscore with dash
+  // var section = subGroup.toLowerCase().replace(" ", "-");
+  // console.log(section);
+  // var subsection = parts[2].replace(/\_/g, "-");
+  // console.log(subsection);
+
+  // path = book + "/" + section + "#" + subsection;
+  path = book + "#" + anchorid;
 
   console.log("Path: " + path);
 
   var portalBaseURL = "https://access.redhat.com/documentation";
-  var finalURL = portalBaseURL + "/" + lang + "/openshift_container_platform/" + currentVersion + "/html/" + path;
+  var finalURL = portalBaseURL + "/" + lang + "/openshift_container_platform/" + currentVersion + "/html-single/" + path;
 
   console.log("Final URL: " + finalURL);
-
-  // alert(finalURL);
   window.location.href = finalURL;
 
 }
@@ -115,8 +199,8 @@ function selectVersion(currentVersion) {
 
   // main file to edit is the file path after the version to the html at
   // the end.
-  // Example: https://docs.openshift.com/container-platform/4.4/updating/updating-cluster-between-minor.html
-  // file path is updating/updating-cluster-between-minor.adoc
+  // Example: https://docs.openshift.com/container-platform/4.4/updating/updating-cluster-within-minor.html
+  // file path is updating/updating-cluster-within-minor.adoc
 
   mainFileToEdit =
     window.location.pathname.substring(

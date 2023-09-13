@@ -1,0 +1,10 @@
+// Module included in the following assemblies:
+//
+// * rosa_architecture/rosa_policy_service_definition/rosa-life-cycle.adoc
+// * osd_architecture/osd_policy/osd-life-cycle.adoc
+
+[id="rosa-install-policy_{context}"]
+= Installation policy
+
+While Red Hat recommends installation of the latest support release, {product-title} supports
+installation of any supported release as covered by the preceding policy.

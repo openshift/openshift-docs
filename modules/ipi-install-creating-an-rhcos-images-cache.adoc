@@ -2,12 +2,23 @@
 //
 //  *installing/installing_bare_metal_ipi/ipi-install-installation-workflow.adoc
 
+:_content-type: PROCEDURE
 [id="ipi-install-creating-an-rhcos-images-cache_{context}"]
-= Creating an {op-system} images cache (optional)
+= Optional: Creating an {op-system} images cache
 
-To employ image caching, you must download two images: the {op-system-first} image used by the bootstrap VM and the {op-system} image used by the installer to provision the different nodes. Image caching is optional, but especially useful when running the installer on a network with limited bandwidth.
+To employ image caching, you must download the {op-system-first} image used by the bootstrap VM to provision the cluster nodes. Image caching is optional, but it is especially useful when running the installation program on a network with limited bandwidth.
 
-If you are running the installer on a network with limited bandwidth and the {op-system} images download takes more than 15 to 20 minutes, the installer will timeout. Caching images on a web server will help in such scenarios.
+[NOTE]
+====
+The installation program no longer needs the `clusterOSImage` {op-system} image because the correct image is in the release payload.
+====
+
+If you are running the installation program on a network with limited bandwidth and the {op-system} images download takes more than 15 to 20 minutes, the installation program will timeout. Caching images on a web server will help in such scenarios.
+
+[WARNING]
+====
+If you enable TLS for the HTTPD server, you must confirm the root certificate is signed by an authority trusted by the client and verify the trusted certificate chain between your {product-title} hub and spoke clusters and the HTTPD server. Using a server configured with an untrusted certificate prevents the images from being downloaded to the image creation service. Using untrusted HTTPS servers is not supported.
+====
 
 Install a container that contains the images.
 
@@ -32,8 +43,7 @@ $ sudo firewall-cmd --add-port=8080/tcp --zone=public --permanent
 $ sudo firewall-cmd --reload
 ----
 
-
-. Create a directory to store the `bootstraposimage` and `clusterosimage`:
+. Create a directory to store the `bootstraposimage`:
 +
 [source,terminal]
 ----
@@ -49,67 +59,38 @@ $ sudo semanage fcontext -a -t httpd_sys_content_t "/home/kni/rhcos_image_cache(
 +
 [source,terminal]
 ----
-$ sudo restorecon -Rv rhcos_image_cache/
+$ sudo restorecon -Rv /home/kni/rhcos_image_cache/
 ----
 
-
-. Get the commit ID from the installer:
+. Get the URI for the {op-system} image that the installation program will deploy on the bootstrap VM:
 +
 [source,terminal]
 ----
-$ export COMMIT_ID=$(/usr/local/bin/openshift-baremetal-install version | grep '^built from commit' | awk '{print $4}')
+$ export RHCOS_QEMU_URI=$(/usr/local/bin/openshift-baremetal-install coreos print-stream-json | jq -r --arg ARCH "$(arch)" '.architectures[$ARCH].artifacts.qemu.formats["qcow2.gz"].disk.location')
 ----
-+
-The ID determines which images the installer needs to download.
 
-. Get the URI for the {op-system} image that the installer will deploy on the nodes:
+. Get the name of the image that the installation program will deploy on the bootstrap VM:
 +
 [source,terminal]
 ----
-$ export RHCOS_OPENSTACK_URI=$(curl -s -S https://raw.githubusercontent.com/openshift/installer/$COMMIT_ID/data/data/rhcos.json  | jq .images.openstack.path | sed 's/"//g')
-----
-
-. Get the URI for the {op-system} image that the installer will deploy on the bootstrap VM:
-+
-[source,terminal]
-----
-$ export RHCOS_QEMU_URI=$(curl -s -S https://raw.githubusercontent.com/openshift/installer/$COMMIT_ID/data/data/rhcos.json  | jq .images.qemu.path | sed 's/"//g')
-----
-
-. Get the path where the images are published:
-+
-[source,terminal]
-----
-$ export RHCOS_PATH=$(curl -s -S https://raw.githubusercontent.com/openshift/installer/$COMMIT_ID/data/data/rhcos.json | jq .baseURI | sed 's/"//g')
+$ export RHCOS_QEMU_NAME=${RHCOS_QEMU_URI##*/}
 ----
 
 . Get the SHA hash for the {op-system} image that will be deployed on the bootstrap VM:
 +
 [source,terminal]
 ----
-$ export RHCOS_QEMU_SHA_UNCOMPRESSED=$(curl -s -S https://raw.githubusercontent.com/openshift/installer/$COMMIT_ID/data/data/rhcos.json  | jq -r '.images.qemu["uncompressed-sha256"]')
+$ export RHCOS_QEMU_UNCOMPRESSED_SHA256=$(/usr/local/bin/openshift-baremetal-install coreos print-stream-json | jq -r --arg ARCH "$(arch)" '.architectures[$ARCH].artifacts.qemu.formats["qcow2.gz"].disk["uncompressed-sha256"]')
 ----
 
-. Get the SHA hash for the {op-system} image that will be deployed on the nodes:
+. Download the image and place it in the `/home/kni/rhcos_image_cache` directory:
 +
 [source,terminal]
 ----
-$ export RHCOS_OPENSTACK_SHA_COMPRESSED=$(curl -s -S https://raw.githubusercontent.com/openshift/installer/$COMMIT_ID/data/data/rhcos.json  | jq -r '.images.openstack.sha256')
+$ curl -L ${RHCOS_QEMU_URI} -o /home/kni/rhcos_image_cache/${RHCOS_QEMU_NAME}
 ----
 
-. Download the images and place them in the `/home/kni/rhcos_image_cache` directory:
-+
-[source,terminal]
-----
-$ curl -L ${RHCOS_PATH}${RHCOS_QEMU_URI} -o /home/kni/rhcos_image_cache/${RHCOS_QEMU_URI}
-----
-+
-[source,terminal]
-----
-$ curl -L ${RHCOS_PATH}${RHCOS_OPENSTACK_URI} -o /home/kni/rhcos_image_cache/${RHCOS_OPENSTACK_URI}
-----
-
-. Confirm SELinux type is of `httpd_sys_content_t` for the newly created files:
+. Confirm SELinux type is of `httpd_sys_content_t` for the new file:
 +
 [source,terminal]
 ----
@@ -120,17 +101,17 @@ $ ls -Z /home/kni/rhcos_image_cache
 +
 [source,terminal]
 ----
-$ podman run -d --name rhcos_image_cache \
+$ podman run -d --name rhcos_image_cache \ <1>
 -v /home/kni/rhcos_image_cache:/var/www/html \
 -p 8080:8080/tcp \
-registry.centos.org/centos/httpd-24-centos7:latest
+quay.io/centos7/httpd-24-centos7:latest
 ----
 ifndef::upstream[]
 +
-The above command creates a caching webserver with the name `rhcos_image_cache`, which serves the images for deployment. The first image `${RHCOS_PATH}${RHCOS_QEMU_URI}?sha256=${RHCOS_QEMU_SHA_UNCOMPRESSED}` is the `bootstrapOSImage` and the second image `${RHCOS_PATH}${RHCOS_OPENSTACK_URI}?sha256=${RHCOS_OPENSTACK_SHA_COMPRESSED}` is the `clusterOSImage` in the `install-config.yaml` file.
+<1> Creates a caching webserver with the name `rhcos_image_cache`. This pod serves the `bootstrapOSImage` image in the `install-config.yaml` file for deployment.
 endif::[]
 
-. Generate the `bootstrapOSImage` and `clusterOSImage` configuration:
+. Generate the `bootstrapOSImage` configuration:
 +
 [source,terminal]
 ----
@@ -139,37 +120,12 @@ $ export BAREMETAL_IP=$(ip addr show dev baremetal | awk '/inet /{print $2}' | c
 +
 [source,terminal]
 ----
-$ export RHCOS_OPENSTACK_SHA256=$(zcat /home/kni/rhcos_image_cache/${RHCOS_OPENSTACK_URI} | sha256sum | awk '{print $1}')
-----
-+
-[source,terminal]
-----
-$ export RHCOS_QEMU_SHA256=$(zcat /home/kni/rhcos_image_cache/${RHCOS_QEMU_URI} | sha256sum | awk '{print $1}')
-----
-+
-[source,terminal]
-----
-$ export CLUSTER_OS_IMAGE="http://${BAREMETAL_IP}:8080/${RHCOS_OPENSTACK_URI}?sha256=${RHCOS_OPENSTACK_SHA256}"
-----
-+
-[source,terminal]
-----
-$ export BOOTSTRAP_OS_IMAGE="http://${BAREMETAL_IP}:8080/${RHCOS_QEMU_URI}?sha256=${RHCOS_QEMU_SHA256}"
-----
-+
-[source,terminal]
-----
-$ echo "${RHCOS_OPENSTACK_SHA256}  ${RHCOS_OPENSTACK_URI}" > /home/kni/rhcos_image_cache/rhcos-ootpa-latest.qcow2.md5sum
+$ export BOOTSTRAP_OS_IMAGE="http://${BAREMETAL_IP}:8080/${RHCOS_QEMU_NAME}?sha256=${RHCOS_QEMU_UNCOMPRESSED_SHA256}"
 ----
 +
 [source,terminal]
 ----
 $ echo "    bootstrapOSImage=${BOOTSTRAP_OS_IMAGE}"
-----
-+
-[source,terminal]
-----
-$ echo "    clusterOSImage=${CLUSTER_OS_IMAGE}"
 ----
 
 . Add the required configuration to the `install-config.yaml` file under `platform.baremetal`:
@@ -178,8 +134,8 @@ $ echo "    clusterOSImage=${CLUSTER_OS_IMAGE}"
 ----
 platform:
   baremetal:
-    bootstrapOSImage: http://<BAREMETAL_IP>:8080/<RHCOS_QEMU_URI>?sha256=<RHCOS_QEMU_SHA256>
-    clusterOSImage: http://<BAREMETAL_IP>:8080/<RHCOS_OPENSTACK_URI>?sha256=<RHCOS_OPENSTACK_SHA256>
+    bootstrapOSImage: <bootstrap_os_image>  <1>
 ----
+<1> Replace `<bootstrap_os_image>` with the value of `$BOOTSTRAP_OS_IMAGE`.
 +
-See the "Configuration files" section for additional details.
+See the "Configuring the install-config.yaml file" section for additional details.

@@ -1,0 +1,110 @@
+////
+This module included in the following assemblies:
+- distr_tracing_install/dist-tracing-removing.adoc
+////
+
+[id="distr-tracing-removing-instance-cli_{context}"]
+= Removing a {JaegerShortName} instance by using the CLI
+
+You can remove a {JaegerShortName} instance on the command line.
+
+.Prerequisites
+
+* An active {oc-first} session by a cluster administrator with the `cluster-admin` role.
++
+[TIP]
+====
+* Ensure that your {oc-first} version is up to date and matches your {product-title} version.
+
+* Run `oc login`:
++
+[source,terminal]
+----
+$ oc login --username=<your_username>
+----
+====
+
+.Procedure
+
+. Log in with the {oc-first} by running the following command:
++
+[source,terminal]
+----
+$ oc login --username=<NAMEOFUSER> 
+----
++
+. To display the {JaegerShortName} instances, run the following command:
++
+[source,terminal]
+----
+$ oc get deployments -n <jaeger-project>
+----
++
+For example,
++
+[source,terminal]
+----
+$ oc get deployments -n openshift-operators
+----
++
+The names of Operators have the suffix `-operator`. The following example shows two {JaegerName} Operators and four {JaegerShortName} instances:
++
+[source,terminal]
+----
+$ oc get deployments -n openshift-operators
+----
++
+You will see output similar to the following:
++
+[source,terminal]
+----
+NAME                     READY   UP-TO-DATE   AVAILABLE   AGE
+elasticsearch-operator   1/1     1            1           93m
+jaeger-operator          1/1     1            1           49m
+jaeger-test              1/1     1            1           7m23s
+jaeger-test2             1/1     1            1           6m48s
+tracing1                 1/1     1            1           7m8s
+tracing2                 1/1     1            1           35m
+----
++
+. To remove an instance of {JaegerShortName}, run the following command:
++
+[source,terminal]
+----
+$ oc delete jaeger <deployment-name> -n <jaeger-project>
+----
++
+For example:
++
+[source,terminal]
+----
+$ oc delete jaeger tracing2 -n openshift-operators
+----
++
+
+. To verify the deletion, run the `oc get deployments` command again:
++
+[source,terminal]
+----
+$ oc get deployments -n <jaeger-project>
+----
+
++
+For example:
++
+[source,terminal]
+----
+$ oc get deployments -n openshift-operators
+----
++
+You will see generated output that is similar to the following example:
++
+[source,terminal]
+----
+NAME                     READY   UP-TO-DATE   AVAILABLE   AGE
+elasticsearch-operator   1/1     1            1           94m
+jaeger-operator          1/1     1            1           50m
+jaeger-test              1/1     1            1           8m14s
+jaeger-test2             1/1     1            1           7m39s
+tracing1                 1/1     1            1           7m59s
+----

@@ -6,16 +6,19 @@ import argparse
 import configparser
 import filecmp
 import fnmatch
-import logging
 import os
 import re
 import shutil
 import subprocess
 import sys
+import tempfile
 import time
-import yaml
 import requests
+import yaml
 
+import logging
+
+# See manual and pip3 install aura.tar.gz for logging
 from aura import cli
 
 cli.init_logging(False, True)
@@ -24,17 +27,26 @@ has_errors = False
 CLONE_DIR = "."
 BASE_PORTAL_URL = "https://access.redhat.com/documentation/en-us/"
 # ID_RE = re.compile("^\[(?:\[|id=\'|#)(.*?)(\'?,.*?)?(?:\]|\')?\]", re.M | re.DOTALL)
-ID_RE = re.compile("^\[(?:\[|id=\'|#|id=\")(.*?)(\'?,.*?)?(?:\]|\'|\")?\]", re.M | re.DOTALL)
-LINKS_RE = re.compile("(?:xref|link):([\./\w_-]*/?[\w_.-]*\.(?:html|adoc))?(#[\w_-]*)?(\[.*?\])", re.M | re.DOTALL)
-EXTERNAL_LINK_RE = re.compile("[\./]*([\w_-]+)/[\w_/-]*?([\w_.-]*\.(?:html|adoc))", re.DOTALL)
+ID_RE = re.compile(
+    "^\[(?:\[|id='|#|id=\")(.*?)('?,.*?)?(?:\]|'|\")?\]", re.M | re.DOTALL
+)
+LINKS_RE = re.compile(
+    "(?:xref|link):([\./\w_-]*/?[\w_.-]*\.(?:html|adoc))?(#[\w_-]*)?(\[.*?\])",
+    re.M | re.DOTALL,
+)
+EXTERNAL_LINK_RE = re.compile(
+    "[\./]*([\w_-]+)/[\w_/-]*?([\w_.-]*\.(?:html|adoc))", re.DOTALL
+)
 INCLUDE_RE = re.compile("include::(.*?)\[(.*?)\]", re.M)
 IFDEF_RE = re.compile(r"^if(n?)def::(.*?)\[\]", re.M)
 ENDIF_RE = re.compile(r"^endif::(.*?)\[\]\r?\n", re.M)
 COMMENT_CONTENT_RE = re.compile(r"^^////$.*?^////$", re.M | re.DOTALL)
-TAG_CONTENT_RE = re.compile(r"//\s+tag::(.*?)\[\].*?// end::(.*?)\[\]", re.M | re.DOTALL)
+TAG_CONTENT_RE = re.compile(
+    r"//\s+tag::(.*?)\[\].*?// end::(.*?)\[\]", re.M | re.DOTALL
+)
 CMP_IGNORE_FILES = [".git", ".gitignore", "README.md", "build.cfg"]
-DEVNULL = open(os.devnull, 'wb')
-
+DEVNULL = open(os.devnull, "wb")
+LIST_OF_HUGE_BOOKS: list = ["Installing", "API reference"]
 
 MASTER_FILE_BASE = "= {title}\n\
 :product-author: {product-author}\n\
@@ -45,17 +57,17 @@ MASTER_FILE_BASE = "= {title}\n\
 :idseparator: -\n\
 {preface-title}\n"
 
-DOCINFO_BASE = "<title>{title}</title>\n\
+DOCINFO_BASE = '<title>{title}</title>\n\
 <productname>{{product-title}}</productname>\n\
 <productnumber>{{product-version}}</productnumber>\n\
 <subtitle>Enter a short description here.</subtitle>\n\
 <abstract>\n\
-    <para>A short overview and summary of the book's subject and purpose, traditionally no more than one paragraph long.</para>\n\
+    <para>A short overview and summary of the book\'s subject and purpose, traditionally no more than one paragraph long.</para>\n\
 </abstract>\n\
 <authorgroup>\n\
     <orgname>{product-author}</orgname>\n\
 </authorgroup>\n\
-<xi:include href=\"Common_Content/Legal_Notice.xml\" xmlns:xi=\"http://www.w3.org/2001/XInclude\" />\n"
+<xi:include href="Common_Content/Legal_Notice.xml" xmlns:xi="http://www.w3.org/2001/XInclude" />\n'
 
 # A list of book titles, that still use the old drupal url format (ie includes the product/version in the book title part)
 # eg. openshift-enterprise/version-3.0/openshift-enterprise-30-getting-started vs openshift-enterprise/version-3.0/getting-started
@@ -68,13 +80,11 @@ DRUPAL_OLD_URL_TITLES = [
     "Getting Started",
     "REST API Reference",
     "Using Images",
-    "What's New?"
+    "What's New?",
 ]
 
 # A mapping of upstream book/category names to CP book names
-BOOK_NAME_OVERRIDES = {
-    "Administration": "Administrator Guide"
-}
+BOOK_NAME_OVERRIDES = {"Administration": "Administrator Guide"}
 
 # Lines that should be stripped out/ignored when cleaning the content
 IGNORE_LINES = [
@@ -82,24 +92,15 @@ IGNORE_LINES = [
     "{product-version}\n",
     "{product-version]\n",
     "{Lucas Costi}\n",
-    "toc::[]\n"
+    "toc::[]\n",
 ]
 
 # Each MACRO in this list is omitted from the output
 # if the input appears as ':MACRO:' (colon, MACRO, colon).
-IGNORE_MACROS = [
-    "description",
-    "keywords",
-    "icons",
-    "data-uri",
-    "toc",
-    "toc-title"
-]
+IGNORE_MACROS = ["description", "keywords", "icons", "data-uri", "toc", "toc-title"]
 
 # Files where the title should be removed when building the all-in-one
-ALL_IN_ONE_SCRAP_TITLE = [
-    "welcome/index.adoc"
-]
+ALL_IN_ONE_SCRAP_TITLE = ["welcome/index.adoc"]
 
 # Files that should be commented out in the toc structure
 COMMENT_FILES = [
@@ -107,7 +108,7 @@ COMMENT_FILES = [
     "creating_images/overview.adoc",
     "dev_guide/overview.adoc",
     "using_images/overview.adoc",
-    "rest_api/overview.adoc"
+    "rest_api/overview.adoc",
 ]
 
 # Map FILENAME to a map of TITLE to ID.  In most of the cases the
@@ -124,19 +125,44 @@ log = logging.getLogger("build")
 
 
 def setup_parser():
-    parser = argparse.ArgumentParser(formatter_class=argparse.ArgumentDefaultsHelpFormatter)
-    parser.add_argument("--distro", help="The distribution to build for", default="openshift-enterprise")
+    parser = argparse.ArgumentParser(
+        formatter_class=argparse.ArgumentDefaultsHelpFormatter
+    )
+    parser.add_argument(
+        "--distro", help="The distribution to build for", default="openshift-enterprise"
+    )
     parser.add_argument("--all-in-one", help=argparse.SUPPRESS, action="store_true")
     parser.add_argument("--title", help=argparse.SUPPRESS, default="Documentation")
     parser.add_argument("--product", default="OpenShift Enterprise")
     parser.add_argument("--version", default="3.0")
     parser.add_argument("--author", default="Red Hat OpenShift Documentation Team")
-    parser.add_argument("--upstream-url", help="The upstream source url", default="https://github.com/openshift/openshift-docs.git")
-    parser.add_argument("--upstream-branch", help="The upstream source branch", default="enterprise-3.0")
-    parser.add_argument("--branch", help="The GitLab branch to commit changes into", default="GA")
-    parser.add_argument("-p", "--push", help="Commit and push the changes into GitLab", action="store_true")
-    parser.add_argument("--no-clean", help="Don't clean the drupal-build directory before building", action="store_true")
-    parser.add_argument("--no-upstream-fetch", help="Don't fetch the upstream sources", action="store_true")
+    parser.add_argument(
+        "--upstream-url",
+        help="The upstream source url",
+        default="https://github.com/openshift/openshift-docs.git",
+    )
+    parser.add_argument(
+        "--upstream-branch", help="The upstream source branch", default="enterprise-3.0"
+    )
+    parser.add_argument(
+        "--branch", help="The GitLab branch to commit changes into", default="GA"
+    )
+    parser.add_argument(
+        "-p",
+        "--push",
+        help="Commit and push the changes into GitLab",
+        action="store_true",
+    )
+    parser.add_argument(
+        "--no-clean",
+        help="Don't clean the drupal-build directory before building",
+        action="store_true",
+    )
+    parser.add_argument(
+        "--no-upstream-fetch",
+        help="Don't fetch the upstream sources",
+        action="store_true",
+    )
     return parser
 
 
@@ -144,9 +170,25 @@ def find_build_config_file():
     """
     Finds the build config file to use, as it might be _topic_map.yml or _build_cfg.yml
     """
-    config = os.path.abspath(os.path.join(CLONE_DIR, "_topic_map.yml"))
+
+    # updated 23rd Nov to support files in _topic_maps folder
+
+    # load everything from the _topic_maps folder
+    file_list = os.listdir(os.path.join(CLONE_DIR, "_topic_maps"))
+
+    # create a temp file combining all values from that folder
+    # don't delete it immediately, and give it a suffix of swp which makes it ignored by git
+    with tempfile.NamedTemporaryFile(dir=CLONE_DIR, delete=False, suffix=".swp") as tmp:
+        for f in file_list:
+            with open(os.path.join(CLONE_DIR, "_topic_maps", f), "rb") as infile:
+                tmp.write(infile.read())
+
+    config = os.path.abspath(tmp.name)
+    log.info(config)
+
+    # backup look for a single _topic_map in the cloned directory
     if not os.path.isfile(config):
-        config = os.path.abspath(os.path.join(CLONE_DIR, "_build_cfg.yml"))
+        config = os.path.abspath(os.path.join(CLONE_DIR, "_topic_map.yml"))
 
     return config
 
@@ -157,20 +199,28 @@ def parse_build_config(config):
     """
     config = os.path.expanduser(config)
     with open(config, "r") as f:
-        data = list(yaml.load_all(f,Loader=yaml.FullLoader))
+        data = list(yaml.load_all(f, Loader=yaml.FullLoader))
 
     for book in data:
-        book_name = book['Name']
+        book_name = book["Name"]
         if book_name in BOOK_NAME_OVERRIDES:
-            book['Name'] = BOOK_NAME_OVERRIDES[book_name]
+            book["Name"] = BOOK_NAME_OVERRIDES[book_name]
 
     return data
 
 
-def iter_tree(node, distro, dir_callback=None, topic_callback=None, include_path=True, parent_dir="", depth=0):
+def iter_tree(
+    node,
+    distro,
+    dir_callback=None,
+    topic_callback=None,
+    include_path=True,
+    parent_dir="",
+    depth=0,
+):
     """
-    Iterates over a build config tree starting from a specifc node, skipping content where the distro doesn't match. Additionally calls are
-    made to the dir_callback or topic_callback functions when a directory or topic is found.
+    Iterates over a build config tree starting from a specific node, skipping content where the distro doesn't match.
+    Additionally, calls are made to the dir_callback or topic_callback functions when a directory or topic is found.
     """
     if "Topics" in node:
         if check_node_distro_matches(node, distro):
@@ -183,7 +233,15 @@ def iter_tree(node, distro, dir_callback=None, topic_callback=None, include_path
                 dir_callback(node, parent_dir, depth)
 
             for topic in node["Topics"]:
-                iter_tree(topic, distro, dir_callback, topic_callback, True, topics_dir, depth + 1)
+                iter_tree(
+                    topic,
+                    distro,
+                    dir_callback,
+                    topic_callback,
+                    True,
+                    topics_dir,
+                    depth + 1,
+                )
     elif check_node_distro_matches(node, distro):
         if topic_callback is not None:
             topic_callback(node, parent_dir, depth)
@@ -197,7 +255,7 @@ def check_node_distro_matches(node, distro):
     if "Distros" not in node:
         return True
     else:
-        node_distros = [x.strip() for x in node['Distros'].split(",")]
+        node_distros = [x.strip() for x in node["Distros"].split(",")]
         for node_distro in node_distros:
             # Check for an exact match, or a glob match
             if node_distro == distro or fnmatch.fnmatchcase(distro, node_distro):
@@ -218,23 +276,28 @@ def build_master_files(info):
     """
     Builds the master.adoc and docinfo.xml files for each guide specified in the config.
     """
-    dest_dir = info['dest_dir']
 
-    all_in_one = info['all_in_one']
+    # TODO: Refactor. This does too much.
+
+    dest_dir = info["dest_dir"]
+    all_in_one = info["all_in_one"]
     all_in_one_text = ""
-    for book in info['book_nodes']:
-        book_dest_dir = os.path.join(dest_dir, book['Dir'])
+    for book in info["book_nodes"]:
+
+        book_dest_dir = os.path.join(dest_dir, book["Dir"])
         ensure_directory(book_dest_dir)
 
         book_info = dict(info)
-        book_info['title'] = book['Name']
+        book_info["title"] = book["Name"]
 
-        master = generate_master_entry(book, book['Dir'], info['distro'], all_in_one, all_in_one=all_in_one)
+        master: str = generate_master_entry(
+            book, book["Dir"], info["distro"], all_in_one, all_in_one=all_in_one
+        )
 
         # Save the content
         if not all_in_one:
-            master_file = os.path.join(book_dest_dir, 'master.adoc')
-            docinfo_file = os.path.join(book_dest_dir, 'docinfo.xml')
+            master_file = os.path.join(book_dest_dir, "master.adoc")
+            docinfo_file = os.path.join(book_dest_dir, "docinfo.xml")
             master_base = MASTER_FILE_BASE.format(**book_info)
 
             log.debug("Writing " + master_file)
@@ -244,12 +307,15 @@ def build_master_files(info):
             with open(docinfo_file, "w") as f:
                 f.write(DOCINFO_BASE.format(**book_info))
         else:
+            # TODO: Do we ever use this?
             if all_in_one_text == "":
                 # Remove the title for the first file in the book
-                master = master.replace("= " + book['Name'] + "\n", "")
+                master = master.replace("= " + book["Name"] + "\n", "")
 
                 # Set the preface title from the first file in the book
-                first_file = os.path.join(info['src_dir'], book['Dir'], book['Topics'][0]['File'] + ".adoc")
+                first_file = os.path.join(
+                    info["src_dir"], book["Dir"], book["Topics"][0]["File"] + ".adoc"
+                )
                 preface_title = None
                 with open(first_file, "r") as f:
                     line = f.readline()
@@ -259,12 +325,47 @@ def build_master_files(info):
                             break
                         line = f.readline()
                 if preface_title is not None:
-                    info['preface-title'] = ":preface-title: " + preface_title
+                    info["preface-title"] = ":preface-title: " + preface_title
             all_in_one_text += master
 
+        if book["Name"] in LIST_OF_HUGE_BOOKS:
+            huge_book_topics = book["Topics"]
+
+            for topic in huge_book_topics:
+                if "Dir" in topic.keys():
+                    topic_master_file = os.path.join(
+                        book_dest_dir, topic["Dir"], "master.adoc"
+                    )
+                    topic_docinfo_file = os.path.join(
+                        book_dest_dir, topic["Dir"], "docinfo.xml"
+                    )
+
+                    # TODO: Make less hacky.
+                    book_info["title"] = topic["Name"]
+                    info["title"] = topic["Name"]
+
+                    master_base = MASTER_FILE_BASE.format(**book_info)
+                    docinfo_node = topic["Name"]
+
+                    ensure_directory(os.path.join(book_dest_dir, topic["Dir"]))
+                    sub_master = generate_master_entry(
+                        topic,
+                        topic["Dir"],
+                        info["distro"],
+                        all_in_one,
+                        all_in_one=all_in_one,
+                    )
+
+                    log.debug("Writing " + topic_master_file)
+                    with open(topic_master_file, "w") as f:
+                        f.write(master_base + sub_master)
+                    log.debug("Writing " + topic_docinfo_file)
+                    with open(topic_docinfo_file, "w") as f:
+                        f.write(DOCINFO_BASE.format(**info))
+    # TODO: And is this ever used?
     if all_in_one:
-        master_file = os.path.join(dest_dir, 'master.adoc')
-        docinfo_file = os.path.join(dest_dir, 'docinfo.xml')
+        master_file = os.path.join(dest_dir, "master.adoc")
+        docinfo_file = os.path.join(dest_dir, "docinfo.xml")
 
         master_base = MASTER_FILE_BASE.format(**info)
 
@@ -276,15 +377,19 @@ def build_master_files(info):
             f.write(DOCINFO_BASE.format(**info))
 
 
-def generate_master_entry(node, book_dir, distro, include_name=True, all_in_one=False):
+def generate_master_entry(
+    node: dict, book_dir: str, distro: str, include_name=True, all_in_one=False
+):
     """
-    Generates the master.adoc core content for a specific book/node.
+    Given a node (book dict), generate content for that node's master.adoc file.
     """
     master_entries = []
 
     def dir_callback(dir_node, parent_dir, depth):
-            if include_name or depth > 0:
-                master_entries.append("=" * (depth + 1) + " " + dir_node["Name"].replace("\\", ""))
+        if include_name or depth > 0:
+            master_entries.append(
+                "=" * (depth + 1) + " " + dir_node["Name"].replace("\\", "")
+            )
 
     def topic_callback(topic_node, parent_dir, depth):
         book_file_path = os.path.join(parent_dir, topic_node["File"] + ".adoc")
@@ -316,15 +421,15 @@ def reformat_for_drupal(info):
     - Fixes duplicate id's in the source content.
     - Fixes links that have been done incorrectly and should be cross references instead.
     """
-    books = info['book_nodes']
-    src_dir = info['src_dir']
-    dest_dir = info['dest_dir']
-    distro = info['distro']
+    books = info["book_nodes"]
+    src_dir = info["src_dir"]
+    dest_dir = info["dest_dir"]
+    distro = info["distro"]
 
     # Build a mapping of files to ids
     # Note: For all-in-one we have to collect ids from all books first
     file_to_id_map = {}
-    if info['all_in_one']:
+    if info["all_in_one"]:
         book_ids = []
         for book in books:
             book_ids.extend(collect_existing_ids(book, distro, src_dir))
@@ -334,25 +439,25 @@ def reformat_for_drupal(info):
         for book in books:
             book_ids = collect_existing_ids(book, distro, src_dir)
             file_to_id_map.update(build_file_to_id_map(book, distro, book_ids, src_dir))
-    info['file_to_id_map'] = file_to_id_map
+    info["file_to_id_map"] = file_to_id_map
 
     # Reformat the data
     for book in books:
-        log.info("Processing %s", book['Dir'])
-        book_src_dir = os.path.join(src_dir, book['Dir'])
+        log.info("Processing %s", book["Dir"])
+        book_src_dir = os.path.join(src_dir, book["Dir"])
 
-        if info['all_in_one']:
+        if info["all_in_one"]:
             images_dir = os.path.join(dest_dir, "images")
         else:
-            book_dest_dir = os.path.join(dest_dir, book['Dir'])
+            book_dest_dir = os.path.join(dest_dir, book["Dir"])
             images_dir = os.path.join(book_dest_dir, "images")
 
         ensure_directory(images_dir)
 
-        log.debug("Copying source files for " + book['Name'])
+        log.debug("Copying source files for " + book["Name"])
         copy_files(book, book_src_dir, src_dir, dest_dir, info)
 
-        log.debug("Copying images for " + book['Name'])
+        log.debug("Copying images for " + book["Name"])
         copy_images(book, src_dir, images_dir, distro)
 
 
@@ -360,8 +465,9 @@ def copy_images(node, src_path, dest_dir, distro):
     """
     Copy images over to the destination directory and flatten all image directories into the one top level dir.
     """
+
     def dir_callback(dir_node, parent_dir, depth):
-        node_dir = os.path.join(parent_dir, dir_node['Dir'])
+        node_dir = os.path.join(parent_dir, dir_node["Dir"])
         src = os.path.join(node_dir, "images")
 
         if os.path.exists(src):
@@ -377,8 +483,9 @@ def copy_files(node, book_src_dir, src_dir, dest_dir, info):
     Recursively copy files from the source directory to the destination directory, making sure to scrub the content, add id's where the
     content is referenced elsewhere and fix any links that should be cross references.
     """
+
     def dir_callback(dir_node, parent_dir, depth):
-        node_dest_dir = os.path.join(dest_dir, parent_dir, dir_node['Dir'])
+        node_dest_dir = os.path.join(dest_dir, parent_dir, dir_node["Dir"])
         ensure_directory(node_dest_dir)
 
     def topic_callback(topic_node, parent_dir, depth):
@@ -391,10 +498,19 @@ def copy_files(node, book_src_dir, src_dir, dest_dir, info):
         # Copy the file
         copy_file(info, book_src_dir, src_file, dest_dir, dest_file)
 
-    iter_tree(node, info['distro'], dir_callback, topic_callback)
+    iter_tree(node, info["distro"], dir_callback, topic_callback)
 
 
-def copy_file(info, book_src_dir, src_file, dest_dir, dest_file, include_check=True, tag=None, cwd=None):
+def copy_file(
+    info,
+    book_src_dir,
+    src_file,
+    dest_dir,
+    dest_file,
+    include_check=True,
+    tag=None,
+    cwd=None,
+):
     """
     Copies a source file to destination, making sure to scrub the content, add id's where the content is referenced elsewhere and fix any
     links that should be cross references. Also copies any includes that are referenced, since they aren't included in _build_cfg.yml.
@@ -407,8 +523,8 @@ def copy_file(info, book_src_dir, src_file, dest_dir, dest_file, include_check=T
     parent_dir = os.path.dirname(dest_file)
     if not os.path.exists(parent_dir):
         os.makedirs(parent_dir)
-    #os.mknod(dest_file)
-    open(dest_file, 'w').close()
+    # os.mknod(dest_file)
+    open(dest_file, "w").close()
     # Scrub/fix the content
     content = scrub_file(info, book_src_dir, src_file, tag=tag, cwd=cwd)
 
@@ -437,10 +553,19 @@ def copy_file(info, book_src_dir, src_file, dest_dir, dest_file, include_check=T
             if relative_book_path.startswith("../"):
                 path, src_book_name = os.path.split(book_src_dir)
                 dest_include_dir = os.path.join(dest_dir, src_book_name, "includes")
-                relative_path = os.path.join(os.path.relpath(dest_include_dir, parent_dir), os.path.basename(include_file))
+                relative_path = os.path.join(
+                    os.path.relpath(dest_include_dir, parent_dir),
+                    os.path.basename(include_file),
+                )
             else:
-                dest_include_dir = os.path.abspath(os.path.join(os.path.dirname(dest_file), os.path.dirname(relative_path)))
-            dest_include_file = os.path.join(dest_include_dir, os.path.basename(include_file))
+                dest_include_dir = os.path.abspath(
+                    os.path.join(
+                        os.path.dirname(dest_file), os.path.dirname(relative_path)
+                    )
+                )
+            dest_include_file = os.path.join(
+                dest_include_dir, os.path.basename(include_file)
+            )
 
             # Make sure we have a reference to the current working dir
             current_dir = cwd or os.path.dirname(src_file)
@@ -448,19 +573,36 @@ def copy_file(info, book_src_dir, src_file, dest_dir, dest_file, include_check=T
 
             # Copy the file and fix the content
             if not os.path.isfile(dest_include_file):
-                copy_file(info, book_src_dir, include_file, dest_dir, dest_include_file, tag=include_tag, cwd=current_dir)
+                copy_file(
+                    info,
+                    book_src_dir,
+                    include_file,
+                    dest_dir,
+                    dest_include_file,
+                    tag=include_tag,
+                    cwd=current_dir,
+                )
             else:
                 # The file has already been copied, so just fix the links for this tag
-                with open(dest_include_file, 'r') as f:
+                with open(dest_include_file, "r") as f:
                     include_content = f.read()
 
                 # Fix any links
-                include_content = fix_links(include_content, info, book_src_dir, include_file, tag=include_tag, cwd=cwd)
+                include_content = fix_links(
+                    include_content,
+                    info,
+                    book_src_dir,
+                    include_file,
+                    tag=include_tag,
+                    cwd=cwd,
+                )
 
                 with open(dest_include_file, "w") as f:
                     f.write(include_content)
 
-            content = content.replace(include_text, include.expand("include::" + relative_path + "[\\2]"))
+            content = content.replace(
+                include_text, include.expand("include::" + relative_path + "[\\2]")
+            )
 
     with open(dest_file, "w") as f:
         f.write(content)
@@ -470,17 +612,17 @@ def scrub_file(info, book_src_dir, src_file, tag=None, cwd=None):
     """
     Scrubs a file and returns the cleaned file contents.
     """
-    base_src_file = src_file.replace(info['src_dir'] + "/", "")
+    base_src_file = src_file.replace(info["src_dir"] + "/", "")
 
     # added 1/Sep/2020
     # to allow loading files like json and yaml from external sources, this
     # procedure loads the file recognizing that it starts with http
     # it then checks if it exists or not, and if it exists, returns the raw data
     # data that it finds.
-    if(base_src_file.startswith("https://raw.githubusercontent.com/openshift/")):
+    if base_src_file.startswith("https://raw.githubusercontent.com/openshift/"):
         try:
             response = requests.get(base_src_file)
-            if(response):
+            if response:
                 return response.text
             else:
                 raise ConnectionError("Malformed URL")
@@ -493,7 +635,7 @@ def scrub_file(info, book_src_dir, src_file, tag=None, cwd=None):
     title_ids = TITLE_IDS.get(base_src_file, {})
 
     # Read in the source content
-    with open(src_file, 'r') as f:
+    with open(src_file, "r") as f:
         src_file_content = f.readlines()
 
     # Scrub the content
@@ -513,16 +655,24 @@ def scrub_file(info, book_src_dir, src_file, tag=None, cwd=None):
             if not header_found and line.strip() != "" and line.startswith("="):
                 header_found = True
 
-                if info['all_in_one'] and base_src_file in ALL_IN_ONE_SCRAP_TITLE and line.startswith("= "):
+                if (
+                    info["all_in_one"]
+                    and base_src_file in ALL_IN_ONE_SCRAP_TITLE
+                    and line.startswith("= ")
+                ):
                     continue
                 # Add a section id if one doesn't exist, so we have something to link to
-                elif current_id is None and src_file in info['file_to_id_map']:
-                    file_id = info['file_to_id_map'][src_file]
+                elif current_id is None and src_file in info["file_to_id_map"]:
+                    file_id = info["file_to_id_map"][src_file]
                     content += "[[" + file_id + "]]\n"
             # Add a custom title id, if one is needed
             elif line.startswith("=") and current_id is None:
                 for title in title_ids:
-                    title_re = r"^=+ " + title.replace(".", "\\.").replace("?", "\\?") + "( (anchor|\[).*?)?(\n)?$"
+                    title_re = (
+                        r"^=+ "
+                        + title.replace(".", "\\.").replace("?", "\\?")
+                        + "( (anchor|\[).*?)?(\n)?$"
+                    )
                     if re.match(title_re, line):
                         content += "[[" + title_ids[title] + "]]\n"
 
@@ -569,15 +719,17 @@ def fix_links(content, info, book_src_dir, src_file, tag=None, cwd=None):
     """
     Fix any links that were done incorrectly and reference the output instead of the source content.
     """
-    if info['all_in_one']:
-        content = fix_links(content, info['src_dir'], src_file, info)
+    if info["all_in_one"]:
+        content = fix_links(content, info["src_dir"], src_file, info)
     else:
         # Determine if the tag should be passed when fixing the links. If it's in the same book, then process the entire file. If it's
         # outside the book then don't process it.
         if book_src_dir in src_file:
             content = _fix_links(content, book_src_dir, src_file, info, cwd=cwd)
         else:
-            content = _fix_links(content, book_src_dir, src_file, info, tag=tag, cwd=cwd)
+            content = _fix_links(
+                content, book_src_dir, src_file, info, tag=tag, cwd=cwd
+            )
 
     return content
 
@@ -587,7 +739,7 @@ def _fix_links(content, book_dir, src_file, info, tag=None, cwd=None):
     Fix any links that were done incorrectly and reference the output instead of the source content.
     """
     # TODO Deal with xref so that they keep the proper path. Atm it'll just strip the path and leave only the id
-    file_to_id_map = info['file_to_id_map']
+    file_to_id_map = info["file_to_id_map"]
     current_dir = cwd or os.path.dirname(src_file)
     cleaned_content = remove_conditional_content(content, info, tag=tag)
     links = LINKS_RE.finditer(cleaned_content)
@@ -598,10 +750,11 @@ def _fix_links(content, book_dir, src_file, info, tag=None, cwd=None):
         link_anchor = link.group(2)
         link_title = link.group(3)
 
-
         if link_file is not None:
             fixed_link_file = link_file.replace(".html", ".adoc")
-            fixed_link_file_abs = os.path.abspath(os.path.join(current_dir, fixed_link_file))
+            fixed_link_file_abs = os.path.abspath(
+                os.path.join(current_dir, fixed_link_file)
+            )
             if fixed_link_file_abs in file_to_id_map:
 
                 # We are dealing with a cross reference to another book here
@@ -610,15 +763,24 @@ def _fix_links(content, book_dir, src_file, info, tag=None, cwd=None):
 
                 # Find the book name
                 book_name = book_dir_name
-                for book in info['data']:
-                    if check_node_distro_matches(book, info['distro']) and book['Dir'] == book_dir_name:
-                        book_name = book['Name']
+                for book in info["data"]:
+                    if (
+                        check_node_distro_matches(book, info["distro"])
+                        and book["Dir"] == book_dir_name
+                    ):
+                        book_name = book["Name"]
                         break
 
                 fixed_link_file = BASE_PORTAL_URL + build_portal_url(info, book_name)
 
                 if link_anchor is None:
-                    fixed_link = "link:" + fixed_link_file + "#" + file_to_id_map[fixed_link_file_abs] + link_title
+                    fixed_link = (
+                        "link:"
+                        + fixed_link_file
+                        + "#"
+                        + file_to_id_map[fixed_link_file_abs]
+                        + link_title
+                    )
                 else:
                     fixed_link = "link:" + fixed_link_file + link_anchor + link_title
             else:
@@ -627,7 +789,12 @@ def _fix_links(content, book_dir, src_file, info, tag=None, cwd=None):
                 if EXTERNAL_LINK_RE.search(link_file) is not None:
                     rel_src_file = src_file.replace(os.path.dirname(book_dir) + "/", "")
                     has_errors = True
-                    log.error("ERROR (%s): \"%s\" appears to try to reference a file not included in the \"%s\" distro", rel_src_file, link_text.replace("\n", ""), info['distro'])
+                    log.error(
+                        'ERROR (%s): "%s" appears to try to reference a file not included in the "%s" distro',
+                        rel_src_file,
+                        link_text.replace("\n", ""),
+                        info["distro"],
+                    )
         else:
             fixed_link = "xref:" + link_anchor.replace("#", "") + link_title
 
@@ -650,9 +817,9 @@ def remove_conditional_content(content, info, tag=None):
 
         # Determine if we should strip the conditional content, based on the distro
         strip_content = False
-        if is_not_def and info['distro'] in ifdef_distros:
+        if is_not_def and info["distro"] in ifdef_distros:
             strip_content = True
-        elif not is_not_def and info['distro'] not in ifdef_distros:
+        elif not is_not_def and info["distro"] not in ifdef_distros:
             strip_content = True
 
         # Remove the conditional content
@@ -720,7 +887,9 @@ def build_file_to_id_map(node, distro, existing_ids, path=""):
 
     def topic_callback(topic_node, parent_dir, depth):
         src_file = os.path.join(parent_dir, topic_node["File"] + ".adoc")
-        file_to_id_map[src_file] = build_file_id(topic_node["Name"], file_to_id_map, existing_ids)
+        file_to_id_map[src_file] = build_file_id(
+            topic_node["Name"], file_to_id_map, existing_ids
+        )
 
     iter_tree(node, distro, topic_callback=topic_callback, parent_dir=path)
     return file_to_id_map
@@ -741,7 +910,9 @@ def build_file_id(file_title, file_to_id_map, existing_ids):
     """
     Generates a unique id for a file, based on its title.
     """
-    file_id = base_id = re.sub(r"[\[\]\(\)#]", "", file_title.lower().replace("_", "-").replace(" ", "-"))
+    file_id = base_id = re.sub(
+        r"[\[\]\(\)#]", "", file_title.lower().replace("_", "-").replace(" ", "-")
+    )
     count = 1
     while file_id in existing_ids or file_id in list(file_to_id_map.values()):
         file_id = base_id + "-" + str(count)
@@ -754,10 +925,17 @@ def build_portal_url(info, book_name):
     """
     Builds a portal url path by escaping the content in the same way drupal does.
     """
-    product = info['product']
-    version = info['product-version']
+    product = info["product"]
+    version = info["product-version"]
 
-    return generate_url_from_name(product) + "/" + generate_url_from_name(version) + "/html-single/" + generate_url_from_name(book_name) + "/"
+    return (
+        generate_url_from_name(product)
+        + "/"
+        + generate_url_from_name(version)
+        + "/html-single/"
+        + generate_url_from_name(book_name)
+        + "/"
+    )
 
 
 def replace_nbsp(val):
@@ -765,14 +943,14 @@ def replace_nbsp(val):
     if val is not None:
         # Check if the string is unicode
         if isinstance(val, str):
-            return val.replace('\xa0', ' ')
+            return val.replace("\xa0", " ")
         else:
-            return val.replace('\xc2\xa0', ' ')
+            return val.replace("\xc2\xa0", " ")
     else:
         return None
 
 
-def generate_url_from_name(name, delimiter='_'):
+def generate_url_from_name(name, delimiter="_"):
     """
     Generates a url fragment from a product, version or titles name.
     """
@@ -814,7 +992,7 @@ def fetch_sources(url, branch, dir=None, clone_dirname=None):
     if dir is None:
         dir = os.getcwd()
     if clone_dirname is None:
-        clone_dirname = url.split('/')[-1].replace(".git", "")
+        clone_dirname = url.split("/")[-1].replace(".git", "")
 
     # If the dir already exists update the content, otherwise clone it
     clone_dir = os.path.abspath(os.path.join(dir, clone_dirname))
@@ -855,7 +1033,7 @@ def _sync_directories_dircmp(dcmp):
             shutil.rmtree(right)
 
     # Copy files that only exist in the source directory or files that have changed
-    for filename in dcmp.left_only+dcmp.common_files:
+    for filename in dcmp.left_only + dcmp.common_files:
         left = os.path.join(dcmp.left, filename)
         right = os.path.join(dcmp.right, filename)
         if os.path.isfile(left):
@@ -877,8 +1055,14 @@ def commit_and_push_changes(git_dir, git_branch, git_upstream_branch):
     subprocess.check_call(add_cmd, cwd=git_dir)
     try:
         # Commit the changes
-        commit_cmd = ["git", "commit", "-m", "Merge branch 'upstream/" + git_upstream_branch + "' into " + git_branch,
-                      "--author", "CCS OSE Build Script <no-reply@redhat.com>"]
+        commit_cmd = [
+            "git",
+            "commit",
+            "-m",
+            "Merge branch 'upstream/" + git_upstream_branch + "' into " + git_branch,
+            "--author",
+            "CCS OSE Build Script <no-reply@redhat.com>",
+        ]
         call_git_command(commit_cmd, cwd=git_dir, stderr=subprocess.STDOUT)
         # Push the changes
         push_cmd = ["git", "push"]
@@ -909,7 +1093,7 @@ def parse_repo_config(config_file, distro, version):
 def main():
     parser = setup_parser()
     args = parser.parse_args()
-    logging.basicConfig(format='%(message)s', level=logging.INFO, stream=sys.stdout)
+    logging.basicConfig(format="%(message)s", level=logging.INFO, stream=sys.stdout)
 
     # Copy down the latest files
     if not args.no_upstream_fetch:
@@ -936,18 +1120,18 @@ def main():
         os.makedirs(dest_dir)
 
     info = {
-        'title': args.title,
-        'product-author': args.author,
-        'product-version': args.version,
-        'product': args.product,
-        'distro': args.distro,
-        'src_dir': src_dir,
-        'dest_dir': dest_dir,
-        'data': data,
-        'book_nodes': book_nodes,
-        'all_in_one': args.all_in_one,
-        'preface-title': "",
-        "upstream_branch": args.upstream_branch
+        "title": args.title,
+        "product-author": args.author,
+        "product-version": args.version,
+        "product": args.product,
+        "distro": args.distro,
+        "src_dir": src_dir,
+        "dest_dir": dest_dir,
+        "data": data,
+        "book_nodes": book_nodes,
+        "all_in_one": args.all_in_one,
+        "preface-title": "",
+        "upstream_branch": args.upstream_branch,
     }
 
     # Build the master files
@@ -962,7 +1146,7 @@ def main():
 
     if args.push:
         # Parse the repo urls
-        config_file = os.path.join(os.path.dirname(__file__), 'repos.ini')
+        config_file = os.path.join(os.path.dirname(__file__), "repos.ini")
         repo_urls = parse_repo_config(config_file, args.distro, args.version)
 
         # Make sure the base git dire exists
@@ -972,7 +1156,7 @@ def main():
         # Checkout the gitlab repo, copy the changes and push them back up
         for book_dir, gitlab_repo_url in list(repo_urls.items()):
             build_book_dir = os.path.join(dest_dir, book_dir)
-            git_dirname = gitlab_repo_url.split('/')[-1].replace(".git", "")
+            git_dirname = gitlab_repo_url.split("/")[-1].replace(".git", "")
             git_dir = os.path.join(base_git_dir, git_dirname)
 
             try:
@@ -988,6 +1172,7 @@ def main():
                 if e.output:
                     sys.stdout.write(e.output)
                 raise
+
 
 if __name__ == "__main__":
     main()

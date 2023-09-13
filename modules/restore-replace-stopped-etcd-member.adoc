@@ -2,15 +2,27 @@
 //
 // * backup_and_restore/replacing-unhealthy-etcd-member.adoc
 
+:_content-type: PROCEDURE
 [id="restore-replace-stopped-etcd-member_{context}"]
 = Replacing an unhealthy etcd member whose machine is not running or whose node is not ready
 
 This procedure details the steps to replace an etcd member that is unhealthy either because the machine is not running or because the node is not ready.
 
+[NOTE]
+====
+If your cluster uses a control plane machine set, see "Recovering a degraded etcd Operator" in "Troubleshooting the control plane machine set" for a more simple etcd recovery procedure.
+====
+
 .Prerequisites
 
 * You have identified the unhealthy etcd member.
 * You have verified that either the machine is not running or the node is not ready.
++
+[IMPORTANT]
+====
+You must wait if the other control plane nodes are powered off. The control plane nodes must remain powered off until the replacement of an unhealthy etcd member is complete.
+====
++
 * You have access to the cluster as a user with the `cluster-admin` role.
 * You have taken an etcd backup.
 +
@@ -29,7 +41,7 @@ In a terminal that has access to the cluster as a `cluster-admin` user, run the 
 +
 [source,terminal]
 ----
-$ oc get pods -n openshift-etcd | grep -v etcd-quorum-guard | grep etcd
+$ oc -n openshift-etcd get pods -l k8s-app=etcd
 ----
 +
 .Example output
@@ -68,7 +80,7 @@ sh-4.2# etcdctl member list -w table
 +------------------+---------+------------------------------+---------------------------+---------------------------+
 ----
 +
-Take note of the ID and the name of the unhealthy etcd member, because these values are needed later in the procedure.
+Take note of the ID and the name of the unhealthy etcd member, because these values are needed later in the procedure. The `$ etcdctl endpoint health` command will list the removed member until the procedure of replacement is finished and a new member is added.
 
 .. Remove the unhealthy etcd member by providing the ID to the `etcdctl member remove` command:
 +
@@ -80,7 +92,7 @@ sh-4.2# etcdctl member remove 6fc1e7c9db35841d
 .Example output
 [source,terminal]
 ----
-Member 6fc1e7c9db35841d removed from cluster baa565c8919b060e
+Member 6fc1e7c9db35841d removed from cluster ead669ce1fbfb346
 ----
 
 .. View the member list again and verify that the member was removed:
@@ -102,6 +114,20 @@ sh-4.2# etcdctl member list -w table
 ----
 +
 You can now exit the node shell.
++
+[IMPORTANT]
+====
+After you remove the member, the cluster might be unreachable for a short time while the remaining etcd instances reboot.
+====
+
+. Turn off the quorum guard by entering the following command:
++
+[source,terminal]
+----
+$ oc patch etcd/cluster --type=merge -p '{"spec": {"unsupportedConfigOverrides": {"useUnsupportedUnsafeNonHANonProductionUnstableEtcd": true}}}'
+----
++
+This command ensures that you can successfully re-create secrets and roll out the static pods.
 
 . Remove the old secrets for the unhealthy etcd member that was removed.
 
@@ -146,7 +172,7 @@ $ oc delete secret -n openshift-etcd etcd-serving-ip-10-0-131-183.ec2.internal
 $ oc delete secret -n openshift-etcd etcd-serving-metrics-ip-10-0-131-183.ec2.internal
 ----
 
-. Delete and recreate the control plane machine (also known as the master machine). After this machine is recreated, a new revision is forced and etcd scales up automatically.
+. Delete and recreate the control plane machine. After this machine is recreated, a new revision is forced and etcd scales up automatically.
 +
 If you are running installer-provisioned infrastructure, or you used the Machine API to create your machines, follow these steps. Otherwise, you must create the new master using the same method that was used to originally create it.
 
@@ -233,41 +259,11 @@ metadata:
   ...
 ----
 
-... Update the `metadata.selfLink` field to use the new machine name from the previous step.
-+
-[source,yaml]
-----
-apiVersion: machine.openshift.io/v1beta1
-kind: Machine
-metadata:
-  ...
-  selfLink: /apis/machine.openshift.io/v1beta1/namespaces/openshift-machine-api/machines/clustername-8qw5l-master-3
-  ...
-----
-
 ... Remove the `spec.providerID` field:
 +
 [source,yaml]
 ----
   providerID: aws:///us-east-1a/i-0fdb85790d76d0c3f
-----
-
-... Remove the `metadata.annotations` and `metadata.generation` fields:
-+
-[source,yaml]
-----
-  annotations:
-    machine.openshift.io/instance-state: running
-  ...
-  generation: 2
-----
-
-... Remove the `metadata.resourceVersion` and `metadata.uid` fields:
-+
-[source,yaml]
-----
-  resourceVersion: "13291"
-  uid: a282eb70-40a2-4e89-8009-d05dd420d31a
 ----
 
 .. Delete the machine of the unhealthy member:
@@ -303,7 +299,6 @@ clustername-8qw5l-worker-us-east-1c-pkg26   Running   m4.large    us-east-1   us
 $ oc apply -f new-master-machine.yaml
 ----
 
-
 .. Verify that the new machine has been created:
 +
 [source,terminal]
@@ -326,6 +321,28 @@ clustername-8qw5l-worker-us-east-1c-pkg26   Running        m4.large    us-east-1
 +
 It might take a few minutes for the new machine to be created. The etcd cluster Operator will automatically sync when the machine or node returns to a healthy state.
 
+. Turn the quorum guard back on by entering the following command:
++
+[source,terminal]
+----
+$ oc patch etcd/cluster --type=merge -p '{"spec": {"unsupportedConfigOverrides": null}}'
+----
+
+. You can verify that the `unsupportedConfigOverrides` section is removed from the object by entering this command:
++
+[source,terminal]
+----
+$ oc get etcd/cluster -oyaml
+----
+
+. If you are using {sno}, restart the node. Otherwise, you might encounter the following error in the etcd cluster Operator:
++
+.Example output
+[source,terminal]
+----
+EtcdCertSignerControllerDegraded: [Operation cannot be fulfilled on secrets "etcd-peer-sno-0": the object has been modified; please apply your changes to the latest version and try again, Operation cannot be fulfilled on secrets "etcd-serving-sno-0": the object has been modified; please apply your changes to the latest version and try again, Operation cannot be fulfilled on secrets "etcd-serving-metrics-sno-0": the object has been modified; please apply your changes to the latest version and try again]
+----
+
 .Verification
 
 . Verify that all etcd pods are running properly.
@@ -334,7 +351,7 @@ In a terminal that has access to the cluster as a `cluster-admin` user, run the 
 +
 [source,terminal]
 ----
-$ oc get pods -n openshift-etcd | grep -v etcd-quorum-guard | grep etcd
+$ oc -n openshift-etcd get pods -l k8s-app=etcd
 ----
 +
 .Example output
