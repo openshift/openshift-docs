@@ -1,0 +1,1255 @@
+// Module included in the following assemblies:
+//
+// * otel/otel-configuring.adoc
+
+:_mod-docs-content-type: REFERENCE
+[id="otel-collector-config-options_{context}"]
+= OpenTelemetry Collector configuration options
+
+The OpenTelemetry Collector consists of five types of components that access telemetry data:
+
+Receivers:: A receiver, which can be push or pull based, is how data gets into the Collector. Generally, a receiver accepts data in a specified format, translates it into the internal format, and passes it to processors and exporters defined in the applicable pipelines. By default, no receivers are configured. One or more receivers must be configured. Receivers may support one or more data sources.
+
+Processors:: Optional. Processors process the data between it is received and exported. By default, no processors are enabled. Processors must be enabled for every data source. Not all processors support all data sources. Depending on the data source, multiple processors might be enabled. Note that the order of processors matters.
+
+Exporters:: An exporter, which can be push or pull based, is how you send data to one or more back ends or destinations. By default, no exporters are configured. One or more exporters must be configured. Exporters can support one or more data sources. Exporters might be used with their default settings, but many exporters require configuration to specify at least the destination and security settings.
+
+Connectors:: A connector connects two pipelines. It consumes data as an exporter at the end of one pipeline and emits data as a receiver at the start of another pipeline. It can consume and emit data of the same or different data type. It can generate and emit data to summarize the consumed data, or it can merely replicate or route data.
+
+Extensions:: An extension adds capabilities to the Collector. For example, authentication can be added to the receivers and exporters automatically.
+
+You can define multiple instances of components in a custom resource YAML file. When configured, these components must be enabled through pipelines defined in the `spec.config.service` section of the YAML file. As a best practice, only enable the components that you need.
+
+.Example of the OpenTelemetry Collector custom resource file
+[source,yaml]
+----
+apiVersion: opentelemetry.io/v1alpha1
+kind: OpenTelemetryCollector
+metadata:
+  name: cluster-collector
+  namespace: tracing-system
+spec:
+  mode: deployment
+  observability:
+    metrics:
+      enableMetrics: true
+  config: |
+    receivers:
+      otlp:
+        protocols:
+          grpc:
+          http:
+    processors:
+    exporters:
+      otlp:
+        endpoint: jaeger-production-collector-headless.tracing-system.svc:4317
+        tls:
+          ca_file: "/var/run/secrets/kubernetes.io/serviceaccount/service-ca.crt"
+      prometheus:
+        endpoint: 0.0.0.0:8889
+        resource_to_telemetry_conversion:
+          enabled: true # by default resource attributes are dropped
+    service: # <1>
+      pipelines:
+        traces:
+          receivers: [otlp]
+          processors: []
+          exporters: [jaeger]
+        metrics:
+          receivers: [otlp]
+          processors: []
+          exporters: [prometheus]
+----
+<1> If a component is configured but not defined in the `service` section, the component is not enabled.
+
+.Parameters used by the Operator to define the OpenTelemetry Collector
+[options="header"]
+[cols="l, a, a, a"]
+|===
+|Parameter |Description |Values |Default
+|receivers:
+|A receiver is how data gets into the Collector. By default, no receivers are configured. There must be at least one enabled receiver for a configuration to be considered valid. Receivers are enabled by being added to a pipeline.
+|`otlp`, `jaeger`, `prometheus`, `zipkin`, `kafka`, `opencensus`
+|None
+
+|processors:
+|Processors run through the data between it is received and exported. By default, no processors are enabled.
+|`batch`, `memory_limiter`, `resourcedetection`, `attributes`, `span`, `k8sattributes`, `filter`, `routing`
+|None
+
+|exporters:
+|An exporter sends data to one or more back ends or destinations. By default, no exporters are configured. There must be at least one enabled exporter for a configuration to be considered valid. Exporters are enabled by being added to a pipeline. Exporters might be used with their default settings, but many require configuration to specify at least the destination and security settings.
+|`otlp`, `otlphttp`, `debug`, `prometheus`, `kafka`
+|None
+
+|connectors:
+|Connectors join pairs of pipelines, that is by consuming data as end-of-pipeline exporters and emitting data as start-of-pipeline receivers, and can be used to summarize, replicate, or route consumed data.
+|`spanmetrics`
+|None
+
+|extensions:
+|Optional components for tasks that do not involve processing telemetry data.
+|`bearertokenauth`, `oauth2client`, `jaegerremotesamplin`, `pprof`, `health_check`, `memory_ballast`, `zpages`
+|None
+
+|service:
+  pipelines:
+|Components are enabled by adding them to a pipeline under `services.pipeline`.
+|
+|
+
+|service:
+  pipelines:
+    traces:
+      receivers:
+|You enable receivers for tracing by adding them under `service.pipelines.traces`.
+|
+|None
+
+|service:
+  pipelines:
+    traces:
+      processors:
+|You enable processors for tracing by adding them under `service.pipelines.traces`.
+|
+|None
+
+|service:
+  pipelines:
+    traces:
+      exporters:
+|You enable exporters for tracing by adding them under `service.pipelines.traces`.
+|
+|None
+
+|service:
+  pipelines:
+    metrics:
+      receivers:
+|You enable receivers for metrics by adding them under `service.pipelines.metrics`.
+|
+|None
+
+|service:
+  pipelines:
+    metrics:
+      processors:
+|You enable processors for metircs by adding them under `service.pipelines.metrics`.
+|
+|None
+
+|service:
+  pipelines:
+    metrics:
+      exporters:
+|You enable exporters for metrics by adding them under `service.pipelines.metrics`.
+|
+|None
+|===
+
+[id="otel-collector-components_{context}"]
+== OpenTelemetry Collector components
+
+[id="receivers_{context}"]
+=== Receivers
+
+Receivers get data into the Collector.
+
+[id="otlp-receiver_{context}"]
+==== OTLP Receiver
+
+The OTLP receiver ingests traces and metrics using the OpenTelemetry protocol (OTLP).
+
+.OpenTelemetry Collector custom resource with an enabled OTLP receiver
+[source,yaml]
+----
+  config: |
+    receivers:
+      otlp:
+        protocols:
+          grpc:
+            endpoint: 0.0.0.0:4317 # <1>
+            tls: # <2>
+              ca_file: ca.pem
+              cert_file: cert.pem
+              key_file: key.pem
+              client_ca_file: client.pem # <3>
+              reload_interval: 1h # <4>
+          http:
+            endpoint: 0.0.0.0:4318 # <5>
+            tls: # <6>
+
+    service:
+      pipelines:
+        traces:
+          receivers: [otlp]
+        metrics:
+          receivers: [otlp]
+----
+<1> The OTLP gRPC endpoint. If omitted, the default `+0.0.0.0:4317+` is used.
+<2> The server-side TLS configuration. Defines paths to TLS certificates. If omitted, TLS is disabled.
+<3> The path to the TLS certificate at which the server verifies a client certificate. This sets the value of `ClientCAs` and `ClientAuth` to `RequireAndVerifyClientCert` in the `TLSConfig`. For more information, see the link:https://godoc.org/crypto/tls#Config[`Config` of the Golang TLS package].
+<4> Specifies the time interval at which the certificate is reloaded. If the value is not set, the certificate is never reloaded. The `reload_interval` accepts a string containing valid units of time such as `ns`, `us` (or `µs`), `ms`, `s`, `m`, `h`.
+<5> The OTLP HTTP endpoint. The default value is `+0.0.0.0:4318+`.
+<6> The server-side TLS configuration. For more information, see the `grpc` protocol configuration section.
+
+[id="jaeger-receiver_{context}"]
+==== Jaeger Receiver
+
+The Jaeger receiver ingests traces in the Jaeger formats.
+
+.OpenTelemetry Collector custom resource with an enabled Jaeger receiver
+[source,yaml]
+----
+  config: |
+    receivers:
+      jaeger:
+        protocols:
+          grpc:
+            endpoint: 0.0.0.0:14250 # <1>
+          thrift_http:
+            endpoint: 0.0.0.0:14268 # <2>
+          thrift_compact:
+            endpoint: 0.0.0.0:6831 # <3>
+          thrift_binary:
+            endpoint: 0.0.0.0:6832 # <4>
+          tls: # <5>
+
+    service:
+      pipelines:
+        traces:
+          receivers: [jaeger]
+----
+<1> The Jaeger gRPC endpoint. If omitted, the default `+0.0.0.0:14250+` is used.
+<2> The Jaeger Thrift HTTP endpoint. If omitted, the default `+0.0.0.0:14268+` is used.
+<3> The Jaeger Thrift Compact endpoint. If omitted, the default `+0.0.0.0:6831+` is used.
+<4> The Jaeger Thrift Binary endpoint. If omitted, the default `+0.0.0.0:6832+` is used.
+<5> The  server-side TLS configuration. See the OTLP receiver configuration section for more details.
+
+[id="prometheus-receiver_{context}"]
+==== Prometheus Receiver
+
+The Prometheus receiver is currently a link:https://access.redhat.com/support/offerings/techpreview[Technology Preview] feature only.
+
+The Prometheus receiver scrapes the metrics endpoints.
+
+.OpenTelemetry Collector custom resource with an enabled Prometheus receiver
+[source,yaml]
+----
+  config: |
+    receivers:
+        prometheus:
+          config:
+            scrape_configs: # <1>
+              - job_name: 'my-app'  # <2>
+                scrape_interval: 5s # <3>
+                static_configs:
+                  - targets: ['my-app.example.svc.cluster.local:8888'] # <4>
+    service:
+      pipelines:
+        metrics:
+          receivers: [prometheus]
+----
+<1> Scrapes configurations using the Prometheus format.
+<2> The Prometheus job name.
+<3> The lnterval for scraping the metrics data. Accepts time units. The default value is `1m`.
+<4> The targets at which the metrics are exposed. This example scrapes the metrics from a `my-app` application in the `example` project.
+
+[id="zipkin-receiver_{context}"]
+==== Zipkin Receiver
+
+The Zipkin receiver ingests traces in the Zipkin v1 and v2 formats.
+
+.OpenTelemetry Collector custom resource with the enabled Zipkin receiver
+[source,yaml]
+----
+  config: |
+    receivers:
+      zipkin:
+        endpoint: 0.0.0.0:9411 # <1>
+        tls: # <2>
+
+    service:
+      pipelines:
+        traces:
+          receivers: [zipkin]
+----
+<1> The Zipkin HTTP endpoint. If omitted, the default `+0.0.0.0:9411+` is used.
+<2> The server-side TLS configuration. See the OTLP receiver configuration section for more details.
+
+[id="kafka-receiver_{context}"]
+==== Kafka Receiver
+
+The Kafka receiver is currently a link:https://access.redhat.com/support/offerings/techpreview[Technology Preview] feature only.
+
+The Kafka receiver receives traces, metrics, and logs from Kafka in the OTLP format.
+
+.OpenTelemetry Collector custom resource with the enabled Kafka receiver
+[source,yaml]
+----
+  config: |
+    receivers:
+      kafka:
+        brokers: ["localhost:9092"] # <1>
+        protocol_version: 2.0.0 # <2>
+        topic: otlp_spans # <3>
+        auth:
+          plain_text: # <4>
+            username: example
+            password: example
+          tls: # <5>
+            ca_file: ca.pem
+            cert_file: cert.pem
+            key_file: key.pem
+            insecure: false # <6>
+            server_name_override: kafka.example.corp # <7>
+    service:
+      pipelines:
+        traces:
+          receivers: [kafka]
+----
+<1> The list of Kafka brokers. The default is `+localhost:9092+`.
+<2> The Kafka protocol version. For example, `+2.0.0+`. This is a required field.
+<3> The name of the Kafka topic to read from. The default is `+otlp_spans+`.
+<4> The plaintext authentication configuration. If omitted, plaintext authentication is disabled.
+<5> The client-side TLS configuration. Defines paths to the TLS certificates. If omitted, TLS authentication is disabled.
+<6> Disables verifying the server's certificate chain and host name. The default is `+false+`.
+<7> ServerName indicates the name of the server requested by the client to support virtual hosting.
+
+[id="opencensus-receiver_{context}"]
+==== OpenCensus receiver
+
+The OpenCensus receiver provides backwards compatibility with the OpenCensus project for easier migration of instrumented codebases. It receives metrics and traces in the OpenCensus format via gRPC or HTTP and Json.
+
+.OpenTelemetry Collector custom resource with the enabled OpenCensus receiver
+[source,yaml]
+----
+  config: |
+    receivers:
+      opencensus:
+        endpoint: 0.0.0.0:9411 # <1>
+        tls: # <2>
+        cors_allowed_origins: # <3>
+          - https://*.<example>.com
+    service:
+      pipelines:
+        traces:
+          receivers: [opencensus]
+          ...
+----
+<1> The OpenCensus endpoint. If omitted, the default is `+0.0.0.0:55678+`.
+<2> The server-side TLS configuration. See the OTLP receiver configuration section for more details.
+<3> You can also use the HTTP JSON endpoint to optionally configure CORS, which is enabled by specifying a list of allowed CORS origins in this field.
+Wildcards with `+*+` are accepted under the `cors_allowed_origins`.
+To match any origin, enter only `+*+`.
+
+[id="processors_{context}"]
+=== Processors
+
+Processors run through the data between it is received and exported.
+
+[id="batch-processor_{context}"]
+==== Batch processor
+
+The Batch processor batches traces and metrics to reduce the number of outgoing connections needed to transfer the telemetry information.
+
+.Example of the OpenTelemetry Collector custom resource when using the Batch processor
+[source,yaml]
+----
+  config: |
+    processor:
+      batch:
+        timeout: 5s
+        send_batch_max_size: 10000
+    service:
+      pipelines:
+        traces:
+          processors: [batch]
+        metrics:
+          processors: [batch]
+----
+
+.Parameters used by the Batch processor
+[options="header"]
+[cols="l, a, a"]
+|===
+|Parameter |Description |Default
+
+|timeout
+|Sends the batch after a specific time duration and irrespective of the batch size.
+|`200ms`
+
+|send_batch_size
+|Sends the batch of telemetry data after the specified number of spans or metrics.
+|`8192`
+
+|send_batch_max_size
+|The maximum allowable size of the batch. Must be equal or greater than the `send_batch_size`.
+|`0`
+
+|metadata_keys
+|When activated, a batcher instance is created for each unique set of values found in the `client.Metadata`.
+|`[]`
+
+|metadata_cardinality_limit
+|When the `metadata_keys` are populated, this configuration restricts the number of distinct metadata key-value combinations processed throughout the duration of the process.
+|`1000`
+|===
+
+[id="memorylimiter-processor_{context}"]
+==== Memory Limiter processor
+
+The Memory Limiter processor periodically checks the Collector's memory usage and pauses data processing when the soft memory limit is reached. This processor supports traces, metrics, and logs. The preceding component, which is typically a receiver, is expected to retry sending the same data and may apply a backpressure to the incoming data. When memory usage exceeds the hard limit, the Memory Limiter processor forces garbage collection to run.
+
+.Example of the OpenTelemetry Collector custom resource when using the Memory Limiter processor
+[source,yaml]
+----
+  config: |
+    processor:
+      memory_limiter:
+        check_interval: 1s
+        limit_mib: 4000
+        spike_limit_mib: 800
+    service:
+      pipelines:
+        traces:
+          processors: [batch]
+        metrics:
+          processors: [batch]
+----
+
+.Parameters used by the Memory Limiter processor
+[options="header"]
+[cols="l, a, a"]
+|===
+|Parameter |Description |Default
+
+|check_interval
+|Time between memory usage measurements. The optimal value is `1s`. For spiky traffic patterns, you can decrease the `check_interval` or increase the `spike_limit_mib`.
+|`0s`
+
+|limit_mib
+|The hard limit, which is the maximum amount of memory in MiB allocated on the heap. Typically, the total memory usage of the OpenTelemetry Collector is about 50 MiB greater than this value.
+|`0`
+
+|spike_limit_mib
+|Spike limit, which is the maximum expected spike of memory usage in MiB. The optimal value is approximately 20% of `limit_mib`. To calculate the soft limit, subtract the `spike_limit_mib` from the `limit_mib`.
+|20% of `limit_mib`
+
+|limit_percentage
+|Same as the `limit_mib` but expressed as a percentage of the total available memory. The `limit_mib` setting takes precedence over this setting.
+|`0`
+
+|spike_limit_percentage
+|Same as the `spike_limit_mib` but expressed as a percentage of the total available memory. Intended to be used with the `limit_percentage` setting.
+|`0`
+
+|===
+
+[id="resource-detection-processor_{context}"]
+==== Resource Detection processor
+
+The Resource Detection processor is currently a link:https://access.redhat.com/support/offerings/techpreview[Technology Preview] feature only.
+
+The Resource Detection processor identifies host resource details in alignment with OpenTelemetry's resource semantic standards. Using the detected information, it can add or replace the resource values in telemetry data. This processor supports traces, metrics, and can be used with multiple detectors such as the Docket metadata detector or the `OTEL_RESOURCE_ATTRIBUTES` environment variable detector.
+
+.{product-title} permissions required for the Resource Detection processor
+[source,yaml]
+----
+kind: ClusterRole
+metadata:
+  name: otel-collector
+rules:
+- apiGroups: ["config.openshift.io"]
+  resources: ["infrastructures", "infrastructures/status"]
+  verbs: ["get", "watch", "list"]
+----
+
+.OpenTelemetry Collector using the Resource Detection processor
+[source,yaml]
+----
+  config: |
+    processor:
+      resourcedetection:
+        detectors: [openshift]
+        override: true
+    service:
+      pipelines:
+        traces:
+          processors: [resourcedetection]
+        metrics:
+          processors: [resourcedetection]
+----
+
+.OpenTelemetry Collector using the Resource Detection Processor with an environment variable detector
+[source,yaml]
+----
+  config: |
+    processors:
+      resourcedetection/env:
+        detectors: [env] # <1>
+        timeout: 2s
+        override: false
+----
+<1> Specifies which detector to use. In this example, the environment detector is specified.
+
+[id="attributes-processor_{context}"]
+==== Attributes processor
+
+The Attributes processor is currently a link:https://access.redhat.com/support/offerings/techpreview[Technology Preview] feature only.
+
+The Attributes processor can modify attributes of a span, log, or metric. You can configure this processor to filter and match input data and include or exclude such data for specific actions.
+
+The processor operates on a list of actions, executing them in the order specified in the configuration. The following actions are supported:
+
+Insert:: Inserts a new attribute into the input data when the specified key does not already exist.
+
+Update:: Updates an attribute in the input data if the key already exists.
+
+Upsert:: Combines the insert and update actions: Inserts a new attribute if the key does not exist yet. Updates the attribute if the key already exists.
+
+Delete:: Removes an attribute from the input data.
+
+Hash:: Hashes an existing attribute value as SHA1.
+
+Extract:: Extracts values by using a regular expression rule from the input key to the target keys defined in the rule. If a target key already exists, it will be overridden similarly to the Span processor's `to_attributes` setting with the existing attribute as the source.
+
+Convert:: Converts an existing attribute to a specified type.
+
+.OpenTelemetry Collector using the Attributes processor
+[source,yaml]
+----
+  config: |
+    processors:
+      attributes/example:
+        actions:
+          - key: db.table
+            action: delete
+          - key: redacted_span
+            value: true
+            action: upsert
+          - key: copy_key
+            from_attribute: key_original
+            action: update
+          - key: account_id
+            value: 2245
+            action: insert
+          - key: account_password
+            action: delete
+          - key: account_email
+            action: hash
+          - key: http.status_code
+            action: convert
+            converted_type: int
+----
+
+[id="resource-processor_{context}"]
+==== Resource processor
+
+The Resource processor is currently a link:https://access.redhat.com/support/offerings/techpreview[Technology Preview] feature only.
+
+The Resource processor applies changes to the resource attributes. This processor supports traces, metrics, and logs.
+
+.OpenTelemetry Collector using the Resource Detection processor
+[source,yaml]
+----
+  config: |
+    processor:
+      attributes:
+      - key: cloud.availability_zone
+        value: "zone-1"
+        action: upsert
+      - key: k8s.cluster.name
+        from_attribute: k8s-cluster
+        action: insert
+      - key: redundant-attribute
+        action: delete
+----
+
+Attributes represent the actions that are applied to the resource attributes, such as delete the attribute, insert the attribute, or upsert the attribute.
+
+[id="span-processor_{context}"]
+==== Span processor
+
+The Span processor is currently a link:https://access.redhat.com/support/offerings/techpreview[Technology Preview] feature only.
+
+The Span processor modifies the span name based on its attributes or extracts the span attributes from the span name. It can also change the span status. It can also include or exclude spans. This processor supports traces.
+
+Span renaming requires specifying attributes for the new name by using the `from_attributes` configuration.
+
+.OpenTelemetry Collector using the Span processor for renaming a span
+[source,yaml]
+----
+  config: |
+    processor:
+      span:
+        name:
+          from_attributes: [<key1>, <key2>, ...] # <1>
+          separator: <value> # <2>
+----
+<1> Defines the keys to form the new span name.
+<2> An optional separator.
+
+You can use the processor to extract attributes from the span name.
+
+.OpenTelemetry Collector using the Span processor for extracting attributes from a span name
+[source,yaml]
+----
+  config: |
+    processor:
+      span/to_attributes:
+        name:
+          to_attributes:
+            rules:
+              - ^\/api\/v1\/document\/(?P<documentId>.*)\/update$ # <1>
+----
+<1> This rule defines how the extraction is to be executed. You can define more rules: for example, in this case, if the regular expression matches the name, a `documentID` attibute is created. In this example, if the input span name is `/api/v1/document/12345678/update`, this results in the `/api/v1/document/{documentId}/update` output span name, and a new `"documentId"="12345678"` attribute is added to the span.
+
+You can have the span status modified.
+
+.OpenTelemetry Collector using the Span Processor for status change
+[source,yaml]
+----
+  config: |
+    processor:
+      span/set_status:
+        status:
+          code: Error
+          description: "<error_description>"
+----
+
+[id="kubernetes-attributes-processor_{context}"]
+==== Kubernetes Attributes processor
+
+The Kubernetes Attributes processor is currently a link:https://access.redhat.com/support/offerings/techpreview[Technology Preview] feature only.
+
+The Kubernetes Attributes processor enables automatic configuration of spans, metrics, and log resource attributes by using the Kubernetes metadata.
+This processor supports traces, metrics, and logs.
+This processor automatically identifies the Kubernetes resources, extracts the metadata from them, and incorporates this extracted metadata as resource attributes into relevant spans, metrics, and logs. It utilizes the Kubernetes API to discover all pods operating within a cluster, maintaining records of their IP addresses, pod UIDs, and other relevant metadata. 
+
+.Minimum {product-title} permissions required for the Kubernetes Attributes processor
+[source,yaml]
+----
+kind: ClusterRole
+metadata:
+  name: otel-collector
+rules:
+  - apiGroups: ['']
+    resources: ['pods', 'namespaces']
+    verbs: ['get', 'watch', 'list']
+----
+
+.OpenTelemetry Collector using the Kubernetes Attributes processor
+[source,yaml]
+----
+  config: |
+    processors:
+         k8sattributes:
+             filter:
+                 node_from_env_var: KUBE_NODE_NAME
+----
+
+[id="filter-processor_{context}"]
+=== Filter processor
+
+The Filter processor is currently a link:https://access.redhat.com/support/offerings/techpreview[Technology Preview] feature only.
+
+The Filter processor leverages the OpenTelemetry Transformation Language to establish criteria for discarding telemetry data. If any of these conditions are satisfied, the telemetry data are discarded. The conditions can be combined by using the logical OR operator. This processor supports traces, metrics, and logs.
+
+.OpenTelemetry Collector custom resource with an enabled OTLP exporter
+[source,yaml]
+----
+config: |
+  processors:
+    filter/ottl:
+      error_mode: ignore # <1>
+      traces:
+        span:
+          - 'attributes["container.name"] == "app_container_1"' # <2>
+          - 'resource.attributes["host.name"] == "localhost"' # <3>
+----
+<1> Defines the error mode. When set to `ignore`, ignores errors returned by conditions. When set to `propagate`, returns the error up the pipeline. An error causes the payload to be dropped from the Collector.
+<2> Filters the spans that have the `container.name == app_container_1` attribute.
+<3> Filters the spans that have the `host.name == localhost` resource attribute.
+
+[id="routing-processor_{context}"]
+=== Routing processor
+
+The Routing processor is currently a link:https://access.redhat.com/support/offerings/techpreview[Technology Preview] feature only.
+
+The Routing processor routes logs, metrics, or traces to specific exporters. This processor can read a header from an incoming HTTP request (gRPC or plain HTTP) or can read a resource attribute, and then directs the trace information to relevant exporters according to the read value.
+
+.OpenTelemetry Collector custom resource with an enabled OTLP exporter
+[source,yaml]
+----
+config: |
+  processors:
+    routing:
+      from_attribute: X-Tenant # <1>
+      default_exporters: # <2>
+      - jaeger
+      table: # <3>
+      - value: acme
+        exporters: [jaeger/acme]
+  exporters:
+    jaeger:
+      endpoint: localhost:14250
+    jaeger/acme:
+      endpoint: localhost:24250
+----
+<1> The HTTP header name for the lookup value when performing the route.
+<2> The default exporter when the attribute value is not present in the table in the next section.
+<3> The table that defines which values are to be routed to which exporters.
+
+You can optionally create an `attribute_source` configuratiion, which defines where to look for the attribute in `from_attribute`. The allowed value is `context` to search the context, which includes the HTTP headers, or `resource` to search the resource attributes.
+
+[id="exporters_{context}"]
+=== Exporters
+
+Exporters send data to one or more back ends or destinations.
+
+[id="otlp-exporter_{context}"]
+==== OTLP exporter
+
+The OTLP gRPC exporter exports traces and metrics using the OpenTelemetry protocol (OTLP).
+
+.OpenTelemetry Collector custom resource with an enabled OTLP exporter
+[source,yaml]
+----
+  config: |
+    exporters:
+      otlp:
+        endpoint: tempo-ingester:4317 # <1>
+        tls: # <2>
+          ca_file: ca.pem
+          cert_file: cert.pem
+          key_file: key.pem
+          insecure: false # <3>
+          insecure_skip_verify: false # # <4>
+          reload_interval: 1h # <5>
+          server_name_override: <name> # <6>
+        headers: # <7>
+          X-Scope-OrgID: "dev"
+    service:
+      pipelines:
+        traces:
+          exporters: [otlp]
+        metrics:
+          exporters: [otlp]
+----
+<1> The OTLP gRPC endpoint. If the `+https://+` scheme is used, then client transport security is enabled and overrides the `insecure` setting in the `tls`.
+<2> The client-side TLS configuration. Defines paths to TLS certificates.
+<3> Disables client transport security when set to `true`. The default value is `false` by default.
+<4> Skips verifying the certificate when set to `true`. The default value is `false`.
+<5> Specifies the time interval at which the certificate is reloaded. If the value is not set, the certificate is never reloaded. The `reload_interval` accepts a string containing valid units of time such as `ns`, `us` (or `µs`), `ms`, `s`, `m`, `h`.
+<6> Overrides the virtual host name of authority such as the authority header field in requests. You can use this for testing.
+<7> Headers are sent for every request performed during an established connection.
+
+[id="otlp-http-exporter_{context}"]
+==== OTLP HTTP exporter
+
+The OTLP HTTP exporter exports traces and metrics using the OpenTelemetry protocol (OTLP).
+
+.OpenTelemetry Collector custom resource with an enabled OTLP exporter
+[source,yaml]
+----
+  config: |
+    exporters:
+      otlphttp:
+        endpoint: http://tempo-ingester:4318 # <1>
+        tls: # <2>
+        headers: # <3>
+          X-Scope-OrgID: "dev"
+
+    service:
+      pipelines:
+        traces:
+          exporters: [otlphttp]
+        metrics:
+          expoters: [otlphttp]
+----
+<1> The OTLP HTTP endpoint. If the `+https://+` scheme is used, then client transport security is enabled and overrides the `insecure` setting in the `tls`.
+<2> The client side TLS configuration. Defines paths to TLS certificates.
+<3> Headers are sent in every HTTP request.
+
+[id="debug-exporter_{context}"]
+==== Debug exporter
+
+The Debug exporter prints traces and metrics to the standard output.
+
+.OpenTelemetry Collector custom resource with an enabled Debug exporter
+[source,yaml]
+----
+  config: |
+    exporters:
+      debug:
+        verbosity: detailed # <1>
+    service:
+      pipelines:
+        traces:
+          exporters: [logging]
+        metrics:
+          exporters: [logging]
+----
+<1> Verbosity of the debug export: `detailed` or `normal` or `basic`. When set to `detailed`, pipeline data is verbosely logged. Defaults to `normal`.
+
+[id="prometheus-exporter_{context}"]
+==== Prometheus exporter
+
+The Prometheus exporter is currently a link:https://access.redhat.com/support/offerings/techpreview[Technology Preview] feature only.
+
+The Prometheus exporter exports metrics in the Prometheus or OpenMetrics formats.
+
+.OpenTelemetry Collector custom resource with an enabled Prometheus exporter
+[source,yaml]
+----
+  ports:
+  - name: promexporter # <1>
+    port: 8889
+    protocol: TCP
+  config: |
+    exporters:
+      prometheus:
+        endpoint: 0.0.0.0:8889 # <2>
+        tls: # <3>
+          ca_file: ca.pem
+          cert_file: cert.pem
+          key_file: key.pem
+        namespace: prefix # <4>
+        const_labels: # <5>
+          label1: value1
+        enable_open_metrics: true # <6>
+        resource_to_telemetry_conversion: # <7>
+          enabled: true
+        metric_expiration: 180m # <8>
+        add_metric_suffixes: false # <9>
+    service:
+      pipelines:
+        metrics:
+          exporters: [prometheus]
+----
+<1> Exposes the Prometheus port from the Collector pod and service. You can enable scraping of metrics by Prometheus by using the port name in `ServiceMonitor` or `PodMonitor` custom resource.
+<2> The network endpoint where the metrics are exposed.
+<3> The server-side TLS configuration. Defines paths to TLS certificates.
+<4> If set, exports metrics under the provided value. No default.
+<5> Key-value pair labels that are applied for every exported metric. No default.
+<6> If `true`, metrics are exported using the OpenMetrics format. Exemplars are only exported in the OpenMetrics format and only for histogram and monotonic sum metrics such as `counter`. Disabled by default.
+<7> If `enabled` is `true`, all the resource attributes are converted to metric labels by default. Disabled by default.
+<8> Defines how long metrics are exposed without updates. The default is `5m`.
+<9> Adds the metrics types and units suffixes. Must be disabled if the monitor tab in Jaeger console is enabled. The default is `true`.
+
+[id="kafka-exporter_{context}"]
+==== Kafka exporter
+
+The Kafka exporter is currently a link:https://access.redhat.com/support/offerings/techpreview[Technology Preview] feature only.
+
+The Kafka exporter exports logs, metrics, and traces to Kafka. This exporter uses a synchronous producer that blocks and does not batch messages. It must be used with batch and queued retry processors for higher throughput and resiliency.
+
+.OpenTelemetry Collector custom resource with an enabled Kafka exporter
+[source,yaml]
+----
+  config: |
+    exporters:
+      kafka:
+        brokers: ["localhost:9092"] # <1>
+        protocol_version: 2.0.0 # <2>
+        topic: otlp_spans # <3>
+        auth:
+          plain_text: # <4>
+            username: example
+            password: example
+          tls: # <5>
+            ca_file: ca.pem
+            cert_file: cert.pem
+            key_file: key.pem
+            insecure: false # <6>
+            server_name_override: kafka.example.corp # <7>
+    service:
+      pipelines:
+        traces:
+          exporters: [kafka]
+----
+<1> The list of Kafka brokers. The default is `+localhost:9092+`.
+<2> The Kafka protocol version. For example, `+2.0.0+`. This is a required field.
+<3> The name of the Kafka topic to read from. The following are the defaults: `+otlp_spans+` for traces, `+otlp_metrics+` for metrics, `+otlp_logs+` for logs.
+<4> The plaintext authentication configuration. If omitted, plaintext authentication is disabled.
+<5> The client-side TLS configuration. Defines paths to the TLS certificates. If omitted, TLS authentication is disabled.
+<6> Disables verifying the server's certificate chain and host name. The default is `+false+`.
+<7> ServerName indicates the name of the server requested by the client to support virtual hosting.
+
+[id="connectors_{context}"]
+=== Connectors
+
+Connectors connect two pipelines.
+
+[id="spanmetrics-connector_{context}"]
+==== Spanmetrics connector
+
+The Spanmetrics connector is currently a link:https://access.redhat.com/support/offerings/techpreview[Technology Preview] feature only.
+
+The Spanmetrics connector aggregates Request, Error, and Duration (R.E.D) OpenTelemetry metrics from span data.
+
+.OpenTelemetry Collector custom resource with an enabled spanmetrics connector
+[source,yaml]
+----
+  config: |
+    connectors:
+      spanmetrics:
+        metrics_flush_interval: 15s # <1>
+    service:
+      pipelines:
+        traces:
+          exporters: [spanmetrics]
+        metrics:
+          receivers: [spanmetrics]
+----
+<1> Defines the flush interval of the generated metrics. Defaults to `15s`.
+
+[id="extensions_{context}"]
+=== Extensions
+
+Extensions add capabilities to the Collector.
+
+[id="bearertokenauth-extension_{context}"]
+==== BearerTokenAuth extension
+
+The BearerTokenAuth extension is currently a link:https://access.redhat.com/support/offerings/techpreview[Technology Preview] feature only.
+
+The BearerTokenAuth extension is an authenticator for receivers and exporters that are based on the HTTP and the gRPC protocol.
+You can use the OpenTelemetry Collector custom resource to configure client authentication and server authentication for the BearerTokenAuth extension on the receiver and exporter side.
+This extension supports traces, metrics, and logs.
+
+.OpenTelemetry Collector custom resource with client and server authentication configured for the BearerTokenAuth extension
+[source,yaml]
+----
+  config: |
+    extensions:
+      bearertokenauth:
+        scheme: "Bearer" # <1>
+        token: "<token>" # <2>
+        filename: "<token_file>" # <3>
+
+    receivers:
+      otlp:
+        protocols:
+          http:
+            auth:
+              authenticator: bearertokenauth # <4>
+    exporters:
+      otlp:
+        auth:
+          authenticator: bearertokenauth # <5>
+
+    service:
+      extensions: [bearertokenauth]
+      pipelines:
+        traces:
+          receivers: [otlp]
+          exporters: [otlp]
+----
+<1> You can configure the BearerTokenAuth extension to send a custom `scheme`. The default is `Bearer`.
+<2> You can add the BearerTokenAuth extension token as metadata to identify a message.
+<3> Path to a file that contains an authorization token that is transmitted with every message.
+<4> You can assign the authenticator configuration to an OTLP receiver.
+<5> You can assign the authenticator configuration to an OTLP exporter.
+
+[id="oauth2client-extension_{context}"]
+==== OAuth2Client extension
+
+The OAuth2Client extension is currently a link:https://access.redhat.com/support/offerings/techpreview[Technology Preview] feature only.
+
+The OAuth2Client extension is an authenticator for exporters that are based on the HTTP and the gRPC protocol.
+Client authentication for the OAuth2Client extension is configured in a separate section in the OpenTelemetry Collector custom resource.
+This extension supports traces, metrics, and logs.
+
+.OpenTelemetry Collector custom resource with client authentication configured for the OAuth2Client extension
+[source,yaml]
+----
+  config: |
+    extensions:
+      oauth2client:
+        client_id: <client_id> # <1>
+        client_secret: <client_secret> # <2>
+        endpoint_params: # <3>
+          audience: <audience>
+        token_url: https://example.com/oauth2/default/v1/token # <4>
+        scopes: ["api.metrics"] # <5>
+        # tls settings for the token client
+        tls: # <6>
+          insecure: true # <7>
+          ca_file: /var/lib/mycert.pem # <8>
+          cert_file: <cert_file> # <9>
+          key_file: <key_file> # <10>
+        timeout: 2s # <11>
+
+    receivers:
+      otlp:
+        protocols:
+          http:
+
+    exporters:
+      otlp:
+        auth:
+          authenticator: oauth2client # <12>
+
+    service:
+      extensions: [oauth2client]
+      pipelines:
+        traces:
+          receivers: [otlp]
+          exporters: [otlp]
+----
+<1> Client identifier, which is provided by the identity provider.
+<2> Confidential key used to authenticate the client to the identity provider.
+<3> Further metadata, in the key-value pair format, which is transferred during authentication. For example, `audience` specifies the intended audience for the access token, indicating the recipient of the token.
+<4> The URL of the OAuth2 token endpoint, where the Collector requests access tokens.
+<5> The scopes define the specific permissions or access levels requested by the client.
+<6> The Transport Layer Security (TLS) settings for the token client, which is used to establish a secure connection when requesting tokens.
+<7> When set to `true`, configures the Collector to use an insecure or non-verified TLS connection to call the configured token endpoint.
+<8> The path to a Certificate Authority (CA) file that is used to verify the server's certificate during the TLS handshake.
+<9> The path to the client certificate file that the client must use to authenticate itself to the OAuth2 server if required.
+<10> The path to the client's private key file that is used with the client certificate if needed for authentication.
+<11> Sets a timeout for the token client's request.
+<12> You can assign the authenticator configuration to an OTLP exporter.
+
+
+[id="jaegerremotesampling-extension_{context}"]
+==== Jaeger Remote Sampling extension
+
+The Jaeger Remote Sampling extension is currently a link:https://access.redhat.com/support/offerings/techpreview[Technology Preview] feature only.
+
+The Jaeger Remote Sampling extension allows serving sampling strategies after Jaeger's remote sampling API. You can configure this extension to proxy requests to a backing remote sampling server such as a Jaeger collector down the pipeline or to a static JSON file from the local file system.
+
+.OpenTelemetry Collector custom resource with a configured Jaeger Remote Sampling extension
+[source,yaml]
+----
+  config: |
+    extensions:
+      jaegerremotesampling:
+        source:
+          reload_interval: 30s # <1>
+          remote:
+            endpoint: jaeger-collector:14250 # <2>
+          file: /etc/otelcol/sampling_strategies.json # <3>
+
+    receivers:
+      otlp:
+        protocols:
+          http:
+
+    exporters:
+      otlp:
+
+    service:
+      extensions: [jaegerremotesampling]
+      pipelines:
+        traces:
+          receivers: [otlp]
+          exporters: [otlp]
+----
+<1> The time interval at which the sampling configuration is updated.
+<2> The endpoint for reaching the Jaeger remote sampling strategy provider.
+<3> The path to a local file that contains a sampling strategy configuration in the JSON format.
+
+.Example of a Jaeger Remote Sampling strategy file
+[source,json]
+----
+{
+  "service_strategies": [
+    {
+      "service": "foo",
+      "type": "probabilistic",
+      "param": 0.8,
+      "operation_strategies": [
+        {
+          "operation": "op1",
+          "type": "probabilistic",
+          "param": 0.2
+        },
+        {
+          "operation": "op2",
+          "type": "probabilistic",
+          "param": 0.4
+        }
+      ]
+    },
+    {
+      "service": "bar",
+      "type": "ratelimiting",
+      "param": 5
+    }
+  ],
+  "default_strategy": {
+    "type": "probabilistic",
+    "param": 0.5,
+    "operation_strategies": [
+      {
+        "operation": "/health",
+        "type": "probabilistic",
+        "param": 0.0
+      },
+      {
+        "operation": "/metrics",
+        "type": "probabilistic",
+        "param": 0.0
+      }
+    ]
+  }
+}
+----
+
+
+
+[id="pprof-extension_{context}"]
+==== Performance Profiler extension
+
+The Performance Profiler extension is currently a link:https://access.redhat.com/support/offerings/techpreview[Technology Preview] feature only.
+
+The Performance Profiler extension enables the Go `net/http/pprof` endpoint. This is typically used by developers to collect performance profiles and investigate issues with the service.
+
+.OpenTelemetry Collector custom resource with the configured Performance Profiler extension
+[source,yaml]
+----
+  config: |
+    extensions:
+      pprof:
+        endpoint: localhost:1777 # <1>
+        block_profile_fraction: 0 # <2>
+        mutex_profile_fraction: 0 # <3>
+        save_to_file: test.pprof # <4>
+
+    receivers:
+      otlp:
+        protocols:
+          http:
+
+    exporters:
+      otlp:
+
+    service:
+      extensions: [pprof]
+      pipelines:
+        traces:
+          receivers: [otlp]
+          exporters: [otlp]
+----
+<1> The endpoint at which this extension listens. Use `localhost:` to make it available only locally or `":"` to make it available on all network interfaces. The default value is `localhost:1777`.
+<2> Sets a fraction of blocking events to be profiled. To disable profiling, set this to `0` or a negative integer. See the link:https://golang.org/pkg/runtime/#SetBlockProfileRate[documentation] for the `runtime` package. The default value is `0`.
+<3> Set a fraction of mutex contention events to be profiled. To disable profiling, set this to `0` or a negative integer. See the link:https://golang.org/pkg/runtime/#SetMutexProfileFraction[documentation] for the `runtime` package. The default value is `0`.
+<4> The name of the file in which the CPU profile is to be saved. Profiling starts when the Collector starts. Profiling is saved to the file when the Collector is terminated.
+
+[id="healthcheck-extension_{context}"]
+==== Health Check extension
+
+The Health Check extension is currently a link:https://access.redhat.com/support/offerings/techpreview[Technology Preview] feature only.
+
+The Health Check extension provides an HTTP URL for checking the status of the OpenTelemetry Collector. You can use this extension as a liveness and readiness probe on OpenShift.
+
+.OpenTelemetry Collector custom resource with the configured Health Check extension
+[source,yaml]
+----
+  config: |
+    extensions:
+      health_check:
+        endpoint: "0.0.0.0:13133" # <1>
+        tls: # <2>
+          ca_file: "/path/to/ca.crt"
+          cert_file: "/path/to/cert.crt"
+          key_file: "/path/to/key.key"
+        path: "/health/status" # <3>
+        check_collector_pipeline: # <4>
+          enabled: true # <5>
+          interval: "5m" # <6>
+          exporter_failure_threshold: 5 # <7>
+
+    receivers:
+      otlp:
+        protocols:
+          http:
+
+    exporters:
+      otlp:
+
+    service:
+      extensions: [health_check]
+      pipelines:
+        traces:
+          receivers: [otlp]
+          exporters: [otlp]
+----
+<1> The target IP address for publishing the health check status. The default is `0.0.0.0:13133`.
+<2> The TLS server-side configuration. Defines paths to TLS certificates. If omitted, the TLS is disabled.
+<3> The path for the health check server. The default is `/`.
+<4> Settings for the Collector pipeline health check.
+<5> Enables the Collector pipeline health check. The default is `false`.
+<6> The time interval for checking the number of failures. The default is `5m`.
+<7> The threshold of a number of failures until which a container is still marked as healthy. The default is `5`.
+
+[id="memory-ballast-extension_{context}"]
+==== Memory Ballast extension
+
+The Memory Ballast extension is currently a link:https://access.redhat.com/support/offerings/techpreview[Technology Preview] feature only.
+
+The Memory Ballast extension enables applications to configure memory ballast for the process.
+
+.OpenTelemetry Collector custom resource with the configured Memory Ballast extension
+[source,yaml]
+----
+  config: |
+    extensions:
+      memory_ballast:
+        size_mib: 64 # <1>
+        size_in_percentage: 20 # <2>
+
+    receivers:
+      otlp:
+        protocols:
+          http:
+
+    exporters:
+      otlp:
+
+    service:
+      extensions: [memory_ballast]
+      pipelines:
+        traces:
+          receivers: [otlp]
+          exporters: [otlp]
+----
+<1> Sets the memory ballast size in MiB. Takes priority over the `size_in_percentage` if both are specified.
+<2> Sets the memory ballast as a percentage, `1`-`100`, of the total memory. Supports containerized and physical host environments.
+
+
+[id="zpages-extension_{context}"]
+==== zPages extension
+
+The zPages extension is currently a link:https://access.redhat.com/support/offerings/techpreview[Technology Preview] feature only.
+
+The zPages extension provides an HTTP endpoint for extensions that serve zPages. At the endpoint, this extension serves live data for debugging instrumented components. All core exporters and receivers provide some zPages instrumentation.
+
+zPages are useful for in-process diagnostics without having to depend on a back end to examine traces or metrics.
+
+.OpenTelemetry Collector custom resource with the configured zPages extension
+[source,yaml]
+----
+  config: |
+    extensions:
+      zpages:
+        endpoint: "localhost:55679" # <1>
+
+    receivers:
+      otlp:
+        protocols:
+          http:
+    exporters:
+      otlp:
+
+    service:
+      extensions: [zpages]
+      pipelines:
+        traces:
+          receivers: [otlp]
+          exporters: [otlp]
+----
+
+<1> Specifies the HTTP endpoint that serves zPages. Use `localhost:` to make it available only locally, or `":"` to make it available on all network interfaces. The default is `localhost:55679`.
