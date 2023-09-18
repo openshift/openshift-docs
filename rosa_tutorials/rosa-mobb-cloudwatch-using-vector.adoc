@@ -1,0 +1,329 @@
+:_content-type: ASSEMBLY
+[id="rosa-mobb-cloudwatch-using-vector"]
+= Configuring the Cluster Log Forwarder for CloudWatch Logs using Vector
+include::_attributes/attributes-openshift-dedicated.adoc[]
+:context: rosa-mobb-cloudwatch-using-vector
+
+toc::[]
+
+// Mobb content metadata
+// Brought into ROSA product docs 2023-09-18
+// ---
+// date: '2022-10-21'
+// title: Configuring the Cluster Log Forwarder for CloudWatch Logs using Vector
+// tags: ["AWS", "ROSA"]
+// authors:
+//   - Thatcher Hubbard
+//   - Connor Wooley
+// ---
+
+include::snippets/mobb-support-statement.adoc[leveloffset=+1]
+
+This guide shows how to deploy the Cluster Log Forwarder Operator and configure it to use the link:https://vector.dev[Vector] logging agent to forward logs to CloudWatch.
+
+[NOTE] 
+====
+Vector will replaced FluentD as the default logging agent used by the Openshift Logging Operator when version 5.6 is released in Q4 2022. Version 5.5.3 of the Operator can enable Vector by configuring it in the `ClusterLogging` resource.
+
+Version 5.5.3 of the Operator **does not** support passing an STS role to Vector, but version 5.6 **will**. Until 5.6 is released, using Vector will require passing traditional IAM creds, but the conversion from IAM to STS will be relatively straightforward and will be documented here when it's available.
+====
+
+[id="rosa-mobb-cloudwatch-using-vector-prerequisites"]
+== Prerequisites
+
+* A ROSA cluster (configured with STS)
+* The `jq` cli command
+* The `aws` cli command
+
+[id="rosa-mobb-cloudwatch-using-vector-environment"]
+== Environment Setup
+
+* Configure the following environment variables:
++
+[NOTE]
+====
+Change the cluster name to match your ROSA cluster and ensure you're logged into the cluster as an Administrator. Ensure all fields are outputted correctly before moving on.
+====
++ 
+[source,terminal]
+----
+$ export ROSA_CLUSTER_NAME=<cluster_name>
+$ export ROSA_CLUSTER_ID=$(rosa describe cluster -c ${ROSA_CLUSTER_NAME} --output json | jq -r .id)
+$ export REGION=$(rosa describe cluster -c ${ROSA_CLUSTER_NAME} --output json | jq -r .region.id)
+$ export AWS_ACCOUNT_ID=`aws sts get-caller-identity --query Account --output text`
+$ export AWS_PAGER=""
+$ export SCRATCH="/tmp/${ROSA_CLUSTER_NAME}/clf-cloudwatch-vector"
+$ mkdir -p ${SCRATCH}
+$ echo "Cluster ID: ${ROSA_CLUSTER_ID}, Region: ${REGION}, AWS Account ID: ${AWS_ACCOUNT_ID}"
+----
+
+[id="rosa-mobb-cloudwatch-using-vector-aws-account"]
+== Prepare AWS Account
+
+. Create an IAM policy for OpenShift Log Forwarding:
++
+[source,terminal]
+----
+$ POLICY_ARN=$(aws iam list-policies --query "Policies[?PolicyName=='RosaCloudWatch'].{ARN:Arn}" --output text)
+  if [[ -z "${POLICY_ARN}" ]]; then
+  cat << EOF > ${SCRATCH}/policy.json
+  {
+  "Version": "2012-10-17",
+  "Statement": [
+     {
+           "Effect": "Allow",
+           "Action": [
+              "logs:CreateLogGroup",
+              "logs:CreateLogStream",
+              "logs:DescribeLogGroups",
+              "logs:DescribeLogStreams",
+              "logs:PutLogEvents",
+              "logs:PutRetentionPolicy"
+           ],
+           "Resource": "arn:aws:logs:*:*:*"
+     }
+  ]
+  }
+  EOF
+$ POLICY_ARN=$(aws iam create-policy --policy-name "RosaCloudWatch" \
+   --policy-document file:///${SCRATCH}/policy.json --query Policy.Arn --output text)
+   fi
+$ echo ${POLICY_ARN}
+----
+
+. Create an IAM user for logging:
++
+[source,terminal]
+----
+$ aws iam create-user \
+      --user-name $ROSA_CLUSTER_NAME-cloud-watch \
+      > $SCRATCH/aws-user.json
+----
+
+. Fetch access and secret keys for IAM user:
++
+[source,terminal]
+----
+$ aws iam create-access-key \
+      --user-name $ROSA_CLUSTER_NAME-cloud-watch \
+      > $SCRATCH/aws-access-key.json
+----
+
+. Attach the policy to AWS IAM user:
++
+[source,terminal]
+----
+$ aws iam attach-user-policy \
+      --user-name $ROSA_CLUSTER_NAME-cloud-watch \
+      --policy-arn ${POLICY_ARN}
+----
+
+. Create an OCP secret to hold the AWS credentials:
++
+[source,terminal]
+----
+$ AWS_ID=`cat $SCRATCH/aws-access-key.json | jq -r '.AccessKey.AccessKeyId'`
+$ AWS_KEY=`cat $SCRATCH/aws-access-key.json | jq -r '.AccessKey.SecretAccessKey'`
+
+$ cat << EOF | oc apply -f -
+  apiVersion: v1
+  kind: Secret
+  metadata:
+     name: cloudwatch-credentials
+     namespace: openshift-logging
+  stringData:
+     aws_access_key_id: $AWS_ID
+     aws_secret_access_key: $AWS_KEY
+  EOF
+----
+
+[id="rosa-mobb-cloudwatch-using-vector-operators"]
+== Deploy Operators
+
+* Deploy the Cluster Logging Operator:
++
+[source,terminal]
+----
+$ cat << EOF | oc apply -f -
+  apiVersion: operators.coreos.com/v1alpha1
+  kind: Subscription
+  metadata:
+    labels:
+     operators.coreos.com/cluster-logging.openshift-logging: ""
+    name: cluster-logging
+    namespace: openshift-logging
+  spec:
+    channel: stable
+    installPlanApproval: Automatic
+    name: cluster-logging
+    source: redhat-operators
+    sourceNamespace: openshift-marketplace
+    startingCSV: cluster-logging.5.5.3
+  EOF
+----
+
+[id="rosa-mobb-cloudwatch-using-vector-configure-logging"]
+== Configure cluster logging
+
+. Create a cluster log forwarding resource:
++
+[source,terminal]
+----
+$ cat << EOF | oc apply -f -
+  apiVersion: "logging.openshift.io/v1"
+  kind: ClusterLogForwarder
+  metadata:
+     name: instance
+     namespace: openshift-logging
+  spec:
+  outputs:
+     - name: cw
+        type: cloudwatch
+        cloudwatch:
+        groupBy: namespaceName
+        groupPrefix: rosa-${ROSA_CLUSTER_NAME}
+        region: ${REGION}
+        secret:
+        name: cloudwatch-credentials
+  pipelines:
+     - name: to-cloudwatch
+        inputRefs:
+        - infrastructure
+        - audit
+        - application
+        outputRefs:
+        - cw
+  EOF
+----
+
+. Create a cluster logging resource:
++
+[source,terminal]
+----
+$ cat << EOF | oc apply -f -
+  apiVersion: logging.openshift.io/v1
+  kind: ClusterLogging
+  metadata:
+  name: instance
+  namespace: openshift-logging
+  spec:
+  collection:
+     logs:
+        type: vector
+        vector: {}
+  forwarder:
+  managementState: Managed
+  EOF
+----
+
+[id="rosa-mobb-cloudwatch-using-vector-check-aws"]
+== Check AWS CloudWatch for logs
+
+* Use the AWS console or CLI to validate that there are log streams from the cluster:
++
+[NOTE]
+====
+If this is a fresh cluster, you may not see a log group for `application` logs as there are no applications running yet.
+====
++
+[source,terminal]
+----
+$ aws logs describe-log-groups --log-group-name-prefix rosa-${ROSA_CLUSTER_NAME}
+----
++
+.Sample output
++
+[source,c]
+----
+{
+   "logGroups": [
+      {
+         "logGroupName": "rosa-xxxx.audit",
+         "creationTime": 1661286368369,
+         "metricFilterCount": 0,
+         "arn": "arn:aws:logs:us-east-2:xxxx:log-group:rosa-xxxx.audit:*",
+         "storedBytes": 0
+      },
+      {
+         "logGroupName": "rosa-xxxx.infrastructure",
+         "creationTime": 1661286369821,
+         "metricFilterCount": 0,
+         "arn": "arn:aws:logs:us-east-2:xxxx:log-group:rosa-xxxx.infrastructure:*",
+         "storedBytes": 0
+      }
+   ]
+}
+----
+
+[id="rosa-mobb-cloudwatch-using-vector-clean-up"]
+== Clean up
+
+. Delete the cluster log forwarding resource:
++
+[source,terminal]
+----
+$ oc delete -n openshift-logging clusterlogforwarder instance
+----
+
+. Delete the cluster logging resource:
++
+[source,terminal]
+----
+$ oc delete -n openshift-logging clusterlogging instance
+----
+
+. Delete the IAM credential secret:
++
+[source,terminal]
+----
+$ oc -n openshift-logging delete secret cloudwatch-credentials
+----
+
+. Detach the IAM policy to the IAM role:
++
+[source,terminal]
+----
+$ aws iam detach-user-policy --user-name "$ROSA_CLUSTER_NAME-cloud-watch" \
+   --policy-arn "${POLICY_ARN}"
+
+----
+
+. Delete the IAM user access keys:
++
+[source,terminal]
+----
+$ aws iam delete-access-key --user-name "$ROSA_CLUSTER_NAME-cloud-watch" \
+   --access-key-id "${AWS_ID}"
+----
+
+. Delete the IAM user:
++
+[source,terminal]
+----
+$ aws ia1m delete-user --user-name "$ROSA_CLUSTER_NAME-cloud-watch"
+----
+
+. Delete the IAM policy:
++
+[NOTE]
+====
+Only run this command if there are no other resources using the policy.
+====
++
+[source,terminal]
+----
+$ aws iam delete-policy --policy-arn "${POLICY_ARN}"
+----
+
+. Delete the CloudWatch Log Groups:
++
+[NOTE]
+====
+If there are any user workloads on the cluster they will have their own log groups that will also need to be deleted.
+====
++
+[source,terminal]
+----
+$ aws logs delete-log-group --log-group-name "rosa-${ROSA_CLUSTER_NAME}.audit"
+$ aws logs delete-log-group --log-group-name "rosa-${ROSA_CLUSTER_NAME}.infrastructure"
+----
