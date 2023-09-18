@@ -1,0 +1,573 @@
+:_content-type: ASSEMBLY
+[id="rosa-mobb-enabling-aws-efs-csi-driver-operator-rosa"]
+= Tutorial: Enabling the AWS EFS CSI driver Operator on ROSA
+include::_attributes/attributes-openshift-dedicated.adoc[]
+:context: rosa-mobb-enabling-aws-efs-csi-driver-operator-rosa
+
+toc::[]
+
+//Mobb content metadata
+//Brought into ROSA product docs 2023-09-18
+//---
+//date: '2023-04-04'
+//title: Enabling the AWS EFS CSI driver Operator on ROSA
+//tags: ["AWS", "ROSA"]
+//aliases:
+//- /docs/rosa/aws-efs/aws-efs-csi-operator-on-rosa/
+//- /docs/rosa/aws-efs/aws-efs-operator-on-rosa/
+//authors:
+//  - Paul Czarkowski
+//  - Andy Repton
+//  - Shaozhen Ding
+//---
+
+include::snippets/mobb-support-statement.adoc[leveloffset=+1]
+
+The Amazon Web Services Elastic File System (AWS EFS) is a Network File System (NFS) that can be provisioned on {product-title} (ROSA) clusters.
+
+[IMPORTANT]
+====
+This procedure is specific to the AWS EFS CSI driver Operator, which is only applicable for ROSA 4.10 and later versions.
+====
+
+== Dynamic and static provisioning
+
+The CSI driver supports both static and dynamic provisioning. Dynamic provisioning should not be confused with the Operator's ability to create EFS volumes.
+
+=== Dynamic provisioning
+
+Dynamic provisioning provisions new PVs as subdirectories of a pre-existing EFS volume. The PVs are independent of each other. However, they all share the same EFS volume. When the volume is deleted, all PVs provisioned out of the volume are also deleted. The EFS CSI driver creates an AWS access point for each subdirectory. Due to AWS access point limits, you can only dynamically provision 120 PVs from a single EFS storage class volume.
+
+=== Static provisioning
+
+Static provisioning mounts the entire volume to a pod.
+
+== Enabling the AWS EFS CSI driver Operator
+
+.Prerequisites
+
+* A ROSA cluster that is 4.10 or later
+* The OpenShift CLI (`oc`)
+* The AWS CLI
+* The `jq` command
+* The `watch` command
+
+.Environment
+
+* Prepare the environment variables:
++
+[source,terminal]
+----
+export CLUSTER_NAME="sts-cluster"
+export AWS_REGION="your_aws_region"
+export OIDC_PROVIDER=$(oc get authentication.config.openshift.io cluster -o json \ | jq -r .spec.serviceAccountIssuer| sed -e "s/^https:\/\///")
+export AWS_ACCOUNT_ID=$(aws sts get-caller-identity --query Account --output text)
+export SCRATCH_DIR=/tmp/scratch
+export AWS_PAGER=""
+mkdir -p $SCRATCH_DIR
+----
+
+.Procedure
+
+. Prepare AWS account
++
+Create the IAM roles and policies attached to the Operator.
++
+.. Create an IAM policy:
++
+[source,terminal]
+----
+   cat << EOF > $SCRATCH_DIR/efs-policy.json
+   {
+     "Version": "2012-10-17",
+     "Statement": [
+       {
+         "Effect": "Allow",
+         "Action": [
+           "elasticfilesystem:DescribeAccessPoints",
+           "elasticfilesystem:DescribeFileSystems",
+           "elasticfilesystem:DescribeMountTargets",
+           "elasticfilesystem:TagResource",
+           "ec2:DescribeAvailabilityZones"
+         ],
+         "Resource": "*"
+       },
+       {
+         "Effect": "Allow",
+         "Action": [
+           "elasticfilesystem:CreateAccessPoint"
+         ],
+         "Resource": "*",
+         "Condition": {
+           "StringLike": {
+             "aws:RequestTag/efs.csi.aws.com/cluster": "true"
+           }
+         }
+       },
+       {
+         "Effect": "Allow",
+         "Action": "elasticfilesystem:DeleteAccessPoint",
+         "Resource": "*",
+         "Condition": {
+           "StringEquals": {
+             "aws:ResourceTag/efs.csi.aws.com/cluster": "true"
+           }
+         }
+       }
+     ]
+   }
+   EOF
+----
+
+.. Create the cluster policy:
++
+[NOTE]
+====
+This creates a named policy for the cluster. However, you can also use a generic policy for multiple clusters.
+====
++
+[source,terminal]
+----
+POLICY=$(aws iam create-policy --policy-name "${CLUSTER_NAME}-rosa-efs-csi" \
+    --policy-document file://$SCRATCH_DIR/efs-policy.json \
+    --query 'Policy.Arn' --output text) || \
+      POLICY=$(aws iam list-policies \
+    --query 'Policies[?PolicyName==`rosa-efs-csi`].Arn' \
+    --output text)
+echo $POLICY
+----
+
+.. Create a trust policy:
++
+[source,terminal]
+----
+cat <<EOF > $SCRATCH_DIR/TrustPolicy.json
+{
+    "Version": "2012-10-17",
+    "Statement": [
+       {
+         "Effect": "Allow",
+         "Principal": {
+           "Federated": "arn:aws:iam::${AWS_ACCOUNT_ID}:oidc-provider/${OIDC_PROVIDER}"
+         },
+         "Action": "sts:AssumeRoleWithWebIdentity",
+         "Condition": {
+           "StringEquals": {
+             "${OIDC_PROVIDER}:sub": [
+               "system:serviceaccount:openshift-cluster-csi-drivers:aws-efs-csi-driver-operator",
+               "system:serviceaccount:openshift-cluster-csi-drivers:aws-efs-csi-driver-controller-sa"
+             ]
+           }
+         }
+       }
+     ]
+   }
+EOF
+----
+
+.. Create the role for the EFS CSI driver Operator:
++
+[source,terminal]
+----
+ROLE=$(aws iam create-role \
+    --role-name "${CLUSTER_NAME}-aws-efs-csi-operator" \
+    --assume-role-policy-document file://$SCRATCH_DIR/TrustPolicy.json \
+    --query "Role.Arn" --output text)
+echo $ROLE
+----
+
+.. Attach the policies to the role:
++
+[source,terminal]
+----
+aws iam attach-role-policy \
+    --role-name "${CLUSTER_NAME}-aws-efs-csi-operator" \
+    --policy-arn $POLICY
+----
+
+. Deploy and test the AWS EFS Operator
+
+.. Create a secret so the AWS EFS Operator requests the correct IAM role:
++
+[source,terminal]
+----
+cat << EOF | oc apply -f -
+apiVersion: v1
+kind: Secret
+metadata:
+    name: aws-efs-cloud-credentials
+    namespace: openshift-cluster-csi-drivers
+stringData:
+     credentials: |-
+       [default]
+       role_arn = $ROLE
+       web_identity_token_file = /var/run/secrets/openshift/serviceaccount/token
+EOF
+----
+
+.. Install the EFS Operator:
++
+[source,terminal]
+----
+cat <<EOF | oc create -f -
+apiVersion: operators.coreos.com/v1
+kind: OperatorGroup
+metadata:
+    generateName: openshift-cluster-csi-drivers-
+    namespace: openshift-cluster-csi-drivers
+---
+apiVersion: operators.coreos.com/v1alpha1
+kind: Subscription
+metadata:
+    labels:
+       operators.coreos.com/aws-efs-csi-driver-operator.openshift-cluster-csi-drivers: ""
+    name: aws-efs-csi-driver-operator
+    namespace: openshift-cluster-csi-drivers
+spec:
+    channel: stable
+    installPlanApproval: Automatic
+    name: aws-efs-csi-driver-operator
+    source: redhat-operators
+    sourceNamespace: openshift-marketplace
+EOF
+----
+
+.. Wait until the Operator is running:
++
+[source,terminal]
+----
+   watch oc get deployment aws-efs-csi-driver-operator -n openshift-cluster-csi-drivers
+----
+
+.. Install the AWS EFS CSI driver:
++
+[source,terminal]
+----
+cat <<EOF | oc apply -f -
+apiVersion: operator.openshift.io/v1
+kind: ClusterCSIDriver
+metadata:
+    name: efs.csi.aws.com
+spec:
+    managementState: Managed
+EOF
+----
+
+.. Wait until the CSI driver is running:
++
+[source,terminal]
+----
+watch oc get daemonset aws-efs-csi-driver-node -n openshift-cluster-csi-drivers
+----
+
+. Prepare an AWS EFS volume for dynamic provisioning
+
+.. Update the VPC to allow EFS access:
++
+[source,terminal]
+----
+NODE=$(oc get nodes --selector=node-role.kubernetes.io/worker \
+    -o jsonpath='{.items[0].metadata.name}')
+VPC=$(aws ec2 describe-instances \
+    --filters "Name=private-dns-name,Values=$NODE" \
+    --query 'Reservations[*].Instances[*].{VpcId:VpcId}' \
+    --region $AWS_REGION \
+    | jq -r '.[0][0].VpcId')
+CIDR=$(aws ec2 describe-vpcs \
+    --filters "Name=vpc-id,Values=$VPC" \
+    --query 'Vpcs[*].CidrBlock' \
+    --region $AWS_REGION \
+    | jq -r '.[0]')
+SG=$(aws ec2 describe-instances --filters \
+    "Name=private-dns-name,Values=$NODE" \
+    --query 'Reservations[*].Instances[*].{SecurityGroups:SecurityGroups}' \
+    --region $AWS_REGION \
+    | jq -r '.[0][0].SecurityGroups[0].GroupId')
+echo "CIDR - $CIDR,  SG - $SG"
+----
+
+.. If the CIDR and SG are correct, update the security group:
++
+[source,terminal]
+----
+aws ec2 authorize-security-group-ingress \
+    --group-id $SG \
+    --protocol tcp \
+    --port 2049 \
+    --cidr $CIDR | jq .
+----
++
+You can now create either a single-zone EFS file system or a region-wide EFS file system.
+
+. Creating a region-wide EFS
+
+.. Create a region-wide EFS file system:
++
+[source,terminal]
+----
+EFS=$(aws efs create-file-system --creation-token efs-token-1 \
+    --region ${AWS_REGION} \
+    --encrypted | jq -r '.FileSystemId')
+echo $EFS
+----
+
+.. Configure a region-wide mount target for the EFS. This will create a mount point in each subnet of your VPC by default:
++
+[source,terminal]
+----
+for SUBNET in $(aws ec2 describe-subnets \
+    --filters Name=vpc-id,Values=$VPC Name=tag:Name,Values='*-private*' \
+    --query 'Subnets[*].{SubnetId:SubnetId}' \
+    --region $AWS_REGION \
+     | jq -r '.[].SubnetId'); do \
+       MOUNT_TARGET=$(aws efs create-mount-target --file-system-id $EFS \
+          --subnet-id $SUBNET --security-groups $SG \
+          --region $AWS_REGION \
+          | jq -r '.MountTargetId'); \
+       echo $MOUNT_TARGET; \
+done
+----
+
+. Creating a single-zone EFS
++
+[NOTE]
+====
+If you created a region-wide EFS mount, skip this step.
+====
++
+.. Select the first subnet to make your EFS mount in. This will select the same subnet that your first node is in by default:
++
+[source,terminal]
+----
+   SUBNET=$(aws ec2 describe-subnets \
+     --filters Name=vpc-id,Values=$VPC Name=tag:Name,Values='*-private*' \
+     --query 'Subnets[*].{SubnetId:SubnetId}' \
+     --region $AWS_REGION \
+     | jq -r '.[0].SubnetId')
+   AWS_ZONE=$(aws ec2 describe-subnets --filters Name=subnet-id,Values=$SUBNET \
+     --region $AWS_REGION | jq -r '.Subnets[0].AvailabilityZone')
+----
+
+.. Create your zonal EFS file system:
++
+[source,terminal]
+----
+EFS=$(aws efs create-file-system --creation-token efs-token-1 \
+    --availability-zone-name $AWS_ZONE \
+    --region $AWS_REGION \
+    --encrypted | jq -r '.FileSystemId')
+echo $EFS
+----
+
+.. Create your EFS mount point:
++
+[source,terminal]
+----
+MOUNT_TARGET=$(aws efs create-mount-target --file-system-id $EFS \
+    --subnet-id $SUBNET --security-groups $SG \
+    --region $AWS_REGION \
+     | jq -r '.MountTargetId')
+echo $MOUNT_TARGET
+----
+
+.. Create a storage class for the EFS volume:
++
+[source,terminal]
+----
+cat <<EOF | oc apply -f -
+kind: StorageClass
+apiVersion: storage.k8s.io/v1
+metadata:
+    name: efs-sc
+provisioner: efs.csi.aws.com
+parameters:
+    provisioningMode: efs-ap
+    fileSystemId: $EFS
+    directoryPerms: "700"
+    gidRangeStart: "1000"
+    gidRangeEnd: "2000"
+    basePath: "/dynamic_provisioning"
+EOF
+----
+
+. Test
+
+.. Create a namespace:
++
+[source,terminal]
+----
+oc new-project efs-demo
+----
+
+.. Create a PVC
++
+[source,terminal]
+----
+cat <<EOF | oc apply -f -
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+    name: pvc-efs-volume
+spec:
+    storageClassName: efs-sc
+    accessModes:
+       - ReadWriteMany
+    resources:
+       requests:
+         storage: 5Gi
+EOF
+----
+
+.. Create a pod to write to the EFS volume:
++
+[source,terminal]
+----
+   cat <<EOF | oc apply -f -
+   apiVersion: v1
+   kind: Pod
+   metadata:
+    name: test-efs
+   spec:
+    volumes:
+      - name: efs-storage-vol
+        persistentVolumeClaim:
+          claimName: pvc-efs-volume
+    containers:
+      - name: test-efs
+        image: centos:latest
+        command: [ "/bin/bash", "-c", "--" ]
+        args: [ "while true; do echo 'hello efs' | tee -a /mnt/efs-data/verify-efs && sleep 5; done;" ]
+        volumeMounts:
+          - mountPath: "/mnt/efs-data"
+            name: efs-storage-vol
+   EOF
+----
++
+It might take a few minutes for the pod to be ready. If you see errors such as `Output: Failed to resolve "fs-XXXX.efs.us-east-2.amazonaws.com"`, it likely means it is still setting up the EFS volume.
+
+.. Wait for the pod to be ready:
++
+[source,terminal]
+----
+watch oc get pod test-efs
+----
+
+.. Create a pod to read from the EFS volume:
++
+[source,terminal]
+----
+   cat <<EOF | oc apply -f -
+   apiVersion: v1
+   kind: Pod
+   metadata:
+    name: test-efs-read
+   spec:
+    volumes:
+      - name: efs-storage-vol
+        persistentVolumeClaim:
+          claimName: pvc-efs-volume
+    containers:
+      - name: test-efs-read
+        image: centos:latest
+        command: [ "/bin/bash", "-c", "--" ]
+        args: [ "tail -f /mnt/efs-data/verify-efs" ]
+        volumeMounts:
+          - mountPath: "/mnt/efs-data"
+            name: efs-storage-vol
+   EOF
+----
+.. Verify the second pod can read the EFS volume:
++
+[source,terminal]
+----
+oc logs test-efs-read
+----
++
+You should see a stream of "hello efs".
++
+[source,terminal]
+----
+hello efs
+hello efs
+hello efs
+hello efs
+hello efs
+hello efs
+hello efs
+hello efs
+hello efs
+hello efs
+----
+. Cleaning up
+
+.. Delete the pods:
++
+[source,terminal]
+----
+   oc delete pod -n efs-demo test-efs test-efs-read
+----
+
+.. Delete the volume:
++
+[source,terminal]
+----
+   oc delete -n efs-demo pvc pvc-efs-volume
+----
+
+.. Delete the namespace:
++
+[source,terminal]
+----
+   oc delete project efs-demo
+----
+
+.. Delete the storage class:
++
+[source,terminal]
+----
+   oc delete storageclass efs-sc
+----
+
+.. Delete the EFS shared volume by using the AWS CLI:
++
+[source,terminal]
+----
+   aws efs delete-mount-target --mount-target-id $MOUNT_TARGET --region $AWS_REGION
+   aws efs delete-file-system --file-system-id $EFS --region $AWS_REGION
+----
++
+[NOTE]
+====
+If you receive the error `An error occurred (FileSystemInUse)`, wait a few minutes and try again.
+====
++
+[NOTE]
+====
+If you created additional mount points for a regional EFS file system, remember to delete all of the mount points before removing the file system.
+====
++
+
+.. Detach the policies from the role:
++
+[source,terminal]
+----
+   aws iam detach-role-policy \
+      --role-name "${CLUSTER_NAME}-aws-efs-csi-operator" \
+      --policy-arn $POLICY
+----
+
+.. Delete the role:
++
+[source,terminal]
+----
+   aws iam delete-role --role-name \
+      ${CLUSTER_NAME}-aws-efs-csi-operator
+----
+
+.. Delete the policy:
++
+[source,terminal]
+----
+   aws iam delete-policy --policy-arn \
+      $POLICY
+----
