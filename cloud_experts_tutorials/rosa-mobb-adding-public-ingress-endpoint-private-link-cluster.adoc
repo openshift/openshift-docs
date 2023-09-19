@@ -1,0 +1,214 @@
+:_content-type: ASSEMBLY
+[id="rosa-mobb-adding-public-ingress-endpoint-private-link-cluster"]
+= Tutorial: Adding a public ingress endpoint to a ROSA PrivateLink cluster
+include::_attributes/attributes-openshift-dedicated.adoc[]
+:context: rosa-mobb-adding-public-ingress-endpoint-private-link-cluster
+
+toc::[]
+
+//Mobb content metadata
+//Brought into ROSA product docs 2023-09-19
+//---
+//date: '2022-05-10'
+//title: Adding a Public Ingress endpoint to a ROSA Private-Link Cluster
+//tags: ["AWS", "ROSA", "Private Link"]
+//authors:
+//  - Paul Czarkowski
+//  - Connor Wooley
+//---
+
+Use this tutorial to create a public ingress endpoint for your {product-title} (ROSA) PrivateLink cluster. 
+
+[IMPORTANT]
+====
+Be aware of the security implications of creating a public subnet in your ROSA virtual private cloud (VPC) with this method.
+====
+
+image::arch-pl-ingress.png[Adding a public ingress endpoint to a ROSA cluster]
+
+For more information on adding public ingresses to a PrivateLink cluster, go link:https://developers.redhat.com/articles/2023/04/27/how-add-public-ingress-private-link-rosa-cluster[here].
+
+.Prerequisites
+
+* The link:https://docs.aws.amazon.com/cli/latest/userguide/install-cliv2.html[AWS CLI]
+* The link:https://github.com/openshift/rosa/releases/tag/v1.0.8[ROSA CLI] (`rosa`)
+* The `jq` command
+* A link:./README.md[ROSA PrivateLink cluster]
+
+== Getting Started
+
+=== Setting your environment variables
+
+. Set the following environment variables, changing them to suit your cluster:
++
+[source,terminal]
+----
+$   export ROSA_CLUSTER_NAME=private-link
+   # this should be a free CIDR inside your VPC
+$   export PUBLIC_CIDR=10.0.2.0/24
+$   export AWS_PAGER=""
+$   export EMAIL=username.taken@gmail.com
+$   export DOMAIN=public.aws.mobb.ninja
+$   export SCRATCH_DIR=/tmp/scratch
+$   mkdir -p $SCRATCH_DIR
+----
+
+=== Creating a public subnet
+[NOTE]
+====
+If you followed the instructions to create a ROSA PrivateLink cluster linked in the prerequisites, you should already have a public subnet in your VPC. Skip to the last step of this procedure to tag your subnet.
+====
+
+. Obtain a private subnet ID from the cluster:
++
+[source,terminal]
+----
+$   PRIVATE_SUBNET_ID=$(rosa describe cluster -c $ROSA_CLUSTER_NAME -o json \
+      | jq -r '.aws.subnet_ids[0]')
+$   echo $PRIVATE_SUBNET_ID
+----
+
+. Obtain the VPC ID from the subnet ID:
++
+[source,terminal]
+----
+$    VPC_ID=$(aws ec2 describe-subnets --subnet-ids $PRIVATE_SUBNET_ID \
+      --query 'Subnets[0].VpcId' --output text)
+$    echo $VPC_ID
+----
+
+. Obtain the cluster tag from the subnet:
++
+[source,terminal]
+----
+ $  TAG=$(aws ec2 describe-subnets --subnet-ids $PRIVATE_SUBNET_ID \
+      --query 'Subnets[0].Tags[?Value == `shared`]' | jq -r '.[0].Key')
+ $  echo $TAG
+----
+
+. Create a public subnet:
++
+[source,terminal]
+----
+$   PUBLIC_SUBNET=`aws ec2 create-subnet --vpc-id $VPC_ID --cidr-block $PUBLIC_CIDR \
+     --query 'Subnet.SubnetId' --output text`
+$   echo $PUBLIC_SUBNET
+----
+
+. Tag the public subnet for the cluster:
++
+[source,terminal]
+----
+$   aws ec2 create-tags --resources $PUBLIC_SUBNET \
+      --tags Key=Name,Value=$ROSA_CLUSTER_NAME-public \
+      Key=$TAG,Value="shared" Key=kubernetes.io/role/elb,Value=1
+----
+
+=== Creating a custom domain
+
+. Use link:https://certbot.eff.org/[Certbot] to create a Transport Layer Security (TLS) key pair for the custom domain:
++
+[NOTE]
+====
+Skip this step if you already have a key pair.
+====
++
+[source,terminal]
+----
+$   certbot certonly --manual \
+     --preferred-challenges=dns \
+     --email $EMAIL \
+     --server https://acme-v02.api.letsencrypt.org/directory \
+     --agree-tos \
+     --config-dir "$SCRATCH_DIR/config" \
+     --work-dir "$SCRATCH_DIR/work" \
+     --logs-dir "$SCRATCH_DIR/logs" \
+     -d "*.$DOMAIN"
+----
+
+. Create TLS secret for custom domain:
++
+[NOTE]
+====
+If you are not using Certbot, use your own key pair paths.
+====
++
+[source,terminal]
+----
+$   CERTS=/tmp/scratch/config/live/$DOMAIN
+   oc new-project my-custom-route
+   oc create secret tls acme-tls --cert=$CERTS/fullchain.pem --key=$CERTS/privkey.pem
+----
+
+. Create a custom domain resource:
++
+[source,terminal]
+----
+$   cat << EOF | oc apply -f -
+   apiVersion: managed.openshift.io/v1alpha1
+   kind: CustomDomain
+   metadata:
+     name: acme
+   spec:
+     domain: $DOMAIN
+     certificate:
+       name: acme-tls
+       namespace: my-custom-route
+   EOF
+----
+
+. Wait for the domain to be ready:
++
+[source,terminal]
+----
+$   watch oc get customdomains
+----
+
+. Obtain the Classic Load Balancer (CLB) name:
++
+[source,terminal]
+----
+$   CDO_NAME=acme
+$   CLB_NAME=$(oc get svc -n openshift-ingress -o jsonpath='{range .items[?(@.metadata.labels.ingresscontroller\.operator\.openshift\.io\/owning-ingresscontroller=="'$CDO_NAME'")]}{.status.loadBalancer.ingress[].hostname}{"\n"}{end}')
+$   echo $CLB_NAME
+----
+
+. Create a CNAME in your DNS provider for *.<$DOMAIN> that points at the CLB name from the above command.
+
+=== Deploying a public application
+
+. Create a new project:
++
+[source,terminal]
+----
+$   oc new-project my-public-app
+----
+
+. Create a new application:
++
+[source,terminal]
+----
+$   oc new-app --docker-image=docker.io/openshift/hello-openshift
+----
+
+. Create a route for the application:
++
+[source,terminal]
+----
+$   oc create route edge --service=hello-openshift hello-openshift-tls \
+     --hostname hello.$DOMAIN
+----
+
+. Verify that you can access the application:
++
+[source,terminal]
+----
+$   curl https://hello.$DOMAIN
+----
+
+. You should see the following output:
++
+[source,terminal]
+----
+   Hello OpenShift!
+----
