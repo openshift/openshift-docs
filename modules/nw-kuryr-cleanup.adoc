@@ -12,9 +12,15 @@ plugin, you must clean up the resources that Kuryr created previously.
 [NOTE]
 ====
 The clean up process relies on a Python virtual environment to ensure that the package versions that you use support tags for Octavia objects. You do not need a virtual environment if you are certain that your environment uses at minimum:
-* `openstacksdk` version 0.54.0
-* `python-openstackclient` version 5.5.0
-* `python-octaviaclient` version 2.3.0 
+
+* The `openstacksdk` Python package version 0.54.0
+
+* The `python-openstackclient` Python package version 5.5.0
+
+* The `python-octaviaclient` Python package version 2.3.0
+
+If you decide to use these particular versions, be sure to pull `python-neutronclient` prior to version 9.0.0, as it prevents you from accessing trunks.
+
 ====
 
 .Prerequisites
@@ -46,13 +52,13 @@ $ source /tmp/venv/bin/activate
 +
 [source,terminal]
 ----
-(venv) $ pip install pip --upgrade
+(venv) $ pip install --upgrade pip
 ----
 .. Install the required Python packages by running the following command:
 +
 [source,terminal]
 ----
-(venv) $ pip install openstacksdk==0.54.0 python-openstackclient==5.5.0 python-octaviaclient==2.3.0
+(venv) $ pip install openstacksdk==0.54.0 python-openstackclient==5.5.0 python-octaviaclient==2.3.0 'python-neutronclient<9.0.0'
 ----
 
 . In your terminal, set variables to cluster and Kuryr identifiers by running the following commands:
@@ -74,7 +80,7 @@ $ source /tmp/venv/bin/activate
 +
 [source,terminal]
 ----
-(venv) $ ROUTERID=$(oc get kuryrnetwork -A --no-headers -o custom-columns=":status.routerId"|head -n 1)
+(venv) $ ROUTERID=$(oc get kuryrnetwork -A --no-headers -o custom-columns=":status.routerId"|uniq)
 ----
 
 . Create a Bash function that removes finalizers from specified resources by running the following command:
@@ -84,12 +90,12 @@ $ source /tmp/venv/bin/activate
 (venv) $ function REMFIN {
     local resource=$1
     local finalizer=$2
-    for res in $(oc get $resource -A --template='{{range $i,$p := .items}}{{ $p.metadata.name }}|{{ $p.metadata.namespace }}{{"\n"}}{{end}}'); do
+    for res in $(oc get "${resource}" -A --template='{{range $i,$p := .items}}{{ $p.metadata.name }}|{{ $p.metadata.namespace }}{{"\n"}}{{end}}'); do
         name=${res%%|*}
         ns=${res##*|}
-        yaml=$(oc get -n $ns $resource $name -o yaml)
+        yaml=$(oc get -n "${ns}" "${resource}" "${name}" -o yaml)
         if echo "${yaml}" | grep -q "${finalizer}"; then
-            echo "${yaml}" | grep -v  "${finalizer}" | oc replace -n $ns $resource $name -f -
+            echo "${yaml}" | grep -v  "${finalizer}" | oc replace -n "${ns}" "${resource}" "${name}" -f -
         fi
     done
 }
@@ -109,7 +115,7 @@ The named resource is removed from the cluster and its definition is replaced wi
 +
 [source,terminal]
 ----
-(venv) $ if $(oc get -n openshift-kuryr service service-subnet-gateway-ip &>/dev/null); then
+(venv) $ if oc get -n openshift-kuryr service service-subnet-gateway-ip &>/dev/null; then
     oc -n openshift-kuryr delete service service-subnet-gateway-ip
 fi
 ----
@@ -118,8 +124,8 @@ fi
 +
 [source,terminal]
 ----
-(venv) $ for lb in $(openstack loadbalancer list --tags $CLUSTERTAG -f value -c id); do
-    openstack loadbalancer delete --cascade $lb
+(venv) $ for lb in $(openstack loadbalancer list --tags "${CLUSTERTAG}" -f value -c id); do
+    openstack loadbalancer delete --cascade "${lb}"
 done
 ----
 
@@ -141,14 +147,14 @@ done
 +
 [source,terminal]
 ----
-(venv) $ openstack router remove subnet $ROUTERID ${CLUSTERID}-kuryr-service-subnet
+(venv) $ openstack router remove subnet "${ROUTERID}" "${CLUSTERID}-kuryr-service-subnet"
 ----
 
 . To remove the Kuryr service network, enter the following command:
 +
 [source,terminal]
 ----
-(venv) $ openstack network delete ${CLUSTERID}-kuryr-service-network
+(venv) $ openstack network delete "${CLUSTERID}-kuryr-service-network"
 ----
 
 . To remove Kuryr finalizers from all pods, enter the following command:
@@ -184,9 +190,10 @@ This command deletes the `KuryrPort` CRs.
 +
 [source,terminal]
 ----
-(venv) $ read -ra trunks <<< $(python -c "import openstack; n = openstack.connect().network; print(' '.join([x.id for x in n.trunks(any_tags='$CLUSTERTAG')]))") && \
+(venv) $ mapfile trunks < <(python -c "import openstack; n = openstack.connect().network; print('\n'.join([x.id for x in n.trunks(any_tags='$CLUSTERTAG')]))") && \
 i=0 && \
 for trunk in "${trunks[@]}"; do
+    trunk=$(echo "$trunk"|tr -d '\n')
     i=$((i+1))
     echo "Processing trunk $trunk, ${i}/${#trunks[@]}."
     subports=()
@@ -198,7 +205,7 @@ for trunk in "${trunks[@]}"; do
         args+=("--subport $sub")
     done
     if [ ${#args[@]} -gt 0 ]; then
-        openstack network trunk unset ${args[*]} $trunk
+        openstack network trunk unset ${args[*]} "${trunk}"
     fi
 done
 ----
@@ -216,7 +223,7 @@ for kn in "${kuryrnetworks[@]}"; do
     echo "Processing network $netID, ${i}/${#kuryrnetworks[@]}"
     # Remove all ports from the network.
     for port in $(python -c "import openstack; n = openstack.connect().network; print(' '.join([x.id for x in n.ports(network_id='$netID') if x.device_owner != 'network:router_interface']))"); do
-        ( openstack port delete $port ) &
+        ( openstack port delete "${port}" ) &
 
         # Only allow 20 jobs in parallel.
         if [[ $(jobs -r -p | wc -l) -ge 20 ]]; then
@@ -226,10 +233,10 @@ for kn in "${kuryrnetworks[@]}"; do
     wait
 
     # Remove the subnet from the router.
-    openstack router remove subnet $ROUTERID $subnetID
+    openstack router remove subnet "${ROUTERID}" "${subnetID}"
 
     # Remove the network.
-    openstack network delete $netID
+    openstack network delete "${netID}"
 done
 ----
 
@@ -237,15 +244,15 @@ done
 +
 [source,terminal]
 ----
-(venv) $ openstack security group delete ${CLUSTERID}-kuryr-pods-security-group
+(venv) $ openstack security group delete "${CLUSTERID}-kuryr-pods-security-group"
 ----
 
 . To remove all tagged subnet pools, enter the following command:
 +
 [source,terminal]
 ----
-(venv) $ for subnetpool in $(openstack subnet pool list --tags $CLUSTERTAG -f value -c ID); do
-    openstack subnet pool delete $subnetpool
+(venv) $ for subnetpool in $(openstack subnet pool list --tags "${CLUSTERTAG}" -f value -c ID); do
+    openstack subnet pool delete "${subnetpool}"
 done
 ----
 
@@ -254,7 +261,7 @@ done
 [source,terminal]
 ----
 (venv) $ networks=$(oc get kuryrnetwork -A --no-headers -o custom-columns=":status.netId") && \
-for existingNet in $(openstack network list --tags $CLUSTERTAG -f value -c ID); do
+for existingNet in $(openstack network list --tags "${CLUSTERTAG}" -f value -c ID); do
     if [[ $networks =~ $existingNet ]]; then
         echo "Network still exists: $existingNet"
     fi
@@ -268,7 +275,7 @@ If the command returns any existing networks, intestigate and remove them before
 [source,terminal]
 ----
 (venv) $ for sgid in $(openstack security group list -f value -c ID -c Description | grep 'Kuryr-Kubernetes Network Policy' | cut -f 1 -d ' '); do
-    openstack security group delete $sgid
+    openstack security group delete "${sgid}"
 done
 ----
 
@@ -283,7 +290,7 @@ done
 +
 [source,terminal]
 ----
-(venv) $ if $(python3 -c "import sys; import openstack; n = openstack.connect().network; r = n.get_router('$ROUTERID'); sys.exit(0) if r.description != 'Created By OpenShift Installer' else sys.exit(1)"); then
-    openstack router delete $ROUTERID
+(venv) $ if python3 -c "import sys; import openstack; n = openstack.connect().network; r = n.get_router('$ROUTERID'); sys.exit(0) if r.description != 'Created By OpenShift Installer' else sys.exit(1)"; then
+    openstack router delete "${ROUTERID}"
 fi
 ----
