@@ -1,0 +1,373 @@
+:_content-type: ASSEMBLY
+[id="rosa-mobb-federating-metrics-aws-prometheus"]
+= Tutorial: Federating metrics to AWS Prometheus
+include::_attributes/attributes-openshift-dedicated.adoc[]
+:context: rosa-mobb-federating-metrics-aws-prometheus
+
+toc::[]
+
+//Mobb content metadata
+//Brought into ROSA product docs 2023-09-19
+//---
+//date: '2021-12-16'
+//title: ROSA - Federating Metrics to AWS Prometheus
+//tags: ["AWS", "ROSA"]
+//authors:
+//  - Kevin Collins
+//---
+
+Federating metrics from {product-title} is a bit tricky as the cluster metrics require pulling from its `/federated` endpoint while the user workload metrics require using the Prometheus `remoteWrite` configuration.
+
+This guide walks you through using the MOBB Helm Chart to deploy the necessary agents to federate the metrics into AWS Prometheus, and then using Grafana to visualize those metrics.
+
+In addition, it shows you how to set up a CloudWatch datasource to view any metrics or logs you have in CloudWatch.
+
+[NOTE]
+====
+Verify that you are using a region where the Amazon Prometheus service is supported.
+====
+
+[id="{context}-prerequisites"]
+== Prerequisites
+
+* A ROSA cluster (deployed with STS)
+* The `aws` CLI
+* The `jq` command
+
+[id="{context}-set-up-environment"]
+== Set up environment
+
+. Create environment variables:
++
+[source,terminal]
+----
+$ export CLUSTER=my-cluster
+$ export REGION=us-east-2
+$ export PROM_NAMESPACE=custom-metrics
+$ export PROM_SA=aws-prometheus-proxy
+$ export SCRATCH_DIR=/tmp/scratch
+$ export OIDC_PROVIDER=$(oc get authentication.config.openshift.io cluster -o json | jq -r .spec.serviceAccountIssuer| sed -e "s/^https:\/\///")
+$ export AWS_ACCOUNT_ID=$(aws sts get-caller-identity --query Account --output text)
+$ export AWS_PAGER=""
+$ mkdir -p $SCRATCH_DIR
+----
+
+. Create a namespace:
++
+[source,terminal]
+----
+$ oc new-project $PROM_NAMESPACE
+----
+
+[id="{context}-deploy-operators"]
+== Deploy Operators
+
+. Add the MOBB chart repository to your Helm:
++
+[source,terminal]
+----
+$ helm repo add mobb https://rh-mobb.github.io/helm-charts/
+----
+
+. Update your repositories:
++
+[source,terminal]
+----
+$ helm repo update
+----
+
+. Use the `mobb/operatorhub` chart to deploy the needed Operators:
++
+[source,terminal]
+----
+$ helm upgrade -n $PROM_NAMESPACE custom-metrics-operators \
+    mobb/operatorhub --version 0.1.1 --install \
+    --values https://raw.githubusercontent.com/rh-mobb/helm-charts/main/charts/rosa-aws-prometheus/files/operatorhub.yaml
+----
+
+[id="{context}-deploy-configure-proxy-agent"]
+=== Deploy and configure the AWS Sigv4 Proxy and the Grafana Agent
+
+. Create a Policy for access to AWS Prometheus:
++
+[source,terminal]
+----
+$ cat <<EOF > $SCRATCH_DIR/PermissionPolicyIngest.json
+  {
+    "Version": "2012-10-17",
+     "Statement": [
+         {"Effect": "Allow",
+          "Action": [
+             "aps:RemoteWrite",
+             "aps:GetSeries",
+             "aps:GetLabels",
+             "aps:GetMetricMetadata"
+          ],
+          "Resource": "*"
+        }
+     ]
+   }
+   EOF
+----
+
+. Apply the policy:
++
+[source,terminal]
+----
+$ PROM_POLICY=$(aws iam create-policy --policy-name $PROM_SA-prom \
+    --policy-document file://$SCRATCH_DIR/PermissionPolicyIngest.json \
+    --query 'Policy.Arn' --output text)
+    
+$ echo $PROM_POLICY
+----
+
+. Create a policy for access to AWS CloudWatch:
++
+[source,terminal]
+----
+$ cat <<EOF > $SCRATCH_DIR/PermissionPolicyCloudWatch.json
+  {
+      "Version": "2012-10-17",
+      "Statement": [
+          {
+              "Sid": "AllowReadingMetricsFromCloudWatch",
+              "Effect": "Allow",
+              "Action": [
+                  "cloudwatch:DescribeAlarmsForMetric",
+                  "cloudwatch:DescribeAlarmHistory",
+                  "cloudwatch:DescribeAlarms",
+                  "cloudwatch:ListMetrics",
+                  "cloudwatch:GetMetricStatistics",
+                  "cloudwatch:GetMetricData"
+              ],
+              "Resource": "*"
+          },
+          {
+              "Sid": "AllowReadingLogsFromCloudWatch",
+              "Effect": "Allow",
+              "Action": [
+                  "logs:DescribeLogGroups",
+                  "logs:GetLogGroupFields",
+                  "logs:StartQuery",
+                  "logs:StopQuery",
+                  "logs:GetQueryResults",
+                  "logs:GetLogEvents"
+              ],
+              "Resource": "*"
+          },
+          {
+              "Sid": "AllowReadingTagsInstancesRegionsFromEC2",
+              "Effect": "Allow",
+              "Action": [
+                  "ec2:DescribeTags",
+                  "ec2:DescribeInstances",
+                  "ec2:DescribeRegions"
+              ],
+              "Resource": "*"
+          },
+          {
+              "Sid": "AllowReadingResourcesForTags",
+              "Effect": "Allow",
+              "Action": "tag:GetResources",
+              "Resource": "*"
+          }
+      ]
+   }
+   EOF
+----
+
+. Apply the policy:
++
+[source,terminal]
+----
+$ CW_POLICY=$(aws iam create-policy --policy-name $PROM_SA-cw \
+      --policy-document file://$SCRATCH_DIR/PermissionPolicyCloudWatch.json \
+      --query 'Policy.Arn' --output text)
+
+$ echo $CW_POLICY
+----
+
+. Create a trust policy:
++
+[source,terminal]
+----
+$ cat <<EOF > $SCRATCH_DIR/TrustPolicy.json
+  {
+    "Version": "2012-10-17",
+    "Statement": [
+      {
+        "Effect": "Allow",
+        "Principal": {
+          "Federated": "arn:aws:iam::${AWS_ACCOUNT_ID}:oidc-provider/${OIDC_PROVIDER}"
+        },
+        "Action": "sts:AssumeRoleWithWebIdentity",
+        "Condition": {
+          "StringEquals": {
+            "${OIDC_PROVIDER}:sub": [
+              "system:serviceaccount:${PROM_NAMESPACE}:${PROM_SA}",
+              "system:serviceaccount:${PROM_NAMESPACE}:grafana-serviceaccount"
+            ]
+          }
+        }
+      }
+    ]
+  }
+  EOF
+----
+
+. Create a role for AWS Prometheus and CloudWatch:
++
+[source,terminal]
+----
+$ PROM_ROLE=$(aws iam create-role \
+    --role-name "prometheus-$CLUSTER" \
+    --assume-role-policy-document file://$SCRATCH_DIR/TrustPolicy.json \
+    --query "Role.Arn" --output text)
+
+$ echo $PROM_ROLE
+----
+
+. Attach the policies to the role:
++
+[source,terminal]
+----
+$ aws iam attach-role-policy \
+    --role-name "prometheus-$CLUSTER" \
+    --policy-arn arn:aws:iam::aws:policy/AmazonPrometheusQueryAccess
+
+$ aws iam attach-role-policy \
+    --role-name "prometheus-$CLUSTER" \
+    --policy-arn $CW_POLICY
+----
+
+. Create an AWS Prometheus workspace:
++
+[source,terminal]
+----
+$ PROM_WS=$(aws amp create-workspace --alias $CLUSTER \
+    --query "workspaceId" --output text)
+
+$ echo $PROM_WS
+----
+
+. Deploy the AWS Prometheus Proxy Helm Chart:
++
+[source,terminal]
+----
+$ helm upgrade --install -n $PROM_NAMESPACE --set "aws.region=$REGION" \
+    --set "aws.roleArn=$PROM_ROLE" --set "fullnameOverride=$PROM_SA" \
+    --set "aws.workspaceId=$PROM_WS" \
+    --set "grafana-cr.serviceAccountAnnotations.eks\.amazonaws\.com/role-arn=$PROM_ROLE" \
+    aws-prometheus-proxy mobb/rosa-aws-prometheus
+----
+
+. Configure `remoteWrite` for user workloads:
++
+[source,terminal]
+----
+$ cat << EOF | kubectl apply -f -
+  apiVersion: v1
+  kind: ConfigMap
+  metadata:
+    name: user-workload-monitoring-config
+    namespace: openshift-user-workload-monitoring
+  data:
+    config.yaml: |
+      prometheus:
+        remoteWrite:
+          - url: "http://aws-prometheus-proxy.$PROM_NAMESPACE.svc.cluster.local:8005/workspaces/$PROM_WS/api/v1/remote_write"
+  EOF
+----
+
+[id="{context}-verify-metrics"]
+== Verify that metrics are being collected
+
+. Access Grafana and check for metrics:
++
+[source,terminal]
+----
+$ oc get route -n custom-metrics grafana-route -o jsonpath='{.status.ingress[0].host}'
+----
+
+. Navigate to the URL provided in the previous command, and log in with your OpenShift credentials.
+
+. Enable Admin by selecting **Sign in** (user `admin` and `password`).
+
+. Browse to `/datasources` and verify that `cloudwatch` and `prometheus` are present.
++
+--
+If `cloudwatch` and `prometheus` are not present, you might have hit a race condition. Run the following commands, and then try again:
+
+[source,terminal]
+----
+$ kubectl delete grafanadatasources.integreatly.org aws-prometheus-proxy-prometheus
+
+$ helm upgrade --install -n $PROM_NAMESPACE --set "aws.region=$REGION" \
+    --set "aws.roleArn=$PROM_ROLE" --set "fullnameOverride=$PROM_SA" \
+    --set "aws.workspaceId=$PROM_WS" \
+    --set "grafana-cr.serviceAccountAnnotations.eks\.amazonaws\.com/role-arn=$PROM_ROLE" \
+    aws-prometheus-proxy mobb/rosa-aws-prometheus
+----
+--
+
+. Browse to `/dashboards` and select the **custom-metrics**->**NodeExporter / Use Method / Cluster** dashboard.
++
+image::rosa-example-cluster-metrics-dashboard.png[]
+
+[id="{context}-cleanup"]
+== Cleanup
+
+. Delete the `aws-prometheus-proxy` Helm Release:
++
+[source,terminal]
+----
+$ helm delete -n custom-metrics aws-prometheus-proxy
+----
+
+. Delete the `custom-metrics-operators` Helm Release:
++
+[source,terminal]
+----
+$ helm delete -n custom-metrics custom-metrics-operators
+----
+
+. Delete the `custom-metrics` namespace:
++
+[source,terminal]
+----
+$ kubectl delete namespace custom-metrics
+----
+
+. Detach the AWS role policies:
++
+[source,terminal]
+----
+$ aws iam detach-role-policy \
+    --role-name "prometheus-$CLUSTER" \
+    --policy-arn arn:aws:iam::aws:policy/AmazonPrometheusQueryAccess
+
+$ aws iam detach-role-policy \
+    --role-name "prometheus-$CLUSTER" \
+    --policy-arn $CW_POLICY
+----
+
+. Delete the custom CloudWatch policy:
++
+[source,terminal]
+----
+$  aws iam delete-policy --policy-arn $CW_POLICY
+----
+
+. Delete the AWS Prometheus role:
++
+[source,terminal]
+----
+$ aws iam delete-role --role-name "prometheus-$CLUSTER"
+----
+
+. Delete the AWS Prometheus workspace:
++
+[source,terminal]
+----
+$ aws amp delete-workspace --workspace-id $PROM_WS
+----
