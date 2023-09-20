@@ -1,0 +1,534 @@
+:_content-type: ASSEMBLY
+[id="rosa-mobb-dynamic-certificate-custom-domain-tutorial"]
+= Tutorial: Dynamically issuing certificates with a custom domain in ROSA
+include::_attributes/attributes-openshift-dedicated.adoc[]
+:context: rosa-mobb-dynamic-certificate-custom-domain-tutorial
+
+toc::[]
+
+//Mobb content metadata
+//Brought into ROSA product docs 2023-09-20
+//---
+//date: '2022-10-11'
+//title: Dynamic Certificates for ROSA Custom Domain
+//weight: 1
+//tags: ["AWS", "ROSA"]
+//authors:
+//   Kevin Collins
+//---
+
+There may be situations when you prefer not to use `wild-card` certificates. This Red Hat OpenShift Service on AWS (ROSA) guide talks about certificate management with cert-manager and letsencrypt, to dynamically issue certificates to routes created on a custom domain that's hosted on AWS Route53.
+
+== Prerequisites
+
+* A ROSA cluster
+* You are logged into the `oc` CLI
+* You are logged into the AWS CLI
+* You are logged into the `rosa` CLI
+* jq
+* gettext
+* A public Route53 hosted zone, and the related domain to use
+
+== Set up environment
+
+. Export a few environment variables:
++
+[source,terminal]
+----
+   export CLUSTER_NAME="sts-pvtlnk-cluster"
+   export OIDC_PROVIDER=$(oc get authentication.config.openshift.io cluster -o json \
+   | jq -r .spec.serviceAccountIssuer| sed -e "s/^https:\/\///")
+   export AWS_ACCOUNT_ID=$(aws sts get-caller-identity --query Account --output text)
+   export SCRATCH_DIR=/tmp/scratch
+   export AWS_PAGER=""
+   export LETSENCRYPT_EMAIL=youremail@work.com
+   export HOSTED_ZONE_ID=ABCDEFGHEXAMPLE
+   export HOSTED_ZONE_REGION=us-east-2
+   export DOMAIN=lab.domain.com   #Custom Hosted Zone Domain for apps
+   mkdir -p $SCRATCH_DIR
+----
+
+. Install jq and gettext.
++
+Installing or ensuring the gettext and jq packages are installed allows you to use envsubst to simplify some of your configuration. You can then use the output of the CLI commands as the input into YAML files to reduce the complexity of manual editing.
++
+[source,terminal]
+----
+$ brew install gettext jq
+----
++
+For Linux or Windows WSL, use the following command:
++
+[source,terminal]
+----
+$ sudo dnf install gettext jq
+----
+
+== Prepare the AWS account
+In order to make changes to the AWS Route53 hosted zone to add or remove DNS TXT challenge records by the cert-manager pod, you first need to create an IAM role with specific policy permissions and a trust relationship to allow access to the pod.
+
+The custom domain hosted zone that is used in this guide is in the same account as the ROSA cluster. If these are in different accounts, a few additional steps for link:https://cert-manager.io/docs/configuration/acme/dns01/route53/#cross-account-access[Cross Account Access] is required.
+
+. Prepare an IAM Policy file
++
+[source,terminal]
+----
+$ cat <<EOF > $SCRATCH_DIR/cert-manager-r53-policy.json
+{
+  "Version": "2012-10-17",
+  "Statement": [
+    {
+      "Effect": "Allow",
+      "Action": "route53:GetChange",
+      "Resource": "arn:aws:route53:::change/*"
+    },
+    {
+      "Effect": "Allow",
+      "Action": [
+        "route53:ChangeResourceRecordSets",
+        "route53:ListResourceRecordSets"
+      ],
+      "Resource": "arn:aws:route53:::hostedzone/*"
+    },
+    {
+      "Effect": "Allow",
+      "Action": "route53:ListHostedZonesByName",
+      "Resource": "*"
+    }
+  ]
+}
+EOF
+----
+. Create the IAM Policy using the file you created in the previous step. This creates a named policy for the cluster. You could use a generic policy for multiple clusters to keep things simpler.
++
+[source,terminal]
+----
+$ POLICY=$(aws iam create-policy --policy-name "${CLUSTER_NAME}-cert-manager-r53-policy" \
+   --policy-document file://$SCRATCH_DIR/cert-manager-r53-policy.json \
+   --query 'Policy.Arn' --output text) || \
+$ echo $POLICY
+----
++
+[source,terminal]
+----
+$ echo $POLICY
+----
+. Create a trust policy:
++
+[source,terminal]
+----
+$ cat <<EOF > $SCRATCH_DIR/TrustPolicy.json
+   {
+     "Version": "2012-10-17",
+     "Statement": [
+       {
+         "Effect": "Allow",
+         "Principal": {
+           "Federated": "arn:aws:iam::${AWS_ACCOUNT_ID}:oidc-provider/${OIDC_PROVIDER}"
+         },
+         "Action": "sts:AssumeRoleWithWebIdentity",
+         "Condition": {
+           "StringEquals": {
+             "${OIDC_PROVIDER}:sub": [
+               "system:serviceaccount:cert-manager:cert-manager"
+             ]
+           }
+         }
+       }
+     ]
+   }
+   EOF
+----
+
+. Create an IAM Role for the `cert-manager` Operator, with the above trust policy:
++
+[source,terminal]
+----
+$ ROLE=$(aws iam create-role \
+     --role-name "${CLUSTER_NAME}-cert-manager-operator" \
+     --assume-role-policy-document file://$SCRATCH_DIR/TrustPolicy.json \
+     --query "Role.Arn" --output text)
+$ echo $ROLE
+----
+
+. Attach the permissions policy to the role:
++
+[source,terminal]
+----
+$ aws iam attach-role-policy \
+   --role-name "${CLUSTER_NAME}-cert-manager-operator" \
+   --policy-arn $POLICY
+----
+
+== Set up cert-manager
+
+. Create a project (namespace) in the ROSA cluster:
++
+[source,terminal]
+----
+$ oc new-project cert-manager --display-name="Certificate Manager" --description="Project  contains Certificates and Custom Domain related components."
+----
+. Install the `cert-manager` Operator:
++
+[source,terminal]
+----
+$ cat <<EOF | oc create -f -
+apiVersion: operators.coreos.com/v1
+kind: OperatorGroup
+metadata:
+  generateName: cert-manager-
+  namespace: cert-manager
+---
+apiVersion: operators.coreos.com/v1alpha1
+kind: Subscription
+metadata:
+  name: cert-manager
+  namespace: cert-manager
+spec:
+  channel: stable
+  installPlanApproval: Automatic
+  name: cert-manager
+  source: community-operators
+  sourceNamespace: openshift-marketplace
+EOF
+----
++
+[NOTE]
+====
+It will take a few minutes for this Operator to install and complete its set up.
+====
+. Wait for the `cert-manager` Operator to finish installing.
++
+The next steps depends on the successful installation of the operator. It is recommended that you login to your cluster console to confirm the success status of the `cert-manager` Operator, in the *Installed Operators* section.
++
+image::mobb-dynamic-cert-operator-install-status.png[]
+
+. Annotate the service account. This is to enable the AWS SDK client code running within the `cert-manager` pod to interact with the AWS STS service for temporary tokens, by assuming the IAM Role that was created in an earlier step. This is referred to as link:https://docs.aws.amazon.com/eks/latest/userguide/iam-roles-for-service-accounts.html[IRSA].
++
+[source,terminal]
+----
+$ oc annotate serviceaccount cert-manager -n cert-manager eks.amazonaws.com/role-arn=$ROLE
+----
++
+[NOTE]
+====
+Normally, after service account annotations, a restart of the pod is required. However, the next step automatically causes a restart of the pod.
+====
+. Update the CA truststore of the cert-manager pod. This step is usually not required. However, it was noticed that the cert-manager pod had difficulties in trusting the link:https://docs.aws.amazon.com/iam/index.html#sts[STS] and link:https://acme-v02.api.letsencrypt.org/[LetsEncrypt] endpoints.
++
+Using the following commands essentially downloads the CA chain of these endpoints, puts them into a ConfigMap, which then gets attached to the pod as a volume.
++
+Along with this step, you will also be link:https://cert-manager.io/docs/configuration/acme/dns01/#setting-nameservers-for-dns01-self-check[setting the NameServers that the cert-manager will use for DNS01 self-check].
++
+The volume attachment to the pod and the setting of `NameServers` will be done together by patching the cert-manager CSV resource to persist these changes to the cert-manager deployment. This will cause the rollout of a new deployment and restart of the `cert-manager` pod.
++
+[source,terminal]
+----
+$ openssl s_client -showcerts -verify 5 -connect sts.amazonaws.com:443 < /dev/null 2> /dev/null | awk '/BEGIN/,/END/{ if(/BEGIN/){a++}; print}'  > $SCRATCH_DIR/extra-ca.pem
+$ openssl s_client -showcerts -verify 5 -connect acme-v02.api.letsencrypt.org:443 < /dev/null 2> /dev/null | awk '/BEGIN/,/END/{ if(/BEGIN/){a++}; print}'  >> $SCRATCH_DIR/extra-ca.pem
+----
++
+[source,terminal]
+----
+$ oc create configmap extra-ca --from-file=$SCRATCH_DIR/extra-ca.pem -n cert-manager
+----
++
+[source,terminal]
+----
+$ CERT_MANAGER_CSV_NAME=$(oc get csv | grep 'cert-manager' | awk '{print $1}')
+$ CLUSTER_DNS_SERVICE_IP=$(oc get svc -n openshift-dns | grep 'dns-default' | awk '{print $3}')
+----
++
+[source,terminal]
+----
+$ echo $CERT_MANAGER_CSV_NAME
+----
++
+[source,terminal]
+----
+$ echo $CLUSTER_DNS_SERVICE_IP
+----
++
+[source,terminal]
+----
+$ oc patch csv $CERT_MANAGER_CSV_NAME --type='json' -p '[{"op": "add", "path": "/spec/install/spec/deployments/0/spec/template/spec/containers/0/args/-", "value":'--dns01-recursive-nameservers-only'}, {"op": "add", "path": "/spec/install/spec/deployments/0/spec/template/spec/containers/0/args/-", "value":'--dns01-recursive-nameservers=$CLUSTER_DNS_SERVICE_IP:53'}]'
+----
++
+[source,terminal]
+----
+$ oc patch csv $CERT_MANAGER_CSV_NAME --type='json' -p '[{"op": "add", "path": "/spec/install/spec/deployments/0/spec/template/spec/volumes", "value": [{"name": "extra-ca"}]}, {"op": "add", "path": "/spec/install/spec/deployments/0/spec/template/spec/volumes/0/configMap", "value": {"name": "extra-ca", "defaultMode": 420}}, {"op": "add", "path": "/spec/install/spec/deployments/0/spec/template/spec/containers/0/volumeMounts", "value": [{"name": "extra-ca", "mountPath": "/etc/ssl/certs/extra-ca-bundle.pem", "readOnly": true, "subPath": "extra-ca-bundle.pem"}]}]'
+----
++
+[NOTE]
+====
+During an Operator upgrade, the above changes might be lost. There seems to be improvement plans to facilitate these changes directly through the Operator config, but until then, it'd be a good idea to maintain some automation around this to persist these changes if it ever gets overridden to defaults.
+====
+
+== Create the issuer and the certificate
+
+=== Configure certificate requestor
+
+. Create cluster issuer to use Let's Encrypt.
++
+[source,terminal]
+----
+$ envsubst  <<EOF | oc apply -f -
+apiVersion: cert-manager.io/v1
+kind: ClusterIssuer
+metadata:
+  name: letsencryptissuer
+spec:
+  acme:
+    server: https://acme-v02.api.letsencrypt.org/directory
+    email: $LETSENCRYPT_EMAIL
+    # This key doesn't exist, cert-manager creates it
+    privateKeySecretRef:
+      name: prod-letsencrypt-issuer-account-key
+    solvers:
+    - dns01:
+        route53:
+         hostedZoneID: $HOSTED_ZONE_ID
+         region: $HOSTED_ZONE_REGION
+         secretAccessKeySecretRef:
+           name: ''
+EOF
+----
+. Describe the `ClusterIssuer` to confirm it's ready.
++
+[source,terminal]
+----
+$ oc describe clusterissuer letsencryptissuer
+----
++
+You should see an output that mentions that the issuer is `Registered/Ready`. Note this can take a few minutes.
++
+.Sample output
++
+[source,terminal]
+----
+   Conditions:
+    Last Transition Time:  2022-11-17T10:29:37Z
+    Message:               The ACME account was registered with the ACME server
+    Observed Generation:   1
+    Reason:                ACMEAccountRegistered
+    Status:                True
+    Type:                  Ready
+   Events:                 <none>
+----
+Once the above command is complete, the status of the `ClusterIssues` in the cluster console will look similar to the following screenshot:
++
+image::mobb-cluster-issuer-status.png[]
+
+=== Create the certificate to be used by the custom domain
+
+[NOTE]
+====
+The following example uses an SAN certificate to show how SAN certificates could be created, which is useful for clusters intended to run only a fixed set of applications. However, this is optional, and a single subject or domain certificate works too.
+====
+. Configure the certificate:
++
+[source,terminal]
+----
+$ envsubst  <<EOF | oc apply -f -
+apiVersion: cert-manager.io/v1
+kind: Certificate
+metadata:
+  name: customdomain-cert
+  namespace: cert-manager
+spec:
+  secretName: custom-domain-certificate-tls
+  issuerRef:
+     name: letsencryptissuer
+     kind: ClusterIssuer
+  commonName: "x.apps.$DOMAIN"
+  dnsNames:
+  - "x.apps.$DOMAIN"
+  - "y.apps.$DOMAIN"
+  - "z.apps.$DOMAIN"
+EOF
+----
+. View the certificate status:
++
+[NOTE]
+====
+It can take up to 5 minutes for the certificate to show with a `Ready` status. If it takes too long, the `oc describe` command will mention issues if any.
+====
++
+[source,terminal]
+----
+$ oc get certificate customdomain-cert -n cert-manager
+----
++
+[source,terminal]
+----
+$ oc describe certificate customdomain-cert -n cert-manager
+----
+
+=== Create the custom domain to be used to access your applications
+
+. Create the custom domain:
++
+[source,terminal]
+----
+$ envsubst  <<EOF | oc apply -f -
+apiVersion: managed.openshift.io/v1alpha1
+kind: CustomDomain
+metadata:
+  name: appdomain
+spec:
+  domain: x.apps.$DOMAIN
+  certificate:
+    name: custom-domain-certificate-tls
+    namespace: cert-manager
+  scope: Internal
+EOF
+
+----
+. View the status of the custom domain:
++
+[source,terminal]
+----
+$ oc get customdomain appdomain -n cert-manager
+----
++
+[NOTE]
+====
+It will take 2-3 minutes for the custom domain to change from a `NotReady` to a `Ready` status. When ready, an endpoint will also be visible in the output of the above command, as shown in the following example.
+====
++
+[source,terminal]
+----
+oc get customdomains
+----
++
+image::mobb-custom-domains.png[]
+
+. Next, you need to add a DNS record in the custom domain Route53 hosted zone to CNAME the wildcard applications domain to the above obtained endpoint, as shown below.
++
+image::mobb-route53-cname.png[]
++
+[source,terminal]
+----
+CUSTOM_DOMAIN_ENDPOINT=$(oc get customdomain appdomain -n cert-manager | grep 'appdomain' | awk '{print $2}')
+echo $CUSTOM_DOMAIN_ENDPOINT
+----
++
+[source,terminal]
+----
+$  cat <<EOF > $SCRATCH_DIR/add_cname_record.json
+   {
+	   "Comment":"Add apps CNAME to Custom Domain Endpoint",
+	   "Changes":[{
+          "Action":"CREATE",
+          "ResourceRecordSet":{
+		       "Name": "*.apps.$DOMAIN",
+			   "Type":"CNAME",
+			   "TTL":30,
+			   "ResourceRecords":[{
+				   "Value": "$CUSTOM_DOMAIN_ENDPOINT"
+			   }]
+		   }
+	   }]
+   }
+----
++
+[source,terminal]
+----
+$ aws route53 change-resource-record-sets --hosted-zone-id $HOSTED_ZONE_ID --change-batch file://$SCRATCH_DIR/add_cname_record.json
+----
++
+[NOTE]
+====
+The wild card CNAME'ing avoids the need to create a new record for every new application. The certificate that each of these applications use will NOT be a wildcard certificate.
+====
++
+At this stage, you can expose cluster applications on any of the listed DNS names that were specified in the previously created certificate.
++
+But what if you have many more applications that will need to be securely exposed too? Well, one approach is to keep updating the certificate resource with additional SAN names as more applications prepare to get onboarded, and this certificate update which will trigger an update to the custom domain to honor the newly added SAN names.
++
+Another approach is to dynamically issue a certificate to every new route. Read on to find the details about this latter approach.
+
+== Dynamic certificates for Custom Domain routes
+
+. Create OpenShift resources required for issuing Dynamic Certificates to Routes.
++
+This step creates a new deployment (and therefore a pod) that'll watch out for specifically annotated routes in the cluster, and if the issuer-kind and issuer-name annotations are found in a new route, it will request the Issuer (ClusterIssuer in my case) for a new Certificate that's unique to this route and which will honor the hostname that was specified while creating the route.
++
+[source,terminal]
+----
+$ oc apply -f https://github.com/cert-manager/openshift-routes/releases/latest/download/cert-manager-openshift-routes.yaml -n cert-manager
+----
++
+Additional OpenShift resources such as a `ClusterRole` (with permissions to watch and update the routes across the cluster), a `ServiceAccount` (with these permissions, that will be used to run this newly created pod), and a `ClusterRoleBinding` to bind these two resources, will be created in this step too.
++
+[NOTE]
+====
+If the cluster does not have access to github, you can save the raw contents locally, and run `oc apply -f localfilename.yaml -n cert-manager`.
+====
+. View the status of the new pod. Check if all the pods are running successfully and that the events do not mention any errors.
++
+[source,terminal]
+----
+$ oc get po -n cert-manager
+----
+
+== Test an application
+
+. Create a test application in a new namespace:
++
+[source,terminal]
+----
+$ oc new-project testapp
+----
++
+[source,terminal]
+----
+$ oc new-app --docker-image=docker.io/openshift/hello-openshift -n testapp
+----
+. Expose the test application service. Let's create a route to expose the application from outside the cluster, and annotate the route to give it a new certificate.
++
+[source,terminal]
+----
+$ oc create route edge --service=hello-openshift testroute --hostname hello.apps.$DOMAIN -n testapp
+----
++
+[source,terminal]
+----
+$ oc annotate route testroute -n testapp cert-manager.io/issuer-kind=ClusterIssuer cert-manager.io/issuer-name=letsencryptissuer
+----
++
+[NOTE]
+====
+It will take a 2-3 minutes for the certificate to be created. The renewal of the certificate will automatically be managed by the `cert-manager` components as it approaches expiry.
+====
+. Access the application route. Do a curl test (or any `http` client of your preference) to confirm there are no certificate related errors.
++
+[source,terminal]
+----
+$ curl -vv https://hello.apps.$DOMAIN
+----
++
+.Example output
++
+[source,terminal]
+----
+Hello OpenShift!
+"subjectAltName: host hello.apps.$DOMAIN" matched cert's "hello.apps.$DOMAIN"
+----
+
+== Debugging
+[NOTE]
+====
+The validation process usually take up to 2-3 minutes to complete while creating certificates.
+====
+
+If you face issues during the certificate create step, run `oc describe` against each of the `certificate`,`certificaterequest`,`order` and `challenge` resources to view the events or reasons that will most help with identifying the cause of the issue.
+
+[source,terminal]
+----
+$ oc get certificate,certificaterequest,order,challenge
+----
+
+This is a very link:https://cert-manager.io/docs/faq/acme/[helpful guide in debugging certificates] as well.
+
+You can also use the link:https://cert-manager.io/docs/reference/cmctl/[cmctl] CLI tool for various certificate management activities such as to check the status of certificates, testing renewals and so on.
