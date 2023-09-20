@@ -1,0 +1,321 @@
+:_content-type: ASSEMBLY
+[id="rosa-mobb-external-dns-for-custom-domain-tutorial"]
+= Tutorial: Deploying the external DNS Operator with a custom domain in ROSA
+include::_attributes/attributes-openshift-dedicated.adoc[]
+:context: ROSA-mobb-external-dns-for-custom-domain-tutorial
+
+toc::[]
+
+//Mobb content metadata
+//Brought into ROSA product docs 2023-09-20
+//---
+//date: '2021-06-10'
+//title: External DNS for ROSA custom domain
+//weight: 1
+//tags: ["AWS", "ROSA"]
+//authors:
+//  - Chris Kang
+//  - Dustin Scott
+//---
+
+Configuring the `Custom Domain` Operator requires a wildcard CNAME DNS record in your Route53 hosted zone. If you do not want to use a wildcard record, you can use the `External DNS` Operator to create individual entries for routes.
+
+This document will guide you through deploying and configuring the External DNS Operator with a custom domain in Red Hat OpenShift Service on AWS (ROSA).
+
+[IMPORTANT]
+====
+The `External DNS` Operator does not support STS yet and uses long lived IAM credentials. This guide will be updated once STS is supported.
+====
+
+[id="rosa-mobb-external-dns-for-custom-domain-prerequisites"]
+== Prerequisites
+
+* A user account with `dedicated-admin` privileges
+* Access to a ROSA cluster with the latest version of the `oc` CLI installed
+* The latest AWS CLI
+* The latest `rosa` CLI
+* Route53 hosted zone
+* A domain
+
+[id="rosa-mobb-external-dns-for-custom-domain-deploy"]
+== Deploy
+
+Deploy the External DNS Operator by completing the following sections.
+
+=== Setup environment
+
+. Set your email and your domain:
++
+[source,terminal]
+----
+$ export EMAIL=<YOUR-EMAIL>
+$ export DOMAIN=<YOUR-DOMAIN>
+----
+
+. Set the remaining environment variables:
++
+[source,terminal]
+----
+$ export SCRATCH_DIR=/tmp/scratch
+$ export ZONE_ID=$(aws route53 list-hosted-zones-by-name --output json \
+--dns-name "$DOMAIN." --query 'HostedZones[0]'.Id --out text | sed 's/\/hostedzone\///')
+$ mkdir -p $SCRATCH_DIR
+----
+
+=== Custom domain
+////
+To be added in.
+[NOTE]
+====
+For information on deploying the External DNS Operator without using a wildcard certificate, see ../cloud_experts_tutorials/rosa-mobb-dynamic-certificate-custom-domain-tutorial[Dynamically issuing certificates with a custom domain in ROSA].
+====
+////
+. Create a TLS key pair for the custom domain using certbot:
++
+[NOTE]
+====
+Skip this step if you already have a key pair.
+====
++
+[source,terminal]
+----
+$ certbot certonly --manual \
+  --preferred-challenges=dns \
+  --email $EMAIL \
+  --server https://acme-v02.api.letsencrypt.org/directory \
+  --agree-tos \
+  --config-dir "$SCRATCH_DIR/config" \
+  --work-dir "$SCRATCH_DIR/work" \
+  --logs-dir "$SCRATCH_DIR/logs" \
+  -d "*.$DOMAIN"
+----
++
+. Create a new TLS secret for the custom domain:
++
+[NOTE]
+====
+Use your own keypair paths if not using certbot.
+====
++
+[source,terminal]
+----
+$ CERTS=/tmp/scratch/config/live/$DOMAIN
+$ oc new-project my-custom-route
+$ oc create secret tls acme-tls --cert=$CERTS/fullchain.pem --key=$CERTS/privkey.pem
+----
++
+. Create a new `Custom Domain` custom resource (CR):
++
+[source,terminal]
+----
+$ cat << EOF | oc apply -f -
+apiVersion: managed.openshift.io/v1alpha1
+kind: CustomDomain
+metadata:
+  name: acme
+spec:
+  domain: $DOMAIN
+  certificate:
+    name: acme-tls
+    namespace: my-custom-route
+EOF
+----
++
+. Wait for the domain to be ready:
++
+[source,terminal]
+----
+$ oc wait --for=condition=Ready customdomains/acme --timeout=300s
+----
+
+=== External DNS
+. Deploy the `External DNS` Operator:
++
+[source,terminal]
+----
+$ oc new-project external-dns-operator
+----
++
+[source,terminal]
+----
+$ cat << EOF | oc apply -f -
+apiVersion: operators.coreos.com/v1
+kind: OperatorGroup
+metadata:
+  name: external-dns-group
+  namespace: external-dns-operator
+spec:
+  targetNamespaces:
+  - external-dns-operator
+---
+apiVersion: operators.coreos.com/v1alpha1
+kind: Subscription
+metadata:
+  name: external-dns-operator
+  namespace: external-dns-operator
+spec:
+  channel: stable-v1
+  installPlanApproval: Automatic
+  name: external-dns-operator
+  source: redhat-operators
+  sourceNamespace: openshift-marketplace
+EOF
+----
++
+. Wait until the `External DNS` Operator is running:
++
+[source,terminal]
+----
+$ oc rollout status deploy external-dns-operator --timeout=300s
+----
++
+. Create an IAM Policy document that allows ExternalDNS to update Route53 only in your hosted zone:
++
+[source,terminal]
+----
+$ cat << EOF > $SCRATCH_DIR/externaldns-r53-policy.json
+{
+  "Version": "2012-10-17",
+  "Statement": [
+    {
+      "Effect": "Allow",
+      "Action": [
+        "route53:ChangeResourceRecordSets"
+      ],
+      "Resource": [
+        "arn:aws:route53:::hostedzone/$ZONE_ID"
+      ]
+    },
+    {
+      "Effect": "Allow",
+      "Action": [
+        "route53:ListHostedZones",
+        "route53:ListResourceRecordSets"
+      ],
+      "Resource": [
+        "*"
+      ]
+    }
+  ]
+}
+EOF
+----
++
+. Create the IAM policy:
++
+[source,terminal]
+----
+$ POLICY_ARN=$(aws iam create-policy --policy-name "AllowExternalDNSUpdates" \
+--policy-document file://$SCRATCH_DIR/externaldns-r53-policy.json \
+--query 'Policy.Arn' --output text)
+----
++
+. Create the IAM user:
++
+[source,terminal]
+----
+$ aws iam create-user --user-name "externaldns"
+----
+. Attach the policy:
++
+[source,terminal]
+----
+$ aws iam attach-user-policy --user-name "externaldns" --policy-arn $POLICY_ARN
+----
++
+[NOTE]
+====
+This will be changed to STS using IRSA in the future.
+====
+. Create AWS keys for the IAM user:
++
+[source,terminal]
+----
+$ SECRET_ACCESS_KEY=$(aws iam create-access-key --user-name "externaldns")
+----
+. Create static credentials:
++
+[source,terminal]
+----
+$ cat << EOF > $SCRATCH_DIR/credentials
+[default]
+aws_access_key_id = $(echo $SECRET_ACCESS_KEY | jq -r '.AccessKey.AccessKeyId')
+aws_secret_access_key = $(echo $SECRET_ACCESS_KEY | jq -r '.AccessKey.SecretAccessKey')
+EOF
+----
+. Create a secret from the credentials:
++
+[source,terminal]
+----
+$ oc create secret generic external-dns \
+--namespace external-dns-operator --from-file $SCRATCH_DIR/credentials
+----
+. Deploy the `ExternalDNS` controller:
++
+[source,terminal]
+----
+$ cat << EOF | oc apply -f -
+apiVersion: externaldns.olm.openshift.io/v1beta1
+kind: ExternalDNS
+metadata:
+  name: $DOMAIN
+spec:
+  domains:
+    - filterType: Include
+      matchType: Exact
+      name: $DOMAIN
+  provider:
+    aws:
+      credentials:
+        name: external-dns
+    type: AWS
+  source:
+    openshiftRouteOptions:
+      routerName: acme
+    type: OpenShiftRoute
+  zones:
+    - $ZONE_ID
+EOF
+----
+. Wait until the controller is running:
++
+[source,terminal]
+----
+$ oc rollout status deploy external-dns-$DOMAIN --timeout=300s
+----
+
+[id="rosa-mobb-external-dns-for-custom-domain-test"]
+== Test
+
+. Create a new route to the OpenShift web console using your domain:
++
+[source,terminal]
+----
+$ oc create route reencrypt --service=console console-acme \
+   --hostname console.$DOMAIN -n openshift-console
+----
+. Check if the DNS record was created automatically by ExternalDNS:
++
+[NOTE]
+====
+It can take a few minutes for the record to appear in Route53.
+====
++
+[source,terminal]
+----
+$ aws route53 list-resource-record-sets --hosted-zone-id $ZONE_ID \
+   --query "ResourceRecordSets[?Type == 'CNAME']" | grep console
+----
+. You can also view the TXT records that indicate they were created by ExternalDNS:
++
+[source,terminal]
+----
+$ aws route53 list-resource-record-sets --hosted-zone-id $ZONE_ID \
+   --query "ResourceRecordSets[?Type == 'TXT']" | grep $DOMAIN
+----
+. Navigate to your custom console domain in the browser where you see the OpenShift login.
++
+[source,terminal]
+----
+$ echo console.$DOMAIN
+----
