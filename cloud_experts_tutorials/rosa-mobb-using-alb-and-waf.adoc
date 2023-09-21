@@ -1,0 +1,308 @@
+:_content-type: ASSEMBLY
+[id="rosa-mobb-using-alb-and-waf"]
+= Tutorial: Using ALB and WAF
+include::_attributes/attributes-openshift-dedicated.adoc[]
+:context: rosa-mobb-using-alb-and-waf
+
+toc::[]
+
+// Mobb content metadata
+// Brought into ROSA product docs 2023-09-21
+// ---
+// date: '2021-06-17'
+// title: AWS ALB
+// aliases: ['/docs/aws/waf/cloud-front.md']
+// tags: ["AWS", "ROSA", "OSD"]
+// authors:
+//  - 'Connor Wooley'
+// ---
+
+You can use an Application Load Balancer (ALB) solution to add a Web Application Firewall (WAF) to your ROSA workloads. Using an external solution protects OpenShift resources from experiencing denial of service due to handling the WAF.
+
+[NOTE]
+====
+It is recommended that you use the xref:../cloud_experts_tutorials/rosa-mobb-using-cloudfront-and-waf.adoc#rosa-mobb-using-cloudfront-and-waf[CloudFront method] unless you absolutely must use an ALB based solution.
+====
+
+//[Here](https://iamondemand.com/blog/elb-vs-alb-vs-nlb-choosing-the-best-aws-load-balancer-for-your-needs/)'s a good overview of AWS LB types and what they support
+
+// Loosely based off EKS instructions here - https://aws.amazon.com/premiumsupport/knowledge-center/eks-alb-ingress-aws-waf/
+
+[id="prerequisites_{context}"]
+== Prerequisites
+
+* You have a ROSA or OSD on AWS cluster.
+* You installed the `oc`, `helm`, and `aws` command-line interface (CLI) tools.
+* You disabled AWS CLI output paging: `$ export AWS_PAGER=""`
+* You set the ALB Controller version: `$ export ALB_VERSION="v2.2.0"`
+* You set the name of your cluster for lookup: `$ export CLUSTER_NAME="waf-demo"`
++
+[NOTE]
+====
+If you use the `waf-demo` cluster name, make sure you create a public ROSA cluster called `waf-demo` and set it to be multi-AZ enabled. Alternatively, replace the cluster name variable with your own cluster name.
+====
+
+[id="deployment_{context}"]
+== Deployment
+
+Deploy the AWS load balancer controller and a sample application. Then, create a WAF rule.
+
+The AWS Load Balancer Controller manages the following AWS resources:
+
+* Application Load Balancers to satisfy Kubernetes ingress objects.
+* Network Load Balancers in IP mode to satisfy Kubernetes service objects of type `LoadBalancer` with NLB IP mode annotation.
+
+[id="deploy-aws-load-balancer-controller_{context}"]
+=== Deploying the AWS Load Balancer Controller
+
+. Create an AWS policy by running the following commands:
++
+[source,terminal]
+----
+$ curl -so iam-policy.json https://raw.githubusercontent.com/kubernetes-sigs/aws-load-balancer-controller/${ALB_VERSION}/docs/install/iam_policy.json
+----
++
+[source,terminal]
+----
+$ POLICY_ARN=$(aws iam create-policy --policy-name "AWSLoadBalancerControllerIAMPolicy" --policy-document file://iam-policy.json --query Policy.Arn --output text)
+----
++
+.Verification
+[source,terminal]
+----
+$ echo $POLICY_ARN
+----
+
+. Create a service account for the AWS Load Balancer Controller by running the following command:
++
+[source,terminal]
+----
+$ aws iam create-user --user-name aws-lb-controller  \
+--query User.Arn --output text
+----
+
+. Attach the policy to the `aws-lb-controller` user by running the following command:
++
+[source,terminal]
+----
+$ aws iam attach-user-policy --user-name aws-lb-controller \
+--policy-arn ${POLICY_ARN}
+----
+
+. Create and save an access key.
+.. Create the access key by running the following command:
++
+[source,terminal]
+----
+$ aws iam create-access-key --user-name aws-lb-controller
+----
+
+.. Copy and paste the `AccessKeyId` and `SecretAccessKey` that you created into a file named `values.yaml`.
+
+.. Export the `AccessKeyID` and `SecretAccessKey` as variables by running the following commands, substituting the actual values:
++
+[source,terminal]
+----
+$ export AWS_ID=<access_key_ID>
+----
++
+[source,terminal]
+----
+$ export AWS_KEY=<secret_access_key>
+----
+
+. Get the `VPC_ID` value by running the following commands:
++
+[source,terminal]
+----
+$ VPC_ID=$(aws ec2 describe-vpcs --output json --filters \
+Name=tag-value,Values="${CLUSTER_NAME}*" \
+--query "Vpcs[].VpcId" --output text)
+----
++
+[source,terminal]
+----
+$ echo ${VPC_ID}
+----
+
+. Open the file `values.yaml` in an editor and modify the VPC ID to match the output from the previous step.
+
+. Get the subnet list by running the following commands:
++
+[source,terminal]
+----
+$ SUBNET_IDS=$(aws ec2 describe-subnets --output json \
+--filters Name=tag-value,Values="${CLUSTER_NAME}-*public*" \
+--query "Subnets[].SubnetId" --output text | sed 's/\t/ /g')
+----
++
+[source,terminal]
+----
+$ echo ${SUBNET_IDS}
+----
+
+. Open the file `ingress.yaml` in an editor and modify the subnet list to match the output from the previous step.
+
+. Add tags to the subnets by running the following command:
++
+[source,terminal]
+----
+$ aws ec2 create-tags \
+--resources $(echo ${SUBNET_IDS}) \
+--tags Key=kubernetes.io/role/elb,Value= Key=kubernetes.io/cluster/${CLUSTER_NAME},Value=shared
+----
+
+. Create a namespace for the controller by running the following command:
++
+[source,terminal]
+----
+$ oc create ns aws-load-balancer-controller
+----
+
+. Apply the CRDs to the cluster by running the following command:
++
+[source,terminal]
+----
+$ oc apply -k "github.com/aws/eks-charts/stable/aws-load-balancer-controller//crds?ref=master"
+----
+
+. Add the Helm repository by running the following command:
+//(install [helm3](https://github.com/helm/helm/releases/tag/v3.5.4) if not already)
++
+[source,terminal]
+----
+$ helm repo add eks https://aws.github.io/eks-charts
+----
+
+. Install the controller by running the following command:
++
+[source,terminal]
+----
+$ helm install -n aws-load-balancer-controller \
+aws-load-balancer-controller eks/aws-load-balancer-controller \
+--set "env.AWS_ACCESS_KEY_ID=${AWS_ID}" \
+--set "env.AWS_SECRET_ACCESS_KEY=${AWS_KEY}" \
+--set "vpcID=${VPC_ID}" \
+--set "clusterName=${CLUSTER_NAME}" \
+--set "image.tag=${ALB_VERSION}" \
+--create-namespace
+----
+
+[id="deploy-example-app_{context}"]
+=== Deploy an example application
+
+. Create a new application in OpenShift by running the following commands:
++
+[source,terminal]
+----
+$ oc new-project demo
+----
++
+[source,terminal]
+----
+$ oc new-app https://github.com/sclorg/django-ex.git
+----
++
+[source,terminal]
+----
+$ oc -n demo patch service django-ex -p '{"spec":{"type":"NodePort"}}'
+----
+
+. Create an `Ingress` object to trigger an ALB. For example:
++
+[source,terminal]
+----
+$ cat << EOF | oc apply -f -
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: django-ex
+  namespace: demo
+  annotations:
+    kubernetes.io/ingress.class: alb
+    alb.ingress.kubernetes.io/scheme: internet-facing
+    alb.ingress.kubernetes.io/target-type: instance
+    # alb.ingress.kubernetes.io/subnets: subnet-0982bb73ca67d61de,subnet-0aa9967e8767d792f,subnet-0fd57669a80eb7596
+    alb.ingress.kubernetes.io/shield-advanced-protection: "true"
+    # wafv2 arn to use
+    # alb.ingress.kubernetes.io/wafv2-acl-arn: arn:aws:wafv2:us-east-2:660250927410:regional/webacl/waf-demo/6565d2a1-6d26-4b6b-b56f-1e996c7e9e8f
+  labels:
+    app: django-ex
+spec:
+  rules:
+    - host: demo.host
+      http:
+        paths:
+           - pathType: Prefix
+            path: /*
+            backend:
+              service:
+                name: django-ex
+                 port:
+                  number: 8080
+----
+
+. Check the logs of the ALB controller:
++
+[source,terminal]
+----
+$ oc logs -f deployment/aws-load-balancer-controller
+----
+
+. Use the second address from the ingress to navigate to the application:
++
+[source,terminal]
+----
+$ oc -n demo get ingress
+----
++
+[source,terminal]
+----
+$ curl -s --header "Host: demo.host" k8s-demo-djangoex-49f31c1921-782305710.us-east-2.elb.amazonaws.com | head
+----
+
+[id="waf_{context}"]
+=== WAF
+
+. Create a new WAF rule by navigating to https://console.aws.amazon.com/wafv2/homev2/web-acls/new.
+.. Ensure that you use the *Core* and *SQL Injection* rules. 
+.. Ensure that the region is *us-east-2*.
+
+. View the WAF by running the following command:
++
+[source,terminal]
+----
+$ aws wafv2 list-web-acls --scope REGIONAL --region us-east-2 | jq .
+----
+
+. Open the file `ingress.yaml` in an editor and set the WAF annotation so that it matches the ARN.
++
+[NOTE]
+====
+Ensure that you uncomment the line.
+====
+
+. Re-apply the `Ingress` manifest to the cluster:
++
+[source,terminal]
+----
+$ oc apply -f ingress.yaml
+----
+
+.Verification
+
+. Test that the app still works:
++
+[source,terminal]
+----
+$ curl -s --header "Host: demo.host" --location "k8s-demo-djangoex-49f31c1921-782305710.us-east-2.elb.amazonaws.com"
+----
+
+. Test that the WAF denies a bad request:
++
+[source,terminal]
+----
+$ curl -X POST http://k8s-demo-djangoex-49f31c1921-782305710.us-east-2.elb.amazonaws.com -F "user='<script><alert>Hello></alert></script>'"
+----
++
+The expected result is a *403 Forbidden* error.

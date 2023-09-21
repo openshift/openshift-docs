@@ -1,0 +1,220 @@
+:_content-type: ASSEMBLY
+[id="rosa-mobb-using-cloudfront-and-waf"]
+= Tutorial: Using CloudFront and WAF
+include::_attributes/attributes-openshift-dedicated.adoc[]
+:context: rosa-mobb-using-cloudfront-and-waf
+
+toc::[]
+
+// Mobb content metadata
+// Brought into ROSA product docs 2023-09-21
+// ---
+// date: '2021-06-17'
+// title: Using CloudFront + WAF
+// aliases: ['/docs/aws/waf/cloud-front.md']
+// tags: ["AWS", "ROSA"]
+// authors:
+//  - 'Connor Wooley'
+// ---
+
+You can use CloudFront and a custom domain to add a Web Application Firewall (WAF) to your ROSA workloads. Using an external solution protects OpenShift resources from experiencing denial of service due to handling the WAF.
+
+[id="preparing_{context}"]
+== Preparing
+
+. Create a cluster by running the following command:
++
+[source,terminal]
+----
+$ rosa create cluster --cluster-name poc-waf --multi-az \
+--region us-east-2 --version 4.7.9 --compute-nodes 3 \
+--machine-cidr 10.0.0.0/16 --service-cidr 172.30.0.0/16 \
+--pod-cidr 10.128.0.0/14 --host-prefix 23
+----
+
+. When the cluster is ready, create a admin user by running the following command:
++
+[source,terminal]
+----
+$ rosa create admin -c poc-waf
+----
+
+. Log in by following the instructions.
+
+. Set the `$EMAIL` and `$DOMAIN` environment variables. For example:
++
+[source,terminal]
+----
+EMAIL=username@example.com
+DOMAIN=waf.tutorial
+----
+
+[id="certificate-and-dns_{context}"]
+== Certificate and DNS
+
+. Create a wildcard certificate by using the `certbot` tool. For example:
++
+[source,terminal]
+----
+certbot certonly --manual \
+--preferred-challenges=dns \
+--email $EMAIL \
+--server https://acme-v02.api.letsencrypt.org/directory \
+--agree-tos \
+--manual-public-ip-logging-ok \
+-d "*.$DOMAIN"
+----
+
+. Create a DNS TXT record by following the `certbot` instructions. The certificate records are saved on your system.
+
+. Set an environment variable for the directory where the certificate records are saved. For example:
++
+[source,terminal]
+----
+CERTS=/etc/letsencrypt/live/waf.tutorial
+----
+
+[id="custom-openshift-domain_{context}"]
+== Custom OpenShift Domain
+
+. Create a project for the custom route by running the following command:
++
+[source,terminal]
+----
+$ oc new-project my-custom-route
+----
+
+. Add the certificates as a secret by running the following command:
++
+[source,terminal]
+----
+$ oc create secret tls acme-tls --cert=$CERTS/fullchain1.pem --key=$CERTS/privkey1.pem
+----
+
+. Create a `CustomDomain` manifest. For example:
++
+[source,terminal]
+----
+cat << EOF | oc apply -f -
+apiVersion: managed.openshift.io/v1alpha1
+kind: CustomDomain
+metadata:
+  name: acme
+spec:
+  domain: $DOMAIN
+  loadBalancerType: Classic <1>
+  certificate:
+    name: acme-tls
+    namespace: my-custom-route
+EOF
+----
+<1> You can optionally change the `spec.loadBalancerType` value to `NLB`. 
+
+. Monitor until your `CustomDomain` object has an endpoint:
++
+[source,terminal]
+----
+$ watch oc get customdomains
+----
+
+[id="aws-waf-and-cloudfront_{context}"]
+== AWS WAF + CloudFront
+
+. Create a WAF rule.
+.. Navigate to https://console.aws.amazon.com/wafv2/homev2/web-acls/new?region=us-east-2. 
+.. Use the Core and SQL Injection rules, and set it as a CloudFront distribution resource type.
+
+. View your WAF by running the following command:
++
+[source,terminal]
+----
+$ aws wafv2 list-web-acls --scope REGIONAL --region us-east-2 | jq .
+----
+
+. Add a certificate to ACM. 
+.. Navigate to https://us-east-2.console.aws.amazon.com/acm/home?region=us-east-1#/importwizard/.
+.. Paste the certificate, key, and certificate chain from the `certbot` files.
++
+[NOTE]
+====
+To ensure compatibility with CloudFront, you must create it in the US-EAST-1 region.
+====
+
+. Log into the link:https://console.aws.amazon.com/cloudfront/home?region=us-east-2#create-distribution:[AWS console] to create a CloudFront distribution.
+
+. Configure the CloudFront distribution by using the following information, substituting your values where applicable:
+* For the *Origin Domain Name*: `<endpoint>` 
++
+[NOTE]
+====
+You can view the endpoint by running the `$ oc get manageddomains` command.
+====
+* *Origin Protocol Policy*: `HTTPS only`
+* *Viewer Protocol Policy*: `Redirect HTTP to HTTPS`
+* *Allowed HTTP Methods*: `GET, HEAD, OPTIONS, PUT, POST, PATCH, DELETE`
+* *AWS WAF Web ACL*: `demo-waf-acl`
+* *Alternate Domain Names*: `*.<your_domain>`
+* *Custom SSL Certificate*: `<your_imported_certificate>`
+* For *Origin Request Policy*, create a new policy allowlist that includes `origin, user-agent, referer, host` (**IMPORTANT**)
+
+. Click *Create* and wait until the *Status* is *Ready*.
+
+[id="dns-cname_{context}"]
+== DNS CNAME
+
+* In your DNS provider, create a CNAME for `*.<your_domain>` that points at the endpoint from the CloudFront status page.
+** For example: `d1vm7mfs9sc24l.cloudfront.net`
+
+[id="deploy-an-application_{context}"]
+== Deploy an application
+
+Use the `oc` CLI to deploy a new application.
+
+. Create a new application. For example:
++
+[source,terminal]
+----
+$ oc new-app --docker-image=docker.io/openshift/hello-openshift
+----
+
+. Create a route for the application. For example:
++
+[source,terminal]
+----
+$ oc create route edge --service=hello-openshift hello-openshift-tls \
+--hostname hello.waf.tutorial
+----
+
+[id="test-waf_{context}"]
+== Test the WAF
+
+. Check that you can access your application by running the `curl` command. For example:
++
+[source,terminal]
+----
+$ curl https://hello.waf.tutorial
+----
++
+.Example output
+[source,text]
+----
+Hello OpenShift!
+----
+
+. Try to do an XSS injection. For example:
++
+[source,terminal]
+----
+$ curl -X POST https://hello.waf.tutorial \
+-F "user='<script><alert>Hello></alert></script>'"
+----
++
+.Example output
+[source,html]
+----
+<!DOCTYPE HTML PUBLIC "-//W3C//DTD HTML 4.01 Transitional//EN" "http://www.w3.org/TR/html4/loose.dtd">
+<HTML><HEAD><META HTTP-EQUIV="Content-Type" CONTENT="text/html; charset=iso-8859-1">
+<TITLE>ERROR: The request could not be satisfied</TITLE>
+</HEAD><BODY>
+<H1>403 ERROR</H1>
+----
