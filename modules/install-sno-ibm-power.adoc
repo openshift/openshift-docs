@@ -1,0 +1,167 @@
+// This is included in the following assemblies:
+//
+// installing_sno/install-sno-installing-sno.adoc
+
+:_content-type: PROCEDURE
+[id="installing-sno-on-ibm-power_{context}"]
+= Installing {sno} with {ibmpowerProductName}
+
+.Prerequisites
+
+* You need to setup bastion.
+
+[id="bastion-setup-installing-sno-on-ibm-power_{context}"]
+== Following steps are used for bastion setup
+
+.Procedure
+
+* PXE is used for SNO installation. It requires the following services to be configured and run:
+** DNS to define api, api-int and *.apps
+** DHCP service to enable PXE and assign IP to SNO node
+** HTTP to provide ignition and RHCOS rootfs image
+** TFTP to enable PXE
+* You will need to install dnsmasq to support DNS, DHCP and PXE, httpd for HTTP.
+
+* PXE setup
+
+. To enable PXE for PowerVM, you need to install `grub2` with:
++
+[source,terminal]
+----
+grub2-mknetdir --net-directory=/var/lib/tftpboot
+----
++
+
+. Below is the sample `/var/lib/tftpboot/boot/grub2/grub.cfg`:
++
+[source,terminal]
+----
+default=0
+fallback=1
+timeout=1
+
+if [ ${net_default_mac} == fa:b0:45:27:43:20 ]; then
+menuentry "CoreOS (BIOS)" {
+   echo "Loading kernel"
+   linux "/rhcos/kernel" ip=dhcp rd.neednet=1 ignition.platform.id=metal ignition.firstboot coreos.live.rootfs_url=http://192.168.10.5:8000/install/rootfs.img ignition.config.url=http://192.168.10.5:8000/ignition/sno.ign
+
+   echo "Loading initrd"
+   initrd  "/rhcos/initramfs.img"
+}
+fi
+----
++
+
+. Download RHCOS image files from the mirror repo for PXE:
++
+[source,terminal]
+----
+export RHCOS_URL=https://mirror.openshift.com/pub/openshift-v4/ppc64le/dependencies/rhcos/4.12/latest/
+cd /var/lib/tftpboot/rhcos
+wget ${RHCOS_URL}/rhcos-live-kernel-ppc64le -o kernel
+wget ${RHCOS_URL}/rhcos-live-initramfs.ppc64le.img -o initramfs.img
+cd /var//var/www/html/install/
+wget ${RHCOS_URL}/rhcos-live-rootfs.ppc64le.img -o rootfs.img
+----
++
+
+* Create the ignition file
+
+. To create the ignition file for SNO, you need to create the `install-config.yaml` file. First, create the work directory to hold the file:
++
+[source,terminal]
+----
+mkdir -p ~/sno-work
+cd ~/sno-work
+----
++
+
+. Following sample file can be used to create the required `install-config.yaml` at the ~/sno-work directory:
++
+[source,yaml]
+----
+apiVersion: v1
+baseDomain: <domain> <1>
+compute:
+- name: worker
+  replicas: 0 <2>
+controlPlane:
+  name: master
+  replicas: 1 <3>
+metadata:
+  name: <name> <4>
+networking: <5>
+  clusterNetwork:
+  - cidr: 10.128.0.0/14
+    hostPrefix: 23
+  machineNetwork:
+  - cidr: 10.0.0.0/16 <6>
+  networkType: OVNKubernetes
+  serviceNetwork:
+  - 172.30.0.0/16
+platform:
+  none: {}
+bootstrapInPlace:
+  installationDisk: /dev/disk/by-id/<disk_id> <7>
+pullSecret: '<pull_secret>' <8>
+sshKey: |
+  <ssh_key> <9>
+----
+<1> Add the cluster domain name.
+<2> Set the `compute` replicas to `0`. This makes the control plane node schedulable.
+<3> Set the `controlPlane` replicas to `1`. In conjunction with the previous `compute` setting, this setting ensures the cluster runs on a single node.
+<4> Set the `metadata` name to the cluster name.
+<5> Set the `networking` details. OVN-Kubernetes is the only allowed network plugin type for single-node clusters.
+<6> Set the `cidr` value to match the subnet of the {sno} cluster.
+<7> Set the path to the installation disk drive, for example, `/dev/disk/by-id/wwn-0x64cd98f04fde100024684cf3034da5c2`.
+<8> Copy the {cluster-manager-url-pull} and add the contents to this configuration setting.
+<9> Add the public SSH key from the administration host so that you can log in to the cluster after installation.
+
+. Download the `openshift-install` to create the ignition file and copy it to the http directory:
++
+[source,terminal]
+----
+wget https://mirror.openshift.com/pub/openshift-v4/ppc64le/clients/ocp/4.12.0/openshift-install-linux-4.12.0.tar.gz
+tar xzvf openshift-install-linux-4.12.0.tar.gz
+./openshift-install --dir=~/sno-work create create single-node-ignition-config
+cp ~/sno-work/single-node-ignition-config.ign /var/www/html/ignition/sno.ign
+restorecon -vR /var/www/html || true
+----
++
+
+. Now the `bastion` has all the required files and configurations to install SNO.
+
+[id="steps-installing-sno-on-ibm-power_{context}"]
+== SNO installation
+
+* There are two steps for SNO installation, first the SNO LPAR need to boot up with PXE, then monitor the installation progress.
+
+.Network boot
+
+. To boot powerVM with netboot, there are two ways to do it: using SMS interactively to select bootp or using lpar_netboot command on HMC. Reference to HMC doc for how to using SMS. Below is the lpar_netboot command to be run on HMC:
++
+[source,terminal]
+----
+lpar_netboot -i -D -f -t ent -m <sno_mac> -s auto -d auto -S <server_ip> -C <sno_ip> -G <gateway> <lpar_name> default_profile <cec_name> <1>
+----
+Where,
+.. sno_mac is the MAC address of SNO
+.. sno_ip is the IP address of SNO
+.. server_ip is the IP address of bastion (PXE server)
+.. gateway is the Network's gateway IP
+.. lpar_name is the SNO lpar name in HMC
+.. cec_name is the System name where the sno_lpar resident at
++
+
+.Monitoring the progress
+
+. After the SNO lpar boots up with PXE, you can use `openshift-install` to monitor the progress of installation.
++
+[source,terminal]
+----
+# first need to wait for bootstrap complete
+./openshift-install wait-for bootstrap-complete
+# after it return successfully, using following cmd to wait for completed
+./openshift-install wait-for install-complete
+----
++
