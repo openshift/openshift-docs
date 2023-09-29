@@ -1,0 +1,252 @@
+:_content-type: ASSEMBLY
+[id="rosa-mobb-federating-system-user-metrics-s3-rosa"]
+= Tutorial: Federating system and user metrics to S3 in ROSA
+include::_attributes/attributes-openshift-dedicated.adoc[]
+:context: rosa-mobb-federating-system-user-metrics-s3-rosa
+
+toc::[]
+
+//Mobb team metadata:
+//---
+//date: '2021-06-07'
+//title: Federating System and User metrics to S3 in Red Hat OpenShift for AWS
+//tags: ["AWS", "ROSA"]
+//authors:
+//  - Paul Czarkowski
+//  - Michael Tipton
+//---
+
+You can set up federating Prometheus metrics to S3 storage.
+
+[NOTE]
+====
+Add Authorization in front of Thanos APIs.
+====
+
+.Prerequisites
+
+* A ROSA classic cluster
+* The AWS CLI
+
+== Setting up the environment
+
+. Create your environment variables:
++
+[source,terminal]
+----
+$ export CLUSTER_NAME=my-cluster
+$ export S3_BUCKET=my-thanos-bucket
+$ export REGION=us-east-2
+$ export NAMESPACE=federated-metrics
+$ export SA=aws-prometheus-proxy
+$ export SCRATCH_DIR=/tmp/scratch
+$ export OIDC_PROVIDER=$(oc get authentication.config.openshift.io cluster -o json | jq -r .spec.serviceAccountIssuer| sed -e "s/^https:\/\///")
+$ export AWS_ACCOUNT_ID=$(aws sts get-caller-identity --query Account --output text)
+$ export AWS_PAGER=""
+$ rm -rf $SCRATCH_DIR
+$ mkdir -p $SCRATCH_DIR
+----
+
+. Create your namespace:
++
+[source,terminal]
+----
+$ oc new-project $NAMESPACE
+----
+
+== AWS Preparation
+
+. Create an S3 bucket:
++
+[source,terminal]
+----
+$ aws s3 mb s3://$S3_BUCKET
+----
+
+. Create a policy for accessing the S3:
++
+[source,terminal]
+----
+$ cat <<EOF > $SCRATCH_DIR/s3-policy.json
+    {
+        "Version": "2012-10-17",
+        "Statement": [
+            {
+                "Sid": "Statement",
+                "Effect": "Allow",
+                "Action": [
+                    "s3:ListBucket",
+                    "s3:GetObject",
+                    "s3:DeleteObject",
+                    "s3:PutObject",
+                    "s3:PutObjectAcl"
+                ],
+                "Resource": [
+                    "arn:aws:s3:::$S3_BUCKET/*",
+                    "arn:aws:s3:::$S3_BUCKET"
+                ]
+            }
+        ]
+    }
+    EOF
+----
+
+. Apply the policy:
++
+[source,terminal]
+----
+$ S3_POLICY=$(aws iam create-policy --policy-name $CLUSTER_NAME-thanos \
+--policy-document file://$SCRATCH_DIR/s3-policy.json \
+--query 'Policy.Arn' --output text)
+$ echo $S3_POLICY
+----
+
+. Create a trust policy:
++
+[source,terminal]
+----
+$ cat <<EOF > $SCRATCH_DIR/TrustPolicy.json
+{
+  "Version": "2012-10-17",
+  "Statement": [
+    {
+      "Effect": "Allow",
+      "Principal": {
+        "Federated": "arn:aws:iam::${AWS_ACCOUNT_ID}:oidc-provider/${OIDC_PROVIDER}"
+      },
+      "Action": "sts:AssumeRoleWithWebIdentity",
+      "Condition": {
+        "StringEquals": {
+          "${OIDC_PROVIDER}:sub": [
+            "system:serviceaccount:${NAMESPACE}:${SA}"
+          ]
+        }
+      }
+    }
+  ]
+}
+EOF
+----
+
+. Create roles for AWS Prometheus and CloudWatch:
++
+[source,terminal]
+----
+$ S3_ROLE=$(aws iam create-role \
+--role-name "$CLUSTER-thanos-s3" \
+--assume-role-policy-document file://$SCRATCH_DIR/TrustPolicy.json \
+--query "Role.Arn" --output text)
+$ echo $S3_ROLE
+----
+
+. Attach the policies to the role:
++
+[source,terminal]
+----
+$ aws iam attach-role-policy \
+--role-name "$CLUSTER-thanos-s3" \
+--policy-arn $S3_POLICY
+----
+
+. Grant the Thanos user access to the S3 bucket:
++
+[source,terminal]
+----
+$ aws s3api put-bucket-policy --bucket my-thanos-metrics \
+--policy file://s3-policy.json
+----
+
+. Obtain the account key and secret, and use them to update `thanos-store-credentials.yaml`. 
+
+== Deploying Operators
+
+. Add the MOBB chart repository to your Helm:
++
+[source,terminal]
+----
+$ helm repo add mobb https://rh-mobb.github.io/helm-charts/
+----
+
+. Update your repositories:
++
+[source,terminal]
+----
+$ helm repo update
+----
+
+. Use the `mobb/operatorhub` chart to deploy the needed Operators:
++
+[source,terminal]
+----
+$ helm upgrade -n $echNAMESPACE custom-metrics-operators \
+$ mobb/operatorhub --version 0.1.1 --install \
+--values https://raw.githubusercontent.com/rh-mobb/helm-charts/main/charts/rosa-thanos-s3/files/operatorhub.yaml
+----
+
+== Deploying the Thanos store gateway
+
+. Deploy the ROSA Thanos S3 Helm chart:
++
+[source,terminal]
+----
+$ helm upgrade -n $NAMESPACE rosa-thanos-s3 --install mobb/rosa-thanos-s3 \
+--set "aws.roleArn=$ROLE_ARN" \
+--set "rosa.clusterName=$CLUSTER_NAME"
+----
+
+. Append remote write settings to the user-workload-monitoring configuration to forward user workload metrics to Thanos:
+
+.. Ensure that the user workload configuration map exists:
++
+[source,terminal]
+----
+$ oc -n openshift-user-workload-monitoring get \ configmaps user-workload-monitoring-config
+----
+
+.. If the configuration does not exist, run:
++
+[source,terminal]
+----
+$ cat << EOF | kubectl apply -f -
+$ apiVersion: v1
+$ kind: ConfigMap
+$ metadata:
+name: user-workload-monitoring-config
+namespace: openshift-user-workload-monitoring
+$ data:
+config.yaml: |
+prometheus:
+remoteWrite:
+- url: "http://thanos-receive.${NAMESPACE}.svc.cluster.local:9091/api/v1/receive"
+EOF
+----
+
+.. Otherwise update it with the following:
++
+[source,terminal]
+----
+$ oc -n openshift-user-workload-monitoring edit \
+configmaps user-workload-monitoring-config
+data:
+config.yaml: |
+...
+prometheus:
+...
+remoteWrite:
+- url: "http://thanos-receive.thanos-receiver.svc.cluster.local:9091/api/v1/receive"
+----
+
+== Ensure that metrics are flowing by logging into Grafana
+
+. Obtain the route URL for Grafana (remember its https) and log in using username `root` and the updated password or the default of `secret`.
++
+[source,terminal]
+----
+$ oc -n thanos-receiver get route grafana-route
+----
+
+. Go to *Dashboards*, then *Manage*. Expand the *federated-metrics* group to see the cluster metrics dashboards.
+
+. Click on the *Use Method/Cluster* dashboard to see your metrics.
+
+image::grafana-metrics.png[]
