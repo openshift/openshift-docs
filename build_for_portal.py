@@ -46,7 +46,6 @@ TAG_CONTENT_RE = re.compile(
 )
 CMP_IGNORE_FILES = [".git", ".gitignore", "README.md", "build.cfg"]
 DEVNULL = open(os.devnull, "wb")
-LIST_OF_HUGE_BOOKS: list = ["Installing", "API reference"]
 
 MASTER_FILE_BASE = "= {title}\n\
 :product-author: {product-author}\n\
@@ -269,7 +268,37 @@ def ensure_directory(directory):
     Creates DIRECTORY if it does not exist.
     """
     if not os.path.exists(directory):
-        os.mkdir(directory)
+        os.makedirs(directory)
+
+def expand_huge_books(info):
+    """
+    Finds nodes for huge books, creates new nodes for books from their top-level topics,
+    and then removes the nodes for huge books
+    """
+
+    # find all the huge books, sa defined by nodes
+    huge_book_nodes = [book for book in info["book_nodes"]
+        if os.path.exists(os.path.join(info["src_dir"],book["Dir"],"hugeBook.flag")) ]
+
+
+    for book in huge_book_nodes:
+            # save the directory in info
+            huge_book_dir = book["Dir"]
+            info["huge_book_dirs"].append(huge_book_dir)
+            # create the flag file in the book destination directory
+            book_dest_dir = os.path.join(info["dest_dir"], book["Dir"])
+            ensure_directory(book_dest_dir)
+            with open(os.path.join(book_dest_dir,"hugeBook.flag"),"w") as fi:
+                fi.write("hugebook")
+            # make new book nodes for the second-level headings
+            for topic in book["Topics"]:
+                if "Dir" in topic.keys():
+                    info["book_nodes"].append(topic)
+                    topic["Dir"] = huge_book_dir + "/" + topic["Dir"]
+
+    # remove book nodes for huge books
+    for node_to_remove in huge_book_nodes:
+        info["book_nodes"].remove(node_to_remove)
 
 
 def build_master_files(info):
@@ -277,11 +306,15 @@ def build_master_files(info):
     Builds the master.adoc and docinfo.xml files for each guide specified in the config.
     """
 
+    # change the huge books into sub-books
+    expand_huge_books(info)
+
     # TODO: Refactor. This does too much.
 
     dest_dir = info["dest_dir"]
     all_in_one = info["all_in_one"]
     all_in_one_text = ""
+
     for book in info["book_nodes"]:
 
         book_dest_dir = os.path.join(dest_dir, book["Dir"])
@@ -328,40 +361,6 @@ def build_master_files(info):
                     info["preface-title"] = ":preface-title: " + preface_title
             all_in_one_text += master
 
-        if book["Name"] in LIST_OF_HUGE_BOOKS:
-            huge_book_topics = book["Topics"]
-
-            for topic in huge_book_topics:
-                if "Dir" in topic.keys():
-                    topic_master_file = os.path.join(
-                        book_dest_dir, topic["Dir"], "master.adoc"
-                    )
-                    topic_docinfo_file = os.path.join(
-                        book_dest_dir, topic["Dir"], "docinfo.xml"
-                    )
-
-                    # TODO: Make less hacky.
-                    book_info["title"] = topic["Name"]
-                    info["title"] = topic["Name"]
-
-                    master_base = MASTER_FILE_BASE.format(**book_info)
-                    docinfo_node = topic["Name"]
-
-                    ensure_directory(os.path.join(book_dest_dir, topic["Dir"]))
-                    sub_master = generate_master_entry(
-                        topic,
-                        topic["Dir"],
-                        info["distro"],
-                        all_in_one,
-                        all_in_one=all_in_one,
-                    )
-
-                    log.debug("Writing " + topic_master_file)
-                    with open(topic_master_file, "w") as f:
-                        f.write(master_base + sub_master)
-                    log.debug("Writing " + topic_docinfo_file)
-                    with open(topic_docinfo_file, "w") as f:
-                        f.write(DOCINFO_BASE.format(**info))
     # TODO: And is this ever used?
     if all_in_one:
         master_file = os.path.join(dest_dir, "master.adoc")
@@ -515,6 +514,7 @@ def copy_file(
     Copies a source file to destination, making sure to scrub the content, add id's where the content is referenced elsewhere and fix any
     links that should be cross references. Also copies any includes that are referenced, since they aren't included in _build_cfg.yml.
     """
+
     # It's possible that the file might have been created by another include, if so then just return
     if os.path.isfile(dest_file):
         return
@@ -544,15 +544,17 @@ def copy_file(
                     key, value = re.split("\s*=\s*", meta, 2)
                     include_vars[key] = value
 
+
             # Determine the include src/dest paths
             include_file = os.path.join(os.path.dirname(book_src_dir), include_path)
             relative_path = os.path.relpath(include_file, os.path.dirname(src_file))
 
             # If the path is in another book, copy it into this one
             relative_book_path = os.path.relpath(include_file, book_src_dir)
+
             if relative_book_path.startswith("../"):
-                path, src_book_name = os.path.split(book_src_dir)
-                dest_include_dir = os.path.join(dest_dir, src_book_name, "includes")
+                src_book_relative_dir = os.path.relpath(book_src_dir,info["src_dir"])
+                dest_include_dir = os.path.join(dest_dir, src_book_relative_dir, "includes")
                 relative_path = os.path.join(
                     os.path.relpath(dest_include_dir, parent_dir),
                     os.path.basename(include_file),
@@ -720,7 +722,7 @@ def fix_links(content, info, book_src_dir, src_file, tag=None, cwd=None):
     Fix any links that were done incorrectly and reference the output instead of the source content.
     """
     if info["all_in_one"]:
-        content = fix_links(content, info["src_dir"], src_file, info)
+        content = _fix_links(content, info["src_dir"], src_file, info)
     else:
         # Determine if the tag should be passed when fixing the links. If it's in the same book, then process the entire file. If it's
         # outside the book then don't process it.
@@ -733,11 +735,27 @@ def fix_links(content, info, book_src_dir, src_file, tag=None, cwd=None):
 
     return content
 
+def dir_to_book_name(dir,src_file,info):
+    # find a book name by the directory
+    for book in info["book_nodes"]:
+        if book["Dir"] == dir:
+            return(book["Name"])
+            break
+
+    has_errors = True
+    log.error(
+        'ERROR (%s): book not found for the directory %s',
+        src_file,
+        dir)
+    return(dir)
+
 
 def _fix_links(content, book_dir, src_file, info, tag=None, cwd=None):
     """
     Fix any links that were done incorrectly and reference the output instead of the source content.
     """
+    current_book_name = dir_to_book_name(os.path.relpath(book_dir,info["src_dir"]),src_file,info)
+
     # TODO Deal with xref so that they keep the proper path. Atm it'll just strip the path and leave only the id
     file_to_id_map = info["file_to_id_map"]
     current_dir = cwd or os.path.dirname(src_file)
@@ -750,6 +768,14 @@ def _fix_links(content, book_dir, src_file, info, tag=None, cwd=None):
         link_anchor = link.group(2)
         link_title = link.group(3)
 
+        # sanity check - is this a link to an external site?
+        # apparently the link macro CAN be used for internal links too, so just testing for http
+        # NOTE: a docs.openshift.com link would not process here corectly, anyway, so let it pass through
+        if ("http:" in link_text) or ("https:" in link_text):
+            continue
+
+        fixed_link = "" # setting the scope of fixed_link outside the if statements
+
         if link_file is not None:
             fixed_link_file = link_file.replace(".html", ".adoc")
             fixed_link_file_abs = os.path.abspath(
@@ -757,32 +783,41 @@ def _fix_links(content, book_dir, src_file, info, tag=None, cwd=None):
             )
             if fixed_link_file_abs in file_to_id_map:
 
-                # We are dealing with a cross reference to another book here
-                external_link = EXTERNAL_LINK_RE.search(link_file)
-                book_dir_name = external_link.group(1)
+                # We are dealing with a cross reference to a book here
+                full_relative_path = os.path.relpath(fixed_link_file_abs,info["src_dir"])
+
+                if full_relative_path[:2]=="..":
+                    log.error(
+                        'ERROR (%s): link pointing outside source directory? %s',
+                        src_file,
+                        link_file)
+                    continue
+                split_relative_path = full_relative_path.split("/")
+                book_dir_name = split_relative_path[0]
+                if book_dir_name in info["huge_book_dirs"]:
+                    book_dir_name = split_relative_path[0]+"/"+split_relative_path[1]
 
                 # Find the book name
-                book_name = book_dir_name
-                for book in info["data"]:
-                    if (
-                        check_node_distro_matches(book, info["distro"])
-                        and book["Dir"] == book_dir_name
-                    ):
-                        book_name = book["Name"]
-                        break
+                book_name = dir_to_book_name(book_dir_name,src_file,info)
 
-                fixed_link_file = BASE_PORTAL_URL + build_portal_url(info, book_name)
 
-                if link_anchor is None:
-                    fixed_link = (
-                        "link:"
-                        + fixed_link_file
-                        + "#"
-                        + file_to_id_map[fixed_link_file_abs]
-                        + link_title
-                    )
+                if book_name==current_book_name:
+                    if link_anchor is None:
+                        fixed_link = "xref:" + file_to_id_map[fixed_link_file_abs] + link_title
+                    else:
+                        fixed_link = "xref:" + link_anchor.replace("#", "") + link_title
                 else:
-                    fixed_link = "link:" + fixed_link_file + link_anchor + link_title
+                    fixed_link_file = BASE_PORTAL_URL + build_portal_url(info, book_name)
+                    if link_anchor is None:
+                        fixed_link = (
+                            "link:"
+                            + fixed_link_file
+                            + "#"
+                            + file_to_id_map[fixed_link_file_abs]
+                            + link_title
+                        )
+                    else:
+                        fixed_link = "link:" + fixed_link_file + link_anchor + link_title
             else:
                 # Cross reference or link that isn't in the docs suite
                 fixed_link = link_text
@@ -1132,6 +1167,7 @@ def main():
         "all_in_one": args.all_in_one,
         "preface-title": "",
         "upstream_branch": args.upstream_branch,
+        "huge_book_dirs": []
     }
 
     # Build the master files
