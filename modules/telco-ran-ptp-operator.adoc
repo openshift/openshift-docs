@@ -1,0 +1,45 @@
+// Module included in the following assemblies:
+//
+// * telco_ref_design_specs/ran/telco-ran-ref-du-components.adoc
+
+:_mod-docs-content-type: REFERENCE
+[id="telco-ran-ptp-operator_{context}"]
+= PTP Operator
+
+New in this release::
+* PTP grandmaster clock (T-GM) GPS timing with Intel E810-XXV-4T Westport Channel NIC – minimum firmware version 4.30 (Technology Preview)
+
+* PTP events and metrics for grandmaster (T-GM) are new in  {product-title} {product-version} (Technology Preview)
+
+Description::
+Configure of link:https://docs.openshift.com/container-platform/latest/scalability_and_performance/ztp_far_edge/ztp-reference-cluster-configuration-for-vdu.html#ztp-sno-du-configuring-ptp_sno-configure-for-vdu[PTP timing] support for cluster nodes.
+The DU node can run in the following modes:
++
+* As an ordinary clock synced to a T-GM or boundary clock (T-BC)
+
+* As dual boundary clocks, one per NIC (high availability is not supported)
+
+* As grandmaster clock with support for E810 Westport Channel NICs (Technology Preview)
+
+* Optionally as a boundary clock for radio units (RUs)
+
++
+Optional: subscribe applications to PTP events that happen on the node that the application is running.
+You subscribe the application to events via HTTP.
+
+Limits and requirements::
+* High availability is not supported with dual NIC configurations.
+
+* Westport Channel NICs configured as T-GM do not support DPLL with the current ice driver version.
+
+* GPS offsets are not reported.
+Use a default offset of less than or equal to 5.
+
+* DPLL offsets are not reported.
+Use a default offset of less than or equal to 5.
+
+
+Engineering considerations::
+* Configurations are provided for ordinary clock, boundary clock, or grandmaster clock
+
+* PTP fast event notifications uses `ConfigMap` CRs to store PTP event subscriptions.

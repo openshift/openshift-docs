@@ -1,0 +1,30 @@
+// Module included in the following assemblies:
+//
+// * telco_ref_design_specs/ran/telco-ran-ref-design-spec.adoc
+
+:_mod-docs-content-type: REFERENCE
+[id="telco-core-ref-application-workloads_{context}"]
+= Application workloads
+
+Application workloads running on core clusters might include a mix of high-performance networking CNFs and traditional best-effort or burstable pod workloads.
+
+Guaranteed QoS scheduling is available to pods that require exclusive or dedicated use of CPUs due to performance or security requirements. Typically pods hosting high-performance and low-latency-sensitive Cloud Native Functions (CNFs) utilizing user plane networking with DPDK necessitate the exclusive utilization of entire CPUs. This is accomplished through node tuning and guaranteed Quality of Service (QoS) scheduling. For pods that require exclusive use of CPUs, be aware of the potential implications of hyperthreaded systems and configure them to request multiples of 2 CPUs when the entire core (2 hyperthreads) must be allocated to the pod.
+
+Pods running network functions that do not require the high throughput and low latency networking are typically scheduled with best-effort or burstable QoS and do not require dedicated or isolated CPU cores.
+
+Description of limits::
+
+* CNF applications should conform to the latest version of the _CNF Best Practices_ guide.
+* For a mix of best-effort and burstable QoS pods.
+** Guaranteed QoS pods might be used but require correct configuration of reserved and isolated CPUs in the `PerformanceProfile`.
+** Guaranteed QoS Pods must include annotations for fully isolating CPUs.
+** Best effort and burstable pods are not guaranteed exclusive use of a CPU. Workloads might be preempted by other workloads, operating system daemons, or kernel tasks.
+* Exec probes should be avoided unless there is no viable alternative.
+** Do not use exec probes if a CNF is using CPU pinning.
+** Other probe implementations, for example `httpGet/tcpSocket`, should be used.
+
+Signaling workload::
+
+* Signaling workloads typically use SCTP, REST, gRPC, or similar TCP or UDP protocols.
+* The transactions per second (TPS) is in the order of hundreds of thousands using secondary CNI (multus) configured as MACVLAN or SR-IOV.
+* Signaling workloads run in pods with either guaranteed or burstable QoS.

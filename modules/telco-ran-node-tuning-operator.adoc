@@ -1,0 +1,74 @@
+// Module included in the following assemblies:
+//
+// * telco_ref_design_specs/ran/telco-ran-ref-du-components.adoc
+
+:_mod-docs-content-type: REFERENCE
+[id="telco-ran-node-tuning-operator_{context}"]
+= Node Tuning Operator
+
+New in this release::
+* No reference design updates in this release
+
+Description::
+You tune the cluster performance by link:https://docs.openshift.com/container-platform/latest/scalability_and_performance/cnf-create-performance-profiles.html[creating a performance profile].
+Settings that you configure with a performance profile include:
++
+* Selecting the realtime or non-realtime kernel.
+
+* Allocating cores to a reserved or isolated `cpuset`.
+{product-title} processes allocated to the management workload partition are pinned to reserved set.
+
+* Enabling kubelet features (CPU manager, topology manager, and memory manager).
+
+* Configuring huge pages.
+
+* Setting additional kernel arguments.
+
+* Setting per-core power tuning and max CPU frequency.
+
+Limits and requirements::
+
+The Node Tuning Operator uses the `PerformanceProfile` CR to configure the cluster. You need to configure the following settings in the RAN DU profile `PerformanceProfile` CR:
+
+* Select reserved and isolated cores and ensure that you allocate at least 4 hyperthreads (equivalent to 2 cores) on Intel 3rd Generation Xeon (Ice Lake) 2.20 GHz CPUs or better with firmware tuned for maximum performance.
+
+* Set the reserved `cpuset` to include both hyperthread siblings for each included core.
+Unreserved cores are available as allocatable CPU for scheduling workloads.
+Ensure that hyperthread siblings are not split across reserved and isolated cores.
+
+* Configure reserved and isolated CPUs to include all threads in all cores based on what you have set as reserved and isolated CPUs.
+
+* Set core 0 of each NUMA node to be included in the reserved CPU set.
+
+* Set the huge page size to 1G.
+
+[NOTE]
+====
+You should not add additional workloads to the management partition.
+Only those pods which are part of the OpenShift management platform should be annotated into the management partition.
+====
+
+Engineering considerations::
+* You should use the RT kernel to meet performance requirements.
++
+[NOTE]
+====
+You can use the non-RT kernel if required.
+====
+
+* The number of huge pages that you configure depends on the application workload requirements.
+Variation in this parameter is expected and allowed.
+
+* Variation is expected in the configuration of reserved and isolated CPU sets based on selected hardware and additional components in use on the system.
+Variation must still meet the specified limits.
+
+* Hardware without IRQ affinity support impacts isolated CPUs.
+To ensure that pods with guaranteed whole CPU QoS have full use of the allocated CPU, all hardware in the server must support IRQ affinity.
+For more information, see link:https://docs.openshift.com/container-platform/latest/scalability_and_performance/cnf-low-latency-tuning.html#about_irq_affinity_setting_cnf-master[About support of IRQ affinity setting].
+
+[NOTE]
+====
+In {product-title} {product-version}, any `PerformanceProfile` CR configured on the cluster causes the Node Tuning Operator to automatically set all cluster nodes to use cgroup v1.
+
+For more information about cgroups, see link:https://docs.openshift.com/container-platform/4.14/nodes/clusters/nodes-cluster-cgroups-2.html#nodes-clusters-cgroups-2_nodes-cluster-cgroups-2[Configuring Linux cgroup].
+====

@@ -1,0 +1,19 @@
+// Module included in the following assemblies:
+//
+// * telco_ref_design_specs/ran/telco-ran-ref-du-crs.adoc
+
+:_mod-docs-content-type: REFERENCE
+[id="cluster-tuning-crs_{context}"]
+= Cluster tuning reference CRs
+
+.Cluster tuning CRs
+[cols="4*", options="header", format=csv]
+|====
+Component,Reference CR,Optional,New in this release
+Cluster capabilities,xref:../../telco_ref_design_specs/ran/telco-ran-ref-du-crs.adoc#ztp-example-sno-yaml[example-sno.yaml],No,No
+Disabling network diagnostics,xref:../../telco_ref_design_specs/ran/telco-ran-ref-du-crs.adoc#ztp-disablesnonetworkdiag-yaml[DisableSnoNetworkDiag.yaml],No,No
+Monitoring configuration,xref:../../telco_ref_design_specs/ran/telco-ran-ref-du-crs.adoc#ztp-reducemonitoringfootprint-yaml[ReduceMonitoringFootprint.yaml],No,No
+OperatorHub,xref:../../telco_ref_design_specs/ran/telco-ran-ref-du-crs.adoc#ztp-defaultcatsrc-yaml[DefaultCatsrc.yaml],No,No
+OperatorHub,xref:../../telco_ref_design_specs/ran/telco-ran-ref-du-crs.adoc#ztp-disconnectedicsp-yaml[DisconnectedICSP.yaml],No,No
+OperatorHub,xref:../../telco_ref_design_specs/ran/telco-ran-ref-du-crs.adoc#ztp-operatorhub-yaml[OperatorHub.yaml],No,No
+|====

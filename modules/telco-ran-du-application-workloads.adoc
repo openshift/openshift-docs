@@ -1,0 +1,23 @@
+// Module included in the following assemblies:
+//
+// * telco_ref_design_specs/ran/telco-ran-du-overview.adoc
+
+:_mod-docs-content-type: REFERENCE
+[id="telco-du-workloads_{context}"]
+= {rds-caps} application workloads
+
+DU worker nodes must have 3rd Generation Xeon (Ice Lake) 2.20 GHz or better CPUs with firmware tuned for maximum performance.
+
+5G RAN DU user applications and workloads should conform to the following best practices and application limits:
+
+* Develop cloud-native network functions (CNFs) that conform to the latest version of the link:https://test-network-function.github.io/cnf-best-practices/[CNF best practices guide].
+
+* Use SR-IOV for high performance networking.
+
+* Use exec probes sparingly and only when no other suitable options are available
+
+** Do not use exec probes if a CNF uses CPU pinning.
+Use other probe implementations, for example, `httpGet` or `tcpSocket`.
+
+** When you need to use exec probes, limit the exec probe frequency and quantity.
+The maximum number of exec probes must be kept below 10, and frequency must not be set to less than 10 seconds.

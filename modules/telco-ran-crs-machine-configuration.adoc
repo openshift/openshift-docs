@@ -1,0 +1,28 @@
+// Module included in the following assemblies:
+//
+// * telco_ref_design_specs/ran/telco-ran-ref-du-crs.adoc
+
+:_mod-docs-content-type: REFERENCE
+[id="machine-configuration-crs_{context}"]
+= Machine configuration reference CRs
+
+.Machine configuration CRs
+[cols="4*", options="header", format=csv]
+|====
+Component,Reference CR,Optional,New in this release
+Container runtime (crun),xref:../../telco_ref_design_specs/ran/telco-ran-ref-du-crs.adoc#ztp-enable-crun-master-yaml[enable-crun-master.yaml],No,No
+Container runtime (crun),xref:../../telco_ref_design_specs/ran/telco-ran-ref-du-crs.adoc#ztp-enable-crun-worker-yaml[enable-crun-worker.yaml],No,No
+Disabling CRI-O wipe,xref:../../telco_ref_design_specs/ran/telco-ran-ref-du-crs.adoc#ztp-99-crio-disable-wipe-master-yaml[99-crio-disable-wipe-master.yaml],No,No
+Disabling CRI-O wipe,xref:../../telco_ref_design_specs/ran/telco-ran-ref-du-crs.adoc#ztp-99-crio-disable-wipe-worker-yaml[99-crio-disable-wipe-worker.yaml],No,No
+Enabling kdump,xref:../../telco_ref_design_specs/ran/telco-ran-ref-du-crs.adoc#ztp-05-kdump-config-master-yaml[05-kdump-config-master.yaml],No,Yes
+Enabling kdump,xref:../../telco_ref_design_specs/ran/telco-ran-ref-du-crs.adoc#ztp-05-kdump-config-worker-yaml[05-kdump-config-worker.yaml],No,Yes
+Enabling kdump,xref:../../telco_ref_design_specs/ran/telco-ran-ref-du-crs.adoc#ztp-06-kdump-master-yaml[06-kdump-master.yaml],No,No
+Enabling kdump,xref:../../telco_ref_design_specs/ran/telco-ran-ref-du-crs.adoc#ztp-06-kdump-worker-yaml[06-kdump-worker.yaml],No,No
+Kubelet configuration and container mount hiding,xref:../../telco_ref_design_specs/ran/telco-ran-ref-du-crs.adoc#ztp-01-container-mount-ns-and-kubelet-conf-master-yaml[01-container-mount-ns-and-kubelet-conf-master.yaml],No,No
+Kubelet configuration and container mount hiding,xref:../../telco_ref_design_specs/ran/telco-ran-ref-du-crs.adoc#ztp-01-container-mount-ns-and-kubelet-conf-worker-yaml[01-container-mount-ns-and-kubelet-conf-worker.yaml],No,No
+One-shot time sync,xref:../../telco_ref_design_specs/ran/telco-ran-ref-du-crs.adoc#ztp-99-sync-time-once-master-yaml[99-sync-time-once-master.yaml],No,Yes
+One-shot time sync,xref:../../telco_ref_design_specs/ran/telco-ran-ref-du-crs.adoc#ztp-99-sync-time-once-worker-yaml[99-sync-time-once-worker.yaml],No,Yes
+SCTP,xref:../../telco_ref_design_specs/ran/telco-ran-ref-du-crs.adoc#ztp-03-sctp-machine-config-master-yaml[03-sctp-machine-config-master.yaml],No,No
+SCTP,xref:../../telco_ref_design_specs/ran/telco-ran-ref-du-crs.adoc#ztp-03-sctp-machine-config-worker-yaml[03-sctp-machine-config-worker.yaml],No,No
+SR-IOV related kernel arguments,xref:../../telco_ref_design_specs/ran/telco-ran-ref-du-crs.adoc#ztp-07-sriov-related-kernel-args-master-yaml[07-sriov-related-kernel-args-master.yaml],No,Yes
+|====

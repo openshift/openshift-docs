@@ -1,0 +1,41 @@
+// Module included in the following assemblies:
+//
+// * telco_ref_design_specs/ran/telco-ran-du-overview.adoc
+
+:_mod-docs-content-type: REFERENCE
+[id="telco-ran-hub-cluster-management_{context}"]
+= Hub cluster management characteristics
+
+{rh-rhacm-first} is the recommended cluster management solution.
+Configure it to the following limits on the hub cluster:
+
+* Configure a maximum of 5 {rh-rhacm} policies with a compliant evaluation interval of at least 10 minutes.
+
+* Use a maximum of 10 managed cluster templates in policies.
+Where possible, use hub-side templating.
+
+* Disable all {rh-rhacm} add-ons except for the `policy-controller` and `observability-controller` add-ons.
+Set `Observability` to the default configuration.
++
+[IMPORTANT]
+====
+Configuring optional components or enabling additional features will result in additional resource usage and can reduce overall system performance.
+
+For more information, see xref:../../telco_ref_design_specs/ran/telco-ran-ref-du-components.adoc#telco-reference-ran-du-deployment-components_ran-ref-design-components[Reference design deployment components].
+====
+
+.OpenShift platform resource utilization under reference application load
+[cols="1,2,3", width="90%", options="header"]
+|====
+|Metric
+|Limit
+|Notes
+
+|CPU usage
+|Less than 4000 mc – 2 cores (4 hyperthreads)
+|Platform CPU is pinned to reserved cores, including both hyperthreads in each reserved core. The system is engineered to use 3 CPUs (3000mc) at steady-state to allow for periodic system tasks and spikes.
+
+|Memory used
+|Less than 16G
+|
+|====

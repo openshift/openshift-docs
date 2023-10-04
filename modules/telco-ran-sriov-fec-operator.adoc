@@ -1,0 +1,26 @@
+// Module included in the following assemblies:
+//
+// * telco_ref_design_specs/ran/telco-ran-ref-du-components.adoc
+
+:_mod-docs-content-type: REFERENCE
+[id="telco-ran-sriov-fec-operator_{context}"]
+= SRIOV-FEC Operator
+
+New in this release::
+* No reference design updates in this release
+
+Description::
+SRIOV-FEC Operator is an optional 3rd party Certified Operator supporting FEC accelerator hardware.
+
+Limits and requirements::
+* Starting with FEC Operator v2.7.0:
+
+** `SecureBoot` is supported
+
+** The `vfio` driver for the `PF` requires the usage of `vfio-token` that is injected into Pods.
+The `VF` token can be passed to DPDK by using the EAL parameter `--vfio-vf-token`.
+
+Engineering considerations::
+* The SRIOV-FEC Operator uses CPU cores from the `isolated` CPU set.
+
+* You can validate FEC readiness as part of the pre-checks for application deployment, for example, by extending the validation policy.

@@ -1,0 +1,49 @@
+// Module included in the following assemblies:
+//
+// * telco_ref_design_specs/ran/telco-ran-ref-du-crs.adoc
+
+:_mod-docs-content-type: REFERENCE
+[id="cluster-tuning-yaml_{context}"]
+= Cluster tuning reference YAML
+
+[id="ztp-example-sno-yaml"]
+.example-sno.yaml
+[source,yaml]
+----
+include::snippets/ztp_example-sno.yaml[]
+----
+
+[id="ztp-disablesnonetworkdiag-yaml"]
+.DisableSnoNetworkDiag.yaml
+[source,yaml]
+----
+include::snippets/ztp_DisableSnoNetworkDiag.yaml[]
+----
+
+[id="ztp-reducemonitoringfootprint-yaml"]
+.ReduceMonitoringFootprint.yaml
+[source,yaml]
+----
+include::snippets/ztp_ReduceMonitoringFootprint.yaml[]
+----
+
+[id="ztp-defaultcatsrc-yaml"]
+.DefaultCatsrc.yaml
+[source,yaml]
+----
+include::snippets/ztp_DefaultCatsrc.yaml[]
+----
+
+[id="ztp-disconnectedicsp-yaml"]
+.DisconnectedICSP.yaml
+[source,yaml]
+----
+include::snippets/ztp_DisconnectedICSP.yaml[]
+----
+
+[id="ztp-operatorhub-yaml"]
+.OperatorHub.yaml
+[source,yaml]
+----
+include::snippets/ztp_OperatorHub.yaml[]
+----
