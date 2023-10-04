@@ -1,0 +1,22 @@
+// Module included in the following assemblies:
+//
+// * telco_ref_design_specs/core/telco-core-ref-components.adoc
+
+:_mod-docs-content-type: REFERENCE
+[id="telco-core-disconnected-environment_{context}"]
+= Disconnected environment
+
+Description::
+{rds-caps} clusters are expected to be installed in networks without direct access to the internet. All container images needed to install, configure, and operator the cluster must be available in a disconnected registry. This includes {product-title} images, day-2 Operator Lifecycle Manager (OLM) Operator images, and application workload images. The use of a disconnected environment provides multiple benefits, for example:
+
+* Limiting access to the cluster for security
+* Curated content: The registry is populated based on curated and approved updates for the clusters
+
+Limits and requirements::
+
+* A unique name is required for all custom CatalogSources. Do not reuse the default catalog names.
+* A valid time source must be configured as part of cluster installation.
+
+Engineering considerations::
+
+Not applicable
