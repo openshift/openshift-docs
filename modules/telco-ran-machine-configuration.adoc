@@ -1,0 +1,48 @@
+// Module included in the following assemblies:
+//
+// * telco_ref_design_specs/ran/telco-ran-ref-du-components.adoc
+
+:_mod-docs-content-type: REFERENCE
+[id="telco-ran-machine-configuration_{context}"]
+= Machine configuration
+
+New in this release::
+* Set `rcu_normal` after node recovery
+
+Limits and requirements::
+* The CRI-O wipe disable `MachineConfig` assumes that images on disk are static other than during scheduled maintenance in defined maintenance windows.
+To ensure the images are static, do not set the pod `imagePullPolicy` field to `Always`.
++
+.Machine configuration options
+[cols=2*, width="90%", options="header"]
+|====
+|Feature
+|Description
+
+|Container runtime
+|Sets the container runtime to `crun` for all node roles.
+
+|kubelet config and container mount hiding
+|Reduces the frequency of kubelet housekeeping and eviction monitoring to reduce CPU usage.
+Create a container mount namespace, visible to kubelet and CRI-O, to reduce system mount scanning resource usage.
+
+|SCTP
+|Optional configuration (enabled by default)
+Enables SCTP. SCTP is required by RAN applications but disabled by default in {op-system}.
+
+|kdump
+|Optional configuration (enabled by default)
+Enables kdump to capture debug information when a kernel panic occurs.
+
+|CRI-O wipe disable
+|Disables automatic wiping of the CRI-O image cache after unclean shutdown.
+
+|SR-IOV-related kernel arguments
+|Includes additional SR-IOV related arguments in the kernel command line.
+
+|RCU Normal systemd service
+|Sets `rcu_normal` after the system is fully started.
+
+|One-shot time sync
+|Runs a one-time system time synchronization job for control plane or worker nodes.
+|====
