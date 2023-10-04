@@ -1,0 +1,22 @@
+// Module included in the following assemblies:
+//
+// * telco_ref_design_specs/ran/telco-ran-du-overview.adoc
+
+:_mod-docs-content-type: REFERENCE
+[id="telco-ran-du-reference-components_{context}"]
+= {rds-caps} RDS components
+
+The following sections describe the various {product-title} components and configurations that you use to configure and deploy clusters to run {rds} workloads.
+
+.{rds-caps} reference design components
+image::319_OpenShift_PTP_bare-metal_OCP_nodes_1023_RAN_DU.png[A diagram describing the {rds} component stack.]
+
+[NOTE]
+====
+Ensure that components that are not included in the {rds} profile do not affect the CPU resources allocated to workload applications.
+====
+
+[IMPORTANT]
+====
+Out of tree drivers are not supported.
+====
