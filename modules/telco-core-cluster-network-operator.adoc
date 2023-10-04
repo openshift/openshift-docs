@@ -1,0 +1,28 @@
+// Module included in the following assemblies:
+//
+// * telco_ref_design_specs/ran/telco-core-ref-components.adoc
+
+:_mod-docs-content-type: REFERENCE
+[id="telco-core-cluster-network-operator_{context}"]
+= Cluster Network Operator (CNO)
+
+New in this release::
+
+Not applicable.
+
+Description::
+
+The CNO deploys and manages the cluster network components including the default OVN-Kubernetes network plugin during {product-title} cluster installation. It allows configuring primary interface MTU settings, OVN gateway modes to use node routing tables for pod egress, and additional secondary networks such as MACVLAN.
++
+In support of network traffic segregation, multiple network interfaces are configured through the CNO. Traffic steering to these interfaces is configured through static routes applied by using the NMState Operator. To ensure that pod traffic is properly routed, OVN-K is configured with the `routingViaHost` option enabled. This setting uses the kernel routing table and the applied static routes rather than OVN for pod egress traffic.
++
+The Whereabouts CNI plugin is used to provide dynamic IPv4 and IPv6 addressing for additional pod network interfaces without the use of a DHCP server.
+
+Limits and requirements::
+
+* OVN-Kubernetes is required for IPv6 support.
+* Large MTU cluster support requires connected network equipment to be set to the same or larger value.
+
+Engineering considerations::
+* Pod egress traffic is handled by kernel routing table with the `routingViaHost` option. Appropriate static routes must be configured in the host.
+
