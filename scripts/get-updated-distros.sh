@@ -5,12 +5,7 @@
 
 # Handle the git diff differently for Travis and local
 # Get the *.adoc and distro maps files in the pull request
-if [ "$TRAVIS" = true ] ; then
-    FILES=$(git diff --name-only HEAD $TRAVIS_BRANCH --diff-filter=d "*.yml" "*.adoc" ':(exclude)_unused_topics/*')
-
-else
-    FILES=$(git diff --name-only HEAD@{1} --diff-filter=d "*.yml" "*.adoc" ':(exclude)_unused_topics/*')
-fi
+FILES=$(git diff --name-only HEAD HEAD@{1} --diff-filter=d "*.yml" "*.adoc" ':(exclude)_unused_topics/*')
 
 REPO_PATH=$(git rev-parse --show-toplevel)
 
