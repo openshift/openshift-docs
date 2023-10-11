@@ -3,9 +3,17 @@
 # Returns a list of updated _topic_map.yml files.
 # The list includes any topic maps that are themselves modified, and indirectly modifed topic maps where incldued AsciiDoc files have been updated.
 
+# Handle the git diff differently for Travis and local
 # Get the *.adoc and distro maps files in the pull request
-FILES=$(git diff --name-only HEAD HEAD~$(git rev-list --count --no-merges origin/enterprise-4.10..) --diff-filter=d "*.yml" "*.adoc" ':(exclude)_unused_topics/*')
+if [ "$TRAVIS" = true ] ; then
+    FILES=$(git diff --name-only HEAD $TRAVIS_BRANCH --diff-filter=d "*.yml" "*.adoc" ':(exclude)_unused_topics/*')
+
+else
+    FILES=$(git diff --name-only HEAD@{1} --diff-filter=d "*.yml" "*.adoc" ':(exclude)_unused_topics/*')
+fi
+
 REPO_PATH=$(git rev-parse --show-toplevel)
+
 # Init an empty array
 DISTROS=()
 
@@ -39,7 +47,7 @@ for ASSEMBLY in $ALL_ASSEMBLIES; do
     fi
 done
 
-# Handle modified topic maps  
+# Handle modified topic maps
 UPDATED_DISTROS=$(echo "$FILES" | awk '/_topic_maps\/(.*)\.yml/')
 # Concat all the updated topic maps
 DISTROS+=("${UPDATED_DISTROS}")
