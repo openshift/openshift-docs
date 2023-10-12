@@ -3,8 +3,11 @@
 # Returns a list of updated _topic_map.yml files.
 # The list includes any topic maps that are themselves modified, and indirectly modifed topic maps where incldued AsciiDoc files have been updated.
 
+# Configure remote for Travis
+git remote set-branches --add upstream $TRAVIS_BRANCH
+git fetch
 # Get the *.adoc and distro maps files in the pull request
-FILES=$(git diff --name-only HEAD@{1} --diff-filter=d "*.yml" "*.adoc" ':(exclude)_unused_topics/*')
+FILES=$(git diff --name-only $TRAVIS_BRANCH upstream/$TRAVIS_BRANCH --diff-filter=d "*.yml" "*.adoc" ':(exclude)_unused_topics/*')
 
 REPO_PATH=$(git rev-parse --show-toplevel)
 
