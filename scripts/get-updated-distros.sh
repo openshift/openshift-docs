@@ -4,8 +4,10 @@
 # The list includes any topic maps that are themselves modified, and indirectly modifed topic maps where incldued AsciiDoc files have been updated.
 
 # Get the *.adoc and distro maps files in the pull request
-FILES=$(git diff --name-only HEAD HEAD~$(git rev-list --count --no-merges origin/main..) --diff-filter=d "*.yml" "*.adoc" ':(exclude)_unused_topics/*')
+FILES=$(git diff --name-only HEAD@{1} --diff-filter=d "*.yml" "*.adoc" ':(exclude)_unused_topics/*')
+
 REPO_PATH=$(git rev-parse --show-toplevel)
+
 # Init an empty array
 DISTROS=()
 
@@ -39,7 +41,7 @@ for ASSEMBLY in $ALL_ASSEMBLIES; do
     fi
 done
 
-# Handle modified topic maps  
+# Handle modified topic maps
 UPDATED_DISTROS=$(echo "$FILES" | awk '/_topic_maps\/(.*)\.yml/')
 # Concat all the updated topic maps
 DISTROS+=("${UPDATED_DISTROS}")
