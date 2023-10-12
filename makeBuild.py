@@ -75,6 +75,46 @@ def _fix_ids_for_html4(tree):
                 if old_endterm.get("endterm") == id_val:
                     old_endterm.set('endterm', new_id)
 
+def build_book(book):
+    validated = True
+    starting_dir=os.getcwd()
+    os.chdir(os.path.join("drupal-build", distro, book))
+    #print(os.getcwd() + "\n")
+
+    # Create the transformer instance
+    transformer = AsciiDocPublicanTransformer()
+
+    try:
+        # Transform the AsciiDoc to DocBook XML
+        print((">>> Working on " + book + " book in " + distro + " <<<"))
+        if not transformer._build_docbook_src("master.adoc", "build"):
+            logging.error(">>> Validation of book " + book + " in " + distro + " failed: master.adoc not found <<<")
+            return False
+
+        # Parse the transformed XML
+        transformer._before_xml_parse("build/master.xml")
+
+        # Parse the XML content
+        tree = utils.parse_xml("build/master.xml")
+
+        # Apply XML updates from aura/ccutil
+        transformer._fix_uncoverted_xrefs_with_file_paths(tree)
+        _fix_ids_for_html4(tree)
+
+        # Validate the transformed XML
+        if not transformer._validate_docbook_idrefs(tree):
+            logging.error(">>> Validation of book " + book + " in " + distro + " failed <<<")
+            validated = False
+    except (XMLSyntaxError, XIncludeError, InvalidInputException) as e:
+        logging.error(e)
+        validated = False
+    finally:
+        print((">>> Finished with " + book + " book in " + distro + " <<<"))
+        print("---------------------------------------")
+        os.chdir(starting_dir)
+        return validated
+
+
 
 # all validated?
 all_validated = True
@@ -91,53 +131,19 @@ for distro in os.listdir("drupal-build"):
     for book in os.listdir(os.path.join("drupal-build", distro)):
 
         #print(os.getcwd() + "\n")
-        #if not os.path.isdir("drupal-build/" + distro + "/" + book):
-            #print("---------------------------------------")
-            #print(">>> No Book " + book + " in this repo. Skipping <<<")
-            #print("---------------------------------------")
-
-            #continue
-
+        # skip any non-directory entries
+        if not os.path.isdir("drupal-build/" + distro + "/" + book):
+            continue
         # rest api book is a pain and doesn't convert well
         if book == "rest_api":
-          continue
+            continue
 
-        os.chdir("drupal-build/" + distro + "/" + book)
-        #print(os.getcwd() + "\n")
-
-        # Create the transformer instance
-        transformer = AsciiDocPublicanTransformer()
-
-        try:
-            # Transform the AsciiDoc to DocBook XML
-            print((">>> Working on " + book + " book in " + distro + " <<<"))
-            if not transformer._build_docbook_src("master.adoc", "build"):
-                print(("Could not transform book " + book))
-                all_validated = False
-                continue
-
-            # Parse the transformed XML
-            transformer._before_xml_parse("build/master.xml")
-
-            # Parse the XML content
-            tree = utils.parse_xml("build/master.xml")
-
-            # Apply XML updates from aura/ccutil
-            transformer._fix_uncoverted_xrefs_with_file_paths(tree)
-            _fix_ids_for_html4(tree)
-
-            # Validate the transformed XML
-            if not transformer._validate_docbook_idrefs(tree):
-                logging.error(">>> Validation of book " + book + " in " + distro + " failed <<<")
-                all_validated = False
-        except (XMLSyntaxError, XIncludeError, InvalidInputException) as e:
-            logging.error(e)
-            all_validated = False
-        finally:
-            print((">>> Finished with " + book + " book in " + distro + " <<<"))
-            print("---------------------------------------")
-            os.chdir("../../../")
-
+        if os.path.exists(os.path.join("drupal-build", distro, book,"hugeBook.flag")):
+            for secondary_book in os.listdir(os.path.join("drupal-build", distro, book)):
+                if os.path.isdir("drupal-build/" + distro + "/" + book + "/" + secondary_book):
+                    all_validated = all_validated and build_book(book+"/"+secondary_book)
+        else:
+            all_validated = all_validated and build_book(book)
 if not all_validated:
     sys.exit(-1)
 else:
