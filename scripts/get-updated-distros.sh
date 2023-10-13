@@ -3,8 +3,14 @@
 # Returns a list of updated _topic_map.yml files.
 # The list includes any topic maps that are themselves modified, and indirectly modifed topic maps where incldued AsciiDoc files have been updated.
 
-# Get the *.adoc and distro ma ps files in the pull request
-FILES=$(git diff --name-only HEAD@{1} --diff-filter=d "*.yml" "*.adoc" ':(exclude)_unused_topics/*')
+# Get the *.adoc and distro maps files in the pull request
+FILES=""
+
+if [ -z ${TRAVIS_COMMIT_RANGE+x} ]; then
+    FILES=$(git diff --name-only HEAD@{1} --diff-filter=d "*.yml" "*.adoc" ':(exclude)_unused_topics/*')
+else
+    FILES=$(git diff --name-only $TRAVIS_COMMIT_RANGE --diff-filter=d "*.yml" "*.adoc" ':(exclude)_unused_topics/*')
+fi
 
 REPO_PATH=$(git rev-parse --show-toplevel)
 
