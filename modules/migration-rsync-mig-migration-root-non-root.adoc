@@ -1,0 +1,42 @@
+// Module included in the following assemblies:
+//
+// * migration_toolkit_for_containers/installing-mtc.adoc
+// * migration_toolkit_for_containers/installing-mtc-restricted.adoc
+[id="migration-rsync-mig-migration-root-non-root_{context}"]
+== Configuring the MigMigration CR as root or non-root per migration
+
+On the destination cluster, you can configure the `MigMigration` CR to run Rsync as root or non-root, with the following non-root options:
+
+* As a specific user ID (UID)
+* As a specific group ID (GID)
+
+.Procedure
+
+. To run Rsync as root, configure the `MigMigration` CR according to this example:
++
+[source,yaml]
+----
+apiVersion: migration.openshift.io/v1alpha1
+kind: MigMigration
+metadata:
+  name: migration-controller
+  namespace: openshift-migration
+spec:
+  [...]
+  runAsRoot: true
+----
+
+. To run Rsync as a specific User ID (UID) or as a specific Group ID (GID), configure the `MigMigration` CR according to this example:
++
+[source,yaml]
+----
+apiVersion: migration.openshift.io/v1alpha1
+kind: MigMigration
+metadata:
+  name: migration-controller
+  namespace: openshift-migration
+spec:
+  [...]
+  runAsUser: 10010001
+  runAsGroup: 3
+----

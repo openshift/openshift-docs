@@ -1,0 +1,266 @@
+// Module included in the following assemblies:
+//
+// * networking/multiple_networks/configuring-additional-network.adoc
+
+:_content-type: CONCEPT
+
+[id="nw-about-configuring-master-interface-container_{context}"]
+= About configuring the master interface in the container network namespace
+
+In {product-title} 4.14 and later, the ability to allow users to create a MAC-VLAN, IP-VLAN, and VLAN subinterface based on a master interface in a container namespace is now generally available.
+
+This feature allows you to create the master interfaces as part of the pod network configuration in a separate network attachment definition. You can then base the VLAN, MACVLAN, or IPVLAN on this interface without requiring the knowledge of the network configuration of the node.
+
+To ensure the use of a container namespace master interface specify the `linkInContainer` and set the value to `true` in the VLAN, MACVLAN, or IPVLAN plugin configuration depending on the particular type of additional network.
+
+An example use case for utilizing this feature is to create multiple VLANs based on SR-IOV VFs. To do so, begin by creating an SR-IOV network and then define the network attachments for the VLAN interfaces.
+
+The following example shows how to configure the setup illustrated in this diagram.
+
+.Creating VLANs
+image::345_OpenShift_config_additional_network_0823.png[Creating VLANs]
+
+.Prerequisites
+* You installed the OpenShift CLI (`oc`).
+* You have access to the cluster as a user with the `cluster-admin` role.
+* You have installed the SR-IOV Network Operator.
+
+.Procedure
+
+. Create a dedicated container namespace where you want to deploy your pod by using the following command:
++
+[source,terminal]
+----
+$ oc new-project test-namespace
+----
+. Create an SR-IOV node policy:
+
+.. Create an `SriovNetworkNodePolicy` object, and then save the YAML in the `sriov-node-network-policy.yaml` file:
++
+[source,yaml]
+----
+apiVersion: sriovnetwork.openshift.io/v1
+kind: SriovNetworkNodePolicy
+metadata:
+ name: sriovnic
+ namespace: openshift-sriov-network-operator
+spec:
+ deviceType: netdevice
+ isRdma: false
+ needVhostNet: true
+ nicSelector:
+   vendor: "15b3" <1>
+   deviceID: "101b" <2>
+   rootDevices: ["00:05.0"]
+ numVfs: 10
+ priority: 99
+ resourceName: sriovnic
+ nodeSelector:
+    feature.node.kubernetes.io/network-sriov.capable: "true"
+----
++
+[NOTE]
+====
+The SR-IOV network node policy configuration example, with the setting `deviceType: netdevice`, is tailored specifically for Mellanox Network Interface Cards (NICs).
+====
++
+<1> The vendor hexadecimal code of the SR-IOV network device. The value `15b3` is associated with a Mellanox NIC.
+<2> The device hexadecimal code of the SR-IOV network device.
+
+.. Apply the YAML by running the following command:
++
+[source,terminal]
+----
+$ oc apply -f sriov-node-network-policy.yaml
+----
++
+[NOTE]
+====
+Applying this might take some time due to the node requiring a reboot.
+====
+
+. Create an SR-IOV network:
+
+.. Create the `SriovNetwork` custom resource (CR) for the additional SR-IOV network attachment as in the following example CR. Save the YAML as the file `sriov-network-attachment.yaml`:
++
+[source,yaml]
+----
+apiVersion: sriovnetwork.openshift.io/v1
+kind: SriovNetwork
+metadata:
+ name: sriov-network
+ namespace: openshift-sriov-network-operator
+spec:
+ networkNamespace: test-namespace
+ resourceName: sriovnic
+ spoofChk: "off"
+ trust: "on"
+----
+
+.. Apply the YAML by running the following command:
++
+[source,terminal]
+----
+$ oc apply -f sriov-network-attachment.yaml
+----
+
+. Create a YAML file for the VLAN additional network configuration and then save the YAML in the `vlan100-additional-network-configuration.yaml` file:
++
+[source,yaml]
+----
+apiVersion: k8s.cni.cncf.io/v1
+kind: NetworkAttachmentDefinition
+metadata:
+  name: vlan-100
+  namespace: test-namespace
+spec:
+  config: |
+    {
+      "cniVersion": "0.4.0",
+      "name": "vlan-100",
+      "plugins": [
+        {
+          "type": "vlan",
+          "master": "ext0", <1>
+          "mtu": 1500,
+          "vlanId": 100,
+          "linkInContainer": true, <2>
+          "ipam": {"type": "whereabouts", "ipRanges": [{"range": "1.1.1.0/24"}]}
+        }
+      ]
+    }
+----
++
+<1> The VLAN configuration needs to specify the master name. This can be configured in the pod networks annotation.
+<2> The `linkInContainer` parameter must be specified.
+
+. Apply the YAML by running the following command:
++
+[source,terminal]
+----
+$ oc apply -f vlan100-additional-network-configuration.yaml
+----
+
+. Create a pod definition by using the earlier specified networks and then save the YAML in the `pod-a.yaml` file.
++
+[NOTE]
+====
+The manifest below includes 2 resources:
+
+* Namespace with security labels
+* Pod definition with appropriate network annotation
+====
++
+[source,yaml]
+----
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: test-namespace
+  labels:
+    pod-security.kubernetes.io/enforce: privileged
+    pod-security.kubernetes.io/audit: privileged
+    pod-security.kubernetes.io/warn: privileged
+    security.openshift.io/scc.podSecurityLabelSync: "false"
+---
+apiVersion: v1
+kind: Pod
+metadata:
+  name: nginx-pod
+  namespace: test-namespace
+  annotations:
+    k8s.v1.cni.cncf.io/networks: '[
+      {
+        "name": "sriov-network",
+        "namespace": "test-namespace",
+        "interface": "ext0" <1>
+      },
+      {
+        "name": "vlan-100",
+        "namespace": "test-namespace",
+        "interface": "ext0.100"
+      }
+    ]'
+spec:
+  securityContext:
+    runAsNonRoot: true
+  containers:
+    - name: nginx-container
+      image: nginxinc/nginx-unprivileged:latest
+      securityContext:
+        allowPrivilegeEscalation: false
+        capabilities:
+          drop: ["ALL"]
+      ports:
+        - containerPort: 80
+      seccompProfile:
+        type: "RuntimeDefault"
+----
++
+<1> The name to be used as the master for the VLAN interface.
+
+. Apply the YAML by running the following command:
++
+[source,terminal]
+----
+$ oc apply -f pod-a.yaml
+----
+
+. Get detailed information about the `nginx-pod` within the `test-namespace` by running the following command:
++
+[source,terminal]
+----
+$ oc describe pods nginx-pod -n test-namespace
+----
++
+.Expected output
++
+[source,terminal]
+----
+Name:         nginx-pod
+Namespace:    test-namespace
+Priority:     0
+Node:         worker-1/10.46.186.105
+Start Time:   Mon, 14 Aug 2023 16:23:13 -0400
+Labels:       <none>
+Annotations:  k8s.ovn.org/pod-networks:
+                {"default":{"ip_addresses":["10.131.0.26/23"],"mac_address":"0a:58:0a:83:00:1a","gateway_ips":["10.131.0.1"],"routes":[{"dest":"10.128.0.0...
+              k8s.v1.cni.cncf.io/network-status:
+                [{
+                    "name": "ovn-kubernetes",
+                    "interface": "eth0",
+                    "ips": [
+                        "10.131.0.26"
+                    ],
+                    "mac": "0a:58:0a:83:00:1a",
+                    "default": true,
+                    "dns": {}
+                },{
+                    "name": "test-namespace/sriov-network",
+                    "interface": "ext0",
+                    "mac": "6e:a7:5e:3f:49:1b",
+                    "dns": {},
+                    "device-info": {
+                        "type": "pci",
+                        "version": "1.0.0",
+                        "pci": {
+                            "pci-address": "0000:d8:00.2"
+                        }
+                    }
+                },{
+                    "name": "test-namespace/vlan-100",
+                    "interface": "ext0.100",
+                    "ips": [
+                        "1.1.1.1"
+                    ],
+                    "mac": "6e:a7:5e:3f:49:1b",
+                    "dns": {}
+                }]
+              k8s.v1.cni.cncf.io/networks:
+                [ { "name": "sriov-network", "namespace": "test-namespace", "interface": "ext0" }, { "name": "vlan-100", "namespace": "test-namespace", "i...
+              openshift.io/scc: privileged
+Status:       Running
+IP:           10.131.0.26
+IPs:
+  IP:  10.131.0.26
+----

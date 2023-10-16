@@ -1,0 +1,29 @@
+// This is included in the following assemblies:
+//
+// post_installation_configuration/bare-metal-configuration.adoc
+
+:_module-type: CONCEPT
+[id="bmo-about-the-bare-metal-operator_{context}"]
+= About the Bare Metal Operator
+
+Use the Bare Metal Operator (BMO) to provision, manage, and inspect bare-metal hosts in your cluster. 
+ 
+The BMO uses three resources to complete these tasks: 
+
+* `BareMetalHost`
+* `HostFirmwareSettings`
+* `FirmwareSchema`
+
+The BMO maintains an inventory of the physical hosts in the cluster by mapping each bare-metal host to an instance of the `BareMetalHost` custom resource definition. Each `BareMetalHost` resource features hardware, software, and firmware details. The BMO continually inspects the bare-metal hosts in the cluster to ensure each `BareMetalHost` resource accurately details the components of the corresponding host. 
+
+The BMO also uses the `HostFirmwareSettings` resource and the `FirmwareSchema` resource to detail firmware specifications for the bare-metal host. 
+
+The BMO interfaces with bare-metal hosts in the cluster by using the Ironic API service. The Ironic service uses the Baseboard Management Controller (BMC) on the host to interface with the machine. 
+
+Some common tasks you can complete by using the BMO include the following:
+
+* Provision bare-metal hosts to the cluster with a specific image
+* Format a host's disk contents before provisioning or after deprovisioning
+* Turn on or off a host
+* Change firmware settings
+* View the host's hardware details 

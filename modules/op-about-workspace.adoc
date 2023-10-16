@@ -1,0 +1,104 @@
+// This module is included in the following assembly:
+//
+// *openshift_pipelines/creating-applications-with-cicd-pipelines.adoc
+
+[id="about-workspaces_{context}"]
+= Workspaces
+
+[NOTE]
+====
+It is recommended that you use workspaces instead of the `PipelineResource` CRs in {pipelines-title}, as `PipelineResource` CRs are difficult to debug, limited in scope, and make tasks less reusable.
+====
+
+Workspaces declare shared storage volumes that a task in a pipeline needs at runtime to receive input or provide output. Instead of specifying the actual location of the volumes, workspaces enable you to declare the filesystem or parts of the filesystem that would be required at runtime. A task or pipeline declares the workspace and you must provide the specific location details of the volume. It is then mounted into that workspace in a task run or a pipeline run. This separation of volume declaration from runtime storage volumes makes the tasks reusable, flexible, and independent of the user environment.
+
+With workspaces, you can:
+
+* Store task inputs and outputs
+* Share data among tasks
+* Use it as a mount point for credentials held in secrets
+* Use it as a mount point for configurations held in config maps
+* Use it as a mount point for common tools shared by an organization
+* Create a cache of build artifacts that speed up jobs
+
+You can specify workspaces in the `TaskRun` or `PipelineRun` using:
+
+* A read-only config map or secret
+* An existing persistent volume claim shared with other tasks
+* A persistent volume claim from a provided volume claim template
+* An `emptyDir` that is discarded when the task run completes
+
+The following example shows a code snippet of the `build-and-deploy` pipeline, which declares a `shared-workspace` workspace for the `build-image` and `apply-manifests` tasks as defined in the pipeline.
+
+[source,yaml]
+----
+apiVersion: tekton.dev/v1beta1
+kind: Pipeline
+metadata:
+  name: build-and-deploy
+spec:
+  workspaces: <1>
+  - name: shared-workspace
+  params:
+...
+  tasks: <2>
+  - name: build-image
+    taskRef:
+      name: buildah
+      kind: ClusterTask
+    params:
+    - name: TLSVERIFY
+      value: "false"
+    - name: IMAGE
+      value: $(params.IMAGE)
+    workspaces: <3>
+    - name: source <4>
+      workspace: shared-workspace <5>
+    runAfter:
+    - fetch-repository
+  - name: apply-manifests
+    taskRef:
+      name: apply-manifests
+    workspaces: <6>
+    - name: source
+      workspace: shared-workspace
+    runAfter:
+      - build-image
+...
+----
+<1> List of workspaces shared between the tasks defined in the pipeline. A pipeline can define as many workspaces as required. In this example, only one workspace named `shared-workspace` is declared.
+<2> Definition of tasks used in the pipeline. This snippet defines two tasks, `build-image` and `apply-manifests`, which share a common workspace.
+<3> List of workspaces used in the `build-image` task. A task definition can include as many workspaces as it requires. However, it is recommended that a task uses at most one writable workspace.
+<4> Name that uniquely identifies the workspace used in the task. This task uses one workspace named `source`.
+<5> Name of the pipeline workspace used by the task. Note that the workspace `source` in turn uses the pipeline workspace named `shared-workspace`.
+<6> List of workspaces used in the `apply-manifests` task. Note that this task shares the `source` workspace with the `build-image` task.
+
+Workspaces help tasks share data, and allow you to specify one or more volumes that each task in the pipeline requires during execution. You can create a persistent volume claim or provide a volume claim template that creates a persistent volume claim for you.
+
+The following code snippet of the `build-deploy-api-pipelinerun` pipeline run uses a volume claim template to create a persistent volume claim for defining the storage volume for the `shared-workspace` workspace used in the `build-and-deploy` pipeline.
+
+[source,yaml]
+----
+apiVersion: tekton.dev/v1beta1
+kind: PipelineRun
+metadata:
+  name: build-deploy-api-pipelinerun
+spec:
+  pipelineRef:
+    name: build-and-deploy
+  params:
+...
+
+  workspaces: <1>
+  - name: shared-workspace <2>
+    volumeClaimTemplate: <3>
+      spec:
+        accessModes:
+          - ReadWriteOnce
+        resources:
+          requests:
+            storage: 500Mi
+----
+<1> Specifies the list of pipeline workspaces for which volume binding will be provided in the pipeline run.
+<2> The name of the workspace in the pipeline for which the volume is being provided.
+<3> Specifies a volume claim template that creates a persistent volume claim to define the storage volume for the workspace.

@@ -1,0 +1,34 @@
+// Module included in the following assemblies:
+//
+// * networking/ovn_kubernetes_network_provider/about-ovn-kubernetes.adoc
+
+[id="nw-ovn-kubernetes-limitations_{context}"]
+= OVN-Kubernetes IPv6 and dual-stack limitations
+
+The OVN-Kubernetes network plugin has the following limitations:
+
+// The foll limitation is also recorded in the installation section.
+* For clusters configured for dual-stack networking, both IPv4 and IPv6 traffic must use the same network interface as the default gateway.
+If this requirement is not met, pods on the host in the `ovnkube-node` daemon set enter the `CrashLoopBackOff` state.
+If you display a pod with a command such as `oc get pod -n openshift-ovn-kubernetes -l app=ovnkube-node -o yaml`, the `status` field contains more than one message about the default gateway, as shown in the following output:
++
+[source,terminal]
+----
+I1006 16:09:50.985852   60651 helper_linux.go:73] Found default gateway interface br-ex 192.168.127.1
+I1006 16:09:50.985923   60651 helper_linux.go:73] Found default gateway interface ens4 fe80::5054:ff:febe:bcd4
+F1006 16:09:50.985939   60651 ovnkube.go:130] multiple gateway interfaces detected: br-ex ens4
+----
++
+The only resolution is to reconfigure the host networking so that both IP families use the same network interface for the default gateway.
+
+* For clusters configured for dual-stack networking, both the IPv4 and IPv6 routing tables must contain the default gateway.
+If this requirement is not met, pods on the host in the `ovnkube-node` daemon set enter the `CrashLoopBackOff` state.
+If you display a pod with a command such as `oc get pod -n openshift-ovn-kubernetes -l app=ovnkube-node -o yaml`, the `status` field contains more than one message about the default gateway, as shown in the following output:
++
+[source,terminal]
+----
+I0512 19:07:17.589083  108432 helper_linux.go:74] Found default gateway interface br-ex 192.168.123.1
+F0512 19:07:17.589141  108432 ovnkube.go:133] failed to get default gateway interface
+----
++
+The only resolution is to reconfigure the host networking so that both IP families contain the default gateway.

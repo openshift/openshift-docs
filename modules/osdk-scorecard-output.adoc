@@ -1,0 +1,74 @@
+// Module included in the following assemblies:
+//
+// * operators/operator_sdk/osdk-scorecard.adoc
+
+[id="osdk-scorecard-output_{context}"]
+= Scorecard output
+
+The `--output` flag for the `scorecard` command specifies the scorecard results output format: either `text` or `json`.
+
+.Example JSON output snippet
+[%collapsible]
+====
+[source,json,subs="attributes+"]
+----
+{
+  "apiVersion": "scorecard.operatorframework.io/v1alpha3",
+  "kind": "TestList",
+  "items": [
+    {
+      "kind": "Test",
+      "apiVersion": "scorecard.operatorframework.io/v1alpha3",
+      "spec": {
+        "image": "quay.io/operator-framework/scorecard-test:v{osdk_ver}",
+        "entrypoint": [
+          "scorecard-test",
+          "olm-bundle-validation"
+        ],
+        "labels": {
+          "suite": "olm",
+          "test": "olm-bundle-validation-test"
+        }
+      },
+      "status": {
+        "results": [
+          {
+            "name": "olm-bundle-validation",
+            "log": "time=\"2020-06-10T19:02:49Z\" level=debug msg=\"Found manifests directory\" name=bundle-test\ntime=\"2020-06-10T19:02:49Z\" level=debug msg=\"Found metadata directory\" name=bundle-test\ntime=\"2020-06-10T19:02:49Z\" level=debug msg=\"Getting mediaType info from manifests directory\" name=bundle-test\ntime=\"2020-06-10T19:02:49Z\" level=info msg=\"Found annotations file\" name=bundle-test\ntime=\"2020-06-10T19:02:49Z\" level=info msg=\"Could not find optional dependencies file\" name=bundle-test\n",
+            "state": "pass"
+          }
+        ]
+      }
+    }
+  ]
+}
+----
+====
+
+.Example text output snippet
+[%collapsible]
+====
+[source,text,subs="attributes+"]
+----
+--------------------------------------------------------------------------------
+Image:      quay.io/operator-framework/scorecard-test:v{osdk_ver}
+Entrypoint: [scorecard-test olm-bundle-validation]
+Labels:
+	"suite":"olm"
+	"test":"olm-bundle-validation-test"
+Results:
+	Name: olm-bundle-validation
+	State: pass
+	Log:
+		time="2020-07-15T03:19:02Z" level=debug msg="Found manifests directory" name=bundle-test
+		time="2020-07-15T03:19:02Z" level=debug msg="Found metadata directory" name=bundle-test
+		time="2020-07-15T03:19:02Z" level=debug msg="Getting mediaType info from manifests directory" name=bundle-test
+		time="2020-07-15T03:19:02Z" level=info msg="Found annotations file" name=bundle-test
+		time="2020-07-15T03:19:02Z" level=info msg="Could not find optional dependencies file" name=bundle-test
+----
+====
+
+[NOTE]
+====
+The output format spec matches the link:https://pkg.go.dev/github.com/operator-framework/api/pkg/apis/scorecard/v1alpha3#Test[`Test`] type layout.
+====

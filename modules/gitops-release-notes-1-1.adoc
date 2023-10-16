@@ -1,0 +1,133 @@
+// Module included in the following assembly:
+//
+// * gitops/gitops-release-notes.adoc
+
+[id="gitops-release-notes-1-1_{context}"]
+= Release notes for {gitops-title} 1.1
+
+{gitops-title} 1.1 is now available on {product-title} 4.7.
+
+[id="support-matrix-1-1_{context}"]
+== Support matrix
+
+Some features in this release are currently in Technology Preview. These experimental features are not intended for production use.
+
+link:https://access.redhat.com/support/offerings/techpreview[Technology Preview Features Support Scope]
+
+In the table below, features are marked with the following statuses:
+
+- *TP*: _Technology Preview_
+
+- *GA*: _General Availability_
+
+Note the following scope of support on the Red Hat Customer Portal for these features:
+
+.Support matrix
+[cols="1,1",options="header"]
+|===
+| Feature | {gitops-title} 1.1
+| Argo CD
+| GA
+| Argo CD ApplicationSet
+| TP
+| {gitops-title} Application Manager CLI (`kam`)
+| TP
+|===
+
+[id="new-features-1-1_{context}"]
+== New features
+In addition to the fixes and stability improvements, the following sections highlight what is new in {gitops-title} 1.1:
+
+* The `ApplicationSet` feature is now added (Technology Preview). The `ApplicationSet` feature enables both automation and greater flexibility when managing Argo CD applications across a large number of clusters and within monorepos. It also makes self-service usage possible on multitenant Kubernetes clusters.
+* Argo CD is now integrated with cluster logging stack and with the {product-title} Monitoring and Alerting features.
+* Argo CD auth is now integrated with {product-title}.
+* Argo CD applications controller now supports horizontal scaling.
+* Argo CD Redis servers now support high availability (HA).
+
+[id="fixed-issues-1-1_{context}"]
+== Fixed issues
+The following issues were resolved in the current release:
+
+* Previously, {gitops-title} did not work as expected in a proxy server setup with active global proxy settings. This issue is fixed and now Argo CD is configured by the {gitops-title} Operator using fully qualified domain names (FQDN) for the pods to enable communication between components. link:https://issues.redhat.com/browse/GITOPS-703[GITOPS-703]
+* The {gitops-title} backend relies on the `?ref=` query parameter in the {gitops-title} URL to make API calls. Previously, this parameter was not read from the URL, causing the backend to always consider the default reference. This issue is fixed and the {gitops-title} backend now extracts the reference query parameter from the {gitops-title} URL and only uses the default reference when there is no input reference provided. link:https://issues.redhat.com/browse/GITOPS-817[GITOPS-817]
+* Previously, the {gitops-title} backend failed to find the valid GitLab repository. This was because the {gitops-title} backend checked for `main` as the branch reference, instead of `master` in the GitLab repository. This issue is fixed now. link:https://issues.redhat.com/browse/GITOPS-768[GITOPS-768]
+* The *Environments* page in the *Developer* perspective of the {product-title} web console now shows the list of applications and the number of environments. This page also displays an Argo CD link that directs you to the Argo CD *Applications* page that lists all the applications. The Argo CD *Applications* page has *LABELS* (for example, `app.kubernetes.io/name=appName`) that help you filter only the applications of your choice. link:https://issues.redhat.com/browse/GITOPS-544[GITOPS-544]
+
+
+[id="known-issues-1-1_{context}"]
+== Known issues
+These are the known issues in {gitops-title} 1.1:
+
+* {gitops-title} does not support Helm v2 and ksonnet.
+* The Red Hat SSO (RH SSO) Operator is not supported in disconnected clusters. As a result, the {gitops-title} Operator and RH SSO integration is not supported in disconnected clusters.
+* When you delete an Argo CD application from the {product-title} web console, the Argo CD application gets deleted in the user interface, but the deployments are still present in the cluster. As a workaround, delete the Argo CD application from the Argo CD console. link:https://issues.redhat.com/browse/GITOPS-830[GITOPS-830]
+
+
+[id="breaking-change-1-1_{context}"]
+== Breaking Change
+=== Upgrading from {gitops-title} v1.0.1
+
+When you upgrade from {gitops-title} `v1.0.1` to `v1.1`, the {gitops-title} Operator renames the default Argo CD instance created in the `openshift-gitops` namespace from `argocd-cluster` to `openshift-gitops`.
+
+This is a breaking change and needs the following steps to be performed manually, before the upgrade:
+
+. Go to the {product-title} web console and copy the content of the `argocd-cm.yml` config map file in the `openshift-gitops` namespace to a local file. The content may look like the following example:
++
+.Example argocd config map YAML
+[source,yaml]
+----
+kind: ConfigMap
+apiVersion: v1
+metadata:
+selfLink: /api/v1/namespaces/openshift-gitops/configmaps/argocd-cm
+resourceVersion: '112532'
+name: argocd-cm
+uid: f5226fbc-883d-47db-8b53-b5e363f007af
+creationTimestamp: '2021-04-16T19:24:08Z'
+managedFields:
+...
+namespace: openshift-gitops
+labels:
+  app.kubernetes.io/managed-by: argocd-cluster
+  app.kubernetes.io/name: argocd-cm
+  app.kubernetes.io/part-of: argocd
+data: "" <1>
+admin.enabled: 'true'
+statusbadge.enabled: 'false'
+resource.exclusions: |
+  - apiGroups:
+    - tekton.dev
+    clusters:
+    - '*'
+    kinds:
+    - TaskRun
+    - PipelineRun
+ga.trackingid: ''
+repositories: |
+  - type: git
+    url: https://github.com/user-name/argocd-example-apps
+ga.anonymizeusers: 'false'
+help.chatUrl: ''
+url: >-
+  https://argocd-cluster-server-openshift-gitops.apps.dev-svc-4.7-041614.devcluster.openshift.com   "" <2>
+help.chatText: ''
+kustomize.buildOptions: ''
+resource.inclusions: ''
+repository.credentials: ''
+users.anonymous.enabled: 'false'
+configManagementPlugins: ''
+application.instanceLabelKey: ''
+----
+<1> Restore only the `data` section of the content in the `argocd-cm.yml` config map file manually.
+<2> Replace the URL value in the config map entry with the new instance name `openshift-gitops`.
+
+. Delete the default `argocd-cluster` instance.
+. Edit the new `argocd-cm.yml` config map file to restore the entire `data` section manually.
+. Replace the URL value in the config map entry with the new instance name `openshift-gitops`. For example, in the preceding example, replace the URL value with the following URL value:
++
+[source,yaml]
+----
+url: >-
+  https://openshift-gitops-server-openshift-gitops.apps.dev-svc-4.7-041614.devcluster.openshift.com
+----
+. Login to the Argo CD cluster and verify that the previous configurations are present.

@@ -1,0 +1,88 @@
+// Module included in the following assemblies:
+//
+// * scalability_and_performance/ztp_far_edge/ztp-advanced-install-ztp.adoc
+
+:_module-type: PROCEDURE
+[id="ztp-filtering-ai-crs-using-siteconfig_{context}"]
+= Filtering custom resources using SiteConfig filters
+
+By using filters, you can easily customize `SiteConfig` custom resources (CRs) to include or exclude other CRs for use in the installation phase of the {ztp-first} pipeline.
+
+You can specify an `inclusionDefault` value of `include` or `exclude` for the `SiteConfig` CR, along with a list of the specific `extraManifest` RAN CRs that you want to include or exclude. Setting `inclusionDefault` to `include` makes the {ztp} pipeline apply all the files in `/source-crs/extra-manifest` during installation. Setting `inclusionDefault` to `exclude` does the opposite.
+
+You can exclude individual CRs from the `/source-crs/extra-manifest` folder that are otherwise included by default. The following example configures a custom {sno} `SiteConfig` CR to exclude the `/source-crs/extra-manifest/03-sctp-machine-config-worker.yaml` CR at installation time.
+
+Some additional optional filtering scenarios are also described.
+
+.Prerequisites
+
+* You configured the hub cluster for generating the required installation and policy CRs.
+
+* You created a Git repository where you manage your custom site configuration data. The repository must be accessible from the hub cluster and be defined as a source repository for the Argo CD application.
+
+.Procedure
+
+. To prevent the {ztp} pipeline from applying the `03-sctp-machine-config-worker.yaml` CR file, apply the following YAML in the `SiteConfig` CR:
++
+[source,yaml,subs="attributes+"]
+----
+apiVersion: ran.openshift.io/v1
+kind: SiteConfig
+metadata:
+  name: "site1-sno-du"
+  namespace: "site1-sno-du"
+spec:
+  baseDomain: "example.com"
+  pullSecretRef:
+    name: "assisted-deployment-pull-secret"
+  clusterImageSetNameRef: "openshift-{product-version}"
+  sshPublicKey: "<ssh_public_key>"
+  clusters:
+- clusterName: "site1-sno-du"
+  extraManifests:
+    filter:
+      exclude:
+        - 03-sctp-machine-config-worker.yaml
+----
++
+The {ztp} pipeline skips the `03-sctp-machine-config-worker.yaml` CR during installation. All other CRs in `/source-crs/extra-manifest` are applied.
+
+. Save the `SiteConfig` CR and push the changes to the site configuration repository.
++
+The {ztp} pipeline monitors and adjusts what CRs it applies based on the `SiteConfig` filter instructions.
+
+. Optional: To prevent the {ztp} pipeline from applying all the `/source-crs/extra-manifest` CRs during cluster installation, apply the following YAML in the `SiteConfig` CR:
++
+[source,yaml]
+----
+- clusterName: "site1-sno-du"
+  extraManifests:
+    filter:
+      inclusionDefault: exclude
+----
+
+. Optional: To exclude all the `/source-crs/extra-manifest` RAN CRs and instead include a custom CR file during installation, edit the custom `SiteConfig` CR to set the custom manifests folder and the `include` file, for example:
++
+[source,yaml,subs="attributes+"]
+----
+clusters:
+- clusterName: "site1-sno-du"
+  extraManifestPath: "<custom_manifest_folder>" <1>
+  extraManifests:
+    filter:
+      inclusionDefault: exclude  <2>
+      include:
+        - custom-sctp-machine-config-worker.yaml
+----
+<1> Replace `<custom_manifest_folder>` with the name of the folder that contains the custom installation CRs, for example, `user-custom-manifest/`.
+<2> Set `inclusionDefault` to `exclude` to prevent the {ztp} pipeline from applying the files in `/source-crs/extra-manifest` during installation.
++
+The following example illustrates the custom folder structure:
++
+[source,text]
+----
+siteconfig
+  ├── site1-sno-du.yaml
+  └── user-custom-manifest
+        └── custom-sctp-machine-config-worker.yaml
+----

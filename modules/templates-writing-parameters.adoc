@@ -1,0 +1,139 @@
+// Module included in the following assemblies:
+//
+// * openshift_images/using-templates.adoc
+
+[id="templates-writing-parameters_{context}"]
+= Writing template parameters
+
+Parameters allow a value to be supplied by you or generated when the template is instantiated. Then, that value is substituted wherever the parameter is referenced. References can be defined in any field in the objects list field. This is useful for generating random passwords or allowing you to supply a hostname or other user-specific value that is required to customize the template. Parameters can be referenced in two ways:
+
+* As a string value by placing values in the form `${PARAMETER_NAME}` in any string field in the template.
+
+* As a JSON or YAML value by placing values in the form `${{PARAMETER_NAME}}` in place of any field in the template.
+
+When using the `${PARAMETER_NAME}` syntax, multiple parameter references can be combined in a single field and the reference can be embedded within fixed data, such as `"http://${PARAMETER_1}${PARAMETER_2}"`. Both parameter values are substituted and the resulting value is a quoted string.
+
+When using the `${{PARAMETER_NAME}}` syntax only a single parameter reference is allowed and leading and trailing characters are not permitted. The resulting value is unquoted unless, after substitution is performed, the result is not a valid JSON object. If the result is not a valid JSON value, the resulting value is quoted and treated as a standard string.
+
+A single parameter can be referenced multiple times within a template and it can be referenced using both substitution syntaxes within a single template.
+
+A default value can be provided, which is used if you do not supply a different value:
+
+The following is an example of setting an explicit value as the default value:
+
+[source,yaml]
+----
+parameters:
+  - name: USERNAME
+    description: "The user name for Joe"
+    value: joe
+----
+
+Parameter values can also be generated based on rules specified in the parameter definition, for example generating a parameter value:
+
+[source,yaml]
+----
+parameters:
+  - name: PASSWORD
+    description: "The random user password"
+    generate: expression
+    from: "[a-zA-Z0-9]{12}"
+----
+
+
+In the previous example, processing generates a random password 12 characters long consisting of all upper and lowercase alphabet letters and numbers.
+
+The syntax available is not a full regular expression syntax. However, you can use `\w`, `\d`, `\a`, and `\A` modifiers:
+
+- `[\w]{10}` produces 10 alphabet characters, numbers, and underscores. This
+follows the PCRE standard and is equal to `[a-zA-Z0-9_]{10}`.
+- `[\d]{10}` produces 10 numbers. This is equal to `[0-9]{10}`.
+- `[\a]{10}` produces 10 alphabetical characters. This is equal to
+`[a-zA-Z]{10}`.
+- `[\A]{10}` produces 10 punctuation or symbol characters. This is equal to ``[~!@#$%\^&*()\-_+={}\[\]\\|<,>.?/"';:`]{10}``.
+
+[NOTE]
+====
+Depending on if the template is written in YAML or JSON, and the type of string that the modifier is embedded within, you might need to escape the backslash with a second backslash. The following examples are equivalent:
+
+.Example YAML template with a modifier
+[source,yaml]
+----
+  parameters:
+  - name: singlequoted_example
+    generate: expression
+    from: '[\A]{10}'
+  - name: doublequoted_example
+    generate: expression
+    from: "[\\A]{10}"
+----
+
+.Example JSON template with a modifier
+[source,json]
+----
+{
+    "parameters": [
+       {
+        "name": "json_example",
+        "generate": "expression",
+        "from": "[\\A]{10}"
+       }
+    ]
+}
+----
+====
+
+Here is an example of a full template with parameter definitions and references:
+
+[source,yaml]
+----
+kind: Template
+apiVersion: template.openshift.io/v1
+metadata:
+  name: my-template
+objects:
+  - kind: BuildConfig
+    apiVersion: build.openshift.io/v1
+    metadata:
+      name: cakephp-mysql-example
+      annotations:
+        description: Defines how to build the application
+    spec:
+      source:
+        type: Git
+        git:
+          uri: "${SOURCE_REPOSITORY_URL}" <1>
+          ref: "${SOURCE_REPOSITORY_REF}"
+        contextDir: "${CONTEXT_DIR}"
+  - kind: DeploymentConfig
+    apiVersion: apps.openshift.io/v1
+    metadata:
+      name: frontend
+    spec:
+      replicas: "${{REPLICA_COUNT}}" <2>
+parameters:
+  - name: SOURCE_REPOSITORY_URL <3>
+    displayName: Source Repository URL <4>
+    description: The URL of the repository with your application source code <5>
+    value: https://github.com/sclorg/cakephp-ex.git <6>
+    required: true <7>
+  - name: GITHUB_WEBHOOK_SECRET
+    description: A secret string used to configure the GitHub webhook
+    generate: expression <8>
+    from: "[a-zA-Z0-9]{40}" <9>
+  - name: REPLICA_COUNT
+    description: Number of replicas to run
+    value: "2"
+    required: true
+message: "... The GitHub webhook secret is ${GITHUB_WEBHOOK_SECRET} ..." <10>
+----
+<1> This value is replaced with the value of the `SOURCE_REPOSITORY_URL` parameter when the template is instantiated.
+<2> This value is replaced with the unquoted value of the `REPLICA_COUNT` parameter when the template is instantiated.
+<3> The name of the parameter. This value is used to reference the parameter within the template.
+<4> The user-friendly name for the parameter. This is displayed to users.
+<5> A description of the parameter. Provide more detailed information for the purpose of the parameter, including any constraints on the expected value. Descriptions should use complete sentences to follow the console's text standards. Do not make this a duplicate of the display name.
+<6> A default value for the parameter which is used if you do not override the value when instantiating the template. Avoid using default values for things like passwords, instead use generated parameters in combination with secrets.
+<7> Indicates this parameter is required, meaning you cannot override it with an empty value. If the parameter does not provide a default or generated value, you must supply a value.
+<8> A parameter which has its value generated.
+<9> The input to the generator. In this case, the generator produces a 40 character alphanumeric value including upper and lowercase characters.
+<10> Parameters can be included in the template message. This informs you about generated values.

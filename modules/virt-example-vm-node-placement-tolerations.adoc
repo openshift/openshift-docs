@@ -1,0 +1,29 @@
+// Module included in the following assemblies:
+//
+// * virt/virtual_machines/advanced_vm_management/virt-specifying-nodes-for-vms.adoc
+
+[id="virt-example-vm-node-placement-tolerations_{context}"]
+= Example: VM node placement with tolerations
+
+In this example, nodes that are reserved for virtual machines are already labeled with the `key=virtualization:NoSchedule` taint. Because this virtual machine has matching `tolerations`, it can schedule onto the tainted nodes.
+
+[NOTE]
+====
+A virtual machine that tolerates a taint is not required to schedule onto a node with that taint.
+====
+
+.Example VM manifest
+[source,yaml]
+----
+metadata:
+  name: example-vm-tolerations
+apiVersion: kubevirt.io/v1
+kind: VirtualMachine
+spec:
+  tolerations:
+  - key: "key"
+    operator: "Equal"
+    value: "virtualization"
+    effect: "NoSchedule"
+# ...
+----

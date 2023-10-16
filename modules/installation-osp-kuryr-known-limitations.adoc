@@ -1,0 +1,57 @@
+// Module included in the following assemblies:
+//
+// * installing/installing_openstack/installing-openstack-installer-kuryr.adoc
+
+[id="installation-osp-kuryr-known-limitations_{context}"]
+= Known limitations of installing with Kuryr
+
+Using {product-title} with Kuryr SDN has several known limitations.
+
+[discrete]
+[id="openstack-general-limitations_{context}"]
+== {rh-openstack} general limitations
+
+Using {product-title} with Kuryr SDN has several limitations that apply to all versions and environments:
+
+* `Service` objects with the `NodePort` type are not supported.
+
+* Clusters that use the OVN Octavia provider driver support `Service` objects for which the `.spec.selector` property is unspecified only if the `.subsets.addresses` property of the `Endpoints` object includes the subnet of the nodes or pods. 
+
+* If the subnet on which machines are created is not connected to a router, or if the subnet is connected, but the router has no external gateway set, Kuryr cannot create floating IPs for `Service` objects with type `LoadBalancer`.
+
+* Configuring the `sessionAffinity=ClientIP` property on `Service` objects does not have an effect. Kuryr does not support this setting.
+
+[discrete]
+[id="openstack-version-limitations_{context}"]
+== {rh-openstack} version limitations
+
+Using {product-title} with Kuryr SDN has several limitations that depend on the {rh-openstack} version.
+
+* {rh-openstack} versions before 16 use
+the default Octavia load balancer driver (Amphora). This driver requires that one
+Amphora load balancer VM is deployed per {product-title} service. Creating too many
+services can cause you to run out of resources.
++
+Deployments of later versions of {rh-openstack} that have the OVN Octavia driver disabled also
+use the Amphora driver. They are subject to the same resource concerns as earlier versions of {rh-openstack}.
+
+* Kuryr SDN does not support automatic unidling by a service.
+
+[discrete]
+[id="openstack-upgrade-limitations_{context}"]
+== {rh-openstack} upgrade limitations
+
+As a result of the {rh-openstack} upgrade process, the Octavia API might be changed, and upgrades to the Amphora images that are used for load balancers might be required.
+
+You can address API changes on an individual basis.
+
+If the Amphora image is upgraded, the {rh-openstack} operator can handle existing load balancer VMs in two ways:
+
+* Upgrade each VM by triggering a link:https://access.redhat.com/documentation/en-us/red_hat_openstack_platform/16.0/html/networking_guide/sec-octavia#update-running-amphora-instances[load balancer failover].
+
+* Leave responsibility for upgrading the VMs to users.
+
+If the operator takes the first option, there might be short downtimes during failovers.
+
+If the operator takes the second option, the existing load balancers will not support upgraded Octavia
+API features, like UDP listeners. In this case, users must recreate their Services to use these features.

@@ -1,0 +1,46 @@
+// Module included in the following assemblies:
+//
+// * scalability_and_performance/using-node-tuning-operator.adoc
+// * post_installation_configuration/node-tasks.adoc
+// * nodes/nodes/nodes-node-tuning-operator
+
+[id="supported-tuned-daemon-plug-ins_{context}"]
+= Supported TuneD daemon plugins
+
+Excluding the `[main]` section, the following TuneD plugins are supported when
+using custom profiles defined in the `profile:` section of the Tuned CR:
+
+* audio
+* cpu
+* disk
+* eeepc_she
+* modules
+* mounts
+* net
+* scheduler
+* scsi_host
+* selinux
+* sysctl
+* sysfs
+* usb
+* video
+* vm
+* bootloader
+
+There is some dynamic tuning functionality provided by some of these plugins
+that is not supported. The following TuneD plugins are currently not supported:
+
+* script
+* systemd
+
+
+[NOTE]
+====
+The TuneD bootloader plugin only supports {op-system-first} worker nodes.
+====
+
+.Additional resources
+
+* link:https://access.redhat.com/documentation/en-us/red_hat_enterprise_linux/8/html/monitoring_and_managing_system_status_and_performance/customizing-tuned-profiles_monitoring-and-managing-system-status-and-performance#available-tuned-plug-ins_customizing-tuned-profiles[Available TuneD Plugins]
+
+* link:https://access.redhat.com/documentation/en-us/red_hat_enterprise_linux/8/html/monitoring_and_managing_system_status_and_performance/getting-started-with-tuned_monitoring-and-managing-system-status-and-performance[Getting Started with TuneD]

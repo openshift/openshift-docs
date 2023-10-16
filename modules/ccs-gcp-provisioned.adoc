@@ -1,0 +1,73 @@
+// Module included in the following assemblies:
+//
+// * osd_planning/gcp-ccs.adoc
+
+[id="ccs-gcp-provisioned_{context}"]
+= Provisioned GCP Infrastructure
+
+This is an overview of the provisioned Google Cloud Platform (GCP) components on a deployed {product-title} cluster. For a more detailed listing of all provisioned GCP components, see the link:https://access.redhat.com/documentation/en-us/openshift_container_platform/[{OCP} documentation].
+
+[id="gcp-policy-instances_{context}"]
+== Compute instances
+
+GCP compute instances are required to deploy the control plane and data plane functions of {product-title} in GCP. Instance types might vary for control plane and infrastructure nodes depending on worker node count.
+
+* Single availability zone
+** 2 infra nodes  (custom machine type: 4 vCPU and 32 GB RAM)
+** 3 control plane nodes  (custom machine type: 8 vCPU and 32 GB RAM)
+** 2 worker nodes (custom machine type: 4 vCPU and 16 GB RAM)
+* Multiple availability zones
+** 3 infra nodes  (custom machine type: 4 vCPU and 32 GB RAM)
+** 3 control plane nodes (custom machine type: 8 vCPU and 32 GB RAM)
+** 3 worker nodes (custom machine type: 4 vCPU and 16 GB RAM)
+
+
+[id="gcp-policy-storage_{context}"]
+== Storage
+
+* Infrastructure volumes:
+** 128 GB SSD persistent disk (deleted on instance deletion)
+** 110 GB  Standard persistent disk (kept on instance deletion)
+* Worker volumes:
+** 128 GB SSD persistent disk  (deleted on instance deletion)
+* Control plane volumes:
+** 128 GB SSD persistent disk  (deleted on instance deletion)
+
+[id="gcp-policy-vpc_{context}"]
+== VPC
+
+* **Subnets:** One master subnet for the control plane workloads and one worker subnet for all others.
+* **Router tables:** One global route table per VPC.
+* **Internet gateways:** One internet gateway per cluster.
+* **NAT gateways:**  One master NAT gateway and one worker NAT gateway per cluster.
+
+[id="gcp-policy-services_{context}"]
+== Services
+
+The following services must be enabled on a GCP CCS cluster:
+
+* `Deploymentmanager`
+* `Compute`
+* `Cloudapis`
+* `Cloudresourcemanager`
+* `DNS`
+* `Iamcredentials`
+* `IAM`
+* `Servicemanagement`
+* `Serviceusage`
+* `Storage-api`
+* `Storage-component`
+
+[id="gcp-policy-permissions_{context}"]
+== Permissions
+
+The following roles must be added to the support service account:
+
+* `Compute.admin`
+* `Dns.admin`
+* `orgpolicy.policyViewer`
+* `Owner`
+* `resourcemanager.projectIamAdmin`
+* `Servicemanagement.admin`
+* `serviceusage.serviceUsageAdmin`
+* `storage.admin`
