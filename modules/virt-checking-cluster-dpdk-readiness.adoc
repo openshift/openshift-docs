@@ -1,0 +1,236 @@
+// Module included in the following assemblies:
+//
+// * virt/monitoring/virt-running-cluster-checkups.adoc
+
+:_content-type: PROCEDURE
+[id="virt-checking-cluster-dpdk-readiness_{context}"]
+= DPDK checkup
+
+Use a predefined checkup to verify that your {product-title} cluster node can run a virtual machine (VM) with a Data Plane Development Kit (DPDK) workload with zero packet loss. The DPDK checkup runs traffic between a traffic generator and a VM running a test DPDK application.
+
+You run a DPDK checkup by performing the following steps:
+
+. Create a service account, role, and role bindings for the DPDK checkup.
+. Create a config map to provide the input to run the checkup and to store the results.
+. Create a job to run the checkup.
+. Review the results in the config map.
+. Optional: To rerun the checkup, delete the existing config map and job and then create a new config map and job.
+. When you are finished, delete the DPDK checkup resources.
+
+.Prerequisites
+* You have installed the OpenShift CLI (`oc`).
+* The cluster is configured to run DPDK applications.
+* The project is configured to run DPDK applications.
+
+.Procedure
+
+. Create a `ServiceAccount`, `Role`, and `RoleBinding` manifest for the DPDK checkup:
++
+.Example service account, role, and rolebinding manifest file
+[%collapsible]
+====
+[source,yaml]
+----
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: dpdk-checkup-sa
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: kiagnose-configmap-access
+rules:
+  - apiGroups: [ "" ]
+    resources: [ "configmaps" ]
+    verbs: [ "get", "update" ]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: kiagnose-configmap-access
+subjects:
+  - kind: ServiceAccount
+    name: dpdk-checkup-sa
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: kiagnose-configmap-access
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: kubevirt-dpdk-checker
+rules:
+  - apiGroups: [ "kubevirt.io" ]
+    resources: [ "virtualmachineinstances" ]
+    verbs: [ "create", "get", "delete" ]
+  - apiGroups: [ "subresources.kubevirt.io" ]
+    resources: [ "virtualmachineinstances/console" ]
+    verbs: [ "get" ]
+  - apiGroups: [ "" ]
+    resources: [ "configmaps" ]
+    verbs: [ "create", "delete" ]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: kubevirt-dpdk-checker
+subjects:
+  - kind: ServiceAccount
+    name: dpdk-checkup-sa
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: kubevirt-dpdk-checker
+----
+====
+
+. Apply the `ServiceAccount`, `Role`, and `RoleBinding` manifest:
++
+[source,terminal]
+----
+$ oc apply -n <target_namespace> -f <dpdk_sa_roles_rolebinding>.yaml
+----
+
+. Create a `ConfigMap` manifest that contains the input parameters for the checkup:
++
+.Example input config map
+[source,yaml]
+----
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: dpdk-checkup-config
+data:
+  spec.timeout: 10m
+  spec.param.networkAttachmentDefinitionName: <network_name> <1>
+  spec.param.trafficGenContainerDiskImage: "quay.io/kiagnose/kubevirt-dpdk-checkup-traffic-gen:v0.2.0 <2>
+  spec.param.vmUnderTestContainerDiskImage: "quay.io/kiagnose/kubevirt-dpdk-checkup-vm:v0.2.0" <3>
+----
+<1> The name of the `NetworkAttachmentDefinition` object.
+<2> The container disk image for the traffic generator. In this example, the image is pulled from the upstream Project Quay Container Registry.
+<3> The container disk image for the VM under test. In this example, the image is pulled from the upstream Project Quay Container Registry.
+
+. Apply the `ConfigMap` manifest in the target namespace:
++
+[source,terminal]
+----
+$ oc apply -n <target_namespace> -f <dpdk_config_map>.yaml
+----
+
+. Create a `Job` manifest to run the checkup:
++
+.Example job manifest
+[source,yaml,subs="attributes+"]
+----
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: dpdk-checkup
+spec:
+  backoffLimit: 0
+  template:
+    spec:
+      serviceAccountName: dpdk-checkup-sa
+      restartPolicy: Never
+      containers:
+        - name: dpdk-checkup
+          image: registry.redhat.io/container-native-virtualization/kubevirt-dpdk-checkup-rhel9:v{product-version}.0
+          imagePullPolicy: Always
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop: ["ALL"]
+            runAsNonRoot: true
+            seccompProfile:
+              type: "RuntimeDefault"
+          env:
+            - name: CONFIGMAP_NAMESPACE
+              value: <target-namespace>
+            - name: CONFIGMAP_NAME
+              value: dpdk-checkup-config
+            - name: POD_UID
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.uid
+----
+
+. Apply the `Job` manifest:
++
+[source,terminal]
+----
+$ oc apply -n <target_namespace> -f <dpdk_job>.yaml
+----
+
+. Wait for the job to complete:
++
+[source,terminal]
+----
+$ oc wait job dpdk-checkup -n <target_namespace> --for condition=complete --timeout 10m
+----
+
+. Review the results of the checkup by running the following command:
++
+[source,terminal]
+----
+$ oc get configmap dpdk-checkup-config -n <target_namespace> -o yaml
+----
++
+.Example output config map (success)
+[source,yaml]
+----
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: dpdk-checkup-config
+data:
+  spec.timeout: 10m
+  spec.param.NetworkAttachmentDefinitionName: "dpdk-network-1"
+  spec.param.trafficGenContainerDiskImage: "quay.io/kiagnose/kubevirt-dpdk-checkup-traffic-gen:v0.2.0"
+  spec.param.vmUnderTestContainerDiskImage: "quay.io/kiagnose/kubevirt-dpdk-checkup-vm:v0.2.0"
+  status.succeeded: "true" <1>
+  status.failureReason: "" <2>
+  status.startTimestamp: "2023-07-31T13:14:38Z" <3>
+  status.completionTimestamp: "2023-07-31T13:19:41Z" <4>
+  status.result.trafficGenSentPackets: "480000000" <5>
+  status.result.trafficGenOutputErrorPackets: "0" <6>
+  status.result.trafficGenInputErrorPackets: "0" <7>
+  status.result.trafficGenActualNodeName: worker-dpdk1 <8>
+  status.result.vmUnderTestActualNodeName: worker-dpdk2 <9>
+  status.result.vmUnderTestReceivedPackets: "480000000" <10>
+  status.result.vmUnderTestRxDroppedPackets: "0" <11>
+  status.result.vmUnderTestTxDroppedPackets: "0" <12>
+----
+<1> Specifies if the checkup is successful (`true`) or not (`false`).
+<2> The reason for failure if the checkup fails.
+<3> The time when the checkup started, in RFC 3339 time format.
+<4> The time when the checkup has completed, in RFC 3339 time format.
+<5> The number of packets sent from the traffic generator.
+<6> The number of error packets sent from the traffic generator.
+<7> The number of error packets received by the traffic generator.
+<8> The node on which the traffic generator VM was scheduled.
+<9> The node on which the VM under test was scheduled.
+<10> The number of packets received on the VM under test.
+<11> The ingress traffic packets that were dropped by the DPDK application.
+<12> The egress traffic packets that were dropped from the DPDK application.
+
+. Delete the job and config map that you previously created by running the following commands:
++
+[source,terminal]
+----
+$ oc delete job -n <target_namespace> dpdk-checkup
+----
++
+[source,terminal]
+----
+$ oc delete config-map -n <target_namespace> dpdk-checkup-config
+----
+
+. Optional: If you do not plan to run another checkup, delete the `ServiceAccount`, `Role`, and `RoleBinding` manifest:
++
+[source,terminal]
+----
+$ oc delete -f <dpdk_sa_roles_rolebinding>.yaml
+----

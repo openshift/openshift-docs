@@ -12,7 +12,7 @@ You can use a saved etcd backup to restore a previous cluster state or restore a
 
 [NOTE]
 ====
-If your cluster uses a control plane machine set, see "Troubleshooting the control plane machine set" for a more simple etcd recovery procedure. 
+If your cluster uses a control plane machine set, see "Troubleshooting the control plane machine set" for a more simple etcd recovery procedure.
 ====
 
 [IMPORTANT]
@@ -22,7 +22,7 @@ When you restore your cluster, you must use an etcd backup that was taken from t
 
 .Prerequisites
 
-* Access to the cluster as a user with the `cluster-admin` role.
+* Access to the cluster as a user with the `cluster-admin` role through a certificate-based `kubeconfig` file, like the one that was used during installation.
 * A healthy control plane host to use as the recovery host.
 * SSH access to control plane hosts.
 * A backup directory containing both the etcd snapshot and the resources for the static pods, which were from the same backup. The file names in the directory must be in the following formats: `snapshot_<datetimestamp>.db` and `static_kuberesources_<datetimestamp>.tar.gz`.
@@ -53,7 +53,7 @@ This procedure assumes that you copied the `backup` directory containing the etc
 +
 [NOTE]
 ====
-It is not required to manually stop the pods on the recovery host. The recovery script will stop the pods on the recovery host.
+You do not need to stop the static pods on the recovery host.
 ====
 
 .. Access a control plane host that is not the recovery host.
@@ -162,14 +162,14 @@ $ oc get nodes -w
 [source,terminal]
 ----
 NAME                STATUS  ROLES          AGE     VERSION
-host-172-25-75-28   Ready   master         3d20h   v1.25.0
-host-172-25-75-38   Ready   infra,worker   3d20h   v1.25.0
-host-172-25-75-40   Ready   master         3d20h   v1.25.0
-host-172-25-75-65   Ready   master         3d20h   v1.25.0
-host-172-25-75-74   Ready   infra,worker   3d20h   v1.25.0
-host-172-25-75-79   Ready   worker         3d20h   v1.25.0
-host-172-25-75-86   Ready   worker         3d20h   v1.25.0
-host-172-25-75-98   Ready   infra,worker   3d20h   v1.25.0
+host-172-25-75-28   Ready   master         3d20h   v1.27.3
+host-172-25-75-38   Ready   infra,worker   3d20h   v1.27.3
+host-172-25-75-40   Ready   master         3d20h   v1.27.3
+host-172-25-75-65   Ready   master         3d20h   v1.27.3
+host-172-25-75-74   Ready   infra,worker   3d20h   v1.27.3
+host-172-25-75-79   Ready   worker         3d20h   v1.27.3
+host-172-25-75-86   Ready   worker         3d20h   v1.27.3
+host-172-25-75-98   Ready   infra,worker   3d20h   v1.27.3
 ----
 +
 It can take several minutes for all nodes to report their state.
@@ -203,6 +203,11 @@ $ sudo systemctl restart kubelet.service
 .. Repeat this step on all other control plane hosts.
 
 . Approve the pending CSRs:
++
+[NOTE]
+====
+Clusters with no worker nodes, such as single-node clusters or clusters consisting of three schedulable control plane nodes, will not have any pending CSRs to approve. You can skip all the commands listed in this step.
+====
 
 .. Get the list of current CSRs:
 +
@@ -251,7 +256,7 @@ $ oc adm certificate approve <csr_name>
 +
 [source,terminal]
 ----
-$ sudo crictl ps | grep etcd | grep -v operator
+$ sudo crictl ps | grep etcd | egrep -v "operator|etcd-guard"
 ----
 +
 .Example output
@@ -267,16 +272,6 @@ $ sudo crictl ps | grep etcd | grep -v operator
 $ oc -n openshift-etcd get pods -l k8s-app=etcd
 ----
 +
-[NOTE]
-====
-If you attempt to run `oc login` prior to running this command and receive the following error, wait a few moments for the authentication controllers to start and try again.
-
-[source,terminal]
-----
-Unable to connect to the server: EOF
-----
-====
-+
 .Example output
 [source,terminal]
 ----
@@ -286,29 +281,29 @@ etcd-ip-10-0-143-125.ec2.internal                1/1     Running     1          
 +
 If the status is `Pending`, or the output lists more than one running etcd pod, wait a few minutes and check again.
 
-+
-[NOTE]
-====
-Perform the following step only if you are using `OVNKubernetes` network plugin.
-====
-
-. Delete the node objects that are associated with control plane hosts that are not the recovery control plane host.
+. If you are using the `OVNKubernetes` network plugin, you must restart `ovnkube-controlplane` pods.
+.. Delete all of the `ovnkube-controlplane` pods by running the following command:
 +
 [source,terminal]
 ----
-$ oc delete node <non-recovery-controlplane-host-1> <non-recovery-controlplane-host-2>
+$ oc -n openshift-ovn-kubernetes delete pod -l app=ovnkube-control-plane
 ----
-
-. Turn off the quorum guard by entering the following command:
+.. Verify that all of the `ovnkube-controlplane` pods were redeployed by running the following command:
 +
 [source,terminal]
 ----
-$ oc patch etcd/cluster --type=merge -p '{"spec": {"unsupportedConfigOverrides": {"useUnsupportedUnsafeNonHANonProductionUnstableEtcd": true}}}'
+$ oc -n openshift-ovn-kubernetes get pod -l app=ovnkube-control-plane
 ----
-+
-This command ensures that you can successfully re-create secrets and roll out the static pods.
 
-. Restart the Open Virtual Network (OVN) Kubernetes pods on all the hosts.
+. If you are using the OVN-Kubernetes network plugin, restart the Open Virtual Network (OVN) Kubernetes pods on all the nodes one by one. Use the following steps to restart OVN-Kubernetes pods on each node:
++
+[IMPORTANT]
+====
+.Restart OVN-Kubernetes pods in the following order:
+. The recovery control plane host
+. The other control plane hosts (if available)
+. The other nodes
+====
 +
 [NOTE]
 ====
@@ -321,58 +316,52 @@ Alternatively, you can temporarily set the `failurePolicy` to `Ignore` while res
 +
 [source,terminal]
 ----
-$ sudo rm -f /var/lib/ovn/etc/*.db
+$ sudo rm -f /var/lib/ovn-ic/etc/*.db
 ----
 
-.. Delete all OVN-Kubernetes control plane pods by running the following command:
+.. Restart the OpenVSwitch services. Access the node by using Secure Shell (SSH) and run the following command:
 +
 [source,terminal]
 ----
-$ oc delete pods -l app=ovnkube-master -n openshift-ovn-kubernetes
+$ sudo systemctl restart ovs-vswitchd ovsdb-server
 ----
 
-.. Ensure that all the OVN-Kubernetes control plane pods are deployed again and are in a `Running` state by running the following command:
+.. Delete the `ovnkube-node` pod on the node by running the following command, replacing `<node>` with the name of the node that you are restarting:
 +
 [source,terminal]
 ----
-$ oc get pods -l app=ovnkube-master -n openshift-ovn-kubernetes
+$ oc -n openshift-ovn-kubernetes delete pod -l app=ovnkube-node --field-selector=spec.nodeName==<node>
 ----
 +
-.Example output
-[source,terminal]
-----
-NAME                   READY   STATUS    RESTARTS   AGE
-ovnkube-master-nb24h   4/4     Running   0          48s
-ovnkube-master-rm8kw   4/4     Running   0          47s
-ovnkube-master-zbqnh   4/4     Running   0          56s
-----
 
-.. Delete all `ovnkube-node` pods by running the following command:
+.. Verify that the `ovnkube-node` pod is running again with the following command:
 +
 [source,terminal]
 ----
-$ oc get pods -n openshift-ovn-kubernetes -o name | grep ovnkube-node | while read p ; do oc delete $p -n openshift-ovn-kubernetes ; done
+$ oc -n openshift-ovn-kubernetes get pod -l app=ovnkube-node --field-selector=spec.nodeName==<node>
 ----
-
-.. Ensure that all the `ovnkube-node` pods are deployed again and are in a `Running` state by running the following command:
 +
-[source,terminal]
-----
-$ oc get  pods -n openshift-ovn-kubernetes | grep ovnkube-node
-----
+[NOTE]
+====
+It might take several minutes for the pods to restart.
+====
 
-. Delete and recreate other non-recovery, control plane machines, one by one. After these machines are recreated, a new revision is forced and etcd scales up automatically.
+. Delete and re-create other non-recovery, control plane machines, one by one. After the machines are re-created, a new revision is forced and etcd automatically scales up.
++
+** If you use a user-provisioned bare metal installation, you can re-create a control plane machine by using the same method that you used to originally create it. For more information, see "Installing a user-provisioned cluster on bare metal".
 +
 [WARNING]
 ====
-For bare metal installations on installer-provisioned infrastructure, control plane machines are not recreated. For more information, see "Replacing a bare-metal control plane node".
+Do not delete and re-create the machine for the recovery host.
 ====
 +
-If you are running installer-provisioned infrastructure, or you used the Machine API to create your machines, follow these steps. Otherwise, you must create the new control plane node using the same method that was used to originally create it.
+** If you are running installer-provisioned infrastructure, or you used the Machine API to create your machines, follow these steps:
 +
 [WARNING]
 ====
-Do not delete and recreate the machine for the recovery host.
+Do not delete and re-create the machine for the recovery host.
+
+For bare metal installations on installer-provisioned infrastructure, control plane machines are not re-created. For more information, see "Replacing a bare-metal control plane node".
 ====
 .. Obtain the machine for one of the lost control plane hosts.
 +
@@ -508,7 +497,7 @@ clustername-8qw5l-worker-us-east-1b-lrdxb   Running   m4.large    us-east-1   us
 clustername-8qw5l-worker-us-east-1c-pkg26   Running   m4.large    us-east-1   us-east-1c   3h28m   ip-10-0-170-181.ec2.internal   aws:///us-east-1c/i-06861c00007751b0a   running
 ----
 
-.. Create the new machine using the `new-master-machine.yaml` file:
+.. Create a machine by using the `new-master-machine.yaml` file:
 +
 [source,terminal]
 ----
@@ -540,17 +529,25 @@ It might take a few minutes for the new machine to be created. The etcd cluster 
 
 .. Repeat these steps for each lost control plane host that is not the recovery host.
 
-. In a separate terminal window, log in to the cluster as a user with the `cluster-admin` role by using the following command:
+. Turn off the quorum guard by entering the following command:
 +
 [source,terminal]
 ----
-$ oc login -u <cluster_admin> <1>
+$ oc patch etcd/cluster --type=merge -p '{"spec": {"unsupportedConfigOverrides": {"useUnsupportedUnsafeNonHANonProductionUnstableEtcd": true}}}'
 ----
-<1> For `<cluster_admin>`, specify a user name with the `cluster-admin` role.
++
+This command ensures that you can successfully re-create secrets and roll out the static pods.
+
+. In a separate terminal window within the recovery host, export the recovery `kubeconfig` file by running the following command:
++
+[source,terminal]
+----
+$ export KUBECONFIG=/etc/kubernetes/static-pod-resources/kube-apiserver-certs/secrets/node-kubeconfigs/localhost-recovery.kubeconfig
+----
 
 . Force etcd redeployment.
 +
-In a terminal that has access to the cluster as a `cluster-admin` user, run the following command:
+In the same terminal window where you exported the recovery `kubeconfig` file, run the following command:
 +
 [source,terminal]
 ----
@@ -564,7 +561,7 @@ When the etcd cluster Operator performs a redeployment, the existing nodes are s
 +
 [source,terminal]
 ----
-$ oc patch etcd/cluster --type=merge -p '\{"spec": {"unsupportedConfigOverrides": null}}
+$ oc patch etcd/cluster --type=merge -p '{"spec": {"unsupportedConfigOverrides": null}}'
 ----
 
 . You can verify that the `unsupportedConfigOverrides` section is removed from the object by entering this command:
@@ -692,4 +689,21 @@ etcd-ip-10-0-173-171.ec2.internal                2/2     Running     0          
 
 To ensure that all workloads return to normal operation following a recovery procedure, restart each pod that stores Kubernetes API information. This includes {product-title} components such as routers, Operators, and third-party components.
 
-Note that it might take several minutes after completing this procedure for all services to be restored. For example, authentication by using `oc login` might not immediately work until the OAuth server pods are restarted.
+[NOTE]
+====
+On completion of the previous procedural steps, you might need to wait a few minutes for all services to return to their restored state. For example, authentication by using `oc login` might not immediately work until the OAuth server pods are restarted.
+
+Consider using the `system:admin` `kubeconfig` file for immediate authentication. This method basis its authentication on SSL/TLS client certificates as against OAuth tokens. You can authenticate with this file by issuing the following command:
+
+[source,terminal]
+----
+$ export KUBECONFIG=<installation_directory>/auth/kubeconfig
+----
+
+Issue the following command to display your authenticated user name:
+
+[source,terminal]
+----
+$ oc whoami
+----
+====

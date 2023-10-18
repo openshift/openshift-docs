@@ -8,9 +8,9 @@
 [id="efs-sts_{context}"]
 = Configuring AWS EFS CSI Driver Operator with Secure Token Service
 
-This procedure explains how to configure the AWS EFS CSI Driver Operator with {product-title} on AWS Secure Token Service (STS).
+This procedure explains how to configure the link:https://github.com/openshift/aws-efs-csi-driver-operator[AWS EFS CSI Driver Operator] (a Red Hat operator) with {product-title} on AWS Secure Token Service (STS).
 
-Perform this procedure before you have installed the AWS EFS CSI Operator, but not yet installed the AWS EFS CSI driver as part of the _Installing the AWS EFS CSI Driver Operator_ procedure. 
+Perform this procedure before you have installed the AWS EFS CSI Operator, but not yet installed the link:https://github.com/openshift/aws-efs-csi-driver[AWS EFS CSI driver] as part of the _Installing the AWS EFS CSI Driver Operator_ procedure. 
 
 [IMPORTANT]
 ====
@@ -23,125 +23,147 @@ If you perform this procedure after installing the driver and creating volumes, 
 * AWS account credentials
 * You have installed the AWS EFS CSI Operator.
 
+
 .Procedure
 
-To configure the AWS EFS CSI Driver Operator with STS:
+. Prepare the AWS account:
+.. Create an IAM policy JSON file with the following content:
++
+[source,json]
+----
+{
+  "Version": "2012-10-17",
+  "Statement": [
+    {
+      "Effect": "Allow",
+      "Action": [
+        "elasticfilesystem:DescribeAccessPoints",
+        "elasticfilesystem:DescribeFileSystems",
+        "elasticfilesystem:DescribeMountTargets",
+        "ec2:DescribeAvailabilityZones"
+      ],
+      "Resource": "*"
+    },
+    {
+      "Effect": "Allow",
+      "Action": [
+        "elasticfilesystem:CreateAccessPoint"
+      ],
+      "Resource": "*",
+      "Condition": {
+        "StringLike": {
+          "aws:RequestTag/efs.csi.aws.com/cluster": "true"
+        }
+      }
+    },
+    {
+      "Effect": "Allow",
+      "Action": "elasticfilesystem:DeleteAccessPoint",
+      "Resource": "*",
+      "Condition": {
+        "StringEquals": {
+          "aws:ResourceTag/efs.csi.aws.com/cluster": "true"
+        }
+      }
+    }
+  ]
+}
+----
 
-// The on-prem version of this step is documented in the cco-ccoctl-configuring procedure.
-. Extract the CCO utility (`ccoctl`) binary from the Cloud Credential Operator.
-
-.. Find the pod on which the Cloud Credential Operator is running.
+.. Create an IAM trust JSON file with the following content:
 +
 --
+[source,json]
+----
+{
+  "Version": "2012-10-17",
+  "Statement": [
+    {
+      "Effect": "Allow",
+      "Principal": {
+        "Federated": "arn:aws:iam::<your_aws_account_ID>:oidc-provider/<openshift_oidc_provider>"  <1>
+      },
+      "Action": "sts:AssumeRoleWithWebIdentity",
+      "Condition": {
+        "StringEquals": {
+          "<openshift_oidc_provider>:sub": [  <2>
+            "system:serviceaccount:openshift-cluster-csi-drivers:aws-efs-csi-driver-operator",
+            "system:serviceaccount:openshift-cluster-csi-drivers:aws-efs-csi-driver-controller-sa"
+          ]
+        }
+      }
+    }
+  ]
+}
+----
+<1> Specify your AWS account ID and the OpenShift OIDC provider endpoint. Obtain the endpoint by running the following command:
++
 [source,terminal]
 ----
-$ oc get pod -n openshift-cloud-credential-operator -l app=cloud-credential-operator
+$ rosa describe cluster \
+  -c $(oc get clusterversion -o jsonpath='{.items[].spec.clusterID}{"\n"}') \
+  -o yaml | awk '/oidc_endpoint_url/ {print $2}' | cut -d '/' -f 3,4
 ----
-
-.Example output
-[source,terminal]
-----
-NAME                                        READY   STATUS    RESTARTS   AGE
-cloud-credential-operator-78c9c575b-r6mmr   2/2     Running   0          6h33m
-----
++
+<2> Specify the OpenShift OIDC endpoint again.
 --
 
-.. Copy the `ccoctl` binary from the pod to a local directory.
+.. Create the IAM role:
 +
 [source,terminal]
 ----
-$ oc cp -c cloud-credential-operator openshift-cloud-credential-operator/<CCO-pod-name>:/usr/bin/ccoctl ./ccoctl 
+ROLE_ARN=$(aws iam create-role \
+  --role-name "<your_cluster_name>-aws-efs-csi-operator" \
+  --assume-role-policy-document file://<your_trust_file_name>.json \
+  --query "Role.Arn" --output text); echo $ROLE_ARN
 ----
++
+Save the output. You will use it in the next steps.
 
-.. Change the permissions to make `ccoctl` executable.
+.. Create the IAM policy:
 +
 [source,terminal]
 ----
-$ chmod 775 ./ccoctl
+POLICY_ARN=$(aws iam create-policy \
+  --policy-name "<your_rosa_cluster_name>-rosa-efs-csi" \
+  --policy-document file://<your_policy_file_name>.json \
+  --query 'Policy.Arn' --output text); echo $POLICY_ARN
 ----
++
 
-.. To verify that `ccoctl` is ready to use, display the help file:
+.. Attach the IAM policy to the IAM role:
 +
 [source,terminal]
 ----
-$ ./ccoctl --help
+$ aws iam attach-role-policy \
+  --role-name "<your_rosa_cluster_name>-aws-efs-csi-operator" \
+  --policy-arn $POLICY_ARN
 ----
-
-. Create and save an EFS `CredentialsRequest` YAML file, such as shown in the following example:
 +
-.Example
+
+. Create a `Secret` YAML file for the driver operator:
++
 [source,yaml]
 ----
-apiVersion: cloudcredential.openshift.io/v1
-kind: CredentialsRequest
+apiVersion: v1
+kind: Secret
 metadata:
-  name: openshift-aws-efs-csi-driver
-  namespace: openshift-cloud-credential-operator
-spec:
-  providerSpec:
-    apiVersion: cloudcredential.openshift.io/v1
-    kind: AWSProviderSpec
-    statementEntries:
-    - action:
-      - elasticfilesystem:*
-      effect: Allow
-      resource: '*'
-  secretRef:
-    name: aws-efs-cloud-credentials
-    namespace: openshift-cluster-csi-drivers
-  serviceAccountNames:
-  - aws-efs-csi-driver-operator
-  - aws-efs-csi-driver-controller-sa
+ name: aws-efs-cloud-credentials
+ namespace: openshift-cluster-csi-drivers
+stringData:
+  credentials: |-
+    [default]
+    sts_regional_endpoints = regional
+    role_arn = <role_ARN> <1>
+    web_identity_token_file = /var/run/secrets/openshift/serviceaccount/token
 ----
+<1> Replace `role_ARN` with the output you saved while creating the role.
 
-. Run the `ccoctl` tool to generate a new IAM role in AWS, and create a YAML file for it in the local file system (`<path_to_ccoctl_output_dir>/manifests/openshift-cluster-csi-drivers-aws-efs-cloud-credentials-credentials.yaml`).
+. Create the secret:
 +
---
 [source,terminal]
 ----
-$ ccoctl aws create-iam-roles --name=<name> --region=<aws_region> --credentials-requests-dir=<path_to_directory_with_list_of_credentials_requests>/credrequests --identity-provider-arn=<oidc_provider_arn>
+$ oc apply -f aws-efs-cloud-credentials.yaml
 ----
-
-* `name=<name>` is the name used to tag any cloud resources that are created for tracking.
-
-* `region=<aws_region>` is the AWS region where cloud resources are created.
-
-* `dir=<path_to_directory_with_list_of_credentials_requests>/credrequests` is the directory containing the EFS CredentialsRequest file in previous step.
-
-* `<oidc_provider_arn>` is the ARN for the OIDC provider that associates with your cluster.
-
-.Example
-[source,terminal]
-----
-$ ccoctl aws create-iam-roles --name=my-aws-efs --credentials-requests-dir= credrequests --identity-provider-arn=arn:aws:iam::123456789012:oidc-provider/example.cloudfront.net/<cluster-ID>
-----
-
-.Example output
-[source,terminal]
-----
-2022/03/21 06:24:44 Role arn:aws:iam::123456789012:role/my-aws-efs -openshift-cluster-csi-drivers-aws-efs-cloud- created
-2022/03/21 06:24:44 Saved credentials configuration to: /manifests/openshift-cluster-csi-drivers-aws-efs-cloud-credentials-credentials.yaml
-2022/03/21 06:24:45 Updated Role policy for Role my-aws-efs-openshift-cluster-csi-drivers-aws-efs-cloud-credentials
-----
---
-
-. Create the AWS EFS cloud credentials and secret:
 +
---
-[source,terminal]
-----
-$ oc create -f <path_to_ccoctl_output_dir>/manifests/openshift-cluster-csi-drivers-aws-efs-cloud-credentials-credentials.yaml
-----
-
-.Example
-[source,terminal]
-----
-$ oc create -f /manifests/openshift-cluster-csi-drivers-aws-efs-cloud-credentials-credentials.yaml
-----
-
-.Example output
-[source,terminal]
-----
-secret/aws-efs-cloud-credentials created
-----
---
+You are now ready to install the AWS EFS CSI driver.

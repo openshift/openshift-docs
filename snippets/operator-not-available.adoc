@@ -1,0 +1,9 @@
+// When including this file, ensure that {operator-name} is set immediately before
+// the include. Otherwise it will result in an incorrect replacement.
+
+[IMPORTANT]
+====
+{operator-name} is not currently available for {product-title} {product-version}. The Operator is planned to be released in the near future.
+====
+// Undefine {operator-name} attribute, so that any mistakes are easily spotted
+:!operator-name:
