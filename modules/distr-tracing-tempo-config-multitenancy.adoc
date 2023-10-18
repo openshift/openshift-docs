@@ -1,0 +1,151 @@
+// Module included in the following assemblies:
+//
+// * distr_tracing_tempo/distr-tracing-tempo-configuring.adoc
+
+:_content-type: REFERENCE
+[id="distr-tracing-tempo-config-multitenancy_{context}"]
+= Multitenancy
+
+Multitenancy with authentication and authorization is provided in the Tempo Gateway service.
+The authentication uses OpenShift OAuth and the Kubernetes `TokenReview` API. The authorization uses the Kubernetes `SubjectAccessReview` API.
+
+.Sample Tempo CR with two tenants, `dev` and `prod`
+[source,yaml]
+----
+apiVersion: tempo.grafana.com/v1alpha1
+kind:  TempoStack
+metadata:
+  name: simplest
+spec:
+  tenants:
+    mode: openshift <1>
+    authentication: <2>
+      - tenantName: dev <3>
+        tenantId: "1610b0c3-c509-4592-a256-a1871353dbfa" <4>
+      - tenantName: prod
+        tenantId: "1610b0c3-c509-4592-a256-a1871353dbfb"
+  template:
+    gateway:
+      enabled: true <5>
+    queryFrontend:
+      jaegerQuery:
+        enabled: true
+----
+
+<1> Must be set to `openshift`.
+<2> The list of tenants.
+<3> The tenant name. Must be provided in the `X-Scope-OrgId` header when ingesting the data.
+<4> A unique tenant ID.
+<5> Enables a gateway that performs authentication and authorization. The Jaeger UI is exposed at `http://<gateway-ingress>/api/traces/v1/<tenant-name>/search`.
+
+The authorization configuration uses the `ClusterRole` and `ClusterRoleBinding` of the Kubernetes Role-Based Access Control (RBAC). By default, no users have read or write permissions.
+
+.Sample of the read RBAC configuration that allows authenticated users to read the trace data of the `dev` and `prod` tenants
+[source,yaml]
+----
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: tempostack-traces-reader
+rules:
+  - apiGroups:
+      - 'tempo.grafana.com'
+    resources: <1>
+      - dev
+      - prod
+    resourceNames:
+      - traces
+    verbs:
+      - 'get' <2>
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: tempostack-traces-reader
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: tempostack-traces-reader
+subjects:
+  - kind: Group
+    apiGroup: rbac.authorization.k8s.io
+    name: system:authenticated <3>
+----
+
+<1> Lists the tenants.
+<2> The `get` value enables the read operation.
+<3> Grants all authenticated users the read permissions for trace data.
+
+.Sample of the write RBAC configuration that allows the `otel-collector` service account to write the trace data for the `dev` tenant
+[source,yaml]
+----
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: otel-collector <1>
+  namespace: otel
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: tempostack-traces-write
+rules:
+  - apiGroups:
+      - 'tempo.grafana.com'
+    resources: <2>
+      - dev
+    resourceNames:
+      - traces
+    verbs:
+      - 'create' <3>
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: tempostack-traces
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: tempostack-traces-write
+subjects:
+  - kind: ServiceAccount
+    name: otel-collector
+    namespace: otel
+----
+<1> The service account name for the client to use when exporting trace data. The client must send the service account token, `/var/run/secrets/kubernetes.io/serviceaccount/token`, as the bearer token header.
+<2> Lists the tenants.
+<3> The `create` value enables the write operation.
+
+Trace data can be sent to the Tempo instance from the OpenTelemetry Collector that uses the service account with RBAC for writing the data.
+
+.Sample OpenTelemetry CR configuration
+[source,yaml]
+----
+apiVersion: opentelemetry.io/v1alpha1
+kind: OpenTelemetryCollector
+metadata:
+  name: cluster-collector
+  namespace: tracing-system
+spec:
+  mode: deployment
+  serviceAccount: otel-collector
+  config: |
+      extensions:
+        bearertokenauth:
+          filename: "/var/run/secrets/kubernetes.io/serviceaccount/token"
+      exporters:
+        otlp/dev:
+          endpoint: tempo-simplest-gateway.tempo.svc.cluster.local:8090
+          tls:
+            insecure: false
+            ca_file: "/var/run/secrets/kubernetes.io/serviceaccount/service-ca.crt"
+          auth:
+            authenticator: bearertokenauth
+          headers:
+            X-Scope-OrgID: "dev"
+      service:
+        extensions: [bearertokenauth]
+        pipelines:
+          traces:
+            exporters: [otlp/dev]
+----
