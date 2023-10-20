@@ -130,7 +130,6 @@ INCORRECT_LINKS = {}
 
 log = logging.getLogger("build")
 
-
 def setup_parser():
     parser = argparse.ArgumentParser(formatter_class=argparse.ArgumentDefaultsHelpFormatter)
     parser.add_argument("--distro", help="The distribution to build for", default="openshift-enterprise")
@@ -936,11 +935,27 @@ def parse_repo_config(config_file, distro, version):
 
     return repo_urls
 
+class ColorFormatter(logging.Formatter):
+    def __init__(self, fmt, colors):
+        logging.Formatter.__init__(self, fmt)
+        self.colors = colors
+
+    def format(self, record):
+        msg = logging.Formatter.format(self, record)
+        if record.levelno == logging.WARNING:
+            msg = self.colors[logging.WARNING] + msg + self.colors["RESET"]
+        elif record.levelno == logging.ERROR:
+            msg = self.colors[logging.ERROR] + msg + self.colors["RESET"]
+        return msg
 
 def main():
     parser = setup_parser()
     args = parser.parse_args()
+    stderr_handler = logging.StreamHandler(stream=sys.stderr)
+    stderr_handler.setLevel(logging.WARNING)
+    log.addHandler(stderr_handler)
     logging.basicConfig(format='%(message)s', level=logging.INFO, stream=sys.stdout)
+    stderr_handler.setFormatter(ColorFormatter("%(message)s", {logging.WARNING: "\033[93m", logging.ERROR: "\033[91m", "RESET": "\033[0m"}))
 
     # Copy down the latest files
     if not args.no_upstream_fetch:
