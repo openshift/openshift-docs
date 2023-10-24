@@ -1,0 +1,102 @@
+// Module included in the following assemblies:
+//
+// * security/certificates/api-server.adoc
+
+:_content-type: PROCEDURE
+[id="replace-the-certificate-authority_{context}"]
+
+= Invalidating the installer-generated kubeconfig before replacing it with a newly generated CA certificate
+
+The installer-generated kubeconfig cannot be removed, but it can be invalidated and replaced with a newly generated CA certificate.
+
+You can replace the installer-generated kubeconfig. You might do this if any of the following conditions exist:
+
+* You do not trust who installed the cluster.
+* The kubeconfig is leaked.
+* Other security-related needs exist, such as the periodic rotation of the kubeconfig.
+
+[IMPORTANT]
+====
+To avoid being locked out of the cluster, have an alternative way to login, such as, using an OAuth-authenticated administrator user or using a client certificate signed by an additional client CA.
+====
+
+.Procedure
+
+. Optional: Generate a new self-signed CA, unless an existing corporate or other CA is to be used.
+.. Export a name for the new self-signed CA.
+[source,terminal]
+----
+
+$ export NAME="custom"
+----
++
+.. Export the subject for the new self-signed CA.
+[source,terminal]
+----
+
+$ export CA_SUBJ="/OU=openshift/CN=admin-kubeconfig-signer-custom"
+----
++
+.. Set the CA validity to 10 years (in days).
+[source,terminal]
+----
+
+$ export VALIDITY=3650
+----
++
+.. Generate the CA private key.
+[source,terminal]
+----
+
+$ openssl genrsa -out ${NAME}-ca.key 4096
+----
++
+.. Create the CA certificate.
+[source,terminal]
+----
+
+$ openssl req -x509 -new -nodes -key ${NAME}-ca.key -sha256 -days $VALIDITY -out ${NAME}-ca.crt -subj "${CA_SUBJ}"
+----
++
+. Generate a new `system:admin` certificate. This X.509 certificate must include the user's name in the Common Name (*CN*) field and the group name in the Organization (*O*) field.
++
+[Note]
+====
+The information in the *CN* and *O* fields are required for authentication.
+====
+
++
+[source,terminal]
+----
+$ export USER=system:admin
+$ export GROUP=system:masters
+$ export USER_SUBJ="/O=${GROUP}/CN=${USER}"
+
+# create the user CSR
+$ openssl req -nodes -newkey rsa:2048 -keyout ${USER}.key -subj "${USER_SUBJ}" -out ${USER}.csr
+
+# sign the user CSR and generate the certificate, the certificate must have the `clientAuth` extension
+$ openssl x509 -extfile <(printf "extendedKeyUsage = clientAuth") -req -in ${USER}.csr \
+       -CA ${NAME}-ca.crt -CAkey ${NAME}-ca.key -CAcreateserial -out 
+${USER}.crt -days $VALIDITY -sha256
+----    
++
+. Use the following commands to add the new certificate as an additional clientCA:
++
+[source,terminal]
+----
+# create the client-ca ConfigMap"
+$ oc create configmap client-ca-custom -n openshift-config --from-file=ca-bundle.crt=${NAME}-ca.crt
+
+# patch the APIServer
+$ oc patch apiserver cluster --type=merge -p '{"spec": {"clientCA": {"name": "client-ca-custom"}}}'
+----
++
+. Use the following commands to import an additional CA certificate in a config map in the `openshift-config`` namespace. The CA file must be in PEM format.
++
+[source,terminal]
+----
+$ oc create --kubeconfig="$NEW_KUBECONFIG" configmap admin-kubeconfig-client-ca -n openshift-config --from-file=ca-bundle.crt=${NAME}-ca.crt \
+       --dry-run -o yaml | oc replace -f -
+----
+
