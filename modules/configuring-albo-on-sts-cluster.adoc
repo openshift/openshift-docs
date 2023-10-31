@@ -3,7 +3,18 @@
 
 :_mod-docs-content-type: PROCEDURE
 [id="nw-installing-albo-on-sts-cluster_{context}"]
-= Configuring AWS Load Balancer Operator on Security Token Service cluster by using managed `CredentialsRequest` objects
+= Configuring the AWS Load Balancer Controller on Security Token Service
+
+The controller's CredentialsRequest needs to be set with the IAM role which needs to be provisioned manually.
+
+There are two options for creating the controller's IAM role:
+
+* Using ccoctl and a pre-defined CredentialsRequest.
+* Using AWS CLI and pre-defined AWS manifests.
+
+If your system doesn't support ccoctl, the second option is the only available choice.
+
+== Option 1: Using ccoctl
 
 .Prerequisites
 
@@ -11,38 +22,110 @@
 
 .Procedure
 
-. The AWS Load Balancer Operator creates the `CredentialsRequest` object in the `openshift-cloud-credential-operator` namespace for each `AWSLoadBalancerController` custom resource (CR). You can extract and save the created `CredentialsRequest` object in a directory by running the following command:
+. Download the `CredentialsRequest` custom resource (CR) of the AWS Load Balancer Operator, and create a directory to store it by running the following command:
 +
 [source,terminal]
 ----
-$ oc get credentialsrequest -n openshift-cloud-credential-operator  \
-    aws-load-balancer-controller-<cr-name> -o yaml > <path-to-credrequests-dir>/cr.yaml <1>
-----
-<1> The `aws-load-balancer-controller-<cr-name>` parameter specifies the credential request name created by the AWS Load Balancer Operator. The `cr-name` specifies the name of the AWS Load Balancer Controller instance.
-
-. Use the `ccoctl` tool to process all `CredentialsRequest` objects by running the following command:
-+
-[source,terminal]
-----
-$ ccoctl aws create-iam-roles \
-    --name <name> --region=<aws_region> \
-    --credentials-requests-dir=<path-to-credrequests-dir> \
-    --identity-provider-arn <oidc-arn>
+$ curl --create-dirs -o <credrequests-dir>/controller.yaml https://raw.githubusercontent.com/openshift/aws-load-balancer-operator/main/hack/controller/controller-credentials-request.yaml
 ----
 
-. Apply the secrets generated in manifests directory to your cluster, by running the following command:
+. Use the `ccoctl` tool to create IAM role by running the following command:
 +
 [source,terminal]
 ----
-$ ls manifests/*-credentials.yaml | xargs -I{} oc apply -f {}
+$ ccoctl aws create-iam-roles --name <name> --region=<aws-region> --credentials-requests-dir=<credrequests-dir> --identity-provider-arn <oidc-arn>
+----
++
+.Example output
+[source,terminal]
+----
+2023/09/12 11:38:57 Role arn:aws:iam::777777777777:role/<name>-aws-load-balancer-operator-aws-load-balancer-controller created <1>
+2023/09/12 11:38:57 Saved credentials configuration to: /home/user/<credrequests-dir>/manifests/aws-load-balancer-operator-aws-load-balancer-controller-credentials.yaml
+2023/09/12 11:38:58 Updated Role policy for Role <name>-aws-load-balancer-operator-aws-load-balancer-controller created
+----
+<1> Note the ARN of the created IAM role.
+
+The role name must not be longer than 12 characters.
+
+== Option 2: Using the AWS CLI
+
+.Prerequisites
+
+* You must have the `aws` binary installed.
+
+.Procedure
+
+. Generate a trusted policy file using your identity provider (e.g. OpenID Connect):
++
+[source,terminal]
+----
+$ cat <<EOF > albo-controller-trusted-policy.json
+{
+    "Version": "2012-10-17",
+    "Statement": [
+        {
+            "Effect": "Allow",
+            "Principal": {
+                "Federated": "arn:aws:iam::999999999999:oidc-provider/d3gt1gce2zmg3d.cloudfront.net/25bslnj8bdll0fqhb9h5u0rmbpb3esgm" <1>
+            },
+            "Action": "sts:AssumeRoleWithWebIdentity",
+            "Condition": {
+                "StringEquals": {
+                    "d3gt1gce2zmg3d.cloudfront.net/25bslnj8bdll0fqhb9h5u0rmbpb3esgm:sub": "system:serviceaccount:aws-load-balancer-operator:aws-load-balancer-controller-cluster" <2>
+                }
+            }
+        }
+    ]
+}
+EOF
+----
+<1> Specifies the ARN of the identity provider.
+<2> Specifies the controller's service account.
+
+. Create the IAM role with the generated trusted policy:
++
+[source,terminal]
+----
+$ aws iam create-role --role-name albo-controller --assume-role-policy-document file://albo-controller-trusted-policy.json
+----
++
+.Example output
+[source,terminal]
+----
+ROLE	arn:aws:iam::999999999999:role/albo-controller	2023-08-02T12:13:22Z <1>
+ASSUMEROLEPOLICYDOCUMENT	2012-10-17
+STATEMENT	sts:AssumeRoleWithWebIdentity	Allow
+STRINGEQUALS	system:serviceaccount:aws-load-balancer-operator:aws-load-balancer-controller-cluster
+PRINCIPAL	arn:aws:iam:999999999999:oidc-provider/d3gt1gce2zmg3d.cloudfront.net/25bslnj8bdll0fqhb9h5u0rmbpb3esgm
+----
+<1> Note the ARN of the created IAM role.
+
+. Download the controller's permission policy by running the following command:
++
+[source,terminal]
+----
+$ curl -o albo-controller-permission-policy.json https://raw.githubusercontent.com/openshift/aws-load-balancer-operator/main/assets/iam-policy.json
 ----
 
-. Verify that the `aws-load-balancer-controller` pod is created:
+. Attach the controller's permission policy to the IAM role by running the following command:
 +
 [source,terminal]
 ----
-$ oc -n aws-load-balancer-operator get pods
-NAME                                                            READY   STATUS    RESTARTS   AGE
-aws-load-balancer-controller-cluster-9b766d6-gg82c              1/1     Running   0          137m
-aws-load-balancer-operator-controller-manager-b55ff68cc-85jzg   2/2     Running   0          3h26m
+$ aws iam put-role-policy --role-name albo-controller --policy-name perms-policy-albo-controller --policy-document file://albo-controller-permission-policy.json
 ----
+
+. Create the `AWSLoadBalancerController` resource YAML file, for example, `sample-sts-iam-role.yaml`, as follows:
++
+[source,yaml]
+----
+apiVersion: networking.olm.openshift.io/v1
+kind: AWSLoadBalancerController <1>
+metadata:
+  name: cluster <2>
+spec:
+  credentialsRequestConfig:
+    stsIAMRoleARN: <rolearn> <3>
+----
+<1> Defines the `AWSLoadBalancerController` resource.
+<2> Defines the AWS Load Balancer Controller instance name. This instance name gets added as a suffix to all related resources.
+<3> Specifies the role ARN to be used in `CredentialsRequest` to provision the controller's AWS credentials.

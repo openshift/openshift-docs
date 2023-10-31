@@ -3,7 +3,18 @@
 
 :_mod-docs-content-type: PROCEDURE
 [id="nw-bootstra-albo-on-sts-cluster_{context}"]
-= Bootstrapping AWS Load Balancer Operator on Security Token Service cluster
+= Creating the IAM role for the AWS Load Balancer Operator on a Security Token Service cluster
+
+An additional IAM Role is needed for the operator to be successfully installed in STS clusters. It is needed to interact with subnets and VPCs. The operator will generate a `CredentialsRequest` with this role to self bootstrap with AWS credentials.
+
+There are two options for creating the operator's IAM role:
+
+* Using ccoctl and a pre-defined CredentialsRequest.
+* Using AWS CLI and pre-defined AWS manifests.
+
+If your system doesn't support ccoctl, the second option is the only available choice.
+
+== Option 1: Using ccoctl
 
 .Prerequisites
 
@@ -11,49 +22,123 @@
 
 .Procedure
 
-. Create the `aws-load-balancer-operator` namespace by running the following command:
-+
-[source,terminal]
-----
-$ oc create namespace aws-load-balancer-operator
-----
-
 . Download the `CredentialsRequest` custom resource (CR) of the AWS Load Balancer Operator, and create a directory to store it by running the following command:
 +
 [source,terminal]
 ----
-$ curl --create-dirs -o <path-to-credrequests-dir>/cr.yaml https://raw.githubusercontent.com/openshift/aws-load-balancer-operator/main/hack/operator-credentials-request.yaml
+$ curl --create-dirs -o <credrequests-dir>/operator.yaml https://raw.githubusercontent.com/openshift/aws-load-balancer-operator/main/hack/operator-credentials-request.yaml
 ----
 
-. Use the `ccoctl` tool to process `CredentialsRequest` objects of the AWS Load Balancer Operator, by running the following command:
+. Use the `ccoctl` tool to create IAM role by running the following command:
 +
 [source,terminal]
 ----
-$ ccoctl aws create-iam-roles \
-    --name <name> --region=<aws_region> \
-    --credentials-requests-dir=<path-to-credrequests-dir> \
-    --identity-provider-arn <oidc-arn>
-----
-
-. Apply the secrets generated in the manifests directory of your cluster by running the following command:
-+
-[source,terminal]
-----
-$ ls manifests/*-credentials.yaml | xargs -I{} oc apply -f {}
-----
-
-. Verify that the credentials secret of the AWS Load Balancer Operator is created by running the following command:
-+
-[source,terminal]
-----
-$ oc -n aws-load-balancer-operator get secret aws-load-balancer-operator --template='{{index .data "credentials"}}' | base64 -d
+$ ccoctl aws create-iam-roles --name <name> --region=<aws-region> --credentials-requests-dir=<credrequests-dir> --identity-provider-arn <oidc-arn>
 ----
 +
 .Example output
 [source,terminal]
 ----
-[default]
-sts_regional_endpoints = regional
-role_arn = arn:aws:iam::999999999999:role/aws-load-balancer-operator-aws-load-balancer-operator
-web_identity_token_file = /var/run/secrets/openshift/serviceaccount/token
+2023/09/12 11:38:57 Role arn:aws:iam::777777777777:role/<name>-aws-load-balancer-operator-aws-load-balancer-operator created <1>
+2023/09/12 11:38:57 Saved credentials configuration to: /home/user/<credrequests-dir>/manifests/aws-load-balancer-operator-aws-load-balancer-operator-credentials.yaml
+2023/09/12 11:38:58 Updated Role policy for Role <name>-aws-load-balancer-operator-aws-load-balancer-operator created
 ----
+<1> Note the ARN of the created IAM role.
+
+The role name must not be longer than 12 characters.
+
+== Option2: Using the AWS CLI
+
+.Prerequisites
+
+* You must have the `aws` binary installed.
+
+.Procedure
+
+. Generate a trusted policy file using your identity provider (e.g. OpenID Connect):
++
+[source,terminal]
+----
+$ cat <<EOF > albo-operator-trusted-policy.json
+{
+    "Version": "2012-10-17",
+    "Statement": [
+        {
+            "Effect": "Allow",
+            "Principal": {
+                "Federated": "arn:aws:iam::999999999999:oidc-provider/d3gt1gce2zmg3d.cloudfront.net/25bslnj8bdll0fqhb9h5u0rmbpb3esgm" <1>
+            },
+            "Action": "sts:AssumeRoleWithWebIdentity",
+            "Condition": {
+                "StringEquals": {
+                    "d3gt1gce2zmg3d.cloudfront.net/25bslnj8bdll0fqhb9h5u0rmbpb3esgm:sub": "system:serviceaccount:aws-load-balancer-operator:aws-load-balancer-operator-controller-manager" <2>
+                }
+            }
+        }
+    ]
+}
+EOF
+----
+<1> Specifies the ARN of the identity provider.
+<2> Specifies the operator's service account.
+
+. Create the IAM role with the generated trusted policy:
++
+[source,terminal]
+----
+$ aws iam create-role --role-name albo-operator --assume-role-policy-document file://albo-operator-trusted-policy.json
+----
++
+.Example output
+[source,terminal]
+----
+ROLE	arn:aws:iam::999999999999:role/albo-operator	2023-08-02T12:13:22Z <1>
+ASSUMEROLEPOLICYDOCUMENT	2012-10-17
+STATEMENT	sts:AssumeRoleWithWebIdentity	Allow
+STRINGEQUALS	system:serviceaccount:aws-load-balancer-operator:aws-load-balancer-controller-manager
+PRINCIPAL	arn:aws:iam:999999999999:oidc-provider/d3gt1gce2zmg3d.cloudfront.net/25bslnj8bdll0fqhb9h5u0rmbpb3esgm
+----
+<1> Note the ARN of the created IAM role.
+
+. Download the operator's permission policy by running the following command:
++
+[source,terminal]
+----
+$ curl -o albo-operator-permission-policy.json https://raw.githubusercontent.com/openshift/aws-load-balancer-operator/main/hack/operator-permission-policy.json
+----
+
+. Attach the operator's permission policy to the IAM role by running the following command:
++
+[source,terminal]
+----
+$ aws iam put-role-policy --role-name albo-operator --policy-name perms-policy-albo-operator --policy-document file://albo-operator-permission-policy.json
+----
+
+= Installing the AWS Load Balancer Operator on a Security Token Service cluster
+
+The operator's role ARN needs to be passed to the operator as an environment variable.
+This can be achieved either through the dedicated input box in the OperatorHub web UI or by specifying it in the Subscription resource when installing the operator via the OpenShift CLI.
+
+.Procedure
+
+. Create the operator subscription with the role ARN by running the following command:
++
+[source,yaml]
+----
+apiVersion: operators.coreos.com/v1alpha1
+kind: Subscription
+metadata:
+  name: aws-load-balancer-operator
+  namespace: aws-load-balancer-operator
+spec:
+  channel: stable-v1
+  name: aws-load-balancer-operator
+  source: redhat-operators
+  sourceNamespace: openshift-marketplace
+  config: <1>
+    env:
+    - name: ROLEARN
+      value: <rolearn> <2>
+----
+<1> Configurates the deployment resource of the operator.
+<2> Specifies the role ARN to be used in `CredentialsRequest` to provision the operator's AWS credentials.
