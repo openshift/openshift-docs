@@ -16,6 +16,10 @@ RUN python3 -m ensurepip
 
 RUN pip3 install --no-cache --upgrade pip setuptools
 
-COPY . $HOME/src/
+WORKDIR /src
+
+COPY ./aura.tar.gz /src
 
 RUN pip3 install --no-cache-dir pyyaml /src/aura.tar.gz
+
+CMD ["/bin/bash"]
