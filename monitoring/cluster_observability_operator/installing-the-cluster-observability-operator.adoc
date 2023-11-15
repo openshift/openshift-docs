@@ -1,0 +1,18 @@
+:_mod-docs-content-type: ASSEMBLY
+[id="installing-cluster-observability-operators"]
+= Installing the Cluster Observability Operator
+include::_attributes/common-attributes.adoc[]
+:context: installing_the_cluster_observability_operator
+
+toc::[]
+
+:FeatureName: The Cluster Observability Operator
+include::snippets/technology-preview.adoc[leveloffset=+2]
+
+As a cluster administrator, you can install the Cluster Observability Operator (COO) from OperatorHub by using the {product-title} web console or CLI.
+OperatorHub is a user interface that works in conjunction with Operator Lifecycle Manager (OLM), which installs and manages Operators on a cluster.
+
+To install the COO using OperatorHub, follow the procedure described in xref:../../operators/admin/olm-adding-operators-to-cluster.adoc[Adding Operators to a cluster].
+
+// Uninstalling COO using the OCP web console
+include::modules/monitoring-uninstalling-cluster-observability-operator-using-the-web-console.adoc[leveloffset=+1]
