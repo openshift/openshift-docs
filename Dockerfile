@@ -18,8 +18,8 @@ RUN pip3 install --no-cache --upgrade pip setuptools
 
 WORKDIR /src
 
-COPY ./aura.tar.gz /src
+COPY ./aura.tar.gz ./requirements.txt /src
 
-RUN pip3 install --no-cache-dir pyyaml /src/aura.tar.gz
+RUN pip3 install --no-cache-dir -r requirements.txt
 
 CMD ["/bin/bash"]
