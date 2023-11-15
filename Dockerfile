@@ -10,7 +10,7 @@ COPY --from=builder /usr/local/bundle /usr/local/bundle
 
 ENV PYTHONUNBUFFERED=1
 
-RUN apk add --update --no-cache git bash python3 python3-dev && ln -sf python3 /usr/bin/python
+RUN apk add --update --no-cache diffutils findutils git bash python3 python3-dev && ln -sf python3 /usr/bin/python
 
 RUN python3 -m ensurepip
 
