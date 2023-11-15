@@ -22,6 +22,6 @@ COPY ./aura.tar.gz ./requirements.txt /src
 
 RUN pip3 install --no-cache-dir -r requirements.txt
 
-RUN git config --global --add safe.directory /go/src/github.com/openshift/openshift-docs
+RUN git config --system --add safe.directory '*'
 
 CMD ["/bin/bash"]
