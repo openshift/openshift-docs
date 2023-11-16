@@ -1,4 +1,4 @@
-FROM registry.access.redhat.com/ubi8/ubi-minimal
+FROM registry.access.redhat.com/ubi8/ubi-minimal AS base
 
 RUN microdnf install -y git python39 python39-pip which && microdnf clean all && rm -rf /var/cache/yum
 
