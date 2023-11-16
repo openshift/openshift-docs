@@ -1,4 +1,4 @@
-FROM registry.ci.openshift.org/ocp/ubi-ruby-27:8
+FROM registry.access.redhat.com/ubi8/ruby-27
 
 ENV LANG=en_US.UTF-8
 
@@ -6,8 +6,8 @@ USER root
 
 RUN gem install listen ascii_binder && yum clean all
 
-WORKDIR /src
-
 RUN git config --system --add safe.directory '*'
+
+WORKDIR /src
 
 CMD ["/bin/bash"]
