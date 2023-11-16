@@ -1,4 +1,4 @@
-FROM registry.access.redhat.com/ubi8/ruby-27
+FROM registry.access.redhat.com/ubi8/ruby-27 AS ruby
 
 ENV LANG=en_US.UTF-8
 
