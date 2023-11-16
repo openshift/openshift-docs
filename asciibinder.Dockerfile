@@ -1,17 +1,17 @@
-FROM ruby:3.1.2-alpine3.16 AS builder
+FROM registry.access.redhat.com/ubi8/ruby-27
 
-RUN apk update && apk add --virtual build-dependencies build-base
+ENV LANG=en_US.UTF-8
 
-RUN gem install listen ascii_binder
+USER root
 
-FROM ruby:3.1.2-alpine3.16
+RUN gem install listen:3.0.8 ascii_binder && \
+    yum clean all
 
-COPY --from=builder /usr/local/bundle /usr/local/bundle
-
-RUN apk add --update --no-cache diffutils findutils git
-
-RUN git config --system --add safe.directory '*'
+LABEL url="http://www.asciibinder.org" \
+      summary="a documentation system built on Asciidoctor" \
+      description="Run the asciibinder container image from the local docs repo, which is mounted into the container. Pass asciibinder commands to run the build. Generated files are owned by root." \
+      RUN="docker run -it --rm \
+          -v `pwd`:/src:z \
+          IMAGE"
 
 WORKDIR /src
-
-CMD ["/bin/sh"]
