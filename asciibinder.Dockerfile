@@ -1,17 +1,13 @@
-FROM ruby:3.1.2-alpine3.16 AS builder
+FROM registry.ci.openshift.org/ocp/ubi-ruby-27:8
 
-RUN apk update && apk add --virtual build-dependencies build-base
+ENV LANG=en_US.UTF-8
 
-RUN gem install listen ascii_binder
+USER root
 
-FROM ruby:3.1.2-alpine3.16
-
-COPY --from=builder /usr/local/bundle /usr/local/bundle
-
-RUN apk add --update --no-cache diffutils findutils git
-
-RUN git config --system --add safe.directory '*'
+RUN gem install listen ascii_binder && yum clean all
 
 WORKDIR /src
 
-CMD ["/bin/sh"]
+RUN git config --system --add safe.directory '*'
+
+CMD ["/bin/bash"]

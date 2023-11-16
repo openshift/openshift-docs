@@ -1,4 +1,4 @@
-FROM registry.access.redhat.com/ubi8/ubi-minimal:latest
+FROM registry.ci.openshift.org/ocp/ubi-minimal:8
 
 WORKDIR /src
 
@@ -6,7 +6,7 @@ RUN microdnf install -y git python39 python39-pip which && microdnf clean all &&
 
 COPY ./aura.tar.gz /src
 
-RUN python3 -m pip install --no-cache-dir --upgrade pip setuptools wheel && pip install --no-cache-dir /src/aura.tar.gz
+RUN python3 -m pip install --no-cache-dir --upgrade pip setuptools wheel pyyaml && pip install --no-cache-dir /src/aura.tar.gz
 
 RUN git config --system --add safe.directory '*'
 

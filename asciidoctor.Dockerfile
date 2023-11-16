@@ -1,4 +1,4 @@
-FROM registry.access.redhat.com/ubi8/ubi-minimal:latest
+FROM registry.ci.openshift.org/ocp/ubi-minimal:8
 
 WORKDIR /src
 
