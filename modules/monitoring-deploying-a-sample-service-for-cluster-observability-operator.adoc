@@ -1,0 +1,88 @@
+// Module included in the following assemblies:
+//
+// monitoring/cluster-observability-operator/configuring-the-cluster-observability-operator-to-monitor-a-service.adoc
+
+:_mod-docs-content-type: PROCEDURE
+[id="deploying-a-sample-service-for-cluster-observability-operator_{context}"]
+= Deploying a sample service for Cluster Observability Operator
+
+This configuration deploys a sample service named `prometheus-coo-example-app` in the user-defined `ns1-coo` project. 
+The service exposes the custom `version` metric.
+
+.Prerequisites
+
+* You have access to the cluster as a user with the `cluster-admin` cluster role or as a user with administrative permissions for the namespace.
+
+.Procedure
+
+. Create a YAML file named `prometheus-coo-example-app.yaml` that contains the following configuration details for a namespace, deployment, and service:
++
+[source,yaml]
+----
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: ns1-coo
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  labels:
+    app: prometheus-coo-example-app
+  name: prometheus-coo-example-app
+  namespace: ns1-coo
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: prometheus-coo-example-app
+  template:
+    metadata:
+      labels:
+        app: prometheus-coo-example-app
+    spec:
+      containers:
+      - image: ghcr.io/rhobs/prometheus-example-app:0.4.1
+        imagePullPolicy: IfNotPresent
+        name: prometheus-coo-example-app
+---
+apiVersion: v1
+kind: Service
+metadata:
+  labels:
+    app: prometheus-coo-example-app
+  name: prometheus-coo-example-app
+  namespace: ns1-coo
+spec:
+  ports:
+  - port: 8080
+    protocol: TCP
+    targetPort: 8080
+    name: web
+  selector:
+    app: prometheus-coo-example-app
+  type: ClusterIP
+----
+
+. Save the file.
+
+. Apply the configuration to the cluster by running the following command:
++
+[source,terminal]
+----
+$ oc apply -f prometheus-coo-example-app.yaml
+----
+
+. Verify that the pod is running by running the following command and observing the output:
++
+[source,terminal]
+----
+$ oc -n -ns1-coo get pod
+----
++
+.Example output
+[source,terminal]
+----
+NAME                                      READY     STATUS    RESTARTS   AGE
+prometheus-coo-example-app-0927545cb7-anskj   1/1       Running   0          81m
+----
