@@ -1,5 +1,7 @@
 FROM registry.access.redhat.com/ubi8/ubi-minimal AS base
 
+USER root
+
 COPY . /src/
 
 WORKDIR /src
