@@ -1,0 +1,13 @@
+:_mod-docs-content-type: ASSEMBLY
+[id="logging-5-8-release-notes"]
+include::_attributes/common-attributes.adoc[]
+= Logging 5.8
+:context: logging-5-8-release-notes
+
+toc::[]
+
+include::snippets/logging-compatibility-snip.adoc[]
+
+include::snippets/logging-stable-updates-snip.adoc[]
+
+include::modules/logging-release-notes-5-8-0.adoc[leveloffset=+1]
