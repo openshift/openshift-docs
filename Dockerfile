@@ -1,11 +1,13 @@
-FROM registry.access.redhat.com/ubi8/ruby-27 AS ruby
+FROM ruby:3.1.2-alpine AS builder
 
-USER root
+RUN apk update && apk add --virtual build-dependencies build-base
 
-ENV LANG=en_US.UTF-8
+RUN gem install listen asciidoctor asciidoctor-diagram ascii_binder
 
-RUN gem install listen ascii_binder && yum clean all
+FROM ruby:3.1.2-alpine
 
-RUN git config --system --add safe.directory '*'
+COPY --from=builder /usr/local/bundle /usr/local/bundle
+
+RUN apk add --update --no-cache git bash
 
 CMD ["/bin/bash"]
