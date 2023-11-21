@@ -10,4 +10,6 @@ COPY --from=builder /usr/local/bundle /usr/local/bundle
 
 RUN apk add --update --no-cache git bash
 
+WORKDIR /go/src/github.com/openshift/openshift-docs
+
 CMD ["/bin/bash"]
