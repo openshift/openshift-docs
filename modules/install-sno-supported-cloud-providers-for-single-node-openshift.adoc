@@ -1,0 +1,18 @@
+// This module is included in the following assemblies:
+//
+// installing/installing_sno/install-sno-installing-sno.adoc
+
+:_mod-docs-content-type: REFERENCE
+[id="supported-cloud-providers-for-single-node-openshift_{context}"]
+= Supported cloud providers for {sno}
+
+The following table contains a list of supported cloud providers and CPU architectures.
+
+.Supported cloud providers
+[options="header"]
+|====
+|Cloud provider |CPU architecture
+|Amazon Web Service (AWS)|x86_64 and AArch64
+|Microsoft Azure|x86_64
+|Google Cloud Platform (GCP) | x86_64 and AArch64
+|====

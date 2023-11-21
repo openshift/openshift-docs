@@ -1,0 +1,33 @@
+:_mod-docs-content-type: ASSEMBLY
+[id="osdk-token-auth"]
+= Token authentication for Operators on cloud providers
+include::_attributes/common-attributes.adoc[]
+:context: osdk-token-auth
+
+toc::[]
+
+Many cloud providers can enable authentication by using account tokens that provide short-term, limited-privilege security credentials.
+
+{product-title} includes the Cloud Credential Operator (CCO) to manage cloud provider credentials as custom resource definitions (CRDs). The CCO syncs on `CredentialsRequest` custom resources (CRs) to allow {product-title} components to request cloud provider credentials with any specific permissions required.
+
+Previously, on clusters where the CCO is in _manual mode_, Operators managed by Operator Lifecycle Manager (OLM) often provided detailed instructions in the OperatorHub for how users could manually provision any required cloud credentials.
+
+Starting in {product-title} 4.14, the CCO can detect when it is running on clusters enabled to use short-term credentials on certain cloud providers. It can then semi-automate provisioning certain credentials, provided that the Operator author has enabled their Operator to support the updated CCO.
+
+[role="_additional-resources"]
+.Additional resources
+
+* xref:../../authentication/managing_cloud_provider_credentials/about-cloud-credential-operator.adoc#about-cloud-credential-operator[About the Cloud Credential Operator]
+
+include::modules/osdk-cco-aws-sts.adoc[leveloffset=+1]
+[role="_additional-resources"]
+.Additional resources
+
+* xref:../../authentication/managing_cloud_provider_credentials/cco-short-term-creds.adoc#cco-short-term-creds-aws-olm_cco-short-term-creds[OLM-managed Operator support for authentication with AWS STS]
+* xref:../../operators/admin/olm-adding-operators-to-cluster.adoc#olm-installing-from-operatorhub-using-web-console_olm-adding-operators-to-a-cluster[Installing from OperatorHub using the web console]
+* xref:../../operators/admin/olm-adding-operators-to-cluster.adoc#olm-installing-operator-from-operatorhub-using-cli_olm-adding-operators-to-a-cluster[Installing from OperatorHub using the CLI]
+
+include::modules/osdk-cco-aws-sts-enabling.adoc[leveloffset=+2]
+include::modules/osdk-cco-aws-sts-role.adoc[leveloffset=+2]
+include::modules/osdk-cco-aws-sts-tshooting.adoc[leveloffset=+2]
+include::modules/osdk-cco-aws-sts-alt.adoc[leveloffset=+2]

@@ -1,6 +1,13 @@
-# Dockerfile
-FROM centos:8
-RUN dnf install git python3 python3-devel ruby rubygems -y
-RUN gem install asciidoctor asciidoctor-diagram
-COPY . $HOME/src/
-RUN pip3 install pyyaml /src/aura.tar.gz
+FROM ruby:3.1.2-alpine AS builder
+
+RUN apk update && apk add --virtual build-dependencies build-base
+
+RUN gem install listen asciidoctor asciidoctor-diagram ascii_binder
+
+FROM ruby:3.1.2-alpine
+
+COPY --from=builder /usr/local/bundle /usr/local/bundle
+
+RUN apk add --update --no-cache git bash
+
+CMD ["/bin/bash"]
