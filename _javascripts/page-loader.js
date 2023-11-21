@@ -26,7 +26,7 @@ function versionSelector(list) {
     baseUrl = "https://docs.openshift.com/enterprise/";
   }
 
-  if (dk === "openshift-enterprise" && currentVersion.charAt(0) !== newVersion.charAt(0)){
+  if (dk === "openshift-enterprise" || dk === "openshift-origin" && currentVersion.charAt(0) !== newVersion.charAt(0)){
     fileRequested = "/welcome/index.html";
   } else {
     const versionIndex = window.location.pathname.lastIndexOf(currentVersion) + currentVersion.length;
