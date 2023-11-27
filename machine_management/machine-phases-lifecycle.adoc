@@ -1,0 +1,31 @@
+:_mod-docs-content-type: ASSEMBLY
+[id="machine-phases-lifecycle"]
+= Machine phases and lifecycle
+include::_attributes/common-attributes.adoc[]
+:context: machine-phases-lifecycle
+
+toc::[]
+
+Machines move through a _lifecycle_ that has several defined phases. Understanding the machine lifecycle and its phases can help you verify whether a procedure is complete or troubleshoot undesired behavior. In {product-title}, the machine lifecycle is consistent across all supported cloud providers.
+
+//Machine phases
+include::modules/machine-about-phases.adoc[leveloffset=+1]
+
+//The machine lifecycle
+include::modules/machine-about-lifecycle.adoc[leveloffset=+1]
+
+[id="machine-determine-phase_{context}"]
+== Determining the phase of a machine
+
+You can find the phase of a machine by using the {oc-first} or by using the web console. You can use this information to verify whether a procedure is complete or to troubleshoot undesired behavior.
+
+//Determining the phase of a machine by using the CLI
+include::modules/machine-determine-phase-cli.adoc[leveloffset=+2]
+
+//Determining the phase of a machine by using the web console
+include::modules/machine-determine-phase-gui.adoc[leveloffset=+2]
+
+[role="_additional-resources"]
+== Additional resources
+
+* xref:../machine_management/deleting-machine.adoc#machine-lifecycle-hook-deletion_deleting-machine[Lifecycle hooks for the machine deletion phase]
