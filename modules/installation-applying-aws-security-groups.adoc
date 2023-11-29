@@ -1,0 +1,58 @@
+// Module included in the following assemblies:
+//
+// * installing/installing_aws/installing-aws-vpc.adoc
+// * installing/installing_aws/installing-aws-private.adoc
+// * installing/installing_aws/installing-aws-government-region.adoc
+// * installing/installing_aws/installing-aws-secret-region.adoc
+// * installing/installing_aws/installing-aws-china.adoc
+// * installing/installing_aws/installing-aws-outposts-remote-workers.adoc
+
+:_mod-docs-content-type: PROCEDURE
+[id="installation-aws-vpc-security-groups_{context}"]
+= Applying existing AWS security groups to the cluster
+
+Applying existing AWS security groups to your control plane and compute machines can help you meet the security needs of your organization, in such cases where you need to control the incoming or outgoing traffic of these machines.
+
+.Prerequisites
+* You have created the security groups in AWS. For more information, see the AWS documentation about working with link:https://docs.aws.amazon.com/AWSEC2/latest/UserGuide/ec2-security-groups.html[security groups].
+* The security groups must be associated with the existing VPC that you are deploying the cluster to. The security groups cannot be associated with another VPC.
+* You have an existing `install-config.yaml` file.
+
+.Procedure
+
+. In the `install-config.yaml` file, edit the `compute.platform.aws.additionalSecurityGroupIDs` parameter to specify one or more custom security groups for your compute machines.
+. Edit the `controlPlane.platform.aws.additionalSecurityGroupIDs` parameter to specify one or more custom security groups for your control plane machines.
+. Save the file and reference it when deploying the cluster.
+
+.Sample `install-config.yaml` file that specifies custom security groups
+[source,yaml]
+----
+# ...
+compute:
+- hyperthreading: Enabled
+  name: worker
+  platform:
+    aws:
+      additionalSecurityGroupIDs:
+        - sg-1 <1>
+        - sg-2
+  replicas: 3
+controlPlane:
+  hyperthreading: Enabled
+  name: master
+  platform:
+    aws:
+      additionalSecurityGroupIDs:
+        - sg-3
+        - sg-4
+  replicas: 3
+platform:
+  aws:
+    region: us-east-1
+    subnets: <2>
+      - subnet-1
+      - subnet-2
+      - subnet-3
+----
+<1> Specify the name of the security group as it appears in the Amazon EC2 console, including the `sg` prefix.
+<2> Specify subnets for each availability zone that your cluster uses.

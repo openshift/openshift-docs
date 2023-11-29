@@ -1,0 +1,21 @@
+:_mod-docs-content-type: ASSEMBLY
+:context: creating-multi-arch-compute-nodes-azure
+[id="creating-multi-arch-compute-nodes-azure"]
+= Creating a cluster with multi-architecture compute machine on Azure
+include::_attributes/common-attributes.adoc[]
+
+toc::[]
+
+To deploy an Azure cluster with multi-architecture compute machines, you must first create a single-architecture Azure installer-provisioned cluster that uses the multi-architecture installer binary. For more information on Azure installations, see xref:../../installing/installing_azure/installing-azure-customizations.adoc#installing-azure-customizations[Installing a cluster on Azure with customizations]. You can then add an ARM64 compute machine set to your cluster to create a cluster with multi-architecture compute machines.
+
+The following procedures explain how to generate an ARM64 boot image and create an Azure compute machine set that uses the ARM64 boot image. This adds ARM64 compute nodes to your cluster and deploys the amount of ARM64 virtual machines (VM) that you need.
+
+include::modules/multi-architecture-verifying-cluster-compatibility.adoc[leveloffset=+1]
+
+include::modules/multi-architecture-creating-arm64-bootimage.adoc[leveloffset=+1]
+
+include::modules/multi-architecture-modify-machine-set.adoc[leveloffset=+1]
+
+[role="_additional-resources"]
+.Additional resources
+* xref:../../machine_management/creating_machinesets/creating-machineset-azure.adoc#creating-machineset-azure[Creating a compute machine set on Azure]

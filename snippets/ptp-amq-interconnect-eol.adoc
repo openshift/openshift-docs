@@ -1,0 +1,7 @@
+[NOTE]
+====
+Use HTTP transport instead of AMQP for PTP and bare-metal events where possible.
+AMQ Interconnect is EOL from 30 June 2024.
+Extended life cycle support (ELS) for AMQ Interconnect ends 29 November 2029.
+For more information see, link:https://access.redhat.com/support/policy/updates/jboss_notes#p_Interconnect[Red Hat AMQ Interconnect support status].
+====

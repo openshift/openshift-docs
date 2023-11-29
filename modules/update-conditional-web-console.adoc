@@ -1,0 +1,33 @@
+// Module included in the following assemblies:
+//
+// * updating/updating_a_cluster/updating-cluster-web-console.adoc
+
+:_mod-docs-content-type: PROCEDURE
+[id="update-conditional-web-console_{context}"]
+= Viewing conditional updates in the web console
+
+You can view and assess the risks associated with particular updates with conditional updates.
+
+.Prerequisites
+* You have access to the cluster with `cluster-admin` privileges.
+
+* You have access to the {product-title} web console.
+
+* Pause all `MachineHealthCheck` resources.
+
+* Your Operators that were previously installed through Operator Lifecycle Manager (OLM) are updated to their latest version in their latest channel. Updating the Operators ensures they have a valid update path when the default OperatorHub catalogs switch from the current minor version to the next during a cluster update.
+
+* Your machine config pools (MCPs) are running and not paused. Nodes associated with a paused MCP are skipped during the update process. You can pause the MCPs if you are performing an advanced update strategy, such as a canary rollout, an EUS update, or a control-plane update.
+
+.Procedure
+
+. From the web console, click *Administration* -> *Cluster settings* page and review the contents of the *Details* tab.
+
+. You can enable `Include supported but not recommended versions` in the `Select new version` dropdown of the *Update cluster* modal to populate the dropdown list with conditional updates.
++
+[NOTE]
+====
+If a `Supported but not recommended` version is selected, more information is provided with potential issues with the version.
+====
+
+. Review the notification detailing the potential risks to updating.

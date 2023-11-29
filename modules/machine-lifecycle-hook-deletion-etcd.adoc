@@ -1,0 +1,55 @@
+// Module included in the following assemblies:
+//
+// * machine_management/deleting-machine.adoc
+
+:_mod-docs-content-type: CONCEPT
+[id="machine-lifecycle-hook-deletion-etcd_{context}"]
+= Quorum protection with machine lifecycle hooks
+
+For {product-title} clusters that use the Machine API Operator, the etcd Operator uses lifecycle hooks for the machine deletion phase to implement a quorum protection mechanism.
+
+By using a `preDrain` lifecycle hook, the etcd Operator can control when the pods on a control plane machine are drained and removed. To protect etcd quorum, the etcd Operator prevents the removal of an etcd member until it migrates that member onto a new node within the cluster.
+
+This mechanism allows the etcd Operator precise control over the members of the etcd quorum and allows the Machine API Operator to safely create and remove control plane machines without specific operational knowledge of the etcd cluster.
+
+[id="machine-lifecycle-hook-deletion-etcd-order_{context}"]
+== Control plane deletion with quorum protection processing order
+
+When a control plane machine is replaced on a cluster that uses a control plane machine set, the cluster temporarily has four control plane machines. When the fourth control plane node joins the cluster, the etcd Operator starts a new etcd member on the replacement node. When the etcd Operator observes that the old control plane machine is marked for deletion, it stops the etcd member on the old node and promotes the replacement etcd member to join the quorum of the cluster.
+
+The control plane machine `Deleting` phase proceeds in the following order:
+
+. A control plane machine is slated for deletion.
+. The control plane machine enters the `Deleting` phase.
+. To satisfy the `preDrain` lifecycle hook, the etcd Operator takes the following actions:
++
+--
+.. The etcd Operator waits until a fourth control plane machine is added to the cluster as an etcd member. This new etcd member has a state of `Running` but not `ready` until it receives the full database update from the etcd leader.
+.. When the new etcd member receives the full database update, the etcd Operator promotes the new etcd member to a voting member and removes the old etcd member from the cluster.
+--
+After this transition is complete, it is safe for the old etcd pod and its data to be removed, so the `preDrain` lifecycle hook is removed.
+. The control plane machine status condition `Drainable` is set to `True`.
+. The machine controller attempts to drain the node that is backed by the control plane machine.
+** If draining fails, `Drained` is set to `False` and the machine controller attempts to drain the node again.
+** If draining succeeds, `Drained` is set to `True`.
+. The control plane machine status condition `Drained` is set to `True`.
+. If no other Operators have added a `preTerminate` lifecycle hook, the control plane machine status condition `Terminable` is set to `True`.
+. The machine controller removes the instance from the infrastructure provider.
+. The machine controller deletes the `Node` object.
+
+.YAML snippet demonstrating the etcd quorum protection `preDrain` lifecycle hook
+[source,yaml]
+----
+apiVersion: machine.openshift.io/v1beta1
+kind: Machine
+metadata:
+  ...
+spec:
+  lifecycleHooks:
+    preDrain:
+    - name: EtcdQuorumOperator <1>
+      owner: clusteroperator/etcd <2>
+  ...
+----
+<1> The name of the `preDrain` lifecycle hook.
+<2> The hook-implementing controller that manages the `preDrain` lifecycle hook.

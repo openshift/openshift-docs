@@ -1,0 +1,117 @@
+// Module included in the following assemblies:
+//
+// * rosa_hcp/rosa-tuning-config.adoc
+
+:_mod-docs-content-type: PROCEDURE
+[id="rosa-modifying-node-tuning_{context}"]
+= Modifying your node tuning configurations for {hcp-title}
+
+You can view and update the node tuning configurations using the {product-title} (ROSA) CLI, `rosa`.
+
+.Prerequisites
+
+* You have downloaded the latest version of the ROSA CLI.
+* You have a cluster on the latest version
+* Your cluster has a node tuning configuration added to it
+
+.Procedure
+
+. You view the tuning configurations with the `rosa describe` command:
++
+[source,terminal]
+----
+$ rosa describe tuning-config -c <cluster_id> <1>
+       --name <name_of_tuning> <2>
+       [-o json] <3>
+----
++
+The following items in this spec file are:
++
+<1> Provide the cluster ID for the cluster that you own that you want to apply a node tuning configurations.
+<2> Provide the name of your tuning configuration.
+<3> Optionally, you can provide the output type. If you do not specify any outputs, you only see the ID and name of the tuning configuration.
++
+.Sample output without specifying output type
+[source,terminal]
+----
+Name:    sample-tuning
+ID:      20468b8e-edc7-11ed-b0e4-0a580a800298
+Spec:    {
+            "profile": [
+              {
+                "data": "[main]\nsummary=Custom OpenShift profile\ninclude=openshift-node\n\n[sysctl]\nvm.dirty_ratio=\"55\"\n",
+                "name": "tuned-1-profile"
+              }
+            ],
+            "recommend": [
+              {
+                 "priority": 20,
+                 "profile": "tuned-1-profile"
+              }
+            ]
+         }
+
+----
++
+.Sample output specifying JSON output
+[source,terminal]
+----
+{
+  "kind": "TuningConfig",
+  "id": "20468b8e-edc7-11ed-b0e4-0a580a800298",
+  "href": "/api/clusters_mgmt/v1/clusters/23jbsevqb22l0m58ps39ua4trff9179e/tuning_configs/20468b8e-edc7-11ed-b0e4-0a580a800298",
+  "name": "sample-tuning",
+  "spec": {
+    "profile": [
+      {
+        "data": "[main]\nsummary=Custom OpenShift profile\ninclude=openshift-node\n\n[sysctl]\nvm.dirty_ratio=\"55\"\n",
+        "name": "tuned-1-profile"
+      }
+    ],
+    "recommend": [
+      {
+        "priority": 20,
+        "profile": "tuned-1-profile"
+      }
+    ]
+  }
+}
+----
+
+. After verifying the tuning configuration, you edit the existing configurations with the `rosa edit` command:
++
+----
+$ rosa edit tuning-config -c <cluster_id> --name <name_of_tuning> --spec-path <path_to_spec_file>
+----
++
+In this command, you use the `spec.json` file to edit your configurations.
+
+.Verification
+
+* Run the `rosa describe` command again, to see that the changes you made to the `spec.json` file are updated in the tuning configurations:
++
+[source,terminal]
+----
+$ rosa describe tuning-config -c <cluster_id> --name <name_of_tuning>
+----
++
+.Sample output
+[source,terminal]
+----
+Name:  sample-tuning
+ID:    20468b8e-edc7-11ed-b0e4-0a580a800298
+Spec:  {
+           "profile": [
+             {
+              "data": "[main]\nsummary=Custom OpenShift profile\ninclude=openshift-node\n\n[sysctl]\nvm.dirty_ratio=\"55\"\n",
+              "name": "tuned-2-profile"
+             }
+           ],
+           "recommend": [
+             {
+              "priority": 10,
+              "profile": "tuned-2-profile"
+             }
+           ]
+       }
+----
