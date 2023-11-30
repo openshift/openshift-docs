@@ -1,0 +1,148 @@
+:_content-type: PROCEDURE
+[id="serverless-ossm-installing-and-configuring-openshift-service-mesh_{context}"]
+= Installing and configuring {SMProductShortName}
+
+To integrate {ServerlessProductShortName} with {SMProductShortName}, you need to install {SMProductShortName} with a specific configuration.
+
+.Procedure
+
+. Create a `ServiceMeshControlPlane` resource in the `istio-system` namespace with the following configuration:
++
+[IMPORTANT]
+====
+If you have an existing `ServiceMeshControlPlane` object, make sure that you have the same configuration applied.
+====
++
+[source,yaml]
+----
+apiVersion: maistra.io/v2
+kind: ServiceMeshControlPlane
+metadata:
+  name: basic
+  namespace: istio-system
+spec:
+  profiles:
+  - default
+  security:
+    dataPlane:
+      mtls: true <1>
+  techPreview:
+    meshConfig:
+      defaultConfig:
+        terminationDrainDuration: 35s <2>
+  gateways:
+    ingress:
+      service:
+        metadata:
+          labels:
+            knative: ingressgateway <3>
+  proxy:
+    networking:
+      trafficControl:
+        inbound:
+          excludedPorts: <4>
+          - 8444 # metrics
+          - 8022 # serving: wait-for-drain k8s pre-stop hook
+----
+<1> Enforce strict mTLS in the mesh. Only calls using a valid client certificate are allowed.
+<2> {ServerlessProductShortName} has a graceful termination for Knative Services of 30 seconds. `istio-proxy` needs to have a longer termination duration to make sure no requests are dropped.
+<3> Define a specific selector for the ingress gateway to target only the Knative gateway.
+<4> These ports are called by Kubernetes and cluster monitoring, which are not part of the mesh and cannot be called using mTLS. Therefore, these ports are excluded from the mesh.
+
+. Add the namespaces that you would like to integrate with {SMProductShortName} to the `ServiceMeshMemberRoll` object as members:
++
+.Example `servicemesh-member-roll.yaml` configuration file
+[source,yaml]
+----
+apiVersion: maistra.io/v1
+kind: ServiceMeshMemberRoll
+metadata:
+  name: default
+  namespace: istio-system
+spec:
+  members: <1>
+    - knative-serving
+    - knative-eventing
+    - your-OpenShift-projects
+----
+<1> A list of namespaces to be integrated with {SMProductShortName}.
++
+[IMPORTANT]
+====
+This list of namespaces must include the `knative-serving` and `knative-eventing` namespaces.
+====
+
+. Apply the `ServiceMeshMemberRoll` resource:
++
+[source,terminal]
+----
+$ oc apply -f servicemesh-member-roll.yaml
+----
+
+. Create the necessary gateways so that {SMProductShortName} can accept traffic. The following example uses the `knative-local-gateway` object with the `ISTIO_MUTUAL` mode (mTLS):
++
+.Example `istio-knative-gateways.yaml` configuration file
+[source,yaml]
+----
+apiVersion: networking.istio.io/v1alpha3
+kind: Gateway
+metadata:
+  name: knative-ingress-gateway
+  namespace: knative-serving
+spec:
+  selector:
+    knative: ingressgateway
+  servers:
+    - port:
+        number: 443
+        name: https
+        protocol: HTTPS
+      hosts:
+        - "*"
+      tls:
+        mode: SIMPLE
+        credentialName: <wildcard_certs> <1>
+---
+apiVersion: networking.istio.io/v1alpha3
+kind: Gateway
+metadata:
+ name: knative-local-gateway
+ namespace: knative-serving
+spec:
+ selector:
+   knative: ingressgateway
+ servers:
+   - port:
+       number: 8081
+       name: https
+       protocol: HTTPS <2>
+     tls:
+       mode: ISTIO_MUTUAL <2>
+     hosts:
+       - "*"
+---
+apiVersion: v1
+kind: Service
+metadata:
+ name: knative-local-gateway
+ namespace: istio-system
+ labels:
+   experimental.istio.io/disable-gateway-port-translation: "true"
+spec:
+ type: ClusterIP
+ selector:
+   istio: ingressgateway
+ ports:
+   - name: http2
+     port: 80
+     targetPort: 8081
+----
+<1> Name of the secret containing the wildcard certificate.
+<2> The `knative-local-gateway` object serves HTTPS traffic and expects all clients to send requests using mTLS. This means that only traffic coming from within {SMProductShortName} is possible. Workloads from outside the {SMProductShortName} must use the external domain via OpenShift Routing.
+
+. Apply the `Gateway` resources:
++
+[source,terminal]
+----
+$ oc apply -f istio-knative-gateways.yaml
+----
