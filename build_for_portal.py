@@ -1177,8 +1177,6 @@ def insert_ddf_and_inclusive_modules():
 
     replacement = """
 include::includes/making-open-source-more-inclusive.adoc[leveloffset=+1]
-
-include::includes/providing-direct-documentation-feedback.adoc[leveloffset=+1]
     """
 
     project_path = os.path.abspath(os.curdir)
