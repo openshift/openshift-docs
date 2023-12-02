@@ -17,7 +17,7 @@ check_updated_assemblies () {
     if [ "${MODULES}" ]
     then
         # $UPDATED_ASSEMBLIES is the list of assemblies that contains changed modules
-        UPDATED_ASSEMBLIES=$(grep -rnwl "$REPO_PATH" --include=\*.adoc --exclude-dir={snippets,modules} -e "$MODULES")
+        UPDATED_ASSEMBLIES=$(grep -rnwl "$REPO_PATH" --exclude-dir={snippets,modules} -e "$MODULES" -- "*.adoc")
         # Exit 0 if there are no modified assemblies
         if [[ -z "${UPDATED_ASSEMBLIES}" ]]
         then
@@ -38,7 +38,7 @@ check_updated_assemblies () {
         # search for files only, not folders
         PAGE="File: $(basename "$ASSEMBLY" .adoc)"
         # don't validate the assembly if it is not in a topic map
-        if grep -rq "$PAGE" --include "*.yml" _topic_maps ; then
+        if grep -rq "$PAGE" _topic_maps/*.yml; then
             # validate the assembly
             echo "Validating $ASSEMBLY ... 🚨"
             RED='\033[0;31m'
