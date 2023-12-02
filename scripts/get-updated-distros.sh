@@ -15,7 +15,7 @@ MODULES=$(echo "$FILES" | awk '/modules\/(.*)\.adoc/')
 if [ "${MODULES}" ]
 then
     # $UPDATED_ASSEMBLIES is the list of assemblies that contains changed modules
-    UPDATED_ASSEMBLIES=$(grep -rnwL "$REPO_PATH" --exclude-dir={snippets,modules} -e "$MODULES" -- "*.adoc")
+    UPDATED_ASSEMBLIES=$(grep -rnwl "$REPO_PATH" --exclude-dir={snippets,modules} -e "$MODULES" -- "*.adoc")
 
     # Exit 0 if there are no modified assemblies
     if [[ -z "${UPDATED_ASSEMBLIES}" ]]
