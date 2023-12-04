@@ -15,7 +15,7 @@ MODULES=$(echo "$FILES" | awk '/modules\/(.*)\.adoc/')
 if [ "${MODULES}" ]
 then
     # $UPDATED_ASSEMBLIES is the list of assemblies that contains changed modules
-    UPDATED_ASSEMBLIES=$(grep -rnwl "$REPO_PATH" --exclude-dir={snippets,modules} -e "$MODULES" -- "*.adoc")
+    UPDATED_ASSEMBLIES=$(grep -rnwl "$REPO_PATH" --include=\*.adoc --exclude-dir={snippets,modules} -e "$MODULES")
 
     # Exit 0 if there are no modified assemblies
     if [[ -z "${UPDATED_ASSEMBLIES}" ]]
@@ -36,7 +36,7 @@ for ASSEMBLY in $ALL_ASSEMBLIES; do
     # Search for files only, not folders
     PAGE="File: $(basename "$ASSEMBLY" .adoc)"
     # Don't include the assembly if it is not in a topic map
-    if grep -rq "$PAGE" _topic_maps/*.yml; then
+    if grep -rq "$PAGE" --include "*.yml" _topic_maps ; then
         DISTROS+=("$(grep -rl "$PAGE" _topic_maps/*.yml)")
     fi
 done
