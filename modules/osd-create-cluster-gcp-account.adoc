@@ -1,0 +1,185 @@
+// Module included in the following assemblies:
+//
+// * osd_install_access_delete_cluster/creating-a-gcp-cluster.adoc
+
+:_mod-docs-content-type: PROCEDURE
+[id="osd-create-cluster-gcp-account_{context}"]
+= Creating a cluster on GCP with Google Cloud Marketplace
+
+When creating an {product-title} (OSD) cluster on Google Cloud through the OpenShift Cluster Manager Hybrid Cloud Console, customers can select Google Cloud Marketplace as their preferred billing model. This billing model allows Red Hat customers to take advantage of their link:https://cloud.google.com/docs/cuds[Google Committed Use Discounts (CUD)] towards {product-title} purchased through the Google Cloud Marketplace. Additionally, OSD pricing is consumption-based and customers are billed directly through their Google Cloud account.
+
+.Procedure
+
+. Log in to {cluster-manager-url} and click *Create cluster*.
+
+. In the *Cloud* tab, click *Create cluster* in the *Red Hat OpenShift Dedicated* row.
+
+. Under *Billing model*, configure the subscription type and infrastructure type:
+.. Select the *On-Demand* subscription type.
+.. From the drop-down menu, select *Google Cloud Marketplace*.
+.. Select the *Customer Cloud Subscription* infrastructure type.
+.. Click *Next*.
+. On the *Cloud provider* page, read the provided prerequisites and the Google terms and conditions. Add your service account key.
+.. Click the *Review Google Terms and Agreements* link.
+.. To continue creating the cluster, click the checkbox indicating that you agree to the Google terms and agreements.
+.. Add your service account key.
++
+[NOTE]
+====
+For more information about service account keys, click the information icon located next to *Service account key*.
+====
+.. Click *Next* to validate your cloud provider account and go to the *Cluster details* page.
+. On the *Cluster details* page, provide a name for your cluster and specify the cluster details:
+.. Add a *Cluster name*.
+.. Select a cluster version from the *Version* drop-down menu.
+.. Select a cloud provider region from the *Region* drop-down menu.
+.. Select a *Single zone* or *Multi-zone* configuration.
+.. Leave *Enable user workload monitoring* selected to monitor your own projects in isolation from Red Hat Site Reliability Engineer (SRE) platform metrics. This option is enabled by default.
+
+. Optional: Expand *Advanced Encryption* to make changes to encryption settings.
+
+.. Select *Use Custom KMS keys* to use custom KMS keys. If you prefer not to use custom KMS keys, leave the default setting *Use default KMS Keys*.
++
+[IMPORTANT]
+====
+To use custom KMS keys, the IAM service account `osd-ccs-admin` must be granted the *Cloud KMS CryptoKey Encrypter/Decrypter* role. For more information about granting roles on a resource, see link:https://cloud.google.com/kms/docs/iam#granting_roles_on_a_resource[Granting roles on a resource].
+====
++
+With *Use Custom KMS keys* selected:
+
+... Select a key ring location from the *Key ring location* drop-down menu.
+... Select a key ring from the *Key ring* drop-down menu.
+... Select a key name from the *Key name* drop-down menu.
+... Provide the *KMS Service Account*.
+
++
+.. Optional: Select *Enable additional etcd encryption* if you require etcd key value encryption.
+With this option, the etcd key values are encrypted, but not the keys. This option is in addition to the control plane storage encryption that encrypts the etcd volumes in {product-title} clusters by default.
++
+[NOTE]
+====
+By enabling etcd encryption for the key values in etcd, you incur a performance overhead of approximately 20%. The overhead is a result of introducing this second layer of encryption, in addition to the default control plane storage encryption that encrypts the etcd volumes. Consider enabling etcd encryption only if you specifically require it for your use case.
+====
++
+.. Optional: Select *Enable FIPS cryptography* if you require your cluster to be FIPS validated.
++
+. Click *Next*.
+
+. On the *Machine pool* page, select a *Compute node instance type* and a *Compute node count*. The number and types of nodes that are available depend on your {product-title} subscription. If you are using multiple availability zones, the compute node count is per zone.
++
+[NOTE]
+====
+After your cluster is created, you can change the number of compute nodes, but you cannot change the compute node instance type in a created machine pool. You can add machine pools after installation that use a customized instance type. The number and types of nodes available to you depend on your {product-title} subscription.
+====
+
+. Optional: Expand *Add node labels* to add labels to your nodes. Click *Add additional label* to add more node labels.
+
+. Click *Next*.
+
+. In the *Cluster privacy* dialog, select *Public* or *Private* to use either public or private API endpoints and application routes for your cluster.
++
+. Optional: To install the cluster in an existing GCP Virtual Private Cloud (VPC):
+.. Select *Install into an existing VPC*.
+.. If you are installing into an existing VPC and you want to enable an HTTP or HTTPS proxy for your cluster, select *Configure a cluster-wide proxy*.
+
++
+. Click *Next*.
++
+
+. Optional: To install the cluster into a GCP Shared VPC:
++
+[IMPORTANT]
+====
+
+To install a cluster into a Shared VPC, you must use {product-title} version 4.13.15 or above. Additionally, the VPC owner of the host project must enable a project as a host project in their Google Cloud console. For more information, see link:https://cloud.google.com/vpc/docs/provisioning-shared-vpc#set-up-shared-vpc[Enable a host project].
+====
+
+.. Select *Install into GCP Shared VPC*.
+.. Specify the *Host project ID*. If the specified host project ID is incorrect, cluster creation fails.
++
+[IMPORTANT]
+====
+Once you complete the steps within the cluster configuration wizard and click *Create Cluster*, the cluster will go into the "Installation Waiting" state. At this point, you must contact the VPC owner of the host project, who must assign the dynamically-generated service account the following roles: *Computer Network Administrator*, *Compute Security Administrator*, and *DNS Administrator*.
+The VPC owner of the host project has 30 days to grant the listed permissions before the cluster creation fails.
+For information about Shared VPC permissions, see link:https://cloud.google.com/vpc/docs/provisioning-shared-vpc#migs-service-accounts[Provision Shared VPC].
+====
++
+. If you opted to install the cluster in an existing GCP VPC, provide your *Virtual Private Cloud (VPC) subnet settings* and select *Next*.
+You must have created the Cloud network address translation (NAT) and a Cloud router. See the additional resources for information about Cloud NATs and Google VPCs.
++
+[NOTE]
+====
+You must ensure that your VPC is configured with a public and a private subnet for each availability zone that you want the cluster installed into. If you opted to use PrivateLink, only private subnets are required.
+====
++
+[NOTE]
+====
+If you are installing a cluster into a Shared VPC, the VPC name and subnets are shared from the host project.
+====
++
+. Click *Next*.
+. If you opted to configure a cluster-wide proxy, provide your proxy configuration details on the *Cluster-wide proxy* page:
++
+--
+.. Enter a value in at least one of the following fields:
+** Specify a valid *HTTP proxy URL*.
+** Specify a valid *HTTPS proxy URL*.
+** In the *Additional trust bundle* field, provide a PEM encoded X.509 certificate bundle. The bundle is added to the trusted certificate store for the cluster nodes. An additional trust bundle file is required unless the identity certificate for the proxy is signed by an authority from the {op-system-first} trust bundle.
++
+If you use an MITM transparent proxy network that does not require additional proxy configuration but requires additional certificate authorities (CAs), you must provide the MITM CA certificate.
++
+[NOTE]
+====
+If you upload an additional trust bundle file without specifying an HTTP or HTTPS proxy URL, the bundle is set on the cluster but is not configured to be used with the proxy.
+====
+.. Click *Next*.
+--
++
+For more information about configuring a proxy with {product-title}, see _Configuring a cluster-wide proxy_.
+
++
+. In the *CIDR ranges* dialog, configure custom classless inter-domain routing (CIDR) ranges or use the defaults that are provided.
++
+[IMPORTANT]
+====
+CIDR configurations cannot be changed later. Confirm your selections with your network administrator before proceeding.
+
+If the cluster privacy is set to *Private*, you cannot access your cluster until you configure private connections in your cloud provider.
+====
+
+. On the *Cluster update strategy* page, configure your update preferences:
+.. Choose a cluster update method:
+** Select *Individual updates* if you want to schedule each update individually. This is the default option.
+** Select *Recurring updates* to update your cluster on your preferred day and start time, when updates are available.
++
+[NOTE]
+====
+You can review the end-of-life dates in the update lifecycle documentation for {product-title}. For more information, see _{product-title} update lifecycle_.
+====
++
+.. Provide administrator approval based on your cluster update method:
+** Individual updates: If you select an update version that requires approval, provide an administrator’s acknowledgment and click *Approve and continue*.
+** Recurring updates: If you selected recurring updates for your cluster, provide an administrator’s acknowledgment and click *Approve and continue*. {cluster-manager} does not start scheduled y-stream updates for minor versions without receiving an administrator’s acknowledgment.
++
+For information about administrator acknowledgment, see xref:./../upgrading/osd-upgrading-cluster-prepare.adoc#upgrade-49-acknowledgement_osd-updating-cluster-prepare[Administrator acknowledgment when upgrading to OpenShift 4.9].
+.. If you opted for recurring updates, select a preferred day of the week and upgrade start time in UTC from the drop-down menus.
+.. Optional: You can set a grace period for *Node draining* during cluster upgrades. A *1 hour* grace period is set by default.
+.. Click *Next*.
++
+[NOTE]
+====
+In the event of critical security concerns that significantly impact the security or stability of a cluster, Red Hat Site Reliability Engineering (SRE) might schedule automatic updates to the latest z-stream version that is not impacted. The updates are applied within 48 hours after customer notifications are provided. For a description of the critical impact security rating, see link:https://access.redhat.com/security/updates/classification[Understanding Red Hat security ratings].
+====
+
+. Review the summary of your selections and click *Create cluster* to start the cluster installation. The installation takes approximately 30-40 minutes to complete.
+
+.Verification
+
+* You can monitor the progress of the installation in the *Overview* page for your cluster. You can view the installation logs on the same page. Your cluster is ready when the *Status* in the *Details* section of the page is listed as *Ready*.
+
+ifeval::["{context}" == "osd-creating-a-cluster-on-aws"]
+:!osd-on-aws:
+endif::[]
+ifeval::["{context}" == "osd-creating-a-cluster-on-gcp"]
+:!osd-on-gcp:
+endif::[]

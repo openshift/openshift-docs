@@ -1,6 +1,7 @@
-# Dockerfile
-FROM centos:8
-RUN dnf install git python3 python3-devel ruby rubygems -y
-RUN gem install asciidoctor asciidoctor-diagram
-COPY . $HOME/src/
-RUN pip3 install pyyaml /src/aura.tar.gz
+FROM ruby:3.1.2-alpine
+
+RUN apk add --update --no-cache git bash jq findutils
+
+WORKDIR /go/src/github.com/openshift/openshift-docs
+
+CMD ["/bin/bash"]

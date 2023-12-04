@@ -1,0 +1,13 @@
+// Module included in the following assemblies:
+//
+// * nodes/pods/nodes-pods-secrets-store.adoc
+
+:_mod-docs-content-type: CONCEPT
+[id="secrets-store-providers_{context}"]
+= Secrets store providers
+
+The following secrets store providers are available for use with the {secrets-store-operator}:
+
+* AWS Secrets Manager
+* AWS Systems Manager Parameter Store
+* Azure Key Vault
