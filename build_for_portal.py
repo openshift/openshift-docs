@@ -1169,9 +1169,9 @@ def parse_repo_config(config_file, distro, version):
     return repo_urls
 
 
-def insert_ddf_and_inclusive_modules():
+def insert_inclusive_modules():
     """
-    Walk project for all master.adoc files and then insert portal-exclusive DDF and inclusivity modules at the top
+    Walk project for all master.adoc files and then insert portal-exclusive inclusivity module at the top
     of those files.
     """
 
@@ -1282,7 +1282,7 @@ def main():
                 if e.output:
                     sys.stdout.write(e.output)
                 raise
-    insert_ddf_and_inclusive_modules()
+    insert_inclusive_modules()
 
 
 if __name__ == "__main__":
