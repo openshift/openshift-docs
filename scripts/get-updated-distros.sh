@@ -6,6 +6,8 @@
 # Get the *.adoc and distro maps files in the pull request
 FILES=$(git diff --name-only HEAD@{1} --diff-filter=d "*.yml" "*.adoc" ':(exclude)_unused_topics/*')
 
+echo "${FILES}"
+
 REPO_PATH=$(git rev-parse --show-toplevel)
 
 # Init an empty array
@@ -14,10 +16,13 @@ DISTROS=()
 # Get the modules in the PR, search for assemblies that include them, and concat with any updated assemblies files
 
 MODULES=$(echo "$FILES" | awk '/modules\/(.*)\.adoc/')
+
+echo "${MODULES}"
+
 if [ "${MODULES}" ]
 then
     # $UPDATED_ASSEMBLIES is the list of assemblies that contains changed modules
-    UPDATED_ASSEMBLIES=$(grep -rnwl "$REPO_PATH" --exclude-dir={snippets,modules} -e "$MODULES" -- "*.adoc")
+    UPDATED_ASSEMBLIES=$(grep -rnwl "$REPO_PATH" --include=\*.adoc --exclude-dir={snippets,modules} -e "${MODULES}")
     # Exit 0 if there are no modified assemblies
     if [[ -z "${UPDATED_ASSEMBLIES}" ]]
     then
