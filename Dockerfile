@@ -1,4 +1,4 @@
-FROM registry.access.redhat.com/ubi8/ruby-30:latest
+FROM registry.access.redhat.com/ubi8-minimal:latest
 
 ENV LANG=en_US.UTF-8
 
