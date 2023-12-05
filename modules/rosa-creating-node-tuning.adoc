@@ -1,0 +1,87 @@
+// Module included in the following assemblies:
+//
+// * rosa_hcp/rosa-tuning-config.adoc
+
+:_mod-docs-content-type: PROCEDURE
+[id="rosa-creating-node-tuning_{context}"]
+= Creating node tuning configurations on {hcp-title}
+
+You can create tuning configurations using the {product-title} (ROSA) CLI, `rosa`.
+
+.Prerequisites
+
+* You have downloaded the latest version of the ROSA CLI.
+* You have a cluster on the latest version.
+* You have a specification file configured for node tuning.
+
+.Procedure
+
+. Run the following command to create your tuning configuration:
++
+[source,terminal]
+----
+$ rosa create tuning-config -c <cluster_id> --name <name_of_tuning> --spec-path <path_to_spec_file>
+----
++
+You must supply the path to the `spec.json` file or the command returns an error.
++
+.Sample output
+[source,terminal]
+----
+$ I: Tuning config 'sample-tuning' has been created on cluster 'cluster-example'.
+$ I: To view all tuning configs, run 'rosa list tuning-configs -c cluster-example'
+----
+
+.Validation
+
+* You can verify the existing tuning configurations that are applied by your account with the following command:
++
+[source,terminal]
+----
+$ rosa list tuning-configs -c <cluster_name> [-o json]
+----
++
+You can specify the type of output you want for the configuration list.
+
+** Without specifying the output type, you see the ID and name of the tuning configuration:
++
+.Sample output without specifying output type
+[source,terminal]
+----
+ID                                    NAME
+20468b8e-edc7-11ed-b0e4-0a580a800298  sample-tuning
+----
+
+** If you specify an output type, such as `json`, you receive the tuning configuration as JSON text:
++
+[NOTE]
+====
+The following JSON output has hard line-returns for the sake of reading clarity. This JSON output is invalid unless you remove the newlines in the JSON strings.
+====
++
+.Sample output specifying JSON output
+[source,terminal]
+----
+[
+  {
+    "kind": "TuningConfig",
+    "id": "20468b8e-edc7-11ed-b0e4-0a580a800298",
+    "href": "/api/clusters_mgmt/v1/clusters/23jbsevqb22l0m58ps39ua4trff9179e/tuning_configs/20468b8e-edc7-11ed-b0e4-0a580a800298",
+    "name": "sample-tuning",
+    "spec": {
+      "profile": [
+        {
+          "data": "[main]\nsummary=Custom OpenShift profile\ninclude=openshift-node\n\n[sysctl]\nvm.dirty_ratio=\"55\"\n",
+          "name": "tuned-1-profile"
+        }
+      ],
+      "recommend": [
+        {
+          "priority": 20,
+          "profile": "tuned-1-profile"
+        }
+      ]
+    }
+  }
+]
+----

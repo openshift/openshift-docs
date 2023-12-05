@@ -1,0 +1,63 @@
+// Module included in the following assemblies:
+//
+// microshift/microshift_install/microshift-install-rpm.adoc
+// microshift/microshift_install/microshift-embed-in-rpm-ostree.adoc
+// microshift/microshift_configuring/microshift-cluster-access-kubeconfig.adoc
+
+:_mod-docs-content-type: PROCEDURE
+[id="accessing-microshift-cluster-remotely_{context}"]
+= Accessing the {microshift-short} cluster remotely
+
+Use the following procedure to access the {microshift-short} cluster from a remote workstation by using a `kubeconfig` file.
+
+The `user@workstation` login is used to access the host machine remotely. The `<user>` value in the procedure is the name of the user that `user@workstation` logs in with to the {microshift-short} host.
+
+.Prerequisites
+
+* You have installed the `oc` binary.
+
+* The `@user@microshift` has opened the firewall from the local host.
+
+.Procedure
+
+. As `user@workstation`, create a `~/.kube/` folder if your {op-system} machine does not have one by running the following command:
++
+[source,terminal,subs="attributes+"]
+----
+[user@workstation]$ mkdir -p ~/.kube/
+----
+
+. As `user@workstation`, set a variable for the hostname of your {microshift-short} host by running the following command:
++
+[source,terminal,subs="attributes+"]
+----
+[user@workstation]$ MICROSHIFT_MACHINE=<name or IP address of {microshift-short} machine>
+----
+
+. As `user@workstation`, copy the generated `kubeconfig` file that contains the host name or IP address you want to connect with from the {op-system} machine running {microshift-short} to your local machine by running the following command:
++
+[source,terminal]
+----
+[user@workstation]$ ssh <user>@$MICROSHIFT_MACHINE "sudo cat /var/lib/microshift/resources/kubeadmin/$MICROSHIFT_MACHINE/kubeconfig" > ~/.kube/config
+----
+
+[NOTE]
+====
+To generate `kubeconfig` files for this step, see the "Generating additional kubeconfig files for remote access" link in the additional resources section.
+====
+
+. As `user@workstation`, update the permissions on your `~/.kube/config` file by running the following command:
++
+[source,terminal]
+----
+$ chmod go-r ~/.kube/config
+----
+
+.Verification
+
+* As `user@workstation`, verify that {microshift-short} is running by entering the following command:
++
+[source,terminal]
+----
+[user@workstation]$ oc get all -A
+----

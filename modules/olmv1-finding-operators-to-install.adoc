@@ -1,0 +1,208 @@
+// Module included in the following assemblies:
+//
+// * operators/olm_v1/olmv1-installing-an-operator-from-a-catalog.adoc
+
+:_mod-docs-content-type: PROCEDURE
+
+[id="olmv1-finding-operators-to-install_{context}"]
+= Finding Operators to install from a catalog
+
+After you add a catalog to your cluster, you can query the catalog to find Operators and extensions to install.
+
+.Prerequisite
+
+* You have added a catalog to your cluster.
+
+.Procedure
+
+. Get a list of the Operators and extensions in the catalog by running the following command:
++
+[source,terminal]
+----
+$ oc get packages
+----
++
+.Example output
+[%collapsible]
+====
+[source,text]
+----
+NAME                                                        AGE
+redhat-operators-3scale-operator                            5m27s
+redhat-operators-advanced-cluster-management                5m27s
+redhat-operators-amq-broker-rhel8                           5m27s
+redhat-operators-amq-online                                 5m27s
+redhat-operators-amq-streams                                5m27s
+redhat-operators-amq7-interconnect-operator                 5m27s
+redhat-operators-ansible-automation-platform-operator       5m27s
+redhat-operators-ansible-cloud-addons-operator              5m27s
+redhat-operators-apicast-operator                           5m27s
+redhat-operators-aws-efs-csi-driver-operator                5m27s
+redhat-operators-aws-load-balancer-operator                 5m27s
+...
+----
+====
+
+. Inspect the contents of an Operator or extension's custom resource (CR) by running the following command:
++
+[source,terminal]
+----
+$ oc get package <catalog_name>-<package_name> -o yaml
+----
++
+.Example command
+[source,text]
+----
+$ oc get package redhat-operators-quay-operator -o yaml
+----
++
+.Example output
+[%collapsible]
+====
+[source,text]
+----
+apiVersion: catalogd.operatorframework.io/v1alpha1
+kind: Package
+metadata:
+  creationTimestamp: "2023-10-06T01:14:04Z"
+  generation: 1
+  labels:
+    catalog: redhat-operators
+  name: redhat-operators-quay-operator
+  ownerReferences:
+  - apiVersion: catalogd.operatorframework.io/v1alpha1
+    blockOwnerDeletion: true
+    controller: true
+    kind: Catalog
+    name: redhat-operators
+    uid: 403004b6-54a3-4471-8c90-63419f6a2c3e
+  resourceVersion: "45196"
+  uid: 252cfe74-936d-44fc-be5d-09a7be7e36f5
+spec:
+  catalog:
+    name: redhat-operators
+  channels:
+  - entries:
+    - name: quay-operator.v3.4.7
+      skips:
+      - red-hat-quay.v3.3.4
+      - quay-operator.v3.4.6
+      - quay-operator.v3.4.5
+      - quay-operator.v3.4.4
+      - quay-operator.v3.4.3
+      - quay-operator.v3.4.2
+      - quay-operator.v3.4.1
+      - quay-operator.v3.4.0
+    name: quay-v3.4
+  - entries:
+    - name: quay-operator.v3.5.7
+      replaces: quay-operator.v3.5.6
+      skipRange: '>=3.4.x <3.5.7'
+    name: quay-v3.5
+  - entries:
+    - name: quay-operator.v3.6.0
+      skipRange: '>=3.3.x <3.6.0'
+    - name: quay-operator.v3.6.1
+      replaces: quay-operator.v3.6.0
+      skipRange: '>=3.3.x <3.6.1'
+    - name: quay-operator.v3.6.10
+      replaces: quay-operator.v3.6.9
+      skipRange: '>=3.3.x <3.6.10'
+    - name: quay-operator.v3.6.2
+      replaces: quay-operator.v3.6.1
+      skipRange: '>=3.3.x <3.6.2'
+    - name: quay-operator.v3.6.4
+      replaces: quay-operator.v3.6.2
+      skipRange: '>=3.3.x <3.6.4'
+    - name: quay-operator.v3.6.5
+      replaces: quay-operator.v3.6.4
+      skipRange: '>=3.3.x <3.6.5'
+    - name: quay-operator.v3.6.6
+      replaces: quay-operator.v3.6.5
+      skipRange: '>=3.3.x <3.6.6'
+    - name: quay-operator.v3.6.7
+      replaces: quay-operator.v3.6.6
+      skipRange: '>=3.3.x <3.6.7'
+    - name: quay-operator.v3.6.8
+      replaces: quay-operator.v3.6.7
+      skipRange: '>=3.3.x <3.6.8'
+    - name: quay-operator.v3.6.9
+      replaces: quay-operator.v3.6.8
+      skipRange: '>=3.3.x <3.6.9'
+    name: stable-3.6
+  - entries:
+    - name: quay-operator.v3.7.10
+      replaces: quay-operator.v3.7.9
+      skipRange: '>=3.4.x <3.7.10'
+    - name: quay-operator.v3.7.11
+      replaces: quay-operator.v3.7.10
+      skipRange: '>=3.4.x <3.7.11'
+    - name: quay-operator.v3.7.12
+      replaces: quay-operator.v3.7.11
+      skipRange: '>=3.4.x <3.7.12'
+    - name: quay-operator.v3.7.13
+      replaces: quay-operator.v3.7.12
+      skipRange: '>=3.4.x <3.7.13'
+    - name: quay-operator.v3.7.14
+      replaces: quay-operator.v3.7.13
+      skipRange: '>=3.4.x <3.7.14'
+    name: stable-3.7
+  - entries:
+    - name: quay-operator.v3.8.0
+      skipRange: '>=3.5.x <3.8.0'
+    - name: quay-operator.v3.8.1
+      replaces: quay-operator.v3.8.0
+      skipRange: '>=3.5.x <3.8.1'
+    - name: quay-operator.v3.8.10
+      replaces: quay-operator.v3.8.9
+      skipRange: '>=3.5.x <3.8.10'
+    - name: quay-operator.v3.8.11
+      replaces: quay-operator.v3.8.10
+      skipRange: '>=3.5.x <3.8.11'
+    - name: quay-operator.v3.8.12
+      replaces: quay-operator.v3.8.11
+      skipRange: '>=3.5.x <3.8.12'
+    - name: quay-operator.v3.8.2
+      replaces: quay-operator.v3.8.1
+      skipRange: '>=3.5.x <3.8.2'
+    - name: quay-operator.v3.8.3
+      replaces: quay-operator.v3.8.2
+      skipRange: '>=3.5.x <3.8.3'
+    - name: quay-operator.v3.8.4
+      replaces: quay-operator.v3.8.3
+      skipRange: '>=3.5.x <3.8.4'
+    - name: quay-operator.v3.8.5
+      replaces: quay-operator.v3.8.4
+      skipRange: '>=3.5.x <3.8.5'
+    - name: quay-operator.v3.8.6
+      replaces: quay-operator.v3.8.5
+      skipRange: '>=3.5.x <3.8.6'
+    - name: quay-operator.v3.8.7
+      replaces: quay-operator.v3.8.6
+      skipRange: '>=3.5.x <3.8.7'
+    - name: quay-operator.v3.8.8
+      replaces: quay-operator.v3.8.7
+      skipRange: '>=3.5.x <3.8.8'
+    - name: quay-operator.v3.8.9
+      replaces: quay-operator.v3.8.8
+      skipRange: '>=3.5.x <3.8.9'
+    name: stable-3.8
+  - entries:
+    - name: quay-operator.v3.9.0
+      skipRange: '>=3.6.x <3.9.0'
+    - name: quay-operator.v3.9.1
+      replaces: quay-operator.v3.9.0
+      skipRange: '>=3.6.x <3.9.1'
+    - name: quay-operator.v3.9.2
+      replaces: quay-operator.v3.9.1
+      skipRange: '>=3.6.x <3.9.2'
+    name: stable-3.9
+  defaultChannel: stable-3.9
+  description: ""
+  icon:
+    data: PD94bWwgdmVyc2lvbj ...
+    mediatype: image/svg+xml
+  packageName: quay-operator
+status: {}
+----
+====

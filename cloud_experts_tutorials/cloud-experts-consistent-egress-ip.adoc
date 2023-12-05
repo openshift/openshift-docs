@@ -1,0 +1,416 @@
+:_mod-docs-content-type: ASSEMBLY
+[id="cloud-experts-consistent-egress-ip"]
+= Tutorial: Assigning consistent egress IP for external traffic
+include::_attributes/attributes-openshift-dedicated.adoc[]
+:context: cloud-experts-consistent-egress-ip
+
+toc::[]
+
+// Mobb content metadata
+// Brought into ROSA product docs 2023-09-19
+// ---
+// date: '2023-02-28'
+// title: Assign Consistent Egress IP for External Traffic
+// tags: ["OSD", "ROSA", "ARO"]
+// authors:
+//  - 'Dustin Scott'
+// ---
+
+It might be desirable to assign a consistent IP address for traffic that leaves the cluster when configuring items such as security groups or other sorts of security controls which require an IP-based configuration. By default, {product-title} (ROSA) (using the OVN-Kubernetes CNI) assigns random IP addresses from a pool which makes configuring security lockdowns unpredictable or unnecessarily open. This guide shows you how to configure a set of predictable IP addresses for egress cluster traffic to meet common security standards and guidance and other potential use cases.
+
+See the link:https://docs.openshift.com/container-platform/latest/networking/ovn_kubernetes_network_provider/configuring-egress-ips-ovn.html[OpenShift documentation on this topic] for more information.
+
+== Prerequisites
+
+* ROSA cluster deployed with OVN-Kubernetes
+* OpenShift CLI (`oc`)
+* ROSA CLI (`rosa`)
+* `jq`
+
+=== Environment
+
+This sets environment variables for the tutorial so that you do not need to copy/paste in your own. Be sure to replace the `ROSA_MACHINE_POOL_NAME` variable if you wish to target a different Machine Pool.:
+
+[source,terminal]
+----
+$ export ROSA_CLUSTER_NAME=$(oc get infrastructure cluster -o=jsonpath="{.status.infrastructureName}"  | sed 's/-[a-z0-9]\{5\}$//')
+$ export ROSA_MACHINE_POOL_NAME=Default
+----
+
+== Ensure capacity
+
+For each public cloud provider, there is a limit on the number of IP addresses that may be assigned per node. This can affect the ability to assign an egress IP address. To verify sufficient capacity, you can run the following command to print out the currently assigned IP addresses versus the total capacity in order to identify any nodes which may affected:
+
+[source,terminal]
+----
+$ oc get node -o json | \
+    jq '.items[] |
+        {
+            "name": .metadata.name,
+            "ips": (.status.addresses | map(select(.type == "InternalIP") | .address)),
+            "capacity": (.metadata.annotations."cloud.network.openshift.io/egress-ipconfig" | fromjson[] | .capacity.ipv4)
+        }'
+----
+
+.Example output
+[source,terminal]
+---
+{
+  "name": "ip-10-10-145-88.ec2.internal",
+  "ips": [
+    "10.10.145.88"
+  ],
+  "capacity": 14
+}
+{
+  "name": "ip-10-10-154-175.ec2.internal",
+  "ips": [
+    "10.10.154.175"
+  ],
+  "capacity": 14
+}
+---
+
+[NOTE]
+====
+The above example uses `jq` as a friendly filter. If you do not have `jq` installed, you can review the `metadata.annotations['cloud.network.openshift.io/egress-ipconfig']` field of each node manually to verify node capacity.
+====
+
+== Create the egress IP rule(s)
+
+[NOTE]
+====
+Generally speaking, it would be ideal to label the nodes prior to assigning the egress IP addresses, however there is a bug that exists which needs to be fixed first. Once this is fixed, the process and documentation will be re-ordered to address this. See link:https://issues.redhat.com/browse/OCPBUGS-4969[OCPBUGS-4969].
+====
+
+=== Identify the egress IPs
+
+Before creating the rules, we should identify which egress IPs that we will use. It should be noted that the egress IPs that you select should exist as a part of the subnets in which the worker nodes are provisioned into.
+
+=== Reserve the egress IPs
+
+It is recommended, but not required, to reserve the egress IPs that you have requested to avoid conflicts with the AWS VPC DHCP service. To do so, you can request explicit IP reservations by link:https://docs.aws.amazon.com/vpc/latest/userguide/subnet-cidr-reservation.html[following the AWS documentation for CIDR reservations].
+
+== Deploy an egress IP to a namespace
+
+Create a project to demonstrate assigning egress IP addresses based on a namespace selection:
+
+[source,terminal]
+----
+$ oc new-project demo-egress-ns
+----
+
+Create the egress rule. This rule will ensure that egress traffic will be applied to all pods within the namespace that we just created using the `spec.namespaceSelector` field:
+
+[source,terminal]
+----
+$ cat <<EOF | oc apply -f -
+apiVersion: k8s.ovn.org/v1
+kind: EgressIP
+metadata:
+  name: demo-egress-ns
+spec:
+  # NOTE: these egress IPs are within the subnet range(s) in which my worker nodes
+  #       are deployed.
+  egressIPs:
+    - 10.10.100.253
+    - 10.10.150.253
+    - 10.10.200.253
+  namespaceSelector:
+    matchLabels:
+      kubernetes.io/metadata.name: demo-egress-ns
+EOF
+----
+
+=== Assign an egress IP to a pod
+
+Create a project to demonstrate assigning egress IP addresses based on a pod selection:
+
+[source,terminal]
+----
+$ oc new-project demo-egress-pod
+----
+
+Create the egress rule. This rule will ensure that egress traffic will be applied to the pod which we just created using the `spec.podSelector` field. It should be noted that `spec.namespaceSelector` is a mandatory field:
+
+[source,terminal]
+----
+$ cat <<EOF | oc apply -f -
+apiVersion: k8s.ovn.org/v1
+kind: EgressIP
+metadata:
+  name: demo-egress-pod
+spec:
+  # NOTE: these egress IPs are within the subnet range(s) in which my worker nodes
+  #       are deployed.
+  egressIPs:
+    - 10.10.100.254
+    - 10.10.150.254
+    - 10.10.200.254
+  namespaceSelector:
+    matchLabels:
+      kubernetes.io/metadata.name: demo-egress-pod
+  podSelector:
+    matchLabels:
+      run: demo-egress-pod
+EOF
+----
+
+=== Label the nodes
+
+You can run `oc get egressips` and see that the egress IP assignments are pending.
+
+.Example output
+[source,terminal]
+----
+NAME              EGRESSIPS       ASSIGNED NODE   ASSIGNED EGRESSIPS
+demo-egress-ns    10.10.100.253
+demo-egress-pod   10.10.100.254
+----
+
+To complete the egress IP assignment, we need to assign a specific label to the nodes. The egress IP rule that you created in a previous step only applies to nodes with the `k8s.ovn.org/egress-assignable` label. We want to ensure that label exists on only a specific machinepool as set using an environment variable in the set environment variables step.
+
+Assign the necessary label to your machine pool using the following command:
+
+[WARNING]
+====
+If you are reliant upon any node labels for your machinepool, this command will replace those labels. Be sure to input your desired labels into the `--labels` field to ensure your node labels persist.
+====
+
+[source,terminal]
+----
+$ rosa update machinepool ${ROSA_MACHINE_POOL_NAME} \
+  --cluster="${ROSA_CLUSTER_NAME}" \
+  --labels "k8s.ovn.org/egress-assignable="
+----
+
+=== Review the egress IPs
+
+You can review the egress IP assignments by running `oc get egressips` which will produce output as follows:
+
+.Example output
+[source,terminal]
+----
+NAME              EGRESSIPS       ASSIGNED NODE                   ASSIGNED EGRESSIPS
+demo-egress-ns    10.10.100.253   ip-10-10-156-122.ec2.internal   10.10.150.253
+demo-egress-pod   10.10.100.254   ip-10-10-156-122.ec2.internal   10.10.150.254
+----
+
+== Test the egress IP rule
+
+=== Deploy a sample application
+
+To test the rule, we will create a service which is locked down only to the egress IP addresses in which we have specified. This will simulate an external service which is expecting a small subset of IP addresses.
+
+Run the echoserver which gives us some helpful information:
+
+[source,terminal]
+----
+$ oc -n default run demo-service --image=gcr.io/google_containers/echoserver:1.4
+----
+
+Expose the pod as a service, limiting the ingress (via the `.spec.loadBalancerSourceRanges` field) to the service to only the egress IP addresses in which we specified our pods should be using:
+
+[source,terminal]
+----
+$ cat <<EOF | oc apply -f -
+apiVersion: v1
+kind: Service
+metadata:
+  name: demo-service
+  namespace: default
+  annotations:
+    service.beta.kubernetes.io/aws-load-balancer-scheme: "internal"
+    service.beta.kubernetes.io/aws-load-balancer-internal: "true"
+spec:
+  selector:
+    run: demo-service
+  ports:
+    - port: 80
+      targetPort: 8080
+  type: LoadBalancer
+  externalTrafficPolicy: Local
+  # NOTE: this limits the source IPs that are allowed to connect to our service.  It
+  #       is being used as part of this demo, restricting connectivity to our egress
+  #       IP addresses only.
+  # NOTE: these egress IPs are within the subnet range(s) in which my worker nodes
+  #       are deployed.
+  loadBalancerSourceRanges:
+    - 10.10.100.254/32
+    - 10.10.150.254/32
+    - 10.10.200.254/32
+    - 10.10.100.253/32
+    - 10.10.150.253/32
+    - 10.10.200.253/32
+EOF
+----
+
+Retrieve the load balancer hostname as the `LOAD_BALANCER_HOSTNAME` environment variable which you can copy and use for following steps:
+
+[source,terminal]
+----
+$ export LOAD_BALANCER_HOSTNAME=$(oc get svc -n default demo-service -o json | jq -r '.status.loadBalancer.ingress[].hostname')
+----
+
+=== Test namespace egress
+
+Test the namespace egress rule which was created previously. The following starts an interactive shell which allows you to run curl against the demo service:
+
+[source,terminal]
+----
+$ oc run \
+  demo-egress-ns \
+  -it \
+  --namespace=demo-egress-ns \
+  --env=LOAD_BALANCER_HOSTNAME=$LOAD_BALANCER_HOSTNAME \
+  --image=registry.access.redhat.com/ubi9/ubi -- \
+  bash
+----
+
+Once inside the pod, you can send a request to the load balancer, ensuring that you can successfully connect:
+
+[source,terminal]
+----
+$ curl -s http://$LOAD_BALANCER_HOSTNAME
+----
+
+You should see output similar to the following, indicating a successful connection. It should be noted that the `client_address` below is the internal IP address of the load balancer rather than our egress IP. Successful connectivity (by limiting the service to `.spec.loadBalancerSourceRanges`) is what provides a successful demonstration:
+
+.Example output
+[source,terminal]
+----
+CLIENT VALUES:
+client_address=10.10.207.247
+command=GET
+real path=/
+query=nil
+request_version=1.1
+request_uri=http://internal-a3e61de18bfca4a53a94a208752b7263-148284314.us-east-1.elb.amazonaws.com:8080/
+
+SERVER VALUES:
+server_version=nginx: 1.10.0 - lua: 10001
+
+HEADERS RECEIVED:
+accept=*/*
+host=internal-a3e61de18bfca4a53a94a208752b7263-148284314.us-east-1.elb.amazonaws.com
+user-agent=curl/7.76.1
+BODY:
+-no body in request-
+----
+
+You can safely exit the pod once you are done:
+
+[source,terminal]
+----
+$ exit
+----
+
+=== Test pod egress
+
+Test the pod egress rule which was created previously. The following starts an interactive shell which allows you to run curl against the demo service:
+
+[source,terminal]
+----
+$ oc run \
+  demo-egress-pod \
+  -it \
+  --namespace=demo-egress-pod \
+  --env=LOAD_BALANCER_HOSTNAME=$LOAD_BALANCER_HOSTNAME \
+  --image=registry.access.redhat.com/ubi9/ubi -- \
+  bash
+----
+
+Once inside the pod, you can send a request to the load balancer, ensuring that you can successfully connect:
+
+[source,terminal]
+----
+$ curl -s http://$LOAD_BALANCER_HOSTNAME
+----
+
+You should see output similar to the following, indicating a successful connection. It should be noted that the `client_address` below is the internal IP address of the load balancer rather than our egress IP. Successful connectivity (by limiting the service to `.spec.loadBalancerSourceRanges`) is what provides a successful demonstration:
+
+.Example output
+[source,terminal]
+----
+CLIENT VALUES:
+client_address=10.10.207.247
+command=GET
+real path=/
+query=nil
+request_version=1.1
+request_uri=http://internal-a3e61de18bfca4a53a94a208752b7263-148284314.us-east-1.elb.amazonaws.com:8080/
+
+SERVER VALUES:
+server_version=nginx: 1.10.0 - lua: 10001
+
+HEADERS RECEIVED:
+accept=*/*
+host=internal-a3e61de18bfca4a53a94a208752b7263-148284314.us-east-1.elb.amazonaws.com
+user-agent=curl/7.76.1
+BODY:
+-no body in request-
+----
+
+You can safely exit the pod once you are done:
+
+[source,terminal]
+----
+$ exit
+----
+
+=== Test blocked egress
+
+Alternatively to a successful connection, you can see that the traffic is successfully blocked when the egress rules do not apply. Unsuccessful connectivity (by limiting the service to `.spec.loadBalancerSourceRanges`) is what provides a successful demonstration in this scenario:
+
+[source,terminal]
+----
+$ oc run \
+  demo-egress-pod-fail \
+  -it \
+  --namespace=demo-egress-pod \
+  --env=LOAD_BALANCER_HOSTNAME=$LOAD_BALANCER_HOSTNAME \
+  --image=registry.access.redhat.com/ubi9/ubi -- \
+  bash
+----
+
+Once inside the pod, you can send a request to the load balancer:
+
+[source,terminal]
+----
+$ curl -s http://$LOAD_BALANCER_HOSTNAME
+----
+
+The above command should hang. You can safely exit the pod once you are done:
+
+[source,terminal]
+----
+$ exit
+----
+
+== Clean up
+
+You can cleanup your cluster by running the following commands:
+
+[source,terminal]
+----
+$ oc delete svc demo-service -n default; \
+$ oc delete pod demo-service -n default; \
+$ oc delete project demo-egress-ns; \
+$ oc delete project demo-egress-pod; \
+$ oc delete egressip demo-egress-ns; \
+$ oc delete egressip demo-egress-pod
+----
+
+You can cleanup the assigned node labels by running the following commands:
+
+[WARNING]
+====
+If you are reliant upon any node labels for your machinepool, this command will replace those labels. Be sure to input your desired labels into the `--labels` field to ensure your node labels persist.
+====
+
+[source,terminal]
+----
+$ rosa update machinepool ${ROSA_MACHINE_POOL_NAME} \
+  --cluster="${ROSA_CLUSTER_NAME}" \
+  --labels ""
+----

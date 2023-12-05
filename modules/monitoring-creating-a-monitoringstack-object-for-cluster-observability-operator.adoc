@@ -1,0 +1,61 @@
+// Module included in the following assemblies:
+//
+// monitoring/cluster-observability-operator/configuring-the-cluster-observability-operator-to-monitor-a-service.adoc
+
+:_mod-docs-content-type: PROCEDURE
+[id="creating-a-monitoringstack-object-for-cluster-observability-operator_{context}"]
+= Creating a MonitoringStack object for the Cluster Observability Operator
+
+To scrape the metrics data exposed by the target `prometheus-coo-example-app` service, create a `MonitoringStack` object that references the `ServiceMonitor` object you created in the "Specifying how a service is monitored for Cluster Observability Operator" section.
+This `MonitoringStack` object can then discover the service and scrape the exposed metrics data from it.
+
+.Prerequisites
+
+* You have access to the cluster as a user with the `cluster-admin` cluster role or as a user with administrative permissions for the namespace.
+* You have installed the Cluster Observability Operator.
+* You have deployed the `prometheus-coo-example-app` sample service in the `ns1-coo` namespace.
+* You have created a `ServiceMonitor` object named `prometheus-coo-example-monitor` in the `ns1-coo` namespace.
+
+.Procedure
+
+. Create a YAML file for the `MonitoringStack` object configuration. For this example, name the file `example-coo-monitoring-stack.yaml`.
+
+. Add the following `MonitoringStack` object configuration details:
++
+.Example `MonitoringStack` object
++
+[source,yaml]
+----
+apiVersion: monitoring.rhobs/v1alpha1
+kind: MonitoringStack
+metadata:
+  name: example-coo-monitoring-stack
+  namespace: ns1-coo
+spec:
+  logLevel: debug
+  retention: 1d
+  resourceSelector:
+    matchLabels:
+      k8s-app: prometheus-coo-example-monitor
+----
+
+. Apply the `MonitoringStack` object by running the following command:
++
+[source,terminal]
+----
+$ oc apply -f example-coo-monitoring-stack.yaml
+----
+
+. Verify that the `MonitoringStack` object is available by running the following command and inspecting the output:
++
+[source,terminal]
+----
+$ oc -n ns1-coo get monitoringstack
+----
++
+.Example output
+[source,terminal]
+----
+NAME                         AGE
+example-coo-monitoring-stack   81m
+----

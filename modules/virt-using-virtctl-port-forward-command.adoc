@@ -1,0 +1,34 @@
+// Module included in the following assemblies:
+//
+// * virt/virtual_machines/virt-accessing-vm-ssh.adoc
+
+:_mod-docs-content-type: PROCEDURE
+[id="virt-using-virtctl-port-forward-command_{context}"]
+= Using the virtctl port-forward command
+
+You can access a running virtual machine (VM) by using a local OpenSSH client and the `virtctl port-forward` command. You can use this method with Ansible to automate the configuration of VMs.
+
+This method is recommended for low-traffic applications because port-forwarding traffic is sent over the control plane. This method is not recommended for high-traffic applications such as Rsync or Remote Desktop Protocol because it places a heavy burden on the API server.
+
+.Prerequisites
+
+* You have OpenSSH installed.
+* You installed the `virtctl` command line tool.
+* The environment where you installed `virtctl` has the cluster permissions required to access the VM. For example, you ran `oc login` or you set the `KUBECONFIG` environment variable.
+
+.Procedure
+
+. Add the following text to the `~/.ssh/config` file on your client machine:
++
+[source,terminal]
+----
+Host vm/*
+  ProxyCommand virtctl port-forward --stdio=true %h %p
+----
+
+. Connect to the VM by running the following command:
++
+[source,terminal]
+----
+$ ssh <user>@vm/<vm_name>.<namespace>
+----

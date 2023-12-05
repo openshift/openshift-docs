@@ -1,0 +1,61 @@
+// Module included in the following assemblies:
+//
+// * hosted_control_planes/hcp-managing.adoc
+
+:_mod-docs-content-type: PROCEDURE
+[id="hosted-control-planes-monitoring-dashboard_{context}"]
+= Creating monitoring dashboards for hosted clusters
+
+The HyperShift Operator can create or delete monitoring dashboards in the management cluster for each hosted cluster that it manages.
+
+[#hosted-control-planes-enable-dashboard]
+== Enabling monitoring dashboards
+
+To enable monitoring dashboards in a hosted cluster, complete the following steps:
+
+.Procedure
+
+. Create the `hypershift-operator-install-flags` config map in the `local-cluster` namespace, being sure to specify the `--monitoring-dashboards` flag in the `data.installFlagsToAdd` section. For example:
+
++
+[source,yaml]
+----
+kind: ConfigMap
+apiVersion: v1
+metadata:
+  name: hypershift-operator-install-flags
+  namespace: local-cluster
+data:
+  installFlagsToAdd: "--monitoring-dashboards"
+  installFlagsToRemove: ""
+----
+
+. Wait a couple of minutes for the HyperShift Operator deployment in the `hypershift` namespace to be updated to include the following environment variable:
+
++
+----
+    - name: MONITORING_DASHBOARDS
+      value: "1"
+----
+
++
+When monitoring dashboards are enabled, for each hosted cluster that the HyperShift Operator manages, the Operator creates a config map named `cp-[NAMESPACE]-[NAME]` in the `openshift-config-managed` namespace, where `NAMESPACE` is the namespace of the hosted cluster and `NAME` is the name of the hosted cluster. As a result, a new dashboard is added in the administrative console of the management cluster.
+
+. To view the dashboard, log in to the management cluster's console and go to the dashboard for the hosted cluster by clicking *Observe -> Dashboards*.
+
+. Optional: To disable a monitoring dashboards in a hosted cluster, remove the `--monitoring-dashboards` flag from the `hypershift-operator-install-flags` config map. When you delete a hosted cluster, its corresponding dashboard is also deleted.
+
+[#hosted-control-planes-customize-dashboards]
+== Dashboard customization
+
+To generate dashboards for each hosted cluster, the HyperShift Operator uses a template that is stored in the `monitoring-dashboard-template` config map in the operator namespace (`hypershift`). This template contains a set of Grafana panels that contain the metrics for the dashboard. You can edit the content of the config map to customize the dashboards.
+
+When a dashboard is generated, the following strings are replaced with values that correspond to a specific hosted cluster:
+
+|===
+| Name | Description
+| [x-]`__NAME__` | The name of the hosted cluster
+| [x-]`__NAMESPACE__` | The namespace of the hosted cluster
+| [x-]`__CONTROL_PLANE_NAMESPACE__` | The namespace where the control plane pods of the hosted cluster are placed
+| [x-]`__CLUSTER_ID__` | The UUID of the hosted cluster, which matches the `_id` label of the hosted cluster metrics
+|===

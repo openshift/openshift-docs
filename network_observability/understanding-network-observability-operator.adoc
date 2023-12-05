@@ -1,0 +1,13 @@
+:_mod-docs-content-type: ASSEMBLY
+[id="nw-network-observability-operator"]
+= Network Observability Operator in {product-title}
+include::_attributes/common-attributes.adoc[]
+:context: nw-network-observability-operator
+
+toc::[]
+
+Network Observability is an OpenShift operator that deploys a monitoring pipeline to collect and enrich network traffic flows that are produced by the Network Observability eBPF agent.
+
+include::modules/nw-network-observability-operator.adoc[leveloffset=+1]
+include::modules/network-observability-architecture.adoc[leveloffset=+1]
+include::modules/nw-view-status-configuration-network-observability-operator.adoc[leveloffset=+1]

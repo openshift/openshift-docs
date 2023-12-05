@@ -1,0 +1,13 @@
+// Module included in the following assemblies:
+//
+// * backup_and_restore/application_backup_and_restore/oadp-features-plugins.adoc
+
+:_mod-docs-content-type: CONCEPT
+[id="oadp-plugins-receiving-eof-message_{context}"]
+
+= Velero plugins returning "received EOF, stopping recv loop" message
+
+[NOTE]
+====
+Velero plugins are started as separate processes. After the Velero operation has completed, either successfully or not, they exit. Receiving a `received EOF, stopping recv loop` message in the debug logs indicates that a plugin operation has completed. It does not mean that an error has occurred.
+====

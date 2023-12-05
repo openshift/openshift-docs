@@ -1,0 +1,14 @@
+:_mod-docs-content-type: ASSEMBLY
+[id="troubleshooting-web-terminal"]
+= Troubleshooting the web terminal
+include::_attributes/common-attributes.adoc[]
+:context: troubleshooting-web-terminal
+
+toc::[]
+
+[id="troubleshooting-web-terminal-network-policies"]
+== Web terminal and network policies
+
+The web terminal might fail to launch if the cluster has network policies configured. To initialize a web terminal instance, the {web-terminal-op} must communicate with the web terminal's pod to verify it is running, and the {product-title} web console needs to send information to automatically log in to the cluster within the terminal. If either step fails, the web terminal fails to initialize and the terminal panel appears to be in a loading state.
+
+To avoid this issue, ensure that the network policies for namespaces that are used for terminals allow ingress from the `openshift-console` and `openshift-operators` namespaces.

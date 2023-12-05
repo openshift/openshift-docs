@@ -1,0 +1,34 @@
+// Module included in the following assemblies:
+//
+// network_observability/observing-network-traffic.adoc
+
+:_mod-docs-content-type: CONCEPT
+[id="network-observability-pktdrop-overview_{context}"]
+= Packet drop tracking
+You can configure graphical representation of network flow records with packet loss in the *Overview* view. By employing eBPF tracepoint hooks, you can gain valuable insights into packet drops for TCP, UDP, SCTP, ICMPv4, and ICMPv6 protocols, which can result in the following actions:
+
+* Identification: Pinpoint the exact locations and network paths where packet drops are occurring. Determine whether specific devices, interfaces, or routes are more prone to drops.
+
+* Root cause analysis: Examine the data collected by the eBPF program to understand the causes of packet drops. For example, are they a result of congestion, buffer issues, or specific network events?
+
+* Performance optimization: With a clearer picture of packet drops, you can take steps to optimize network performance, such as adjust buffer sizes, reconfigure routing paths, or implement Quality of Service (QoS) measures.
+
+When packet drop tracking is enabled, you can see the following metrics represented in a chart in the *Overview*.
+
+* Top X flow dropped rates stacked
+* Total dropped rate
+* Top X dropped state
+* Top X dropped cause
+* Top X flow dropped rates stacked with total
+
+Two kinds of packet drops are detected by Network Observability: host drops and OVS drops. Host drops are prefixed with `SKB_DROP` and OVS drops are prefixed with `OVS_DROP`. Dropped flows are shown in the side panel of the *Traffic flows* table along with a link to a description of each drop type. Examples of host drop reasons are as follows:
+
+* `SKB_DROP_REASON_NO_SOCKET`: the packet dropped due to a missing socket.
+* `SKB_DROP_REASON_TCP_CSUM`: the packet dropped due to a TCP checksum error.
+
+Examples of OVS drops reasons are as follows:
+
+* `OVS_DROP_LAST_ACTION`: OVS packets dropped due to an implicit drop action, for example due to a configured network policy.
+* `OVS_DROP_IP_TTL`: OVS packets dropped due to an expired IP TTL.
+
+See the _Additional Resources_ of this section for more information about enabling and working with packet drop tracking.

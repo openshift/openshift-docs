@@ -1,0 +1,117 @@
+// Module included in the following assemblies:
+//
+// * nodes/cma/nodes-cma-autoscaling-custom-uninstall.adoc
+
+:_mod-docs-content-type: PROCEDURE
+[id="nodes-cma-autoscaling-custom-uninstalling_{context}"]
+= Uninstalling the Custom Metrics Autoscaler Operator
+
+Use the following procedure to remove the custom metrics autoscaler from your {product-title} cluster.
+
+.Prerequisites
+
+* The Custom Metrics Autoscaler Operator must be installed.
+
+.Procedure
+
+. In the {product-title} web console, click *Operators* -> *Installed Operators*.
+
+ifndef::openshift-rosa,openshift-dedicated[]
+. Switch to the *openshift-keda* project.
+endif::openshift-rosa,openshift-dedicated[]
+ifdef::openshift-rosa,openshift-dedicated[]
+. Switch to the *keda* project.
+endif::openshift-rosa,openshift-dedicated[]
+
+. Remove the `KedaController` custom resource.
+
+.. Find the *CustomMetricsAutoscaler*  Operator and click the *KedaController* tab.
+
+.. Find the custom resource, and then click *Delete KedaController*.
+
+.. Click *Uninstall*.
+
+. Remove the Custom Metrics Autoscaler Operator:
+
+.. Click *Operators* -> *Installed Operators*.
+
+.. Find the *CustomMetricsAutoscaler*  Operator and click the *Options* menu {kebab} and select *Uninstall Operator*.
+
+.. Click *Uninstall*.
+
+. Optional: Use the OpenShift CLI to remove the custom metrics autoscaler components:
+
+.. Delete the custom metrics autoscaler CRDs:
++
+--
+* `clustertriggerauthentications.keda.sh`
+* `kedacontrollers.keda.sh`
+* `scaledjobs.keda.sh`
+* `scaledobjects.keda.sh`
+* `triggerauthentications.keda.sh`
+--
++
+[source,terminal]
+----
+$ oc delete crd clustertriggerauthentications.keda.sh kedacontrollers.keda.sh scaledjobs.keda.sh scaledobjects.keda.sh triggerauthentications.keda.sh
+----
++
+Deleting the CRDs removes the associated roles, cluster roles, and role bindings. However, there might be a few cluster roles that must be manually deleted.
+
+.. List any custom metrics autoscaler cluster roles:
++
+[source,terminal]
+----
+$ oc get clusterrole | grep keda.sh
+----
+
+.. Delete the listed custom metrics autoscaler cluster roles. For example:
++
+[source,terminal]
+----
+$ oc delete clusterrole.keda.sh-v1alpha1-admin
+----
+
+.. List any custom metrics autoscaler cluster role bindings:
++
+[source,terminal]
+----
+$ oc get clusterrolebinding | grep keda.sh
+----
+
+.. Delete the listed custom metrics autoscaler cluster role bindings. For example:
++
+[source,terminal]
+----
+$ oc delete clusterrolebinding.keda.sh-v1alpha1-admin
+----
+
+. Delete the custom metrics autoscaler project:
++
+ifndef::openshift-rosa,openshift-dedicated[]
+[source,terminal]
+----
+$ oc delete project openshift-keda
+----
+endif::openshift-rosa,openshift-dedicated[]
+ifdef::openshift-rosa,openshift-dedicated[]
+[source,terminal]
+----
+$ oc delete project keda
+----
+endif::openshift-rosa,openshift-dedicated[]
+
+. Delete the Cluster Metric Autoscaler Operator:
++
+ifndef::openshift-rosa,openshift-dedicated[]
+[source,terminal]
+----
+$ oc delete operator/openshift-custom-metrics-autoscaler-operator.openshift-keda
+----
+endif::openshift-rosa,openshift-dedicated[]
+ifdef::openshift-rosa,openshift-dedicated[]
+[source,terminal]
+----
+$ oc delete operator/openshift-custom-metrics-autoscaler-operator.keda
+----
+endif::openshift-rosa,openshift-dedicated[]

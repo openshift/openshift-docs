@@ -1,0 +1,30 @@
+// Module included in the following assemblies:
+//
+// * rosa-adding-additional-constraints-for-ip-based-aws-role-assumption/rosa-attaching-the-policy.adoc
+:_mod-docs-content-type: PROCEDURE
+[id="rosa-attaching-the-policy_{context}"]
+= Attaching the identity-based IAM policy
+
+Once you have created an identity-based IAM policy, attach it to the relevant IAM users, groups, or roles in your AWS account to prevent IP-based role assumption for those entities.
+
+.Procedure
+
+. Navigate to the IAM console in the AWS Management Console.
+. Select the default IAM `ManagedOpenShift-Support-Role` role to which you want to attach the policy.
++
+[NOTE]
+====
+You can change the default IAM `ManagedOpenShift-Support-Role` role. For more information about roles, see link:https://docs.openshift.com/rosa/rosa_architecture/rosa_policy_service_definition/rosa-sre-access.html#rosa-policy-rh-access_rosa-sre-access[Red Hat support access].
+====
++
+. In the *Permissions* tab, select *Add Permissions* or *Create inline policy* from the *Add Permissions* drop-down list.
+. Search for the policy you created earlier by:
+.. Entering the policy name.
+.. Filtering by the appropriate category.
+. Select the policy and click *Attach policy*.
+
+[IMPORTANT]
+====
+To ensure effective IP-based role assumption prevention, you must keep the allowlisted IPs up to date. Failure to do so may result in Red Hat site reliability engineering (SRE) being unable to access your account and affect your SLA. If you have further questions or require assistance, please reach out to our support team.
+====
+

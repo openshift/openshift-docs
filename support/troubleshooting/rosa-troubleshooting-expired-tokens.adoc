@@ -1,0 +1,8 @@
+:_mod-docs-content-type: ASSEMBLY
+include::_attributes/attributes-openshift-dedicated.adoc[]
+[id="rosa-troubleshooting-expired-tokens"]
+= Troubleshooting expired tokens
+:context: rosa-troubleshooting-expired-tokens
+toc::[]
+
+include::modules/rosa-troubleshooting-expired-token.adoc[leveloffset=+1]

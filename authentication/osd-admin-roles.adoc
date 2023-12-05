@@ -1,0 +1,13 @@
+:_mod-docs-content-type: ASSEMBLY
+[id="osd-admin-roles"]
+= Managing administration roles and users
+include::_attributes/attributes-openshift-dedicated.adoc[]
+:context: osd-admin-roles
+
+toc::[]
+
+// TODO: needs intro
+
+include::modules/understanding-admin-roles.adoc[leveloffset=+1]
+
+include::modules/managing-dedicated-administrators.adoc[leveloffset=+1]

@@ -1,0 +1,11 @@
+// Text snippet included in the following modules:
+//
+// * operators/olm_v1/olmv1-installing-an-operator-from-a-catalog.adoc
+// * operators/olm_v1/olmv1-managing-plain-bundles.adoc
+
+:_mod-docs-content-type: SNIPPET
+
+[NOTE]
+====
+For {product-title} 4.14, documented procedures for {olmv1} are CLI-based only. Alternatively, administrators can create and view related objects in the web console by using normal methods, such as the *Import YAML* and *Search* pages. However, the existing *OperatorHub* and *Installed Operators* pages do not yet display {olmv1} components.
+====

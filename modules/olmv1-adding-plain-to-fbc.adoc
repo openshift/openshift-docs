@@ -1,0 +1,121 @@
+// Module included in the following assemblies:
+//
+// * operators/olm_v1/olmv1-plain-bundles.adoc
+
+:_mod-docs-content-type: PROCEDURE
+
+[id="olmv1-adding-plain-bundle-to-fbc_{context}"]
+= Adding a plain bundle to a file-based catalog
+
+The `opm render` command does not support adding plain bundles to catalogs. You must manually add plain bundles to your file-based catalog, as shown in the following procedure.
+
+.Procedure
+
+. Verify that the `index.json` or `index.yaml` file for your catalog is similar to the following example:
++
+.Example `<catalog_dir>/index.json` file
+[source,json]
+----
+{
+    {
+     "schema": "olm.package",
+     "name": "<extension_name>",
+     "defaultChannel": ""
+    }
+}
+----
+
+. To create an `olm.bundle` blob, edit your `index.json` or `index.yaml` file, similar to the following example:
++
+.Example `<catalog_dir>/index.json` file with `olm.bundle` blob
+[source,json]
+----
+{
+   "schema": "olm.bundle",
+    "name": "<extension_name>.v<version>",
+    "package": "<extension_name>",
+    "image": "quay.io/<organization_name>/<repository_name>:<image_tag>",
+    "properties": [
+        {
+            "type": "olm.package",
+            "value": {
+            "packageName": "<extension_name>",
+            "version": "<bundle_version>"
+            }
+        },
+        {
+            "type": "olm.bundle.mediatype",
+            "value": "plain+v0"
+        }
+  ]
+}
+----
+
+. To create an `olm.channel` blob, edit your `index.json` or `index.yaml` file, similar to the following example:
++
+.Example `<catalog_dir>/index.json` file with `olm.channel` blob
+[source,json]
+----
+{
+    "schema": "olm.channel",
+    "name": "<desired_channel_name>",
+    "package": "<extension_name>",
+    "entries": [
+        {
+            "name": "<extension_name>.v<version>"
+        }
+    ]
+}
+----
+
+// Please refer to [channel naming conventions](https://olm.operatorframework.io/docs/best-practices/channel-naming/) for choosing the <desired_channel_name>. An example of the <desired_channel_name> is `candidate-v0`.
+
+.Verification
+
+. Open your `index.json` or `index.yaml` file and ensure it is similar to the following example:
++
+.Example `<catalog_dir>/index.json` file
+[source,json]
+----
+{
+    "schema": "olm.package",
+    "name": "example-extension",
+    "defaultChannel": "preview"
+}
+{
+    "schema": "olm.bundle",
+    "name": "example-extension.v0.0.1",
+    "package": "example-extension",
+    "image": "quay.io/example-org/example-extension-bundle:v0.0.1",
+    "properties": [
+        {
+            "type": "olm.package",
+            "value": {
+            "packageName": "example-extension",
+            "version": "0.0.1"
+            }
+        },
+        {
+            "type": "olm.bundle.mediatype",
+            "value": "plain+v0"
+        }
+    ]
+}
+{
+    "schema": "olm.channel",
+    "name": "preview",
+    "package": "example-extension",
+    "entries": [
+        {
+            "name": "example-extension.v0.0.1"
+        }
+    ]
+}
+----
+
+. Validate your catalog by running the following command:
++
+[source,terminal]
+----
+$ opm validate <catalog_dir>
+----

@@ -1,0 +1,41 @@
+// Module included in the following assemblies:
+//
+// * rosa_cluster_admin/rosa_nodes/rosa-managing-worker-nodes.adoc
+
+:_mod-docs-content-type: PROCEDURE
+[id="deleting-machine-pools-cli{context}"]
+= Deleting a machine pool using the ROSA CLI
+You can delete a machine pool for your Red Hat OpenShift Service on AWS (ROSA) cluster by using the ROSA CLI.
+
+[NOTE]
+====
+For users of ROSA CLI `rosa` version 1.2.25 and earlier versions, the machine pool (ID='Default') that is created along with the cluster cannot be deleted. For users of ROSA CLI `rosa` version 1.2.26 and later, the machine pool (ID='worker') that is created along with the cluster can be deleted as long as there is one machine pool within the cluster that contains no taints, and at least two replicas for a Single-AZ cluster or three replicas for a Multi-AZ cluster.
+====
+
+.Prerequisites
+
+ifdef::openshift-rosa[]
+* You created a ROSA cluster.
+* The cluster is in the ready state.
+* You have an existing machine pool without any taints and with at least two instances for a Single-AZ cluster or three instances for a Multi-AZ cluster.
+endif::openshift-rosa[]
+ifndef::openshift-rosa[]
+* You have created an {product-title} cluster.
+endif::[]
+
+.Procedure
+. From the ROSA CLI, run the following command:
++
+[source,terminal]
+----
+$ rosa delete machinepool -c=<cluster_name> <machine_pool_ID>
+----
++
+.Example output
+[source,terminal]
+----
+? Are you sure you want to delete machine pool <machine_pool_ID> on cluster <cluster_name>? (y/N)
+----
+. Enter 'y' to delete the machine pool.
++
+The selected machine pool is deleted.

@@ -1,0 +1,34 @@
+// Module included in the following assemblies:
+//
+// * operators/operator_sdk/osdk-token-auth.adoc
+
+:_mod-docs-content-type: CONCEPT
+[id="osdk-cco-aws-sts_{context}"]
+= CCO-based workflow for OLM-managed Operators with AWS STS
+
+When an {product-title} cluster running on AWS is in Security Token Service (STS) mode, it means the cluster is utilizing features of AWS and {product-title} to use IAM roles at an application level. STS enables applications to provide a JSON Web Token (JWT) that can assume an IAM role.
+
+The JWT includes an Amazon Resource Name (ARN) for the `sts:AssumeRoleWithWebIdentity` IAM action to allow temporarily-granted permission for the service account. The JWT contains the signing keys for the `ProjectedServiceAccountToken` that AWS IAM can validate. The service account token itself, which is signed, is used as the JWT required for assuming the AWS role.
+
+The Cloud Credential Operator (CCO) is a cluster Operator installed by default in {product-title} clusters running on cloud providers. For the purposes of STS, the CCO provides the following functions:
+
+* Detects when it is running on an STS-enabled cluster
+* Checks for the presence of fields in the `CredentialsRequest` object that provide the required information for granting Operators access to AWS resources
+
+The CCO performs this detection even when in manual mode. When properly configured, the CCO projects a `Secret` object with the required access information into the Operator namespace.
+
+Starting in {product-title} 4.14, the CCO can semi-automate this task through an expanded use of `CredentialsRequest` objects, which can request the creation of `Secrets` that contain the information required for STS workflows. Users can provide a role ARN when installing the Operator from either the web console or CLI.
+
+[NOTE]
+====
+Subscriptions with automatic update approvals are not recommended because there might be permission changes to make prior to updating. Subscriptions with manual update approvals ensure that administrators have the opportunity to verify the permissions of the later version and take any necessary steps prior to update.
+====
+
+As an Operator author preparing an Operator for use alongside the updated CCO in {product-title} 4.14, you should instruct users and add code to handle the divergence from earlier CCO versions, in addition to handling STS token authentication (if your Operator is not already STS-enabled). The recommended method is to provide a `CredentialsRequest` object with correctly filled STS-related fields and let the CCO create the `Secret` for you.
+
+[IMPORTANT]
+====
+If you plan to support {product-title} clusters earlier than version 4.14, consider providing users with instructions on how to manually create a secret with the STS-enabling information by using the CCO utility (`ccoctl`). Earlier CCO versions are unaware of STS mode on the cluster and cannot create secrets for you.
+
+Your code should check for secrets that never appear and warn users to follow the fallback instructions you have provided. For more information, see the "Alternative method" subsection.
+====
