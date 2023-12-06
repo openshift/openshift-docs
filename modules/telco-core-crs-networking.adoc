@@ -1,0 +1,30 @@
+// Module included in the following assemblies:
+//
+// *
+
+:_mod-docs-content-type: REFERENCE
+[id="networking-crs_{context}"]
+= Networking reference CRs
+
+.Networking CRs
+[cols="4*", options="header", format=csv]
+|====
+Component,Reference CR,Optional,New in this release
+Baseline,xref:../../telco_ref_design_specs/core/telco-core-ref-crs.adoc#telco-core-network-yaml[Network.yaml],No,No
+Baseline,xref:../../telco_ref_design_specs/core/telco-core-ref-crs.adoc#telco-core-networkattachmentdefinition-yaml[networkAttachmentDefinition.yaml],Yes,No
+SR-IOV Network Operator,xref:../../telco_ref_design_specs/core/telco-core-ref-crs.adoc#telco-core-sriovsubscriptionns-yaml[SriovSubscriptionNS.yaml],No,No
+SR-IOV Network Operator,xref:../../telco_ref_design_specs/core/telco-core-ref-crs.adoc#telco-core-sriovsubscriptionopergroup-yaml[SriovSubscriptionOperGroup.yaml],No,No
+SR-IOV Network Operator,xref:../../telco_ref_design_specs/core/telco-core-ref-crs.adoc#telco-core-sriovsubscription-yaml[SriovSubscription.yaml],No,No
+SR-IOV Network Operator,xref:../../telco_ref_design_specs/core/telco-core-ref-crs.adoc#telco-core-sriovoperatorconfig-yaml[SriovOperatorConfig.yaml],No,No
+SR-IOV Network Operator,xref:../../telco_ref_design_specs/core/telco-core-ref-crs.adoc#telco-core-sriovnetworknodepolicy-yaml[sriovNetworkNodePolicy.yaml],No,No
+SR-IOV Network Operator,xref:../../telco_ref_design_specs/core/telco-core-ref-crs.adoc#telco-core-sriovnetwork-yaml[sriovNetwork.yaml],No,No
+Load balancer,xref:../../telco_ref_design_specs/core/telco-core-ref-crs.adoc#telco-core-metallbns-yaml[metallbNS.yaml],No,No
+Load balancer,xref:../../telco_ref_design_specs/core/telco-core-ref-crs.adoc#telco-core-metallbopergroup-yaml[metallbOperGroup.yaml],No,No
+Load balancer,xref:../../telco_ref_design_specs/core/telco-core-ref-crs.adoc#telco-core-metallbsubscription-yaml[metallbSubscription.yaml],No,No
+Load balancer,xref:../../telco_ref_design_specs/core/telco-core-ref-crs.adoc#telco-core-metallb-yaml[metallb.yaml],No,No
+Load balancer,xref:../../telco_ref_design_specs/core/telco-core-ref-crs.adoc#telco-core-bgp-peer-yaml[bgp-peer.yaml],No,No
+Load balancer,xref:../../telco_ref_design_specs/core/telco-core-ref-crs.adoc#telco-core-bfd-profile-yaml[bfd-profile.yaml],No,No
+Load balancer,xref:../../telco_ref_design_specs/core/telco-core-ref-crs.adoc#telco-core-addr-pool-yaml[addr-pool.yaml],No,No
+Load balancer,xref:../../telco_ref_design_specs/core/telco-core-ref-crs.adoc#telco-core-bgp-advr-yaml[bgp-advr.yaml],No,No
+Multus - Tap CNI for rootless DPDK pod,xref:../../telco_ref_design_specs/core/telco-core-ref-crs.adoc#telco-core-mc_rootless_pods_selinux-yaml[mc_rootless_pods_selinux.yaml],Yes,No
+|====

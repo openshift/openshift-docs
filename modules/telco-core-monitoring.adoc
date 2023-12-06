@@ -1,0 +1,36 @@
+// Module included in the following assemblies:
+//
+// * telco_ref_design_specs/ran/telco-core-ref-components.adoc
+
+:_mod-docs-content-type: REFERENCE
+[id="telco-core-monitoring_{context}"]
+= Monitoring
+
+New in this release::
+
+Not applicable
+
+Description::
+
+The Cluster Monitoring Operator is included by default on all OpenShift clusters and provides monitoring (metrics, dashboards, and alerting) for the platform components and optionally user projects as well.
++
+Configuration of the monitoring operator allows for customization, including:
++
+--
+- Default retention period
+- Custom alert rules
+--
+The default handling of pod CPU and memory metrics is based on upstream Kubernetes `cAdvisor` and makes a tradeoff that prefers handling of stale data over metric accuracy. This leads to spiky data that will create false triggers of alerts over user-specified thresholds. OpenShift supports an opt-in dedicated service monitor feature creating an additional set of pod CPU and memory metrics that do not suffer from the spiky behavior. For additional information, see link:https://access.redhat.com/solutions/7012719[this solution guide].
++
+In addition to default configuration, the following metrics are expected to be configured for {rds} clusters:
+
+* Pod CPU and memory metrics and alerts for user workloads
+
+Limits and requirements::
+
+* Monitoring configuration must enable the dedicated service monitor feature for accurate representation of pod metrics
+
+Engineering considerations::
+
+* The Prometheus retention period is specified by the user. The value used is a tradeoff between operational requirements for maintaining historical data on the cluster against CPU and storage resources. Longer retention periods increase the need for storage and require additional CPU to manage the indexing of data.
+

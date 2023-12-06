@@ -1,0 +1,23 @@
+// Module included in the following assemblies:
+//
+// * telco_ref_design_specs/ran/telco-core-ref-components.adoc
+
+:_mod-docs-content-type: REFERENCE
+[id="telco-core-nmstate-operator_{context}"]
+= NMState Operator
+
+New in this release::
+
+Not applicable
+
+Description::
+
+The NMState Operator provides a Kubernetes API for performing network configurations across the cluster's nodes. It enables network interface configurations, static IPs and DNS, VLANs, trunks, bonding, static routes, MTU, and enabling promiscuous mode on the secondary interfaces. The cluster nodes periodically report on the state of each node's network interfaces to the API server.
+
+Limits and requirements::
+
+Not applicable
+
+Engineering considerations::
+* The initial networking configuration is applied using `NMStateConfig` content in the installation CRs. The NMState Operator is used only when needed for network updates.
+* When SR-IOV virtual functions are used for host networking, the NMState Operator using `NodeNetworkConfigurationPolicy` is used to configure those VF interfaces, for example, VLANs and the MTU.

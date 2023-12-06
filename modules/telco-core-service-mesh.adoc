@@ -1,0 +1,12 @@
+// Module included in the following assemblies:
+//
+// * telco_ref_design_specs/ran/telco-core-ref-components.adoc
+
+:_mod-docs-content-type: REFERENCE
+[id="telco-core-service-mesh_{context}"]
+= Service Mesh
+
+Description::
+
+{rds-caps} CNFs typically require a service mesh implementation. The specific features and performance required are dependent on the application. The selection of service mesh implementation and configuration is outside the scope of this documentation. The impact of service mesh on cluster resource utilization and performance, including additional latency introduced into pod networking, must be accounted for in the overall solution engineering.
+
