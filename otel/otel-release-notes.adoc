@@ -1,0 +1,136 @@
+:_mod-docs-content-type: ASSEMBLY
+include::_attributes/common-attributes.adoc[]
+[id="otel-release-notes"]
+= Release notes for {OTELName}
+:context: otel-release-notes
+
+toc::[]
+
+[id="otel-product-overview"]
+== {OTELName} overview
+
+{OTELName} is based on the open source link:https://opentelemetry.io/[OpenTelemetry project], which aims to provide unified, standardized, and vendor-neutral telemetry data collection for cloud-native software. {OTELName} product provides support for deploying and managing the OpenTelemetry Collector and simplifying the workload instrumentation.
+
+The link:https://opentelemetry.io/docs/collector/[OpenTelemetry Collector] can receive, process, and forward telemetry data in multiple formats, making it the ideal component for telemetry processing and interoperability between telemetry systems. The Collector provides a unified solution for collecting and processing metrics, traces, and logs.
+
+The OpenTelemetry Collector has a number of features including the following:
+
+Data Collection and Processing Hub:: It acts as a central component that gathers telemetry data like metrics and traces from various sources. This data can be created from instrumented applications and infrastructure.
+
+Customizable telemetry data pipeline:: The OpenTelemetry Collector is designed to be customizable. It supports various processors, exporters, and receivers.
+
+Auto-instrumentation features:: Automatic instrumentation simplifies the process of adding observability to applications. Developers don't need to manually instrument their code for basic telemetry data.
+
+Here are some of the use cases for the OpenTelemetry Collector:
+
+Centralized data collection:: In a microservices architecture, the Collector can be deployed to aggregate data from multiple services.
+
+Data enrichment and processing:: Before forwarding data to analysis tools, the Collector can enrich, filter, and process this data.
+
+Multi-backend receiving and exporting:: The Collector can receive and send data to multiple monitoring and analysis platforms simultaneously.
+
+[id="otel-3-0-rn"]
+== {OTELName} {DTProductVersion}
+
+{OTELName} {DTProductVersion} is based on link:https://opentelemetry.io/[OpenTelemetry] {OTELVersion}.
+
+[id="new-features-and-enhancements_otel-3-0-rn"]
+=== New features and enhancements
+
+This update introduces the following enhancements:
+
+* The *OpenShift distributed tracing data collection Operator* is renamed as the *{OTELOperator}*.
+* Support for the ARM architecture.
+* Support for the Prometheus receiver for metrics collection.
+* Support for the Kafka receiver and exporter for sending traces and metrics to Kafka.
+* Support for cluster-wide proxy environments.
+* The {OTELOperator} creates the Prometheus `ServiceMonitor` custom resource if the Prometheus exporter is enabled.
+* The Operator enables the `Instrumentation` custom resource that allows injecting upstream OpenTelemetry auto-instrumentation libraries.
+
+[id="removal-notice_otel-3-0-rn"]
+=== Removal notice
+
+* In {OTELName} {DTProductVersion}, the Jaeger exporter has been removed. Bug fixes and support are provided only through the end of the 2.9 lifecycle. As an alternative to the Jaeger exporter for sending data to the Jaeger collector, you can use the OTLP exporter instead.
+
+[id="bug-fixes_otel-3-0-rn"]
+=== Bug fixes
+
+This update introduces the following bug fixes:
+
+* Fixed support for disconnected environments when using the `oc adm catalog mirror` CLI command.
+
+[id="known-issues_otel-3-0-rn"]
+=== Known issues
+
+Curently, the cluster monitoring of the {OTELOperator} is disabled due to a bug (link:https://issues.redhat.com/browse/TRACING-3761[TRACING-3761]). The bug is preventing the cluster monitoring from scraping metrics from the {OTELOperator} due to a missing label `openshift.io/cluster-monitoring=true`
+ that is required for the cluster monitoring and service monitor object.
+
+.Workaround
+
+You can enable the cluster monitoring as follows:
+
+. Add the following label in the Operator namespace: `oc label namespace openshift-opentelemetry-operator openshift.io/cluster-monitoring=true`
+
+. Create a service monitor, role, and role binding:
++
+[source,yaml]
+----
+apiVersion: monitoring.coreos.com/v1
+kind: ServiceMonitor
+metadata:
+  name: opentelemetry-operator-controller-manager-metrics-service
+  namespace: openshift-opentelemetry-operator
+spec:
+  endpoints:
+  - bearerTokenFile: /var/run/secrets/kubernetes.io/serviceaccount/token
+    path: /metrics
+    port: https
+    scheme: https
+    tlsConfig:
+      insecureSkipVerify: true
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: opentelemetry-operator
+      control-plane: controller-manager
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: otel-operator-prometheus
+  namespace: openshift-opentelemetry-operator
+  annotations:
+    include.release.openshift.io/self-managed-high-availability: "true"
+    include.release.openshift.io/single-node-developer: "true"
+rules:
+- apiGroups:
+  - ""
+  resources:
+  - services
+  - endpoints
+  - pods
+  verbs:
+  - get
+  - list
+  - watch
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: otel-operator-prometheus
+  namespace: openshift-opentelemetry-operator
+  annotations:
+    include.release.openshift.io/self-managed-high-availability: "true"
+    include.release.openshift.io/single-node-developer: "true"
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: otel-operator-prometheus
+subjects:
+- kind: ServiceAccount
+  name: prometheus-k8s
+  namespace: openshift-monitoring
+----
+
+include::modules/support.adoc[leveloffset=+1]
+
+include::modules/making-open-source-more-inclusive.adoc[leveloffset=+1]
