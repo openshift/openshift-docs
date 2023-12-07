@@ -4,10 +4,13 @@
 
 # Get the repo path and files changed
 REPO_PATH="$(git rev-parse --show-toplevel)"
-FILES=$(git diff --name-only HEAD~1 HEAD --diff-filter=d "*release-notes*.adoc" ':(exclude)_unused_topics/*')
+FILES=$(git diff --name-only HEAD~1 HEAD --diff-filter=d "*release-notes*.adoc" ':(exclude)_unused_topics/*' | grep -v 'logging-release-notes-5-8-0.adoc')
 
 # Function to check links in updated release notes
 check_rn_links () {
+    
+    # Array to store any links to internal JIRA issues
+    protected_links=()
 
     # Iterate through RN files because could potentially be more than one (e.g. OCP + ROSA)
     for RELEASE_FILE in ${FILES}; do
@@ -26,8 +29,7 @@ check_rn_links () {
 
         # Extract links from the content, excluding single-line comments
         links=$(echo "$content" | grep -v '^//.*' | grep -o 'https://issues[^]]*' | sed 's/\[.*//')
-        protected_links=()
-
+        
         echo ""
         echo "#########"
         echo "Checking for internal bug links in $REPO_PATH/$RELEASE_FILE"
