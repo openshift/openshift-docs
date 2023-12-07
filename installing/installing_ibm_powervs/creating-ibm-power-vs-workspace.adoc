@@ -1,0 +1,15 @@
+:_mod-docs-content-type: ASSEMBLY
+[id="creating-ibm-power-vs-workspace"]
+= Creating an {ibm-power-server-title} workspace
+include::_attributes/common-attributes.adoc[]
+:context: creating-ibm-power-vs-workspace
+
+:FeatureName: {ibm-power-server-name} using installer-provisioned infrastructure
+include::snippets/technology-preview.adoc[]
+
+include::modules/creating-ibm-power-vs-workspace-procedure.adoc[leveloffset=+1]
+
+
+[id="next-steps_creating-ibm-power-vs-workspace"]
+== Next steps
+* xref:../../installing/installing_ibm_powervs/installing-ibm-power-vs-customizations.adoc#installing-ibm-power-vs-customizations[Installing a cluster on {ibm-power-server-name} with customizations]

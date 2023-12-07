@@ -1,0 +1,38 @@
+//Module included in the following assemblies:
+//
+//*  microshift_troubleshooting/microshift-troubleshoot-cluster
+
+:_mod-docs-content-type: PROCEDURE
+[id="microshift-check-cluster-status_{context}"]
+= Checking the status of a cluster
+
+You can check the status of a {microshift-short} cluster or see active pods by running a simple command. Given in the following procedure are three commands you can use to check cluster status. You can choose to run one, two, or all commands to help you retrieve the information you need to troubleshoot the cluster.
+
+.Procedure
+* You can check the system status, which returns the cluster status, by running the following command:
++
+[source,terminal]
+----
+$ sudo systemctl status microshift
+----
++
+If {microshift-short} is failing to start, this command returns the logs from the previous run.
+
+* Optional: You can view the logs by running the following command:
++
+[source,terminal]
+----
+$ sudo journalctl -u microshift
+----
+
+[NOTE]
+====
+The default configuration of the `systemd` journal service stores data in a volatile directory. To persist system logs across system starts and restarts, enable log persistence and set limits on the maximum journal data size.
+====
+
+* Optional: If {microshift-short} is running, you can see active pods by entering the following command:
++
+[source,terminal]
+----
+$ oc get pods -A
+----

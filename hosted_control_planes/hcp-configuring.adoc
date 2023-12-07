@@ -1,0 +1,72 @@
+:_mod-docs-content-type: ASSEMBLY
+[id="hcp-configuring"]
+= Configuring hosted control planes
+include::_attributes/common-attributes.adoc[]
+:context: hcp-configuring
+
+toc::[]
+
+To get started with hosted control planes for {product-title}, you first configure your hosted cluster on the provider that you want to use. Then, you complete a few management tasks.
+
+You can view the procedures by selecting from one of the following providers:
+
+[id="hcp-configuring-bm"]
+== Bare metal
+
+* link:https://access.redhat.com/documentation/en-us/red_hat_advanced_cluster_management_for_kubernetes/2.9/html/clusters/cluster_mce_overview#hosted-sizing-guidance[Hosted control plane sizing guidance]
+* link:https://access.redhat.com/documentation/en-us/red_hat_advanced_cluster_management_for_kubernetes/2.9/html/clusters/cluster_mce_overview#hosted-install-cli[Installing the hosted control plane command line interface]
+* link:https://access.redhat.com/documentation/en-us/red_hat_advanced_cluster_management_for_kubernetes/2.9/html/clusters/cluster_mce_overview#hosted-cluster-workload-distributing[Distributing hosted cluster workloads]
+* link:https://access.redhat.com/documentation/en-us/red_hat_advanced_cluster_management_for_kubernetes/2.9/html/clusters/cluster_mce_overview#firewall-port-reqs-bare-metal[Bare metal firewall and port requirements]
+* link:https://access.redhat.com/documentation/en-us/red_hat_advanced_cluster_management_for_kubernetes/2.9/html/clusters/cluster_mce_overview#infrastructure-reqs-bare-metal[Bare metal infrastructure requirements]: Review the infrastructure requirements to create a hosted cluster on bare metal.
+* link:https://access.redhat.com/documentation/en-us/red_hat_advanced_cluster_management_for_kubernetes/2.9/html/clusters/cluster_mce_overview#configuring-hosting-service-cluster-configure-bm[Configuring the hosting cluster on bare metal]:
+** Configure DNS
+** Create an `InfraEnv` resource and add agents to it
+** Create a hosted cluster and verify cluster creation
+* link:https://access.redhat.com/documentation/en-us/red_hat_advanced_cluster_management_for_kubernetes/2.9/html/clusters/cluster_mce_overview#hosted-control-planes-manage-bm[Managing hosted control plane clusters on bare metal]:
+** Scale the `NodePool` object for a hosted cluster
+** Handle ingress traffic for a hosted cluster
+** Enable node auto-scaling for a hosted cluster
+** Destroy a hosted cluster
+* link:https://access.redhat.com/documentation/en-us/red_hat_advanced_cluster_management_for_kubernetes/2.9/html/clusters/cluster_mce_overview#configure-hosted-disconnected[Configuring hosted control planes in a disconnected environment]
+
+[id="hcp-configuring-virt"]
+== {VirtProductName}
+
+* link:https://access.redhat.com/documentation/en-us/red_hat_advanced_cluster_management_for_kubernetes/2.9/html/clusters/cluster_mce_overview#hosted-sizing-guidance[Hosted control plane sizing guidance]
+* link:https://access.redhat.com/documentation/en-us/red_hat_advanced_cluster_management_for_kubernetes/2.9/html/clusters/cluster_mce_overview#hosted-install-cli[Installing the hosted control plane command line interface]
+* link:https://access.redhat.com/documentation/en-us/red_hat_advanced_cluster_management_for_kubernetes/2.9/html/clusters/cluster_mce_overview#hosted-cluster-workload-distributing[Distributing hosted cluster workloads]
+* link:https://access.redhat.com/documentation/en-us/red_hat_advanced_cluster_management_for_kubernetes/2.9/html/clusters/cluster_mce_overview#hosted-control-planes-manage-kubevirt[Managing hosted control plane clusters on OpenShift Virtualization]: Create {product-title} clusters with worker nodes that are hosted by KubeVirt virtual machines.
+* link:https://access.redhat.com/documentation/en-us/red_hat_advanced_cluster_management_for_kubernetes/2.9/html/clusters/cluster_mce_overview#configure-hosted-disconnected[Configuring hosted control planes in a disconnected environment]
+
+[id="hcp-configuring-aws"]
+== {aws-first}
+
+:FeatureName: Hosted control planes on the {aws-short} platform
+include::snippets/technology-preview.adoc[]
+
+* link:https://access.redhat.com/documentation/en-us/red_hat_advanced_cluster_management_for_kubernetes/2.9/html/clusters/cluster_mce_overview#hosting-cluster-aws-infra-reqs[AWS infrastructure requirements]: Review the infrastructure requirements to create a hosted cluster on {aws-short}.
+* link:https://access.redhat.com/documentation/en-us/red_hat_advanced_cluster_management_for_kubernetes/2.9/html/clusters/cluster_mce_overview#hosting-service-cluster-configure-aws[Configuring the hosting cluster on AWS]: The tasks to configure a hosted cluster on {aws-short} include creating the {aws-short} S3 OIDC secret, creating a routable public zone, enabling external DNS, enabling {aws-short} PrivateLink, enabling the hosted control planes feature, and installing the hosted control planes CLI.
+* link:https://access.redhat.com/documentation/en-us/red_hat_advanced_cluster_management_for_kubernetes/2.9/html/clusters/cluster_mce_overview#hosted-control-planes-manage-aws[Managing hosted control plane clusters on AWS]: Management tasks include creating, importing, accessing, or deleting a hosted cluster on {aws-short}.
+* xref:../networking/hardware_networks/configuring-sriov-operator.adoc#sriov-operator-hosted-control-planes_configuring-sriov-operator[Deploying the SR-IOV Operator for hosted control planes]: After you configure and deploy your hosting service cluster, you can create a subscription to the Single Root I/O Virtualization (SR-IOV) Operator on a hosted cluster. The SR-IOV pod runs on worker machines rather than the control plane.
+
+[id="hcp-configuring-ibmz"]
+== {ibm-z-title}
+
+:FeatureName: Hosted control planes on the {ibm-z-title} platform
+include::snippets/technology-preview.adoc[]
+
+* link:https://access.redhat.com/documentation/en-us/red_hat_advanced_cluster_management_for_kubernetes/2.9/html/clusters/cluster_mce_overview#hosted-sizing-guidance[Hosted control plane sizing guidance]
+* link:https://access.redhat.com/documentation/en-us/red_hat_advanced_cluster_management_for_kubernetes/2.9/html/clusters/cluster_mce_overview#hosted-install-cli[Installing the hosted control plane command line interface]
+* link:https://access.redhat.com/documentation/en-us/red_hat_advanced_cluster_management_for_kubernetes/2.9/html/clusters/cluster_mce_overview#hosted-cluster-workload-distributing[Distributing hosted cluster workloads]
+* link:https://access.redhat.com/documentation/en-us/red_hat_advanced_cluster_management_for_kubernetes/2.9/html/clusters/cluster_mce_overview#configuring-hosting-service-cluster-ibmz[Configuring the hosting cluster on x86 bare metal for IBM Z compute nodes (Technology Preview)]
+
+[id="hcp-configuring-ibmpower"]
+== {ibm-power-title}
+
+:FeatureName: Hosted control planes on the {ibm-power-title} platform
+include::snippets/technology-preview.adoc[]
+
+* link:https://access.redhat.com/documentation/en-us/red_hat_advanced_cluster_management_for_kubernetes/2.9/html/clusters/cluster_mce_overview#hosted-sizing-guidance[Hosted control plane sizing guidance]
+* link:https://access.redhat.com/documentation/en-us/red_hat_advanced_cluster_management_for_kubernetes/2.9/html/clusters/cluster_mce_overview#hosted-install-cli[Installing the hosted control plane command line interface]
+* link:https://access.redhat.com/documentation/en-us/red_hat_advanced_cluster_management_for_kubernetes/2.9/html/clusters/cluster_mce_overview#hosted-cluster-workload-distributing[Distributing hosted cluster workloads]
+* link:https://access.redhat.com/documentation/en-us/red_hat_advanced_cluster_management_for_kubernetes/2.9/html/clusters/cluster_mce_overview#config-hosted-service-ibmpower[Configuring the hosting cluster on a 64-bit x86 OpenShift Container Platform cluster to create hosted control planes for IBM Power compute nodes (Technology Preview)]

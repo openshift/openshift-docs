@@ -1,0 +1,79 @@
+// Module included in the following assemblies:
+//
+// * microshift/running_applications/microshift-deploy-with-mirror-registry.adoc
+
+:_mod-docs-content-type: PROCEDURE
+[id="microshift-configuring-hosts-for-mirror_{context}"]
+= Configuring hosts for mirror registry access
+
+To configure a {microshift-short} host to use a mirror registry, you must give the {microshift-short} host access to the registry by creating a configuration file that maps the Red Hat registry host names to the mirror.
+
+.Prerequisites
+* Your mirror host has access to the internet.
+* The mirror host can access the mirror registry.
+* You configured the mirror registry for use in your restricted network.
+* You downloaded the pull secret and modified it to include authentication to your mirror repository.
+
+.Procedure
+. Log into your {microshift-short} host.
+
+. Enable the SSL certificate trust on any host accessing the mirror registry by completing the following steps:
+
+.. Copy the `rootCA.pem` file from the mirror registry, for example, `<registry_path>/quay-rootCA`, to the {microshift-short} host at the `/etc/pki/ca-trust/source/anchors` directory.
+.. Enable the certificate in the system-wide trust store configuration by running the following command:
++
+[source,terminal]
+----
+$ sudo update-ca-trust
+----
+
+. Create the `/etc/containers/registries.conf.d/999-microshift-mirror.conf` configuration file that maps the Red Hat registry host names to the mirror registry:
++
+.Example mirror configuration file
+[source,terminal]
+----
+[[registry]]
+    prefix = ""
+    location = "<registry_host>:<port>" <1>
+    mirror-by-digest-only = true
+    insecure = false
+
+[[registry]]
+    prefix = ""
+    location = "quay.io"
+    mirror-by-digest-only = true
+[[registry.mirror]]
+    location = "<registry_host>:<port>"
+    insecure = false
+
+[[registry]]
+    prefix = ""
+    location = "registry.redhat.io"
+    mirror-by-digest-only = true
+[[registry.mirror]]
+    location = "<registry_host>:<port>"
+    insecure = false
+
+[[registry]]
+    prefix = ""
+    location = "registry.access.redhat.com"
+    mirror-by-digest-only = true
+[[registry.mirror]]
+    location = "<registry_host>:<port>"
+    insecure = false
+----
+<1> Replace `<registry_host>:<port>` with the host name and port of your mirror registry server, for example, `<microshift-quay:8443>`.
+
+. Enable the {microshift-short} service by running the following command:
++
+[source,terminal]
+----
+$ sudo systemctl enable microshift
+----
+
+. Reboot the host by running the following command:
++
+[source,terminal]
+----
+$ sudo reboot
+----

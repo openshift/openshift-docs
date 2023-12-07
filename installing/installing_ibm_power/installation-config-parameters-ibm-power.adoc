@@ -1,0 +1,12 @@
+:_mod-docs-content-type: ASSEMBLY
+[id="installation-config-parameters-ibm-power"]
+= Installation configuration parameters for {ibm-power-title}
+include::_attributes/common-attributes.adoc[]
+:context: installation-config-parameters-ibm-power
+:platform: IBM Power
+
+toc::[]
+
+Before you deploy an {product-title} cluster, you provide a customized `install-config.yaml` installation configuration file that describes the details for your environment.
+
+include::modules/installation-configuration-parameters.adoc[leveloffset=+1]

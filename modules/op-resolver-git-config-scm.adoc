@@ -1,0 +1,68 @@
+// This module is included in the following assembly:
+//
+// // *openshift_pipelines/remote-pipelines-tasks-resolvers.adoc
+
+:_mod-docs-content-type: PROCEDURE
+[id="resolver-git-config-scm_{context}"]
+= Configuring the Git resolver for the authenticated SCM API
+
+For the authenticated SCM API, you must set the configuration for the authenticated Git connection.
+
+You can use Git repository providers that are supported by the `go-scm` library. Not all `go-scm` implementations have been tested with the Git resolver, but the following providers are known to work:
+
+* `github.com` and GitHub Enterprise
+* `gitlab.com` and self-hosted Gitlab
+* Gitea
+* BitBucket Server
+* BitBucket Cloud
+
+[NOTE]
+====
+* You can configure only one Git connection using the authenticated SCM API for your cluster. This connection becomes available to all users of the cluster. All users of the cluster can access the repository using the security token that you configure for the connection.
+
+* If you configure the Git resolver to use the authenticated SCM API, you can also use anonymous Git clone references to retrieve pipelines and tasks.
+====
+
+
+.Procedure
+
+. To edit the `TektonConfig` custom resource, enter the following command:
++
+[source,terminal]
+----
+$ oc edit TektonConfig config
+----
+
+. In the `TektonConfig` custom resource, edit the `pipeline.git-resolver-config` spec:
++
+[source,yaml]
+----
+apiVersion: operator.tekton.dev/v1alpha1
+kind: TektonConfig
+metadata:
+  name: config
+spec:
+  pipeline:
+    git-resolver-config:
+      default-revision: main # <1>
+      fetch-timeout: 1m # <2>
+      scm-type: github # <3>
+      server-url: api.internal-github.com # <4>
+      api-token-secret-name: github-auth-secret # <5>
+      api-token-secret-key: github-auth-key # <6>
+      api-token-secret-namespace: github-auth-namespace # <7>
+      default-org: tektoncd # <8>
+----
+<1> The default Git revision to use if none is specified.
+<2> The maximum time any single Git clone resolution may take, for example, `1m`, `2s`, `700ms`. {pipelines-title} also enforces a global maximum timeout of 1 minute on all resolution requests.
+<3> The SCM provider type.
+<4> The base URL for use with the authenticated SCM API. This setting is not required if you are using `github.com`, `gitlab.com`, or BitBucket Cloud.
+<5> The name of the secret that contains the SCM provider API token.
+<6> The key within the token secret that contains the token.
+<7> The namespace containing the token secret, if not `default`.
+<8> Optional: The default organization for the repository, when using the authenticated API. This organization is used if you do not specify an organization in the resolver parameters.
+
+[NOTE]
+====
+The `scm-type`, `api-token-secret-name`, and `api-token-secret-key` settings are required to use the authenticated SCM API.
+====
