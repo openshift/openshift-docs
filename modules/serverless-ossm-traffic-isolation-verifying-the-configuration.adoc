@@ -1,0 +1,216 @@
+:_content-type: PROCEDURE
+[id="serverless-ossm-traffic-isolation-verifying-the-configuration_{context}"]
+= Verifying the configuration
+
+You can use the `curl` command to verify the configuration for network traffic isolation.
+
+[NOTE]
+====
+The following examples assume having two tenants, each having one namespace, and all part of the `ServiceMeshMemberRoll` object, configured with the resources in the `team-alpha.yaml` and `team-bravo.yaml` files.
+====
+
+.Procedure
+
+. Deploy Knative Services in the namespaces of both of the tenants:
++
+.Example command for `team-alpha`
+[source,terminal]
+----
+$ kn service create test-webapp -n team-alpha-1 \
+    --annotation-service serving.knative.openshift.io/enablePassthrough=true \
+    --annotation-revision sidecar.istio.io/inject=true \
+    --env RESPONSE="Hello Serverless" \
+    --image docker.io/openshift/hello-openshift
+----
++
+.Example command for `team-bravo`
+[source,terminal]
+----
+$ kn service create test-webapp -n team-bravo-1 \
+    --annotation-service serving.knative.openshift.io/enablePassthrough=true \
+    --annotation-revision sidecar.istio.io/inject=true \
+    --env RESPONSE="Hello Serverless" \
+    --image docker.io/openshift/hello-openshift
+----
++
+Alternatively, use the following YAML configuration:
++
+[source,yaml]
+----
+apiVersion: serving.knative.dev/v1
+kind: Service
+metadata:
+  name: test-webapp
+  namespace: team-alpha-1
+  annotations:
+    serving.knative.openshift.io/enablePassthrough: "true"
+spec:
+  template:
+    metadata:
+      annotations:
+        sidecar.istio.io/inject: 'true'
+    spec:
+      containers:
+        - image: docker.io/openshift/hello-openshift
+          env:
+            - name: RESPONSE
+              value: "Hello Serverless!"
+---
+apiVersion: serving.knative.dev/v1
+kind: Service
+metadata:
+  name: test-webapp
+  namespace: team-bravo-1
+  annotations:
+    serving.knative.openshift.io/enablePassthrough: "true"
+spec:
+  template:
+    metadata:
+      annotations:
+        sidecar.istio.io/inject: 'true'
+    spec:
+      containers:
+        - image: docker.io/openshift/hello-openshift
+          env:
+            - name: RESPONSE
+              value: "Hello Serverless!"
+----
+
+. Deploy a `curl` pod for testing the connections:
++
+[source,terminal]
+----
+$ cat <<EOF | oc apply -f -
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: curl
+  namespace: team-alpha-1
+  labels:
+    app: curl
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: curl
+  template:
+    metadata:
+      labels:
+        app: curl
+      annotations:
+        sidecar.istio.io/inject: 'true'
+    spec:
+      containers:
+      - name: curl
+        image: curlimages/curl
+        command:
+        - sleep
+        - "3600"
+EOF
+----
+
+. Verify the configuration by using the `curl` command.
++
+Test `team-alpha-1 -> team-alpha-1` through cluster local domain, which is allowed:
++
+.Example command
+[source,terminal]
+----
+$ oc exec deployment/curl -n team-alpha-1 -it -- curl -v http://test-webapp.team-alpha-1:80
+----
++
+.Example output
+[source,terminal]
+----
+HTTP/1.1 200 OK
+content-length: 18
+content-type: text/plain; charset=utf-8
+date: Wed, 26 Jul 2023 12:49:59 GMT
+server: envoy
+x-envoy-upstream-service-time: 9
+
+Hello Serverless!
+----
++
+Test the `team-alpha-1` to `team-alpha-1` connection through an external domain, which is allowed:
++
+.Example command
+[source,terminal]
+----
+$ EXTERNAL_URL=$(oc get ksvc -n team-alpha-1 test-webapp -o custom-columns=:.status.url --no-headers) && \
+oc exec deployment/curl -n team-alpha-1 -it -- curl -ik $EXTERNAL_URL
+----
++
+.Example output
+[source,terminal]
+----
+HTTP/2 200
+content-length: 18
+content-type: text/plain; charset=utf-8
+date: Wed, 26 Jul 2023 12:55:30 GMT
+server: istio-envoy
+x-envoy-upstream-service-time: 3629
+
+Hello Serverless!
+----
++
+Test the `team-alpha-1` to `team-bravo-1` connection through the cluster's local domain, which is not allowed:
++
+.Example command
+[source,terminal]
+----
+$ oc exec deployment/curl -n team-alpha-1 -it -- curl -v http://test-webapp.team-bravo-1:80
+----
++
+.Example output
+[source,terminal]
+----
+* processing: http://test-webapp.team-bravo-1:80
+*   Trying 172.30.73.216:80...
+* Connected to test-webapp.team-bravo-1 (172.30.73.216) port 80
+> GET / HTTP/1.1
+> Host: test-webapp.team-bravo-1
+> User-Agent: curl/8.2.0
+> Accept: */*
+>
+< HTTP/1.1 403 Forbidden
+< content-length: 19
+< content-type: text/plain
+< date: Wed, 26 Jul 2023 12:55:49 GMT
+< server: envoy
+< x-envoy-upstream-service-time: 6
+<
+* Connection #0 to host test-webapp.team-bravo-1 left intact
+RBAC: access denied
+----
++
+Test the `team-alpha-1` to `team-bravo-1` connection through an external domain, which is allowed:
++
+.Example command
+[source,terminal]
+----
+$ EXTERNAL_URL=$(oc get ksvc -n team-bravo-1 test-webapp -o custom-columns=:.status.url --no-headers) && \
+oc exec deployment/curl -n team-alpha-1 -it -- curl -ik $EXTERNAL_URL
+----
++
+.Example output
+[source,terminal]
+----
+HTTP/2 200
+content-length: 18
+content-type: text/plain; charset=utf-8
+date: Wed, 26 Jul 2023 12:56:22 GMT
+server: istio-envoy
+x-envoy-upstream-service-time: 2856
+
+Hello Serverless!
+----
+
+. Delete the resources that were created for verification:
++
+[source,terminal]
+----
+$ oc delete deployment/curl -n team-alpha-1 && \
+oc delete ksvc/test-webapp -n team-alpha-1 && \
+oc delete ksvc/test-webapp -n team-bravo-1
+----
