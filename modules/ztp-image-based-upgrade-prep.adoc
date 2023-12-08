@@ -1,0 +1,207 @@
+// Module included in the following assemblies:
+// Epic TELCOSTRAT-160 (4.15/4.16), story TELCODOCS-1576
+// * scalability_and_performance/ztp-talm-updating-managed-policies.adoc
+
+:_mod-docs-content-type: PROCEDURE
+[id="ztp-image-based-upgrade-prep_{context}"]
+= Preparing the {sno} cluster for the image-based upgrade
+
+When you deploy the {lcao} on a cluster, an `ImageBasedUpgrade` CR is automatically created.
+You edit this CR to specify the image repository of the seed image and to move through the different stages.
+
+.Prerequisites
+
+* Install {lcao} on the target cluster.
+* Generate a seed image from a compatible seed cluster.
+* Install the OADP Operator on the target cluster.
+* Create an S3-compatible storage solution and a ready-to-use bucket with proper credentials configured. For more information, see _Additional resources_.
+* Create a separate partition on the target cluster for the container images that is shared between stateroots. For more information about, see _Additional resources_.
+
+.Procedure
+
+This example procedure demonstrates how to back up and upgrade a cluster with applications which are using persistent volumes.
+
+[NOTE]
+====
+The target cluster does not need to be detached from the hub cluster.
+====
+
+. Create your OADP `Backup` and `Restore` CRs.
+
+.. Define the restore order for the OADP Operator in the `Restore` CR by using the `lca.openshift.io/apply-wave` field:
++
+[source,yaml]
+----
+apiVersion: velero.io/v1
+kind: Restore
+metadata:
+  name: restore-acm-klusterlet
+  namespace: openshift-adp
+  labels:
+    velero.io/storage-location: default
+  annotations:
+    lca.openshift.io/apply-wave: "1"
+spec:
+  backupName:
+    acm-klusterlet
+---
+apiVersion: velero.io/v1
+kind: Restore
+metadata:
+  name: restore-example-app
+  namespace: openshift-adp
+  labels:
+    velero.io/storage-location: default
+  annotations:
+    lca.openshift.io/apply-wave: "3"
+spec:
+  backupName:
+    example-app
+---
+apiVersion: velero.io/v1
+kind: Restore
+metadata:
+  name: restore-localvolume
+  namespace: openshift-adp
+  labels:
+    velero.io/storage-location: default
+  annotations:
+    lca.openshift.io/apply-wave: "2"
+spec:
+  backupName:
+    localvolume
+----
+
+.. Create a `kustomization.yaml` that will append the information to a new `ConfigMap`:
++
+[source,yaml]
+----
+configMapGenerator:
+- name: oadp-cm-example
+  namespace: openshift-adp
+  files:
+  - backup-acm-klusterlet.yaml
+  - backup-localvolume.yaml
+  - backup-example-app.yaml
+  - restore-acm-klusterlet.yaml
+  - restore-localvolume.yaml
+  - restore-example-app.yaml
+generatorOptions:
+  disableNameSuffixHash: true <1>
+----
+<1> Disables the hash generation at the end of the `ConfigMap` filename which allows the `ConfigMap` file to be overwritten when a new one is generated with the same name.
+
+.. Create the `ConfigMap`:
++
+[source,terminal]
+----
+$ kustomize build ./ -o oadp-cm-example.yaml
+----
++
+.Example output
+[source,terminal]
+----
+kind: ConfigMap
+metadata:
+  name: oadp-cm-example
+  namespace: openshift-adp
+[...]
+----
+
+.. Apply the `ConfigMap`:
++
+[source,terminal]
+----
+$ oc apply -f oadp-cm-example.yaml
+----
+
+. Edit the `ImageBasedUpgrade` CR:
++
+[source,yaml]
+----
+apiVersion: lca.openshift.io/v1alpha1
+kind: ImageBasedUpgrade
+metadata:
+  name: example-upgrade
+spec:
+  stage: Idle
+  seedImageRef:
+    version: 4.14.7 <1>
+    image: <seed_container_image> <2>
+    pullSecretRef: <seed_pull_secret> <3>
+  additionalImages:
+    name: ""
+    namespace: ""
+  autoRollbackOnFailure: {} <4>
+#    disabledForPostRebootConfig: "true" <5>
+#    disabledForUpgradeCompletion: "true" <6>
+#    disabledInitMonitor: "true" <7>
+#    initMonitorTimeoutSeconds: 1800 <8>
+#  extraManifests: <9>
+#  - name: sno-extra-manifests
+#    namespace: openshift-lifecycle-agent
+  oadpContent: <10>
+  - name: oadp-cm-example
+    namespace: openshift-adp
+----
+<1> Specify the target platform version. The value must match the version of the seed image.
+<2> Specify the repository where the target cluster can pull the seed image from.
+<3> Specify the reference to a secret with credentials to pull container images.
+<4> By default, automatic rollback on failure is enabled throughout the upgrade.
+<5> (Optional) Disables automatic rollback when the reconfiguration of the cluster fails upon the first reboot.
+<6> (Optional) Disables automatic rollback after the {lcao} reports a failed upgrade upon completion.
+<7> (Optional) Disables automatic rollback when the upgrade does not complete after reboot within the time frame specified in the `initMonitorTimeoutSeconds` field.
+<8> (Optional) Specifies the time frame in seconds. If not defined, the default value is `1800` seconds or 30 minutes.
+<9> (Optional) Specify the extra manifests to apply to the target cluster that are not part of the seed image.
+<10> Add the `oadpContent` section with the OADP `ConfigMap` information.
+
+. Change the value of the `stage` field to `Prep` in the `ImageBasedUpgrade` CR:
++
+[source,terminal]
+----
+$ oc patch imagebasedupgrades.lca.openshift.io example-upgrade -p='{"spec": {"stage": "Prep"}}' --type=merge -n openshift-lifecycle-agent
+----
+
++
+The {lcao} checks for the health of the cluster, creates a new `ostree` stateroot, and pulls the seed image to the target cluster.
+Then, the Operator precaches all the required images on the target cluster.
+
+// What else, if anything?
+
+.Verification
+
+. Check the status of the `ImageBasedUpgrade` CR.
++
+[source,terminal]
+----
+$ oc get ibu -A -oyaml
+----
+
++
+.Example output
+[source,yaml]
+----
+status:
+  conditions:
+  - lastTransitionTime: "2024-01-01T09:00:00Z"
+    message: In progress
+    observedGeneration: 2
+    reason: InProgress
+    status: "False"
+    type: Idle
+  - lastTransitionTime: "2024-01-01T09:00:00Z"
+    message: 'Prep completed: total: 121 (pulled: 1, skipped: 120, failed: 0)'
+    observedGeneration: 2
+    reason: Completed
+    status: "True"
+    type: PrepCompleted
+  - lastTransitionTime: "2024-01-01T09:00:00Z"
+    message: Prep completed
+    observedGeneration: 2
+    reason: Completed
+    status: "False"
+    type: PrepInProgress
+  observedGeneration: 2
+----
+
+// Troubleshooting?
