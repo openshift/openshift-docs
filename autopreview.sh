@@ -8,7 +8,31 @@ GREEN='\033[0;32m'
 YELLOW='\033[1;33m'
 NC='\033[0m' # No Color
 
-USERNAME=${TRAVIS_PULL_REQUEST_SLUG::-15}
+echo -e "${YELLOW}PR_BRANCH:${NC} ${TRAVIS_PULL_REQUEST_BRANCH}"
+echo -e "${YELLOW}BASE_REPO:${NC} ${TRAVIS_REPO_SLUG}"
+echo -e "${YELLOW}PR_NUMBER:${NC} ${TRAVIS_PULL_REQUEST}"
+echo -e "${YELLOW}BASE_REF:${NC} ${TRAVIS_BRANCH}"
+echo -e "${YELLOW}REPO_NAME:${NC} ${TRAVIS_PULL_REQUEST_SLUG}"
+echo -e "${YELLOW}SHA:${NC} ${TRAVIS_PULL_REQUEST_SHA}"
+
+USERNAME=${TRAVIS_PULL_REQUEST_SLUG}
+if [ ${#USERNAME} -ge 15 ]; then
+    USERNAME=${USERNAME::-15}
+else
+    USERNAME=""
+fi
+
+# Check if any of the variables are blank or TRAVIS_PULL_REQUEST_BRANCH is false
+if [ -z "${TRAVIS_PULL_REQUEST_BRANCH}" ] || [ "${TRAVIS_PULL_REQUEST_BRANCH}" == "false" ] || [ -z "${TRAVIS_REPO_SLUG}" ] || [ -z "${TRAVIS_PULL_REQUEST}" ] || [ -z "${TRAVIS_BRANCH}" ] || [ -z "${TRAVIS_PULL_REQUEST_SLUG}" ] || [ -z "${TRAVIS_PULL_REQUEST_SHA}" ]; then
+    echo -e "${RED}❌😬 One or more required variables are blank. Exiting the script.${NC}"
+    echo -e "${YELLOW}PR_BRANCH:${NC} ${TRAVIS_PULL_REQUEST_BRANCH}"
+    echo -e "${YELLOW}BASE_REPO:${NC} ${TRAVIS_REPO_SLUG}"
+    echo -e "${YELLOW}PR_NUMBER:${NC} ${TRAVIS_PULL_REQUEST}"
+    echo -e "${YELLOW}BASE_REF:${NC} ${TRAVIS_BRANCH}"
+    echo -e "${YELLOW}REPO_NAME:${NC} ${TRAVIS_PULL_REQUEST_SLUG}"
+    echo -e "${YELLOW}SHA:${NC} ${TRAVIS_PULL_REQUEST_SHA}"
+    exit 1
+fi
 
 if [[ "$USERNAME" == "openshift-cherrypick-robot" ]]; then
     echo -e "${YELLOW}🤖 PR by openshift-cherrypick-robot. Skipping the preview.${NC}"
