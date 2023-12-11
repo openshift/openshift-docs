@@ -1,0 +1,76 @@
+:_mod-docs-content-type: ASSEMBLY
+[id="microshift-update-options"]
+= Update options with {product-title} and {op-system-bundle}
+include::_attributes/attributes-microshift.adoc[]
+:context: microshift-update-options
+
+toc::[]
+
+You can update {op-system-ostree-first} or {op-system-base-full} with or without updating {product-title} as long as the two versions are compatible. See the following table for details:
+
+include::snippets/microshift-rhde-compatibility-table-snip.adoc[leveloffset=+1]
+
+*{product-title} update paths*
+
+* Generally Available Version 4.14.0 to 4.14.z on {op-system-ostree} 9.2
+* Generally Available Version 4.14.0 to 4.14.z on {op-system} 9.2
+
+[IMPORTANT]
+====
+Updates of {microshift-short} from one minor version to the next must be in sequence. For example, you cannot update from 4.14 to 4.16. You must update 4.14 to 4.15.
+====
+
+[id="microshift-update-options-standalone-updates_{context}"]
+== Standalone {microshift-short} updates
+
+You can update {microshift-short} without reinstalling the applications you created. {op-system} or {op-system-ostree} updates are also not required to update {microshift-short}, as long as the existing operating system is compatible with the new version of {microshift-short} that you want to use.
+
+{product-title} operates as an in-place update and does not require removal of the previous version. Data backups beyond those required for the usual functioning of your applications are also not required.
+
+[id="microshift-update-options-rpm-ostree-updates_{context}"]
+=== RPM-OSTree updates
+You can update {microshift-short} on an `rpm-ostree` system such as {op-system-ostree} by building a new image containing the new version of {microshift-short}. Ensure that the version of the operating system you want to use is compatible with the new version of {microshift-short} that you update to.
+
+The following features are available in the {op-system-ostree} update path:
+
+* The system automatically rolls back to a previous healthy system state if the update fails.
+* Applications do not need to be reinstalled.
+* You can update an application without updating {microshift-short} using this update type.
+* The image you build can contain other updates as needed.
+
+To begin a {microshift-short} update by embedding in a {op-system-ostree} image, use the procedures in the following documentation:
+
+* xref:../microshift_updating/microshift-update-rpms-ostree.adoc#microshift-update-rpms-ostree[Applying updates on an OSTree system]
+
+To understand more about Greenboot, see the following documentation:
+
+* xref:../microshift_install/microshift-greenboot.adoc#microshift-greenboot[The Greenboot health check]
+* xref:../microshift_running_apps/microshift-greenboot-workload-scripts.adoc#microshift-greenboot-workload-scripts[Greenboot workload health check scripts]
+
+[id="microshift-update-options-manual-rpm-updates_{context}"]
+=== Manual RPM updates
+You can update {microshift-short} manually on a non-OSTree system such as {op-system-base-full} by downloading and updating the RPMs. To complete this update type, use the subscription manager to access the repository containing the new RPMs. To begin a manual RPM update, use the procedures in the following documentation:
+
+* xref:../microshift_updating/microshift-update-rpms-manually.adoc#microshift-update-rpms-manually[About updating MicroShift RPMs manually]
+
+[id="microshift-update-options-standalone-rhel-updates_{context}"]
+== Standalone {op-system-ostree} updates
+You can update {op-system-ostree} or {op-system} without updating {microshift-short}, on the condition that the two versions are compatible. Check compatibilities before beginning an update. Use the {op-system-ostree} documentation specific to your update path.
+
+//additional resources for updating RHEL alone
+[role="_additional-resources"]
+.Additional resources
+* link:https://access.redhat.com/documentation/en-us/red_hat_enterprise_linux/9/html/composing_installing_and_managing_rhel_for_edge_images/index[Managing RHEL for Edge images]
+
+[id="microshift-update-options-simultaneous-microshift-rhel-updates_{context}"]
+== Simultaneous {microshift-short} and operating system updates
+You can update {op-system-ostree} or {op-system} and update {microshift-short} at the same time, on the condition that the versions are compatible. Check for compatibility before beginning an update. First use the {op-system-ostree} documentation specific to your update path to plan and update the operating system. Then use the {microshift-short} update type specific to your update path.
+
+//additional resources for updating RHEL and MicroShift
+[role="_additional-resources"]
+.Additional resources
+* link:https://access.redhat.com/documentation/en-us/red_hat_enterprise_linux/9/html/composing_installing_and_managing_rhel_for_edge_images/index[Managing RHEL for Edge images]
+* xref:../microshift_updating/microshift-update-rpms-ostree.adoc#microshift-update-rpms-ostree[Applying updates on an OSTree system]
+* xref:../microshift_updating/microshift-update-rpms-manually.adoc#microshift-update-rpms-manually[Applying updates manually with RPMs]
+* xref:../microshift_install/microshift-greenboot.adoc#microshift-greenboot[The Greenboot system health check]
+* xref:../microshift_running_apps/microshift-greenboot-workload-scripts.adoc#microshift-greenboot-workload-scripts[Greenboot workload scripts]

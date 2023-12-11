@@ -1,0 +1,41 @@
+:_mod-docs-content-type: ASSEMBLY
+[id="virt-connecting-vm-to-ovn-secondary-network"]
+= Connecting a virtual machine to an OVN-Kubernetes secondary network
+include::_attributes/common-attributes.adoc[]
+:context: virt-connecting-vm-to-ovn-secondary-network
+
+toc::[]
+
+You can connect a virtual machine (VM) to an Open Virtual Network (OVN)-Kubernetes secondary network. The OVN-Kubernetes Container Network Interface (CNI) plug-in uses the Geneve (Generic Network Virtualization Encapsulation) protocol to create an overlay network between nodes.
+
+{VirtProductName} currently supports the flat layer 2 topology. This topology connects workloads by a cluster-wide logical switch. You can use this overlay network to connect VMs on different nodes, without having to configure any additional physical networking infrastructure.
+
+To configure an OVN-Kubernetes secondary network and attach a VM to that network, perform the following steps:
+
+. Create a network attachment definition (NAD) by using the web console or the xref:../../virt/vm_networking/virt-connecting-vm-to-ovn-secondary-network.adoc#virt-creating-layer2-nad-cli_virt-connecting-vm-to-ovn-secondary-network[CLI].
+
+. Add information about the secondary network interface to the VM specification by using the web console or the xref:../../virt/vm_networking/virt-connecting-vm-to-ovn-secondary-network.adoc#virt-attaching-vm-to-ovn-secondary-nw-cli_virt-connecting-vm-to-ovn-secondary-network[CLI].
+
+[id="creating-ovn-layer2-nad"]
+== Creating an OVN-Kubernetes NAD
+
+You can create an OVN-Kubernetes flat layer 2 network attachment definition (NAD) by using the {product-title} web console or the CLI.
+
+[NOTE]
+====
+Configuring IP address management (IPAM) in a network attachment definition for virtual machines is not supported.
+====
+
+include::modules/virt-creating-layer2-nad-cli.adoc[leveloffset=+2]
+
+[id="attaching-vm-to-ovn-secondary-nw"]
+== Attaching a virtual machine to the OVN-Kubernetes secondary network
+
+You can attach a virtual machine (VM) to the OVN-Kubernetes secondary network interface by using the {product-title} web console or the CLI.
+
+include::modules/virt-attaching-vm-to-ovn-secondary-nw-cli.adoc[leveloffset=+2]
+
+[role="_additional-resources"]
+[id="additional-resources_virt-connecting-vm-to-ovn-secondary-network"]
+== Additional resources
+* xref:../../networking/multiple_networks/configuring-additional-network.adoc#configuration-ovnk-additional-networks_configuring-additional-network[Configuration for an OVN-Kubernetes additional network]

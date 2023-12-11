@@ -22,7 +22,7 @@ if [[ "$TRAVIS_PULL_REQUEST" ]]; then
     send_request=false
 
     for file in $modified_files; do
-        if [[ $file == *.adoc || $file == "_topic_map.yml" || $file == "_distro_map.yml" ]]; then
+        if [[ $file == *.adoc || $file == "_topic_map.yml" || $file == "_distro_map.yml" || $file == "_topic_maps/"* ]]; then
             send_request=true
             break
         fi
