@@ -51,7 +51,7 @@ EOF
                 echo -e "${YELLOW}$json_data${NC}"
                 exit 1
             else
-                echo -e "${GREEN}✅🥳 $response${NC}"
+                echo -e "Green${GREEN}✅🥳 $response${NC}"
             fi
         else
             echo -e "${RED}❌😬 Curl request failed: $response${NC}"
