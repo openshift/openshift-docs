@@ -1,0 +1,41 @@
+// Module included in the following assemblies:
+//
+// * telco_ref_design_specs/ran/telco-ran-ref-du-components.adoc
+
+:_mod-docs-content-type: REFERENCE
+[id="telco-ran-bios-tuning_{context}"]
+= Host firmware tuning
+
+New in this release::
+* No reference design updates in this release
+
+Description::
+Configure system level performance.
+See link:https://docs.openshift.com/container-platform/latest/scalability_and_performance/ztp_far_edge/ztp-reference-cluster-configuration-for-vdu.html#ztp-du-configuring-host-firmware-requirements_sno-configure-for-vdu[Configuring host firmware for low latency and high performance] for recommended settings.
++
+If Ironic inspection is enabled, the firmware setting values are available from the per-cluster `BareMetalHost` CR on the hub cluster.
+You enable Ironic inspection with a label in the `spec.clusters.nodes` field in the `SiteConfig` CR that you use to install the cluster.
+For example:
++
+[source,yaml]
+----
+nodes:
+  - hostName: "example-node1.example.com"
+    ironicInspect: "enabled"
+----
++
+[NOTE]
+====
+The {rds} reference `SiteConfig` does not enable the `ironicInspect` field by default.
+====
+
+Limits and requirements::
+* Hyperthreading must be enabled
+
+Engineering considerations::
+* Tune all settings for maximum performance
++
+[NOTE]
+====
+You can tune firmware selections for power savings at the expense of performance as required.
+====

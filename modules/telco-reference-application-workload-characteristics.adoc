@@ -1,0 +1,32 @@
+// Module included in the following assemblies:
+//
+// * telco_ref_design_specs/ran/telco-ran-du-overview.adoc
+
+:_mod-docs-content-type: REFERENCE
+[id="telco-reference-application-workload-characteristics_{context}"]
+= {rds-caps} representative reference application workload characteristics
+
+The representative reference application workload has the following characteristics:
+
+* Has a maximum of 15 pods and 30 containers for the vRAN application including its management and control functions
+
+* Uses a maximum of 2 `ConfigMap` and 4 `Secret` CRs per pod
+
+* Uses a maximum of 10 exec probes with a frequency of not less than 10 seconds
+
+* Incremental application load on the `kube-apiserver` is less than 10% of the cluster platform usage
++
+[NOTE]
+====
+You can extract CPU load can from the platform metrics.
+For example:
+
+[source,text]
+----
+query=avg_over_time(pod:container_cpu_usage:sum{namespace="openshift-kube-apiserver"}[30m])
+----
+====
+
+* Application logs are not collected by the platform log collector
+
+* Aggregate traffic on the primary CNI is less than 1 MBps
