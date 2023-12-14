@@ -1,0 +1,18 @@
+// Module included in the following assemblies:
+//
+// *
+
+:_mod-docs-content-type: REFERENCE
+[id="storage-crs_{context}"]
+= Storage reference CRs
+
+.Storage CRs
+[cols="4*", options="header", format=csv]
+|====
+Component,Reference CR,Optional,New in this release
+External ODF configuration,xref:../../telco_ref_design_specs/core/telco-core-ref-crs.adoc#telco-core-odfns-yaml[odfNS.yaml],No,No
+External ODF configuration,xref:../../telco_ref_design_specs/core/telco-core-ref-crs.adoc#telco-core-odfopergroup-yaml[odfOperGroup.yaml],No,No
+External ODF configuration,xref:../../telco_ref_design_specs/core/telco-core-ref-crs.adoc#telco-core-odfsubscription-yaml[odfSubscription.yaml],No,No
+External ODF configuration,xref:../../telco_ref_design_specs/core/telco-core-ref-crs.adoc#telco-core-01-rook-ceph-external-cluster-details.secret-yaml[01-rook-ceph-external-cluster-details.secret.yaml],No,No
+External ODF configuration,xref:../../telco_ref_design_specs/core/telco-core-ref-crs.adoc#telco-core-02-ocs-external-storagecluster-yaml[02-ocs-external-storagecluster.yaml],No,No
+|====
