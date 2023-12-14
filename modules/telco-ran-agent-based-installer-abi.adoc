@@ -1,0 +1,34 @@
+// Module included in the following assemblies:
+//
+// * telco_ref_design_specs/ran/telco-ran-ref-du-components.adoc
+
+:_mod-docs-content-type: REFERENCE
+[id="telco-ran-agent-based-installer-abi_{context}"]
+= Agent-based installer
+
+New in this release::
+* No reference design updates in this release
+
+Description::
+Agent-based installer (ABI) provides installation capabilities without centralized infrastructure.
+The installation program creates an ISO image that you mount to the server.
+When the server boots it installs {product-title} and supplied extra manifests.
++
+[NOTE]
+====
+You can also use ABI to install {product-title} clusters without a hub cluster.
+An image registry is still required when you use ABI in this manner.
+====
+
+Agent-based installer (ABI) is an optional component.
+
+Limits and requirements::
+* You can supply a limited set of additional manifests at installation time.
+
+* You must include `MachineConfiguration` CRs that are required by the RAN DU use case.
+
+Engineering considerations::
+
+* ABI provides a baseline {product-title} installation.
+
+* You install Day 2 Operators and the remainder of the RAN DU use case configurations after installation.
