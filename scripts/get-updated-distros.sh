@@ -1,5 +1,4 @@
 #!/bin/bash
-
 # Returns a list of updated _topic_map.yml files.
 # The list includes any topic maps that are themselves modified, and indirectly modifed topic maps where incldued AsciiDoc files have been updated.
 
@@ -12,12 +11,12 @@ REPO_PATH=$(git rev-parse --show-toplevel)
 DISTROS=()
 
 # Get the modules in the PR, search for assemblies that include them, and concat with any updated assemblies files
-
 MODULES=$(echo "$FILES" | awk '/modules\/(.*)\.adoc/')
 if [ "${MODULES}" ]
 then
     # $UPDATED_ASSEMBLIES is the list of assemblies that contains changed modules
     UPDATED_ASSEMBLIES=$(grep -rnwl "$REPO_PATH" --include=\*.adoc --exclude-dir={snippets,modules} -e "$MODULES")
+
     # Exit 0 if there are no modified assemblies
     if [[ -z "${UPDATED_ASSEMBLIES}" ]]
     then
@@ -26,6 +25,7 @@ then
     # Subtract $REPO_PATH from path with bash substring replacement
     UPDATED_ASSEMBLIES=${UPDATED_ASSEMBLIES//"$REPO_PATH/"/}
 fi
+
 # ASSEMBLIES is the list of modifed assemblies
 ASSEMBLIES=$(echo "$FILES" | awk '!/modules\/(.*)\.adoc/')
 # Concatenate both lists and remove dupe entries
@@ -37,7 +37,7 @@ for ASSEMBLY in $ALL_ASSEMBLIES; do
     PAGE="File: $(basename "$ASSEMBLY" .adoc)"
     # Don't include the assembly if it is not in a topic map
     if grep -rq "$PAGE" --include "*.yml" _topic_maps ; then
-        DISTROS+=("$(grep -rl "$PAGE" --include "*.yml" _topic_maps)")
+        DISTROS+=("$(grep -rl "$PAGE" _topic_maps/*.yml)")
     fi
 done
 

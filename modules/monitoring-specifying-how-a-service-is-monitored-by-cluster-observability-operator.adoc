@@ -1,0 +1,71 @@
+// Module included in the following assemblies:
+//
+// monitoring/cluster-observability-operator/configuring-the-cluster-observability-operator-to-monitor-a-service.adoc
+
+:_mod-docs-content-type: PROCEDURE
+[id="specifying-how-a-service-is-monitored-by-cluster-observability-operator_{context}"]
+= Specifying how a service is monitored by Cluster Observability Operator
+
+To use the metrics exposed by the sample service you created in the "Deploying a sample service for Cluster Observability Operator" section, you must configure monitoring components to scrape metrics from the `/metrics` endpoint. 
+
+You can create this configuration by using a `ServiceMonitor` object that specifies how the service is to be monitored, or a `PodMonitor` object that specifies how a pod is to be monitored. 
+The `ServiceMonitor` object requires a `Service` object. The `PodMonitor` object does not, which enables the `MonitoringStack` object to scrape metrics directly from the metrics endpoint exposed by a pod.
+
+This procedure shows how to create a `ServiceMonitor` object for a sample service named `prometheus-coo-example-app` in the `ns1-coo` namespace.
+
+.Prerequisites
+
+* You have access to the cluster as a user with the `cluster-admin` cluster role or as a user with administrative permissions for the namespace.
+* You have installed the Cluster Observability Operator.
+* You have deployed the `prometheus-coo-example-app` sample service in the `ns1-coo` namespace.
++
+[NOTE]
+====
+The `prometheus-coo-example-app` sample service does not support TLS authentication. 
+====
+
+.Procedure
+
+. Create a YAML file named `example-coo-app-service-monitor.yaml` that contains the following `ServiceMonitor` object configuration details:
++
+[source,yaml]
+----
+apiVersion: monitoring.rhobs/v1alpha1
+kind: ServiceMonitor
+metadata:
+  labels:
+    k8s-app: prometheus-coo-example-monitor
+  name: prometheus-coo-example-monitor
+  namespace: ns1-coo
+spec:
+  endpoints:
+  - interval: 30s
+    port: web
+    scheme: http
+  selector:
+    matchLabels:
+      app: prometheus-coo-example-app
+----
++
+This configuration defines a `ServiceMonitor` object that the `MonitoringStack` object will reference to scrape the metrics data exposed by the `prometheus-coo-example-app` sample service.
+
+. Apply the configuration to the cluster by running the following command:
++
+[source,terminal]
+----
+$ oc apply -f example-app-service-monitor.yaml
+----
+
+. Verify that the `ServiceMonitor` resource is created by running the following command and observing the output:
++
+[source,terminal]
+----
+$ oc -n ns1-coo get servicemonitor
+----
++
+.Example output
+[source,terminal]
+----
+NAME                         AGE
+prometheus-coo-example-monitor   81m
+----
