@@ -40,7 +40,7 @@ class CustomHtml5Converter < (Asciidoctor::Converter.for 'html5')
   # so placing an edit button at the top encompasses a whole-page
   # edit
   def convert_embedded node
-    parent_output = super node
+    parent_output = super
     if @show_edit_button && node.source_location.nil?
       %(<div class="edit-page-button edit-button">
     <a href="https://github.com/#{ @github_repo }/edit/#{ @branch_name }/#{ node.attributes["repo_path"] }" target="_blank">
@@ -57,21 +57,20 @@ class CustomHtml5Converter < (Asciidoctor::Converter.for 'html5')
   # for content such as "snippets", etc. and focuses primarily
   # on modules
   def convert_section node
-    parent_output = super node
+    parent_output = super
     if @show_edit_button && node.source_location
       file_path = node.source_location.path.include?("modules") ? node.source_location.path : node.source_location.file.sub(node.source_location.dir + "/", "")
 
       if @seen_files.empty? || !@seen_files.include?(file_path)
         @seen_files << file_path
-        %(<div class="edit-section-button edit-button">
+        return %(<div class="edit-section-button edit-button">
     <a href="https://github.com/#{ @github_repo }/edit/#{ @branch_name }/#{ file_path }" target="_blank">
       <span class="material-icons-outlined" title="Suggest a section edit">edit</span>
     </a>
   </div>
   #{ parent_output })
-        end
-    else
-      parent_output
+      end
     end
+    parent_output
   end
 end
