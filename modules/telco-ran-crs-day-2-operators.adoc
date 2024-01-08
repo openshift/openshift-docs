@@ -1,0 +1,42 @@
+// Module included in the following assemblies:
+//
+// * telco_ref_design_specs/ran/telco-ran-ref-du-crs.adoc
+
+:_mod-docs-content-type: REFERENCE
+[id="day-2-operators-crs_{context}"]
+= Day 2 Operators reference CRs
+
+.Day 2 Operators CRs
+[cols="4*", options="header", format=csv]
+|====
+Component,Reference CR,Optional,New in this release
+Cluster logging,xref:../../telco_ref_design_specs/ran/telco-ran-ref-du-crs.adoc#ztp-clusterlogforwarder-yaml[ClusterLogForwarder.yaml],No,No
+Cluster logging,xref:../../telco_ref_design_specs/ran/telco-ran-ref-du-crs.adoc#ztp-clusterlogging-yaml[ClusterLogging.yaml],No,No
+Cluster logging,xref:../../telco_ref_design_specs/ran/telco-ran-ref-du-crs.adoc#ztp-clusterlogns-yaml[ClusterLogNS.yaml],No,No
+Cluster logging,xref:../../telco_ref_design_specs/ran/telco-ran-ref-du-crs.adoc#ztp-clusterlogopergroup-yaml[ClusterLogOperGroup.yaml],No,No
+Cluster logging,xref:../../telco_ref_design_specs/ran/telco-ran-ref-du-crs.adoc#ztp-clusterlogsubscription-yaml[ClusterLogSubscription.yaml],No,No
+Local Storage Operator,xref:../../telco_ref_design_specs/ran/telco-ran-ref-du-crs.adoc#ztp-storageclass-yaml[StorageClass.yaml],Yes,No
+Local Storage Operator,xref:../../telco_ref_design_specs/ran/telco-ran-ref-du-crs.adoc#ztp-storagelv-yaml[StorageLV.yaml],Yes,No
+Local Storage Operator,xref:../../telco_ref_design_specs/ran/telco-ran-ref-du-crs.adoc#ztp-storagens-yaml[StorageNS.yaml],Yes,No
+Local Storage Operator,xref:../../telco_ref_design_specs/ran/telco-ran-ref-du-crs.adoc#ztp-storageopergroup-yaml[StorageOperGroup.yaml],Yes,No
+Local Storage Operator,xref:../../telco_ref_design_specs/ran/telco-ran-ref-du-crs.adoc#ztp-storagesubscription-yaml[StorageSubscription.yaml],Yes,No
+Node Tuning Operator,xref:../../telco_ref_design_specs/ran/telco-ran-ref-du-crs.adoc#ztp-performanceprofile-yaml[PerformanceProfile.yaml],No,No
+Node Tuning Operator,xref:../../telco_ref_design_specs/ran/telco-ran-ref-du-crs.adoc#ztp-tunedperformancepatch-yaml[TunedPerformancePatch.yaml],No,No
+PTP fast event notifications,xref:../../telco_ref_design_specs/ran/telco-ran-ref-du-crs.adoc#ztp-ptpoperatorconfigforevent-yaml[PtpOperatorConfigForEvent.yaml],Yes,No
+PTP Operator,xref:../../telco_ref_design_specs/ran/telco-ran-ref-du-crs.adoc#ztp-ptpconfigboundary-yaml[PtpConfigBoundary.yaml],No,No
+PTP Operator,xref:../../telco_ref_design_specs/ran/telco-ran-ref-du-crs.adoc#ztp-ptpconfiggmwpc-yaml[PtpConfigGmWpc.yaml],No,Yes
+PTP Operator,xref:../../telco_ref_design_specs/ran/telco-ran-ref-du-crs.adoc#ztp-ptpconfigslave-yaml[PtpConfigSlave.yaml],No,No
+PTP Operator,xref:../../telco_ref_design_specs/ran/telco-ran-ref-du-crs.adoc#ztp-ptpsubscription-yaml[PtpSubscription.yaml],No,No
+PTP Operator,xref:../../telco_ref_design_specs/ran/telco-ran-ref-du-crs.adoc#ztp-ptpsubscriptionns-yaml[PtpSubscriptionNS.yaml],No,No
+PTP Operator,xref:../../telco_ref_design_specs/ran/telco-ran-ref-du-crs.adoc#ztp-ptpsubscriptionopergroup-yaml[PtpSubscriptionOperGroup.yaml],No,No
+SR-IOV FEC Operator,xref:../../telco_ref_design_specs/ran/telco-ran-ref-du-crs.adoc#ztp-acceleratorsns-yaml[AcceleratorsNS.yaml],Yes,No
+SR-IOV FEC Operator,xref:../../telco_ref_design_specs/ran/telco-ran-ref-du-crs.adoc#ztp-acceleratorsopergroup-yaml[AcceleratorsOperGroup.yaml],Yes,No
+SR-IOV FEC Operator,xref:../../telco_ref_design_specs/ran/telco-ran-ref-du-crs.adoc#ztp-acceleratorssubscription-yaml[AcceleratorsSubscription.yaml],Yes,No
+SR-IOV FEC Operator,xref:../../telco_ref_design_specs/ran/telco-ran-ref-du-crs.adoc#ztp-sriovfecclusterconfig-yaml[SriovFecClusterConfig.yaml],Yes,No
+SR-IOV Operator,xref:../../telco_ref_design_specs/ran/telco-ran-ref-du-crs.adoc#ztp-sriovnetwork-yaml[SriovNetwork.yaml],No,No
+SR-IOV Operator,xref:../../telco_ref_design_specs/ran/telco-ran-ref-du-crs.adoc#ztp-sriovnetworknodepolicy-yaml[SriovNetworkNodePolicy.yaml],No,No
+SR-IOV Operator,xref:../../telco_ref_design_specs/ran/telco-ran-ref-du-crs.adoc#ztp-sriovoperatorconfig-yaml[SriovOperatorConfig.yaml],No,No
+SR-IOV Operator,xref:../../telco_ref_design_specs/ran/telco-ran-ref-du-crs.adoc#ztp-sriovsubscription-yaml[SriovSubscription.yaml],No,No
+SR-IOV Operator,xref:../../telco_ref_design_specs/ran/telco-ran-ref-du-crs.adoc#ztp-sriovsubscriptionns-yaml[SriovSubscriptionNS.yaml],No,No
+SR-IOV Operator,xref:../../telco_ref_design_specs/ran/telco-ran-ref-du-crs.adoc#ztp-sriovsubscriptionopergroup-yaml[SriovSubscriptionOperGroup.yaml],No,No
+|====

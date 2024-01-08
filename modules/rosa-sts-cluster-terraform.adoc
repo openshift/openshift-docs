@@ -1,0 +1,422 @@
+// Module included in the following assemblies:
+//
+// * rosa_install_access_delete_clusters/rosa-sts-creating-a-cluster-quickly-terraform.adoc
+//
+ifeval::["{context}" == "rosa-sts-creating-a-cluster-quickly-terraform"]
+:tf-defaults:
+endif::[]
+:_content-type: PROCEDURE
+
+[id="rosa-sts-cluster-terraform_{context}"]
+= Creating your ROSA cluster with Terraform
+
+The following Terraform cluster example shows how to create your account-wide IAM roles and a ROSA cluster with a managed OIDC configuration.
+
+.Procedure
+. Optional: Because the Terraform files that are created in your current directory during this procedure, you can create a new directory to store these files.
+
+.. To create and navigate into a new directory, run the following command:
++
+[source,terminal]
+----
+$ mkdir terraform-cluster && cd terraform-cluster
+----
+
+. You can grant permissions to your account by using link:https://console.redhat.com/openshift/token[an offline {cluster-manager-first} token].
+
+.. Set the token as a variable by running the following command:
++
+[source,terminal]
+----
+$ export RHCS_TOKEN=<your_offline_token>
+----
+
+.. After you export your token, verify the value by running the following command:
++
+[source,terminal]
+----
+$ echo $RHCS_TOKEN
+----
+
+. Create the Terraform files locally by using the following code templates:
+.. Create the `account-roles.tf` file by running the following command:
++
+[source,terminal]
+----
+$ cat<<-EOF>account-roles.tf
+data "rhcs_policies" "all_policies" {}
+
+data "rhcs_versions" "all" {}
+
+module "create_account_roles" {
+  source  = "terraform-redhat/rosa-sts/aws"
+  version = ">=0.0.15"
+
+  create_account_roles  = true
+  create_operator_roles = false
+
+  account_role_prefix    = local.cluster_name
+  path                   = var.path
+  rosa_openshift_version = regex("^[0-9]+\\\\.[0-9]+", var.rosa_openshift_version)
+  account_role_policies  = data.rhcs_policies.all_policies.account_role_policies
+  all_versions           = data.rhcs_versions.all
+  operator_role_policies = data.rhcs_policies.all_policies.operator_role_policies
+  tags                   = var.additional_tags
+}
+
+resource "time_sleep" "wait_10_seconds" {
+  depends_on = [module.create_account_roles]
+
+  create_duration = "10s"
+}
+EOF
+----
+
+.. Create the `main.tf` file by running the following command:
++
+[source,terminal]
+----
+$ cat<<-EOF>main.tf
+#
+# Copyright (c) 2023 Red Hat, Inc.
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#   http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+#
+
+terraform {
+  required_providers {
+    aws = {
+      source  = "hashicorp/aws"
+      version = ">= 4.20.0"
+    }
+    rhcs = {
+      version = ">= 1.4.1"
+      source  = "terraform-redhat/rhcs"
+    }
+  }
+}
+
+# Export token using the RHCS_TOKEN environment variable
+provider "rhcs" {}
+
+provider "aws" {
+  region = var.aws_region
+  ignore_tags {
+    key_prefixes = ["kubernetes.io/"]
+  }
+}
+
+data "aws_availability_zones" "available" {}
+
+locals {
+  # Extract availability zone names for the specified region, limit it to 1
+  region_azs = slice([for zone in data.aws_availability_zones.available.names : format("%s", zone)], 0, 1)
+}
+
+resource "random_string" "random_name" {
+  length           = 6
+  special          = false
+  upper            = false
+}
+
+locals {
+  path = coalesce(var.path, "/")
+  sts_roles = {
+    role_arn         = "arn:aws:iam::\${data.aws_caller_identity.current.account_id}:role\${local.path}\${local.cluster_name}-Installer-Role",
+    support_role_arn = "arn:aws:iam::\${data.aws_caller_identity.current.account_id}:role\${local.path}\${local.cluster_name}-Support-Role",
+    instance_iam_roles = {
+      master_role_arn = "arn:aws:iam::\${data.aws_caller_identity.current.account_id}:role\${local.path}\${local.cluster_name}-ControlPlane-Role",
+      worker_role_arn = "arn:aws:iam::\${data.aws_caller_identity.current.account_id}:role\${local.path}\${local.cluster_name}-Worker-Role"
+    },
+    operator_role_prefix = local.cluster_name,
+    oidc_config_id       = rhcs_rosa_oidc_config.oidc_config.id
+  }
+  worker_node_replicas = coalesce(var.worker_node_replicas, 2)
+  # If cluster_name is not null, use that, otherwise generate a random cluster name
+  cluster_name = coalesce(var.cluster_name, "rosa-\${random_string.random_name.result}")
+}
+
+data "aws_caller_identity" "current" {
+}
+
+resource "rhcs_cluster_rosa_classic" "rosa_sts_cluster" {
+  name                 = local.cluster_name
+  cloud_region         = var.aws_region
+  multi_az             = false
+  aws_account_id       = data.aws_caller_identity.current.account_id
+  availability_zones   = ["us-east-1a"]
+  tags                 = var.additional_tags
+  version              = var.rosa_openshift_version
+  compute_machine_type = var.machine_type
+  replicas             = local.worker_node_replicas
+  autoscaling_enabled  = false
+  sts                  = local.sts_roles
+  properties = {
+    rosa_creator_arn = data.aws_caller_identity.current.arn
+  }
+  machine_cidr     = var.vpc_cidr_block
+
+  lifecycle {
+    precondition {
+      condition     = can(regex("^[a-z][-a-z0-9]{0,13}[a-z0-9]\$", local.cluster_name))
+      error_message = "ROSA cluster name must be less than 16 characters, be lower case alphanumeric, with only hyphens."
+    }
+  }
+
+  depends_on = [time_sleep.wait_10_seconds]
+}
+
+resource "rhcs_cluster_wait" "wait_for_cluster_build" {
+  cluster = rhcs_cluster_rosa_classic.rosa_sts_cluster.id
+  # timeout in minutes
+  timeout = 60
+}
+EOF
+----
+
+.. Create the `oidc-provider.tf` file by running the following command:
++
+[source,terminal]
+----
+$ cat<<-EOF>oidc-provider.tf
+resource "rhcs_rosa_oidc_config" "oidc_config" {
+  managed = true
+}
+
+data "rhcs_rosa_operator_roles" "operator_roles" {
+  operator_role_prefix = local.cluster_name
+  account_role_prefix  = local.cluster_name
+}
+
+module "oidc_provider" {
+  source  = "terraform-redhat/rosa-sts/aws"
+  version = "0.0.15"
+
+  create_operator_roles = false
+  create_oidc_provider  = true
+
+  cluster_id                  = ""
+  rh_oidc_provider_thumbprint = rhcs_rosa_oidc_config.oidc_config.thumbprint
+  rh_oidc_provider_url        = rhcs_rosa_oidc_config.oidc_config.oidc_endpoint_url
+  tags                        = var.additional_tags
+  path                        = var.path
+}
+EOF
+----
+
+.. Create the `operator-roles.tf` file by running the following command:
++
+[source,terminal]
+----
+$ cat<<-EOF>operator-roles.tf
+module "operator_roles" {
+  source  = "terraform-redhat/rosa-sts/aws"
+  version = "0.0.15"
+
+  create_operator_roles = true
+  create_oidc_provider  = false
+
+  rh_oidc_provider_thumbprint = rhcs_rosa_oidc_config.oidc_config.thumbprint
+  rh_oidc_provider_url        = rhcs_rosa_oidc_config.oidc_config.oidc_endpoint_url
+  operator_roles_properties   = data.rhcs_rosa_operator_roles.operator_roles.operator_iam_roles
+  tags                        = var.additional_tags
+  path                        = var.path
+}
+EOF
+----
+
+.. Create the `variables.tf` file by running the following command:
++
+[source,terminal]
+----
+$ cat<<-EOF>variables.tf
+variable "rosa_openshift_version" {
+  type        = string
+  default     = "4.14.2"
+  description = "Desired version of OpenShift for the cluster, for example '4.14.2'. If version is greater than the currently running version, an upgrade will be scheduled."
+}
+
+variable "account_role_policies" {
+  description = "account role policies details for account roles creation"
+  type = object({
+    sts_installer_permission_policy             = string
+    sts_support_permission_policy               = string
+    sts_instance_worker_permission_policy       = string
+    sts_instance_controlplane_permission_policy = string
+  })
+  default = null
+}
+
+variable "operator_role_policies" {
+  description = "operator role policies details for operator roles creation"
+  type = object({
+    openshift_cloud_credential_operator_cloud_credential_operator_iam_ro_creds_policy = string
+    openshift_cloud_network_config_controller_cloud_credentials_policy                = string
+    openshift_cluster_csi_drivers_ebs_cloud_credentials_policy                        = string
+    openshift_image_registry_installer_cloud_credentials_policy                       = string
+    openshift_ingress_operator_cloud_credentials_policy                               = string
+    openshift_machine_api_aws_cloud_credentials_policy                                = string
+  })
+  default = null
+}
+
+# ROSA Cluster info
+variable "cluster_name" {
+  default     = null
+  type        = string
+  description = "Provide the name of your ROSA cluster."
+}
+
+variable "additional_tags" {
+  default = {
+    Terraform   = "true"
+  }
+  description = "Additional AWS resource tags"
+  type        = map(string)
+}
+
+variable "path" {
+  description = "(Optional) The arn path for the account/operator roles as well as their policies."
+  type        = string
+  default     = null
+}
+
+variable "machine_type" {
+  description = "The AWS instance type used for your default worker pool."
+  type        = string
+  default     = "m5.xlarge"
+}
+
+variable "worker_node_replicas" {
+  default     = 2
+  description = "Number of worker nodes to provision. Single zone clusters need at least 2 nodes, multizone clusters need at least 3 nodes"
+  type        = number
+}
+
+variable "autoscaling_enabled" {
+  description = "Enables autoscaling. This variable requires you to set a maximum and minimum replicas range using the 'max_replicas' and 'min_replicas' variables. If the autoscaling_enabled is 'true', you cannot configure the worker_node_replicas."
+  type        = string
+  default     = "false"
+}
+
+#VPC Info
+variable "vpc_cidr_block" {
+  type        = string
+  description = "The value of the IP address block for machines or cluster nodes for the VPC."
+  default     = "10.0.0.0/16"
+}
+
+#AWS Info
+variable "aws_region" {
+  type    = string
+  default = "us-east-1"
+}
+EOF
+----
+
+. To set up Terraform to create your resources based on your Terraform files, run the following command:
++
+[source,terminal]
+----
+$ terraform init
+----
+
+. Optional: Verify that the Terraform you copied is correct by running the following command:
++
+[source,terminal]
+----
+$ terraform validate
+----
++
+.Sample output
++
+[source,terminal]
+----
+Success! The configuration is valid.
+----
+
+. Create your cluster with Terraform by running the following command:
++
+[source,terminal]
+----
+$ terraform apply
+----
+
+. The Terraform interface lists the resources to be created or changed and prompts for confirmation. Enter `yes` to proceed, or `no` to cancel:
++
+.Example output
+[source,terminal]
+----
+Plan: 39 to add, 0 to change, 0 to destroy.
+
+Do you want to perform these actions?
+  Terraform will perform the actions described above.
+  Only 'yes' will be accepted to approve.
+
+  Enter a value: yes
+----
++
+If you enter `yes`, your Terraform plan executes, creating your AWS account roles, Operator roles, and your ROSA Classic cluster.
+
+.Verification
+. Verify that your cluster was created by running the following command:
++
+[source,terminal]
+----
+$ rosa list clusters
+----
++
+.Example output showing a cluster's ID, name, and status:
++
+[source,terminal]
+----
+ID                                NAME          STATE  TOPOLOGY
+27c3snjsupa9obua74ba8se5kcj11269  rosa-tf-demo  ready  Classic (STS)
+----
+
+. Verify that your account roles were created by running the following command:
++
+[source,terminal]
+----
+$ rosa list account-roles
+----
++
+.Example output showing Terraform-created account roles:
+[source,terminal]
+----
+I: Fetching account roles
+ROLE NAME                                   ROLE TYPE      ROLE ARN                                                           OPENSHIFT VERSION  AWS Managed
+ROSA-demo-ControlPlane-Role                 Control plane  arn:aws:iam::<ID>:role/ROSA-demo-ControlPlane-Role                 4.13               No
+ROSA-demo-Installer-Role                    Installer      arn:aws:iam::<ID>:role/ROSA-demo-Installer-Role                    4.13               No
+ROSA-demo-Support-Role                      Support        arn:aws:iam::<ID>:role/ROSA-demo-Support-Role                      4.13               No
+ROSA-demo-Worker-Role                       Worker         arn:aws:iam::<ID>:role/ROSA-demo-Worker-Role                       4.13               No
+----
+
+. Verify that your Operator roles were created by running the following command:
++
+[source,terminal]
+----
+$ rosa list operator-roles
+----
++
+.Example output showing Terraform-created Operator roles:
+[source,terminal]
+----
+I: Fetching operator roles
+ROLE PREFIX    AMOUNT IN BUNDLE
+rosa-demo      6
+----
+
+ifeval::["{context}" == "rosa-sts-creating-a-cluster-quickly-terraform"]
+:!tf-defaults:
+endif::[]

@@ -1,0 +1,51 @@
+// Module included in the following assemblies:
+//
+// * backup_and_restore/oadp-release-notes-1-2.adoc
+
+:_mod-docs-content-type: PROCEDURE
+
+[id="oadp-converting-to-new-dpa-1-2-0_{context}"]
+= Converting DPA to the new version
+
+If you use the fields that were updated in the `spec.configuration.velero.args` stanza, you must configure your `DataProtectionApplication` (DPA) manifest to use the new parameter names.
+
+.Procedure
+
+. Click *Operators* → *Installed Operators* and select the OADP Operator.
+. Select *Provided APIs*, click *Create instance* in the *DataProtectionApplication* box.
+. Click *YAML View* to display the current DPA parameters.
++
+.Example current DPA
+[source,yaml]
+----
+spec:
+  configuration:
+    velero:
+      args:
+        default-volumes-to-restic: true
+        default-restic-prune-frequency: 6000
+        restic-timeout: 600
+# ...
+----
+
+. Update the DPA parameters:
+. Update the DPA parameter names without changing their values:
+.. Change the `default-volumes-to-restic` key to `default-volumes-to-fs-backup`.
+.. Change the `default-restic-prune-frequency` key to `default-repo-maintain-frequency`.
+.. Change the `restic-timeout` key to `fs-backup-timeout`.
+
++
+.Example updated DPA
+[source,yaml]
+----
+spec:
+  configuration:
+    velero:
+      args:
+        default-volumes-to-fs-backup: true
+        default-repo-maintain-frequency: 6000
+        fs-backup-timeout: 600
+# ...
+----
+
+. Wait for the DPA to reconcile successfully.

@@ -1,0 +1,29 @@
+// Module included in the following assemblies:
+//
+// * telco_ref_design_specs/ran/telco-core-ref-components.adoc
+
+:_mod-docs-content-type: REFERENCE
+[id="telco-core-load-balancer_{context}"]
+= Load Balancer
+
+New in this release::
+
+Not applicable.
+
+Description::
+
+MetalLB is a load-balancer implementation for bare metal Kubernetes clusters using standard routing protocols. It enables a Kubernetes service to get an external IP address which is also added to the host network for the cluster.
++
+Some use cases might require features not available in MetalLB, for example stateful load balancing. Where necessary, you can use an external third party load balancer. Selection and configuration of an external load balancer is outside the scope of this specification. When an external third party load balancer is used, the integration effort must include enough analysis to ensure all performance and resource utilization requirements are met.
+
+Limits and requirements::
+
+* Stateful load balancing is not supported by MetalLB. An alternate load balancer implementation must be used if this is a requirement for workload CNFs.
+* The networking infrastructure must ensure that the external IP address is routable from clients to the host network for the cluster.
+
+Engineering considerations::
+* MetalLB is used in BGP mode only for core use case models.
+* For core use models, MetalLB is supported with only the OVN-Kubernetes network provider used in local gateway mode. See `routingViaHost` in the "Cluster Network Operator" section.
+* BGP configuration in MetalLB varies depending on the requirements of the network and peers.
+* Address pools can be configured as needed, allowing variation in addresses, aggregation length, auto assignment, and other relevant parameters.
+* The values of parameters in the Bi-Directional Forwarding Detection (BFD) profile should remain close to the defaults. Shorter values might lead to false negatives and impact performance.
