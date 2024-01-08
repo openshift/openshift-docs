@@ -1,146 +1,106 @@
 // Module included in the following assemblies:
 //
 // * networking/ovn_kubernetes_network_provider/migrate-from-openshift-sdn.adoc
-
+// * networking/openshift_sdn/rollback-to-ovn-kubernetes.adoc
 [id="nw-ovn-kubernetes-migration-about_{context}"]
-= Migration to the OVN-Kubernetes network plugin
+= Live migration to the OVN-Kubernetes network plugin
 
-Migrating to the OVN-Kubernetes network plugin is a manual process that includes some downtime during which your cluster is unreachable. Although a rollback procedure is provided, the migration is intended to be a one-way process.
+Migrating from OpenShift SDN to OVN-Kubernetes is a manual process. 
 
-A migration to the OVN-Kubernetes network plugin is supported on the following platforms:
-
-* Bare metal hardware
-* Amazon Web Services (AWS)
-* Google Cloud Platform (GCP)
-* {ibm-cloud-name}
-* Microsoft Azure
-* {rh-openstack-first}
-* VMware vSphere
-
-[IMPORTANT]
-====
-Migrating to or from the OVN-Kubernetes network plugin is not supported for managed OpenShift cloud services such as {product-dedicated}, Azure Red Hat OpenShift(ARO), and Red Hat OpenShift Service on AWS (ROSA).
-
-Migrating from OpenShift SDN network plugin to OVN-Kubernetes network plugin is not supported on Nutanix.
-====
+With {product-title} 4.15, a _live_ migration process is available. This migration type offers no service interruption during the migration procedure.
++
+With this method, migrating to the OVN-Kubernetes plugin from SDN is supported on the following platforms:
+** Azure Red Hat OpenShift (ARO)
+** {product-dedicated}
+** {product-rosa}
 
 [id="considerations-migrating-ovn-kubernetes-network-provider_{context}"]
 == Considerations for migrating to the OVN-Kubernetes network plugin
 
-If you have more than 150 nodes in your {product-title} cluster, then open a support case for consultation on your migration to the OVN-Kubernetes network plugin.
+* With the live migration, there is a Maximum Transmission Unit (MTU) mismatch between OpenShift SDN and OVN-Kubernetes, and MTU values might differ. The Cluster Network Operator (CNO) handles updating the routable MTU to ensure both CNIs share the same overlay MTU. 
 
-The subnets assigned to nodes and the IP addresses assigned to individual pods are not preserved during the migration.
+* When the live migration procedure begins, multitenant isolation is permanently disabled. Multitenant isolation is only supported on OpenShift SDN. 
 
-While the OVN-Kubernetes network plugin implements many of the capabilities present in the OpenShift SDN network plugin, the configuration is not the same.
+* During the live migration, when the cluster is running both OVN-Kubernetes and OpenShift SDN, multicast and egress IP are temporarily disabled for both CNIs. The egress firewall remains functional during this process.
 
-* If your cluster uses any of the following OpenShift SDN network plugin capabilities, you must manually configure the same capability in the OVN-Kubernetes network plugin:
+* Although a rollback procedure is provided, the migration is intended to be a one-way process. For users that want to rollback to OpenShift-SDN, migration from OpenShift-SDN to OVN-Kubernetes must have succeeded. 
+
+* Live migration does not work in clusters without the `dedicated-admin` namespace. This namespace is only created by _managed_ clusters. This does not include hypershift clusters. 
+
+[id="prerequisites-migrating-ovn-kubernetes-network-provider_{context}"]
+== Prerequisites for migrating to the OVN-Kubernetes network plugin
+
+Prior to migrating from OpenShift SDN to OVN-Kubernetes, cluster administrators must ensure that the following custom resources (CRs) are disabled:
+
+* Egress Router
+* Egress IP
+* Egress Firewalls
+* Multicast
+
+Use the following procedure to check the status of these CRs.
+
+.Procedure 
+
+. From the {product-title} web console, navigate to *Observe* -> *Metrics*.
+
+. In the *Expression* box, add the following queries, and then click *Add query*:
 +
---
-* Namespace isolation
-* Egress router pods
---
+[source,promql]
++
+----
+network_attachment_definition_instances{networks="egress-router"} > 0
+----
++
+----
+sdn_controller_num_egress_ips > 0
+----
++
+----
+sdn_controller_num_egress_firewalls > 0
+----
++
+----
+sdn_controller_num_multicast_enabled_namespaces > 0
+----
 
-* If your cluster or surrounding network uses any part of the `100.64.0.0/16` address range, you must choose another unused IP range by specifying the `v4InternalSubnet` spec under the `spec.defaultNetwork.ovnKubernetesConfig` object definition. OVN-Kubernetes uses the IP range `100.64.0.0/16` internally by default.
+. Click *Run queries*.
++
+If any datapoints are found, users should not proceed with the OpenShift SDN to OVN-Kubernetes live migration procedure.
 
-The following sections highlight the differences in configuration between the aforementioned capabilities in OVN-Kubernetes and OpenShift SDN network plugins.
+:_mod-docs-content-type: PROCEDURE
+[id="nw-ovn-kubernetes-migration-live_{context}"]
+= Migrating to the OVN-Kubernetes network plugin (live migration)
 
-[discrete]
-[id="namespace-isolation_{context}"]
-=== Namespace isolation
+With the live migration, cluster administrators can migrate to the OVN-Kubernetes network plugin from the SDN plugin without service interruption. This migration method offers no service interruption, minimizes downtown, and automatically reboots nodes. The live migration method is particularly valuable for Azure Red Hat OpenShift (ARO), {product-dedicated}, {product-rosa}, or other deployments types that require constant service availability.
 
-OVN-Kubernetes supports only the network policy isolation mode.
+.Prerequisites
 
-[IMPORTANT]
-====
-If your cluster uses OpenShift SDN configured in either the multitenant or subnet isolation modes, you cannot migrate to the OVN-Kubernetes network plugin.
-====
+* A cluster configured with the OpenShift SDN CNI network plugin in the network policy isolation mode.
+* Install the OpenShift CLI (`oc`).
+* Access to the cluster as a user with the `cluster-admin` role.
+* A recent backup of the etcd database is available.
+* The cluster is in a known good state, without any errors.
+* On all cloud platforms after updating software, a security group rule must be in place to allow UDP packets on port `6081` for all nodes.
 
-[discrete]
-[id="egress-ip-addresses_{context}"]
-=== Egress IP addresses
+.Procedure
 
-OpenShift SDN supports two different Egress IP modes:
+. Edit the `Network.operator.openshift.io` custom resource (CR) by entering the following command:
++
+[source,terminal]
+----
+$ oc edit network.operator.openshift.io cluster
+----
 
-* In the _automatically assigned_ approach, an egress IP address range is assigned to a node.
-* In the _manually assigned_ approach, a list of one or more egress IP addresses is assigned to a node.
-
-The migration process supports migrating Egress IP configurations that use the automatically assigned mode.
-
-The differences in configuring an egress IP address between OVN-Kubernetes and OpenShift SDN is described in the following table:
-
-.Differences in egress IP address configuration
-[cols="1a,1a",options="header"]
-|===
-|OVN-Kubernetes|OpenShift SDN
-
-|
-* Create an `EgressIPs` object
-* Add an annotation on a `Node` object
-
-|
-* Patch a `NetNamespace` object
-* Patch a `HostSubnet` object
-|===
-
-For more information on using egress IP addresses in OVN-Kubernetes, see "Configuring an egress IP address".
-
-[discrete]
-[id="egress-network-policies_{context}"]
-=== Egress network policies
-
-The difference in configuring an egress network policy, also known as an egress firewall, between OVN-Kubernetes and OpenShift SDN is described in the following table:
-
-.Differences in egress network policy configuration
-[cols="1a,1a",options="header"]
-|===
-|OVN-Kubernetes|OpenShift SDN
-
-|
-* Create an `EgressFirewall` object in a namespace
-
-|
-* Create an `EgressNetworkPolicy` object in a namespace
-|===
-
-[NOTE]
-====
-Because the name of an `EgressFirewall` object can only be set to `default`, after the migration all migrated `EgressNetworkPolicy` objects are named `default`, regardless of what the name was under OpenShift SDN.
-
-If you subsequently rollback to OpenShift SDN, all `EgressNetworkPolicy` objects are named `default` as the prior name is lost.
-
-For more information on using an egress firewall in OVN-Kubernetes, see "Configuring an egress firewall for a project".
-====
-
-[discrete]
-[id="egress-router-pods_{context}"]
-=== Egress router pods
-
-OVN-Kubernetes supports egress router pods in redirect mode. OVN-Kubernetes does not support egress router pods in HTTP proxy mode or DNS proxy mode.
-
-When you deploy an egress router with the Cluster Network Operator, you cannot specify a node selector to control which node is used to host the egress router pod.
-
-[discrete]
-[id="multicast_{context}"]
-=== Multicast
-
-The difference between enabling multicast traffic on OVN-Kubernetes and OpenShift SDN is described in the following table:
-
-.Differences in multicast configuration
-[cols="1a,1a",options="header"]
-|===
-|OVN-Kubernetes|OpenShift SDN
-
-|
-* Add an annotation on a `Namespace` object
-
-|
-* Add an annotation on a `NetNamespace` object
-|===
-
-For more information on using multicast in OVN-Kubernetes, see "Enabling multicast for a project".
-
-[discrete]
-[id="network-policies_{context}"]
-=== Network policies
-
-OVN-Kubernetes fully supports the Kubernetes `NetworkPolicy` API in the `networking.k8s.io/v1` API group. No changes are necessary in your network policies when migrating from OpenShift SDN.
+. Set the `mode` parameter in the CR to `Live`, such as in the following example:
++
+[source,yaml]
+----
+{ 
+  "spec": { 
+    "migration": {
+      "networkType": "OVNKubernetes",
+      "mode": "Live"
+    }
+  } 
+}
+----
