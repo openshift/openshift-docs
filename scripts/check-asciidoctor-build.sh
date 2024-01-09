@@ -8,7 +8,7 @@ then
 fi
 
 # get the *.adoc modules and assemblies in the pull request
-FILES=$(git diff --name-only HEAD~1 HEAD --diff-filter=d "*.adoc" ':(exclude)_unused_topics/*')
+FILES=$(git diff --name-only HEAD~1 HEAD --diff-filter=AMRD "*.adoc" ':(exclude)_unused_topics/*')
 REPO_PATH=$(git rev-parse --show-toplevel)
 
 # get the modules in the PR, search for assemblies that include them, and concat with any updated assemblies files
