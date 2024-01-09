@@ -3,7 +3,7 @@
 # The list includes any topic maps that are themselves modified, and indirectly modifed topic maps where incldued AsciiDoc files have been updated.
 
 # Get the *.adoc and distro maps files in the pull request
-FILES=$(git diff --name-only HEAD@{1} --diff-filter=d "*.yml" "*.adoc" ':(exclude)_unused_topics/*')
+FILES=$(git diff --name-only HEAD@{1} --diff-filter=AMRD "*.yml" "*.adoc" ':(exclude)_unused_topics/*')
 
 REPO_PATH=$(git rev-parse --show-toplevel)
 
@@ -17,11 +17,6 @@ then
     # $UPDATED_ASSEMBLIES is the list of assemblies that contains changed modules
     UPDATED_ASSEMBLIES=$(grep -rnwl "$REPO_PATH" --include=\*.adoc --exclude-dir={snippets,modules} -e "$MODULES")
 
-    # Exit 0 if there are no modified assemblies
-    if [[ -z "${UPDATED_ASSEMBLIES}" ]]
-    then
-        exit 0
-    fi
     # Subtract $REPO_PATH from path with bash substring replacement
     UPDATED_ASSEMBLIES=${UPDATED_ASSEMBLIES//"$REPO_PATH/"/}
 fi
