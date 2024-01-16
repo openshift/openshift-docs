@@ -3,7 +3,7 @@
 # The list includes any topic maps that are themselves modified, and indirectly modifed topic maps where incldued AsciiDoc files have been updated.
 
 # Get the *.adoc and distro maps files in the pull request
-FILES=$(git diff --name-only HEAD@{1} --diff-filter=AMRD "*.yml" "*.adoc" ':(exclude)_unused_topics/*')
+FILES=$(git diff --name-only HEAD~1 HEAD --diff-filter=AMRD "*.yml" "*.adoc" ':(exclude)_unused_topics/*')
 
 REPO_PATH=$(git rev-parse --show-toplevel)
 
