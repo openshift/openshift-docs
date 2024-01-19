@@ -1,0 +1,24 @@
+// Module included in the following assemblies:
+//
+// * service_mesh/v2x/installing-ossm.adoc
+
+:_mod-docs-content-type: CONCEPT
+[id="ossm-about-adding-namespace_{context}"]
+= About adding projects to a service mesh
+
+After installing the Operators and creating the `ServiceMeshControlPlane` resource, add one or more projects to the service mesh.
+
+[NOTE]
+====
+In {product-title}, a project is essentially a Kubernetes namespace with additional annotations, such as the range of user IDs that can be used in the project. Typically, the {product-title} web console uses the term project, and the CLI uses the term namespace, but the terms are essentially synonymous.
+====
+
+You can add projects to an existing service mesh using either the {product-title} web console or the CLI. There are three methods to add a project to a service mesh:
+
+* Specifying the project name in the `ServiceMeshMemberRoll` resource.
+
+* Configuring label selectors in the `spec.labelSelectors` field of the `ServiceMeshMemberRoll` resource.
+
+* Creating the `ServiceMeshMember` resource in the project.
+
+If you use the first method, then you must create the `ServiceMeshMemberRoll` resource.

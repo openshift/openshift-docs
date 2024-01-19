@@ -1,0 +1,18 @@
+// Module included in the following assemblies:
+//
+// * architecture/nvidia-gpu-architecture-overview.adoc
+
+:_mod-docs-content-type: CONCEPT
+[id="nvidia-gpu-enablement_{context}"]
+= NVIDIA GPU enablement
+
+The following diagram shows how the GPU architecture is enabled for OpenShift:
+
+
+.NVIDIA GPU enablement
+image::512_OpenShift_NVIDIA_GPU_enablement_1223.png[NVIDIA GPU enablement]
+
+[NOTE]
+====
+MIG is only supported with A30, A100, A100X, A800, AX800, H100, H200, and H800.
+====

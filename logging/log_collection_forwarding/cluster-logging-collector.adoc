@@ -1,0 +1,21 @@
+:_mod-docs-content-type: ASSEMBLY
+:context: cluster-logging-collector
+[id="cluster-logging-collector"]
+= Configuring the logging collector
+include::_attributes/common-attributes.adoc[]
+include::_attributes/attributes-openshift-dedicated.adoc[]
+
+toc::[]
+
+{logging-title-uc} collects operations and application logs from your cluster and enriches the data with Kubernetes pod and project metadata.
+All supported modifications to the log collector can be performed though the `spec.collection` stanza in the `ClusterLogging` custom resource (CR).
+
+include::modules/configuring-logging-collector.adoc[leveloffset=+1]
+
+include::modules/log-collector-resources-scheduling.adoc[leveloffset=+1]
+
+include::modules/cluster-logging-collector-pod-location.adoc[leveloffset=+1]
+
+include::modules/cluster-logging-collector-limits.adoc[leveloffset=+1]
+
+include::modules/cluster-logging-collector-tuning.adoc[leveloffset=+1]

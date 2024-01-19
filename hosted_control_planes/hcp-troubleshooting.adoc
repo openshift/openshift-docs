@@ -1,0 +1,19 @@
+:_mod-docs-content-type: ASSEMBLY
+[id="hcp-troubleshooting"]
+= Troubleshooting hosted control planes
+include::_attributes/common-attributes.adoc[]
+:context: hcp-troubleshooting
+
+toc::[]
+
+If you encounter issues with hosted control planes, see the following information to guide you through troubleshooting.
+
+:FeatureName: Hosted control planes
+include::snippets/technology-preview.adoc[]
+
+include::modules/hosted-control-planes-troubleshooting.adoc[leveloffset=+1]
+
+[role="_additional-resources"]
+.Additional resources
+
+* link:https://access.redhat.com/documentation/en-us/red_hat_advanced_cluster_management_for_kubernetes/2.9/html/clusters/cluster_mce_overview#trouble-hosted-cluster-backplane[Must-gather for a hosted cluster]

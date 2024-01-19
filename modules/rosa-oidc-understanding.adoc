@@ -1,0 +1,31 @@
+// Module included in the following assemblies:
+//
+// * rosa_architecture/rosa-sts-about-iam-resources.adoc
+// * rosa_architecture/rosa_policy_service_definition/rosa-oidc-overview.adoc
+
+:_mod-docs-content-type: CONCEPT
+[id=rosa-oidc-understanding_{context}]
+= Understanding the OIDC verification options
+
+There are three options for OIDC verification:
+
+* Unregistered, managed OIDC configuration
++
+An unregistered, managed OIDC configuration is created for you during the cluster installation process. The configuration is hosted under Red Hat's AWS account. This option does not give you the ID that links to the OIDC configuration, so you can only use this type of OIDC configuration on a single cluster.
+
+* Registered, managed OIDC configuration
++
+You create a registered, managed OIDC configuration before you start creating your clusters. This configuration is hosted under Red Hat's AWS account like the unregistered managed OIDC configuration. When you use this option for your OIDC configuration, you receive an ID that links to the OIDC configuration. Red Hat uses this ID to identify the issuer URL and private key. You can then use this URL and private key to create an identity provider and Operator roles. These resources are created under your AWS account by using Identity and Access Management (IAM) AWS services. You can also use the OIDC configuration ID during the cluster creation process.
+
+* Registered, unmanaged OIDC configuration
++
+You can create a registered, unmanaged OIDC configuration before you start creating your clusters. This configuration is hosted under your AWS account. When you use this option, you are responsible for managing the private key. You can register the configuration with {cluster-manager-first} by storing the private key in an AWS secrets file by using the AWS Secrets Manager (SM) service and the issuer URL which hosts the configuration. You can use the {product-title} (ROSA) CLI, `rosa`, to create a registered, unmanaged OIDC configuration with the `rosa create oidc-config --managed=false` command. This command creates and hosts the configuration under your account and creates the necessary files and private secret key. This command also registers the configuration with {cluster-manager}.
+
+The registered options can be used to create the required IAM resources before you start creating a cluster. This option results in faster install times since there is a waiting period during cluster creation where the installation pauses until you create an OIDC provider and Operator roles.
+
+For ROSA Classic, you may use any of the OIDC configuration options. If you are using {hcp-title}, you must create registered OIDC configuration, either as managed or unmanaged. You can share the registered OIDC configurations with other clusters. This ability to share the configuration also allows you to share the provider and Operator roles.
+
+[NOTE]
+====
+Reusing the OIDC configurations, OIDC provider, and Operator roles between clusters is not recommended for production clusters since the authentication verification is used throughout all of these clusters. Red Hat advises to only reuse resources on non-production test environments.
+====

@@ -1,0 +1,45 @@
+//Module included in the following assemblies:
+//
+// * microshift_updating/microshift-update-options.adoc
+
+:_mod-docs-content-type: PROCEDURE
+[id="microshift-backing-up-manually_{context}"]
+= Backing up {microshift-short} data manually
+
+You can back up {microshift-short} data manually at any time. Back up your data before system updates to preserve it for use if an update fails or for other system trouble. Automated backups are created in the `/var/lib/microshift-backups` directory. You can use this directory for manually backing up and restoring data by specifying it in each command. When you create a backup, you must use the entire file path for the output file.
+
+.Prerequisites
+
+* You have root access to the host.
+* {microshift-short} is stopped.
+
+.Procedure
+
+. Manually create a backup by using the parent directory and specifying a name, such as `/var/lib/microshift-backups/<my_manual_backup>`, by running the following command:
++
+[source,terminal]
+----
+$ sudo microshift backup /var/lib/microshift-backups/<my_manual_backup>
+----
+Replace `<my_manual_backup>` with the backup name that you want to use.
++
+.Example output
++
+[source,terminal]
+----
+??? I1017 07:38:16.770506    5900 data_manager.go:92] "Copying data to backup directory" storage="/var/lib/microshift-backups" name="test" data="/var/lib/microshift"
+??? I1017 07:38:16.770713    5900 data_manager.go:227] "Starting copy" cmd="/bin/cp --verbose --recursive --preserve --reflink=auto /var/lib/microshift /var/lib/microshift-backups/test"
+??? I1017 07:38:16.776162    5900 data_manager.go:241] "Finished copy" cmd="/bin/cp --verbose --recursive --preserve --reflink=auto /var/lib/microshift /var/lib/microshift-backups/test"
+??? I1017 07:38:16.776256    5900 data_manager.go:125] "Copied data to backup directory" backup="/var/lib/microshift-backups/test" data="/var/lib/microshift"
+----
+
+. Optional: Manually create a backup in a specific parent directory with a custom name by running the following command:
++
+[source,terminal]
+----
+$ sudo microshift backup /mnt/<other_backups_location>/<another_manual_backup>
+----
+Replace `<other_backups_location>` with the directory you want to use and `<my_manual_backup>` with the backup name you want to use.
+
+.Verification
+* You can verify that the backup exists by viewing the data in the directory you chose. For example, `/var/lib/microshift-backups/<my_manual_backup>/` or `/mnt/<other_backups_location>/<another_manual_backup>`.
