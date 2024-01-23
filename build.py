@@ -362,14 +362,17 @@ def reformat_for_drupal(info):
 
     # Reformat the data
     for book in books:
-        log.info("Processing %s", book['Dir'])
-        book_src_dir = os.path.join(src_dir, book['Dir'])
+        try:
+            log.info("Processing %s", book['Dir'])
+            book_src_dir = os.path.join(src_dir, book['Dir'])
 
-        if info['all_in_one']:
-            images_dir = os.path.join(dest_dir, "images")
-        else:
-            book_dest_dir = os.path.join(dest_dir, book['Dir'])
-            images_dir = os.path.join(book_dest_dir, "images")
+            if info['all_in_one']:
+                images_dir = os.path.join(dest_dir, "images")
+            else:
+                book_dest_dir = os.path.join(dest_dir, book['Dir'])
+                images_dir = os.path.join(book_dest_dir, "images")
+        except Exception as e:
+            logging.exception("%s", e)
 
         ensure_directory(images_dir)
 
