@@ -9,7 +9,6 @@ fi
 
 # get the *.adoc modules and assemblies in the pull request
 FILES=$(git diff --name-only HEAD~1 HEAD --diff-filter=d "*.adoc" ':(exclude)_unused_topics/*')
-
 REPO_PATH=$(git rev-parse --show-toplevel)
 
 # get the modules in the PR, search for assemblies that include them, and concat with any updated assemblies files
@@ -34,14 +33,14 @@ check_updated_assemblies () {
     # concatenate both lists and remove dupe entries
     ALL_ASSEMBLIES=$(echo "$UPDATED_ASSEMBLIES $ASSEMBLIES" | tr ' ' '\n' | sort -u)
     # check that assemblies are in a topic_map
-    for ASSEMBLY in $ALL_ASSEMBLIES; do
+    for ASSEMBLY in ${ALL_ASSEMBLIES}; do
         # get the page name to search the topic_map
         # search for files only, not folders
         PAGE="File: $(basename "$ASSEMBLY" .adoc)"
         # don't validate the assembly if it is not in a topic map
-        if grep -q "$PAGE" _topic_map.yml; then
+        if grep -rq "$PAGE" --include "*.yml" _topic_maps ; then
             # validate the assembly
-            echo "Validating $ASSEMBLY ... 🚨"
+            echo "Validating $ASSEMBLY ..."
             RED='\033[0;31m'
             NC='\033[0m'
             OUTPUT=$(asciidoctor "$ASSEMBLY" -a source-highlighter=rouge -a icons! -o /tmp/out.html -v --failure-level WARN --trace 2>&1)
@@ -49,17 +48,18 @@ check_updated_assemblies () {
             if [[ $? != 0 ]];
             then
                 echo -e "${RED}$OUTPUT${NC}"
-                echo "Validation errors found! ❌"
-                exit 1
+                ERRORS=true
             else
-                echo "No errors found! ✅"
-                exit 0
+                echo "No errors found for $ASSEMBLY! ✅"
             fi
         else
             echo "$ASSEMBLY is not in a topic_map, skipping validation... 😙"
-            exit 0
         fi
     done
+    if [ "$ERRORS" = true ]; then
+        echo "Validation errors found! ❌"
+        exit 1
+    fi
 }
 
 update_log () {
