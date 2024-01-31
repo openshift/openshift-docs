@@ -31,7 +31,7 @@ for ASSEMBLY in $ALL_ASSEMBLIES; do
     # Search for files only, not folders
     PAGE="File: $(basename "$ASSEMBLY" .adoc)"
     # Don't include the assembly if it is not in a topic map
-    if grep -rq "$PAGE" --include "*.yml" _topic_maps ; then
+    if grep -rq "$PAGE" _topic_maps/*.yml; then
         DISTROS+=("$(grep -rl "$PAGE" _topic_maps/*.yml)")
     fi
 done
