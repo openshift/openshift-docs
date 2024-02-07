@@ -1,10 +1,10 @@
 #!/bin/bash
 # Report errors for links to Red Hat JIRA bugs that are behind a login
 
-# Get modifed lines, remove deleted lines from the diff
+# Get modifed lines, remove deleted lines from the diff 
 git_diff=$(git diff --unified=0 --stat --diff-filter=AM HEAD~1 HEAD "*release-notes*.adoc" ':(exclude)_unused_topics/*' | grep '^+' | grep -Ev '^(\+\+\+ a/ b/)')
 
-# Exit zero if there are no release-notes changes
+# Exit zero if there are no release-notes changes 
 if [ -z "${git_diff}" ]; then
     exit 0
 fi
