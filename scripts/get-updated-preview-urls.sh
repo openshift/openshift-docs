@@ -24,8 +24,11 @@ fi
 
 # Search for $file references in all *.adoc files that are not in a folder called modules/, snippets/, or _unused_topics/
 for file in $files; do
-    found_file=$(find . -name '*.adoc' -not -path "./modules/*" -not -path "./snippets/*" -not -path "./_unused_topics/*" -exec grep -rl "$file" {} +)
-    assemblies+=("$found_file")
+    include_ref="include::$file"
+    found_file=$(find . -name '*.adoc' -not -path "./modules/*" -not -path "./snippets/*" -not -path "./_unused_topics/*" -exec grep -rl "^$include_ref" {} +)
+    if [ -z "$found_file" ]; then
+        assemblies+=("$file")
+    fi
 done
 
 # Make the HTML URL slug
