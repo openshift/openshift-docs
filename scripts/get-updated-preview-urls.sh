@@ -43,4 +43,4 @@ for updated_page in $updated_pages; do
     pages+=("${preview_url}/${found_page}")
 done
 
-printf '%s\n' "${pages[@]}"
+printf '%s\n' "${pages[@]}" | sort | uniq
