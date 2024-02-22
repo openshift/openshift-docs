@@ -28,7 +28,7 @@ for file in $files; do
     found_file=$(find . -name '*.adoc' -not -path "modules/*" -not -path "snippets/*" -not -path "_unused_topics/*" -exec grep -rl "^$include_ref" {} +)
     # Add the found updated assemblies, not directly included in PR
     assemblies+=("$found_file")
-    # If not found, then it is an directly updated assembly file
+    # If not found, then it is a directly updated assembly file
     if [ -z "$found_file" ]; then
         assemblies+=("$file")
     fi
