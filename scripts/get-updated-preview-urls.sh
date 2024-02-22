@@ -25,7 +25,10 @@ fi
 # Search for $file references in all *.adoc files that are not in a folder called modules/, snippets/, or _unused_topics/
 for file in $files; do
     include_ref="include::$file"
-    found_file=$(find . -name '*.adoc' -not -path "./modules/*" -not -path "./snippets/*" -not -path "./_unused_topics/*" -exec grep -rl "^$include_ref" {} +)
+    found_file=$(find . -name '*.adoc' -not -path "modules/*" -not -path "snippets/*" -not -path "_unused_topics/*" -exec grep -rl "^$include_ref" {} +)
+    # Add the found updated assemblies, not directly included in PR
+    assemblies+=("$found_file")
+    # If not found, then it is an directly updated assembly file
     if [ -z "$found_file" ]; then
         assemblies+=("$file")
     fi
@@ -33,7 +36,7 @@ done
 
 # Make the HTML URL slug
 if [ ${#assemblies[@]} -gt 0 ]; then
-    updated_pages=$(echo "${assemblies[@]}" | xargs -n1 basename | sed 's/\.adoc$/.html/' | sort | uniq)
+    updated_pages=$(echo "${assemblies[@]}" | sed 's/\.adoc$/.html/' | sort | uniq)
 else
     # No updated pages, just add default URL
     pages+=("${preview_url}")
