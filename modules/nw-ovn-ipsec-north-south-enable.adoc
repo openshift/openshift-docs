@@ -4,11 +4,9 @@
 
 :_mod-docs-content-type: PROCEDURE
 [id="nw-ovn-ipsec-north-south-enable_{context}"]
-= Enabling IPsec encryption for external IPsec endpoints
+= Configuring IPsec encryption for external traffic
 
-// This procedure requests installing Butane to prepare the machine config
-
-As a cluster administrator, you can enable IPsec encryption between the cluster and external IPsec endpoints. Because this procedure uses Butane to create machine configs, you must have the `butane` command installed.
+As a cluster administrator, to encrypt external traffic with IPsec you must configure IPsec for your network infrastructure, including providing PKCS#12 certificates. Because this procedure uses Butane to create machine configs, you must have the `butane` command installed.
 
 [NOTE]
 ====
@@ -18,16 +16,99 @@ After you apply the machine config, the Machine Config Operator reboots affected
 .Prerequisites
 
 * Install the {oc-first}.
+* You have installed the `butane` utility on your local computer.
+* You have installed the NMState Operator on the cluster.
 * You are logged in to the cluster as a user with `cluster-admin` privileges.
-* You have reduced the size of your cluster MTU by `46` bytes to allow for the overhead of the IPsec ESP header.
-* You have installed the `butane` utility.
 * You have an existing PKCS#12 certificate for the IPsec endpoint and a CA cert in PEM format.
+* You enabled IPsec in either `Full` or `External` mode on your cluster.
+* The OVN-Kubernetes network plugin must be configured in local gateway mode, where `ovnKubernetesConfig.gatewayConfig.routingViaHost=true`.
 
 .Procedure
 
-As a cluster administrator, you can enable IPsec support for external IPsec endpoints.
+. Create an IPsec configuration with an NMState Operator node network configuration policy. For more information, see link:https://access.redhat.com/documentation/en-us/red_hat_enterprise_linux/9/html/securing_networks/configuring-a-vpn-with-ipsec_securing-networks#configuring-a-vpn-with-ipsec_securing-networks[Libreswan as an IPsec VPN implementation].
 
-. Create an IPsec configuration file named `ipsec-endpoint-config.conf`. The configuration is consumed in the next step. For more information, see link:https://access.redhat.com/documentation/en-us/red_hat_enterprise_linux/9/html/securing_networks/configuring-a-vpn-with-ipsec_securing-networks#configuring-a-vpn-with-ipsec_securing-networks[Libreswan as an IPsec VPN implementation].
+.. To identify the IP address of the cluster node that is the IPsec endpoint, enter the following command:
++
+----
+$ oc get nodes
+----
+
+.. Create a file named `ipsec-config.yaml` that contains a node network configuration policy for the NMState Operator, such as in the following examples. For an overview about `NodeNetworkConfigurationPolicy` objects, see link:https://nmstate.io/kubernetes-nmstate/[The Kubernetes NMState project].
++
+--
+.Example NMState IPsec transport configuration
+[source,yaml]
+----
+apiVersion: nmstate.io/v1
+kind: NodeNetworkConfigurationPolicy
+metadata:
+  name: ipsec-config
+spec:
+  nodeSelector:
+    kubernetes.io/hostname: "<hostname>" <1>
+  desiredState:
+    interfaces:
+    - name: <interface_name> <2>
+      type: ipsec
+      libreswan:
+        left: <cluster_node> <3>
+        leftid: '%fromcert'
+        leftrsasigkey: '%cert'
+        leftcert: left_server
+        leftmodecfgclient: false
+        right: <external_host> <4>
+        rightid: '%fromcert'
+        rightrsasigkey: '%cert'
+        rightsubnet: <external_address>/32 <5>
+        ikev2: insist
+        type: transport
+----
+<1> Specifies the host name to apply the policy to. This host serves as the left side host in the IPsec configuration.
+<2> Specifies the name of the interface to create on the host.
+<3> Specifies the host name of the cluster node that terminates the IPsec tunnel on the cluster side. The name should match SAN `[Subject Alternate Name]` from your supplied PKCS#12 certificates.
+<4> Specifies the external host name, such as `host.example.com`. The name should match the SAN `[Subject Alternate Name]` from your supplied PKCS#12 certificates.
+<5> Specifies the IP address of the external host, such as `10.1.2.3.4/32`.
+
+.Example NMState IPsec tunnel configuration
+[source,yaml]
+----
+apiVersion: nmstate.io/v1
+kind: NodeNetworkConfigurationPolicy
+metadata:
+  name: ipsec-config
+spec:
+  nodeSelector:
+    kubernetes.io/hostname: "<hostname>" <1>
+  desiredState:
+    interfaces:
+    - name: <interface_name> <2>
+      type: ipsec
+      libreswan:
+        left: <cluster_node> <3>
+        leftid: '%fromcert'
+        leftmodecfgclient: false
+        leftrsasigkey: '%cert'
+        leftcert: left_server
+        right: <external_host> <4>
+        rightid: '%fromcert'
+        rightrsasigkey: '%cert'
+        rightsubnet: <external_address>/32 <5>
+        ikev2: insist
+        type: tunnel
+----
+<1> Specifies the host name to apply the policy to. This host serves as the left side host in the IPsec configuration.
+<2> Specifies the name of the interface to create on the host.
+<3> Specifies the host name of the cluster node that terminates the IPsec tunnel on the cluster side. The name should match SAN `[Subject Alternate Name]` from your supplied PKCS#12 certificates.
+<4> Specifies the external host name, such as `host.example.com`. The name should match the SAN `[Subject Alternate Name]` from your supplied PKCS#12 certificates.
+<5> Specifies the IP address of the external host, such as `10.1.2.3.4/32`.
+--
+
+.. To configure the IPsec interface, enter the following command:
++
+[source,terminal]
+----
+$ oc create -f ipsec-config.yaml
+----
 
 . Provide the following certificate files to add to the Network Security Services (NSS) database on each host. These files are imported as part of the Butane configuration in subsequent steps.
 +
@@ -50,9 +131,6 @@ $ for role in master worker; do
     name: 99-$\{role}-import-certs-enable-svc-os-ext
     labels:
       machineconfiguration.openshift.io/role: $role
-  openshift:
-    extensions:
-      - ipsec
   systemd:
     units:
     - name: ipsec-import.service
@@ -67,15 +145,6 @@ $ for role in master worker; do
         ExecStart=/usr/local/bin/ipsec-addcert.sh
         RemainAfterExit=false
         StandardOutput=journal
-
-        [Install]
-        WantedBy=multi-user.target
-    - name: ipsecenabler.service
-      enabled: true
-      contents: |
-        [Service]
-        Type=oneshot
-        ExecStart=systemctl enable --now ipsec.service
 
         [Install]
         WantedBy=multi-user.target
@@ -146,3 +215,49 @@ A successfully updated node has the following status: `UPDATED=true`, `UPDATING=
 ====
 By default, the MCO updates one machine per pool at a time, causing the total time the migration takes to increase with the size of the cluster.
 ====
+
+. To confirm that IPsec machine configs rolled out successfully, enter the following commands:
+.. Confirm that the IPsec machine configs were created:
++
+[source,terminal]
+----
+$ oc get mc | grep ipsec
+----
++
+.Example output
+[source,text]
+----
+80-ipsec-master-extensions        3.2.0        6d15h
+80-ipsec-worker-extensions        3.2.0        6d15h
+----
+
+.. Confirm that the that the IPsec extension are applied to control plane nodes:
++
+[source,terminal]
+----
+$ oc get mcp master -o yaml | grep 80-ipsec-master-extensions -c
+----
++
+.Expected output
+[source,text]
+----
+2
+----
+
+.. Confirm that the that the IPsec extension are applied to worker nodes:
++
+[source,terminal]
+----
+$ oc get mcp worker -o yaml | grep 80-ipsec-worker-extensions -c
+----
++
+.Expected output
+[source,text]
+----
+2
+----
+
+[role="_additional-resources"]
+.Additional resources
+
+* For more information about the nmstate IPsec API, see link:https://nmstate.io/devel/yaml_api.html#ipsec-encryption[IPsec Encryption]
