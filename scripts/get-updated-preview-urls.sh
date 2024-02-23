@@ -1,15 +1,24 @@
 #!/bin/bash
-# Returns a list of page preview URLs for use with Prow CI jobs
+# Returns a list of page preview URLs
 # To run locally, clean the _preview folder and do a new asciibinder build before running the script
+# To run in Prow CI, run with 
+# ./get-updated-preview-urls.sh $PULL_NUMBER
 
 # Check if jq is installed
 hash jq 2>/dev/null || { echo >&2 "Error: jq is not installed"; exit 1; }
 
-pr_branch="$(git rev-parse --abbrev-ref HEAD)"
+# Set $pull_number if it is not passed as variable
+if [ $# -eq 0 ]; then
 commit_id=$(git log -n 1 --pretty=format:"%H")
-pr_number="$(curl -s "https://api.github.com/search/issues?q=$commit_id" | jq '.items[0].number')"
+pull_number="$(curl -s "https://api.github.com/search/issues?q=$commit_id" | jq '.items[0].number')"
+pr_branch="$(git rev-parse --abbrev-ref HEAD)"
+else
+    pull_number=$1
+    pr_branch="latest"
+fi
+
 preview_url_slug="ocpdocs-pr"
-preview_url="https://${pr_number}--${preview_url_slug}.netlify.app"
+preview_url="https://${pull_number}--${preview_url_slug}.netlify.app"
 assemblies=()
 pages=()
 files=$(git diff --name-only HEAD~1 HEAD --diff-filter=AMRD "*.adoc" ':(exclude)_unused_topics/*')
@@ -45,8 +54,11 @@ fi
 # Search built_pages for every entry in updated_pages and add to pages array when it is found
 for updated_page in $updated_pages; do
     # sed $pr_branch > "latest" to match the Prow build URL
-    found_page=$(echo "${built_pages}" | grep "${updated_page}" | sed "s/$pr_branch/latest/")
-    pages+=("${preview_url}/${found_page}")
+    if [ "$pr_branch" != "latest" ]; then
+        found_page=$(echo "${built_pages}" | grep "${updated_page}" | sed "s/$pr_branch/latest/")
+    fi
+    pages+=("${found_page}")
 done
 
-printf '%s\n' "${pages[@]}" | sort | uniq
+#Echo the results, prepending the $preview_url to every line
+echo "${pages[@]}" | tr ' ' '\n' | sort | uniq | sed "s|^|$preview_url/|"
