@@ -7,7 +7,7 @@
 hash jq 2>/dev/null || { echo >&2 "Error: jq is not installed"; exit 1; }
 
 COMMIT_ID=$(git log -n 1 --pretty=format:"%H")
-PULL_NUMBER=$(curl -s "https://api.github.com/search/issues?q=$COMMIT_ID" | jq '.items[0].number')
+PULL_NUMBER=$1
 REPO_OWNER="openshift"
 REPO_NAME="openshift-docs"
 
