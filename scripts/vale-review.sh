@@ -1,13 +1,20 @@
 #!/bin/bash
-# This runs Vale on updated files, checks if the Vale alerts are on new/modified lines, and if so, builds curl request for GitHub review comment API
-# Also checks if a commment already exists before posting.
+# This runs Vale on updated files in last commit, checks if the Vale alerts are on new/modified lines, and if so, builds curl request 
+# for GitHub review comment API. Also checks if a commment already exists before posting.
 # To test locally, create a Github personal access token and export a $GITHUB_AUTH_TOKEN environmental variable to use the token
 
 # Check if jq is installed
 hash jq 2>/dev/null || { echo >&2 "Error: jq is not installed"; exit 1; }
 
-COMMIT_ID=$(git log -n 1 --pretty=format:"%H")
-PULL_NUMBER=$(curl -s "https://api.github.com/search/issues?q=$COMMIT_ID" | jq '.items[0].number')
+# Set $PULL_NUMBER and $COMMIT_ID if not passed as variables
+if [ $# -eq 0 ]; then
+    COMMIT_ID=$(git log -n 1 --pretty=format:"%H")
+    PULL_NUMBER=$(curl -s "https://api.github.com/search/issues?q=$COMMIT_ID" | jq '.items[0].number')
+else
+    PULL_NUMBER=$1
+    COMMIT_ID=$2
+fi
+
 REPO_OWNER="openshift"
 REPO_NAME="openshift-docs"
 
@@ -22,8 +29,7 @@ function post_variable_metadata {
 
 }
 
-# Get update files - this only gets files updated  in the last commit. For unsquashed commits, it will only run on last commit
-# This might be helpful to find all commits since head if the needs arises: https://stackoverflow.com/questions/7693249/how-to-list-commits-since-certain-commit
+# Get updated files in the last commit.
 FILES=$(git diff --name-only HEAD~1 HEAD --diff-filter=d "*.adoc" ':(exclude)_unused_topics/*')
 
 # Compares body, path, and line values for Vale alerts vs already existing comments on PR. If values match, comment already exists, remove from temp json files.
