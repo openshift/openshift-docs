@@ -53,10 +53,8 @@ fi
 
 # Search built_pages for every entry in updated_pages and add to pages array when it is found
 for updated_page in $updated_pages; do
-    # sed $pr_branch > "latest" to match the Prow build URL
-    if [ "$pr_branch" != "latest" ]; then
-        found_page=$(echo "${built_pages}" | grep "${updated_page}" | sed "s/$pr_branch/latest/")
-    fi
+    # sed s/$pr_branch/latest to match the Prow build URL
+    found_page=$(echo "${built_pages}" | grep "${updated_page}" | sed "s|/$pr_branch/|/latest/|")
     pages+=("${found_page}")
 done
 
