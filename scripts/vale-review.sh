@@ -76,13 +76,10 @@ function check_if_existing_comment {
 # Run vale with the custom template on updated files
 for FILE in ${FILES}; 
 do
-    valeOutput=$(vale --minAlertLevel=error --output=.vale/templates/bot-comment-output.tmpl $FILE)
-    
-    # Converts JSON stream to array
-    finalJson=$(jq -s '.' <<< "$valeOutput")
+    valeOutput=$(vale --minAlertLevel=error --output=.vale/templates/bot-comment-output.tmpl $FILE | jq)
         
     # Moved JSON to temp file for further parsing to avoid issues during development, but might not be neccessary(?)
-    echo "$finalJson" > vale_output_temp.json
+    echo "$valeOutput" > vale_output_temp.json
 
     #Get comments in PR
     curl -L -H "Accept: application/vnd.github+json" -H "Authorization: Bearer $GITHUB_AUTH_TOKEN" -H "X-GitHub-Api-Version: 2022-11-28" https://api.github.com/repos/$REPO_OWNER/$REPO_NAME/pulls/$PULL_NUMBER/comments > pull_comments_temp.json
