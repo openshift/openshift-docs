@@ -46,18 +46,33 @@ do
     sed -i 's/ifdef::.*\|ifndef::.*\|ifeval::.*\|endif::.*/ /' "$FILE"
     vale_json=$(vale --minAlertLevel=error --output=.vale/templates/bot-comment-output.tmpl "$FILE" | jq)
 
-    #Get comments in PR
-    pull_comments_json=$(curl -L -H "Accept: application/vnd.github+json" -H "Authorization: Bearer $GITHUB_AUTH_TOKEN" -H "X-GitHub-Api-Version: 2022-11-28" https://api.github.com/repos/openshift/openshift-docs/pulls/$PULL_NUMBER/comments | jq)
-
-    get_vale_errors "$vale_json" "$pull_comments_json"
+    # Check if there are Vale errors before processing the file further.
+    if [[ "$vale_json" != "[]" ]]; then
+        echo "Vale errors found in the file..."
+        #Check if Vale review comments already exist in the PR
+        pull_comments_json=$(curl -L -H "Accept: application/vnd.github+json" -H "Authorization: Bearer $GITHUB_AUTH_TOKEN" -H "X-GitHub-Api-Version: 2022-11-28" https://api.github.com/repos/openshift/openshift-docs/pulls/$PULL_NUMBER/comments | jq)
+        # Check if the response is not empty
+        if [[ "$pull_comments_json" != "[]" ]]; then
+            get_vale_errors "$vale_json" "$pull_comments_json"
+        else 
+            echo "No existing comments found..."
+        fi
+    else 
+        echo "No Vale errors found in the file, moving to next file..."
+        continue # move to next file
+    fi
 
     # Following logic checks if the line number is a part of the git diff. If it's not part of the diff it will be discarded.
     # We only want to check new/modified content, plus the GitHub API only accepts comments within the diff for the review comments endpoint.
-
-    echo "Posting new review comments..."
+    if [[ "$updated_vale_json" == "[]" ]]; then
+        echo "All Vale alerts already have existing comments, moving to next file..."
+        continue # move to next file
+    else 
+        echo "Checking if Vale alerts with existing comments are part of added or modified content..."
+    fi
+    
     # Iterate through $vale_json and post a comment if required
     jq -c '.[]' <<< "$updated_vale_json" | while IFS= read -r object; do
-        #echo "$object"
         BODY=$(echo "$object" | jq -r '.body')
         FILENAME=$(echo "$object" | jq -r '.path')
         LINE_NUMBER=$(echo "$object" | jq -r '.line')
@@ -96,6 +111,8 @@ do
                     post_review_comment "$BODY" "$FILENAME" "$LINE_NUMBER"
                     
                     break  # Exit the loop since the alert is within the diff, move on to the next JSON object
+                else
+                    echo "Vale error alert not part of the file's added/modified content..."
                 fi
             fi
 
