@@ -1,0 +1,395 @@
+:_mod-docs-content-type: ASSEMBLY
+include::_attributes/common-attributes.adoc[]
+[id="backing-up-restoring-vms-using-oadp"]
+= Backing up and restoring up virtual machines using OADP examples
+:context: oadp-backing-up-vms
+:installing-oadp-kubevirt:
+
+toc::[]
+
+[id="backing-up-restoring-fedora-vm-block-pv"]
+== Backup and restore a running Virtual Machine, with native data mover
+
+Example of Backing up and restoring Fedora virtual machine (VM) deployed with large file Over Block PV using {oadp-first}.
+
+.Prerequisites
+
+. OADP operator installed on OCP cluster. For more information, see xref:../../../backup_and_restore/application_backup_and_restore/installing/about-installing-oadp.adoc#about-installing-oadp[OADP Operator]
+. An available object storage for the backup location.
+. A file consisting of cloud credentials keys. For more information,  please refer to the official OADP docs
+https://docs.openshift.com/container-platform/4.13/backup_and_restore/application_backup_and_restore/installing/about-installing-oadp.html
+. {VirtProductName} Operator installed.
+. Container Storage Interface (CSI) Storage Provisioner supporting Block volumes
+
+
+.Procedure
+
+. Create a DPA instance with CSI and Node Agent enabled:
+
++
+[source,terminal]
+----
+cat <<EOF | oc create -f -
+apiVersion: oadp.openshift.io/v1alpha1
+kind: DataProtectionApplication
+metadata:
+  namespace: openshift-adp
+  name: ts-dpa
+spec:
+  configuration:
+    nodeAgent:
+      enable: true
+      uploaderType: kopia
+    velero:
+      defaultPlugins:
+      - openshift
+      - aws
+      - csi
+  backupLocations:
+    - name: default
+      velero:
+        provider: aws
+        default: true
+        objectStorage:
+          bucket: $BUCKET
+          prefix: velero
+          region: $REGION
+        config:
+          profile: default
+          region: $REGION
+EOF
+----
+
+. Create a secret:
++
+[source,terminal]
+----
+$ oc create secret generic <secret-name> -n openshift-adp --from-file cloud=<credentials file path>
+----
+
++
+[NOTE]
+====
+The Data Protection Application (DPA) configuration can be different for each bucket.
+====
+
+. Verify that the DataProtectionApplication (DPA) is reconciled.
+
+. Verify the Velero and Node agents pods are created and running:
++
+[source,terminal]
+----
+$ oc get pod -n openshift-adp
+----
++
+Output
++
+[source,terminal]
+----
+NAME                                                              READY   STATUS              RESTARTS   AGE
+node-agent-p4j6c                                                  1/1     Running             0          13m
+openshift-adp-controller-manager-54877df7c4-sw6zj                 1/1     Running             0          162m
+velero-5d6cbbc5d-gqpls                                            1/1     Running             0          13m
+----
+
+. Verify the node agent is running in `privilege` mode, outputting in YAML:
+
++
+[source,terminal]
+----
+$ oc get po/node-agent-p4j6c  -o yaml
+----
++
+Output:
++
+[source,terminal]
+----
+  containers:
+  - args:
+    - node-agent
+    - server
+    command:
+    - /velero
+    env:
+    - name: NODE_NAME
+      valueFrom:
+        fieldRef:
+          apiVersion: v1
+          fieldPath: spec.nodeName
+    - name: VELERO_NAMESPACE
+      valueFrom:
+        fieldRef:
+          apiVersion: v1
+          fieldPath: metadata.namespace
+    - name: VELERO_SCRATCH_DIR
+      value: /scratch
+    image: registry.redhat.io/oadp/oadp-velero-rhel9@sha256:xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx
+    imagePullPolicy: Always
+    name: node-agent
+    resources:
+      requests:
+        cpu: 100m
+        memory: 64Mi
+    securityContext:
+      privileged: true <1>
+----
++
+<1> Node agent is running in `privilege` mode.
+
+. Perform a backup:
++
+[source,terminal]
+----
+$ oc create -f backup.yml
+apiVersion: velero.io/v1
+kind: Backup
+metadata:
+  name: test-backup
+  labels:
+    velero.io/storage-location: default
+  namespace: openshift-adp
+spec:
+  hooks: {}
+  includedNamespaces:
+  - test-vm
+  snapshotMoveData: true
+  storageLocation: ts-dpa-1
+  ttl: 720h0m0s
+----
+
+. Verify the clone PVC volumeMode:
++
+[source,terminal]
+----
+$ oc get pvc/ocp-kubevirt-df735757-6c10-11ee-9572-0c9a3c9340c2-z5hv  -o jsonpath='{.spec.volumeMode}'
+----
++
+Output:
++
+[source,terminal]
+----
+Block
+----
+. Wait until the backups is completed successfully:
++
+[source,terminal]
+----
+$ oc get backup test-backup -n openshift-adp -o jsonpath='{.status.phase}'
+----
++
+Output:
++
+[source,terminal]
+----
+Completed
+----
+
+. Verify the dataupload CR's status is completed
++
+[source,terminal]
+----
+$ oc get dataupload
+----
++
+Output:
++
+[source,terminal]
+----
+NAME                 STATUS      STARTED   BYTES DONE   TOTAL BYTES   STORAGE LOCATION   AGE    NODE
+test-backup4         Completed   105s      50223065     50223065      ts-dpa-1           105s   oadp-51230-56rtw-worker
+----
+
+. Verify that there are no VolumeSnapshots resources remaining in the OADP namespace:
++
+[source,terminal]
+----
+$ oc get vs -n openshift-adp
+----
++
+Output:
++
+[source,terminal]
+----
+No resources found in openshift-adp namespace.
+----
+
+. Verify that there are no persistent volume claims (PVCs) remaining in the OADP namespace `openshift-adp`:
++
+[source,terminal]
+----
+$ oc get pvc -n openshift-adp
+----
++
+Output:
++
+[source,terminal]
+----
+No resources found in openshift-adp namespace.
+----
+
+. Delete the application namespace:
++
+[source,terminal]
+----
+$ appm remove ocp-kubevirt
+----
+
+. Check that the application has been deleted:
++
+[source,terminal]
+----
+$ oc get project ocp-kubevirt
+----
++
+Output:
++
+[source,terminal]
+----
+Error from server (NotFound): namespaces "ocp-kubevirt" not found
+----
+
+. Perform a restore:
++
+[source,terminal]
+----
+$ oc create -f restore.yml
+apiVersion: velero.io/v1
+kind: Restore
+metadata:
+  name: test-restore1
+  namespace: openshift-adp
+spec:
+  backupName: test-backup
+  excludedResources:
+  - nodes
+  - events
+  - events.events.k8s.io
+  - backups.velero.io
+  - restores.velero.io
+  - resticrepositories.velero.io
+  restorePVs: true
+----
+
+. Verify the clone PVC volumeMode is present in the namespace `openshift-adp ns`:
++
+[source,terminal]
+----
+$ oc get pvc/  -o jsonpath='{.spec.volumeMode}'ocp-kubevirt-df735757-6c10-11ee-9572-0c9a3c9340c2-z5hvf
+----
++
+Output:
++
+[source,terminal]
+----
+Block
+----
+
+. Wait until the restore finishes successfully:
++
+[source,terminal]
+----
+$ oc get restore test-restore1 -n openshift-adp -o jsonpath='{.status.phase}'
+----
++
+Output:
++
+[source,terminal]
+----
+Completed
+----
+
+. Verify the datadownload CR is completed successfully:
++
+[source,terminal]
+----
+$ oc get datadownload
+----
++
+Output:
++
+[source,terminal]
+----
+NAME                  STATUS      STARTED   BYTES DONE   TOTAL BYTES   STORAGE LOCATION   AGE   NODE
+test-restore3-nv4n2   Completed   55s       50223065     50223065      ts-dpa-1           55s   oadp-51230-56rtw-worker
+----
+
+. Verify that there are no PVCs left on the namespace  `openshift-adp ns`:
++
+[source,terminal]
+----
+$ oc get pvc
+----
+Output:
++
+[source,terminal]
+----
+No resources were found in openshift-adp namespace.
+----
+
+. Verify the VM is running:
++
+[source,terminal]
+----
+$ appm validate ocp-kubevirt && echo ok!
+----
++
+Output:
++
+[source,terminal]
+----
+...
+2024-02-14 18:22:02,711.711 - INFO: TASK [ocp-kubevirt : Wait for VM to be Running & Ready]
+2024-02-14 18:22:02,711.711 - INFO: ok: [localhost]
+2024-02-14 18:22:03,924.924 - INFO:
+2024-02-14 18:22:03,925.925 - INFO: TASK [ocp-kubevirt : Wait for VM to have AgentConnected status True indicating the guest agent is running] ***
+2024-02-14 18:22:03,925.925 - INFO: ok: [localhost]
+2024-02-14 18:22:03,951.951 - INFO:
+2024-02-14 18:22:03,951.951 - INFO: PLAY RECAP
+2024-02-14 18:22:03,951.951 - INFO: localhost                  : ok=5    changed=1    unreachable=0    failed=0    skipped=4    rescued=0    ignored=0
+2024-02-14 18:22:04,115.115 - DEBUG: Removed private data directory: /tmp/tmpic2dgato
+ok! <1>
+----
++
+<1> `ok!` is echoed, showing the VM is running.
+
+. Verify the PVC holding the VM is provided with `Block` mode PV:
++
+[source,terminal]
+----
+$ oc get pvc/test-vm-dv -o jsonpath='{.spec.volumeMode}'
+----
++
+Output:
++
+[source,terminal]
+----
+Block
+----
+
+. Verify the PVC is mounted properly to the `virt-launcher` pod
++
+[source,terminal]
+----
+$ oc get pvc/test-vm-dv -o jsonpath='{.status.phase}'
+----
++
+Output:
++
+[source,terminal]
+----
+Bound
+----
+
+. Verify VM file content SHA digest:
++
+[source,terminal]
+----
+$ sha256sum /tmp/random_data-from-v.bin
+----
++
+Output:
++
+[source,terminal]
+----
+XXXXXXXXXXXXXXXXXXX6c8d3b2488af14e116292a21dd15fbedb724014673  /tmp/random_data-from-vm-after-restore.bin
+----
