@@ -6,7 +6,13 @@ that are not included in assemblies.
 
 __author__      = "Christian Huffman"
 __version__     = "1 July, 2019"
+
+Updated September 2022 to run with Python 3.
+
+Run with `python scripts/find_unused.py .` at the repo root level to run against the entire repo.
 """
+
+from __future__ import print_function
 
 from os.path import join
 import argparse
@@ -48,7 +54,7 @@ class FindUnused():
             self.move_files(self.args.path,remaining_modules)
         else:
             for filename in remaining_modules:
-                print remaining_modules[filename]
+                print(remaining_modules[filename])
     
     def check_assemblies(self,assemblies,modules):
         """
@@ -79,7 +85,7 @@ class FindUnused():
         try:
             for key in remaining_modules:
                 os.rename(remaining_modules[key],root + "/" + self.unused_directory + "/" + key)
-            print "Moved %d files" % len(remaining_modules)
+            print("Moved %d files" % len(remaining_modules))
         except OSError as err:
             print("Unable to move files: {0}".format(err))
             print("Target destination: " + self.unused_directory)
