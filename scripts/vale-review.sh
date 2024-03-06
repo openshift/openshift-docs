@@ -48,9 +48,10 @@ do
 
     #Get comments in PR
     pull_comments_json=$(curl -L -H "Accept: application/vnd.github+json" -H "Authorization: Bearer $GITHUB_AUTH_TOKEN" -H "X-GitHub-Api-Version: 2022-11-28" https://api.github.com/repos/openshift/openshift-docs/pulls/$PULL_NUMBER/comments | jq)
-
+    
     get_vale_errors "$vale_json" "$pull_comments_json"
 
+    echo $updated_vale_json
     # Following logic checks if the line number is a part of the git diff. If it's not part of the diff it will be discarded.
     # We only want to check new/modified content, plus the GitHub API only accepts comments within the diff for the review comments endpoint.
 
