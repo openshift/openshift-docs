@@ -1,0 +1,58 @@
+:_mod-docs-content-type: ASSEMBLY
+[id="about-oadp-1-3-data-mover"]
+= About the OADP 1.3 Data Mover
+include::_attributes/common-attributes.adoc[]
+:context: about-oadp-1-3-data-mover
+
+toc::[]
+
+OADP 1.3 includes a built-in Data Mover that you can use to move Container Storage Interface (CSI) volume snapshots to a remote object store. The built-in Data Mover allows you to restore stateful applications from the remote object store if a failure, accidental deletion, or corruption of the cluster occurs. It uses xref:../../../backup_and_restore/application_backup_and_restore/backing_up_and_restoring/oadp-about-kopia.adoc#oadp-about-kopia[Kopia] as the uploader mechanism to read the snapshot data and write to the unified repository.
+
+OADP supports CSI snapshots on the following:
+
+* Red Hat OpenShift Data Foundation
+* Any other cloud storage provider with the Container Storage Interface (CSI) driver that supports the Kubernetes Volume Snapshot API
+
+:FeatureName: The OADP built-in Data Mover
+include::snippets/technology-preview.adoc[]
+
+[id="enabling-oadp-1-3-data-mover"]
+== Enabling the built-in Data Mover
+
+To enable the built-in Data Mover, you must include the CSI plugin and enable the node agent in the `DataProtectionApplication` custom resource (CR). The node agent is a Kubernetes daemonset that hosts data movement modules. These include the Data Mover controller, uploader, and the repository. 
+
+.Example `DataProtectionApplication` manifest
+[source,yaml]
+----
+apiVersion: oadp.openshift.io/v1alpha1
+kind: DataProtectionApplication
+metadata:
+  name: dpa-sample
+spec:
+  configuration:
+    nodeAgent:
+      enable: true <1>
+      uploaderType: kopia <2>
+    velero:
+      defaultPlugins:
+      - openshift
+      - aws
+      - csi <3>
+# ...
+----
+<1> The flag to enable the node agent.
+<2> The type of uploader. The possible values are `restic` or `kopia`. The built-in Data Mover uses Kopia as the default uploader mechanism regardless of the value of the `uploaderType` field.
+<3> The CSI plugin included in the list of default plugins.
+
+[id="built-in-data-mover-crs"]
+== Built-in Data Mover controller and custom resource definitions (CRDs)
+
+The built-in Data Mover feature introduces three new API objects defined as CRDs for managing backup and restore:
+
+* `DataDownload`: Represents a data download of a volume snapshot. The CSI plugin creates one `DataDownload` object per volume to be restored. The `DataDownload` CR includes information about the target volume, the specified Data Mover, the progress of the current data download, the specified backup repository, and the result of the current data download after the process is complete.
+
+* `DataUpload`: Represents a data upload of a volume snapshot. The CSI plugin creates one `DataUpload` object per CSI snapshot. The `DataUpload` CR includes information about the specified snapshot, the specified Data Mover, the specified backup repository, the progress of the current data upload, and the result of the current data upload after the process is complete.
+
+* `BackupRepository`: Represents and manages the lifecycle of the backup repositories. OADP creates a backup repository per namespace when the first CSI snapshot backup or restore for a namespace is requested. 
+
+

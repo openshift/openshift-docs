@@ -1,0 +1,26 @@
+// Module included in the following assemblies:
+//
+// * telco_ref_design_specs/ran/telco-core-ref-components.adoc
+
+:_mod-docs-content-type: REFERENCE
+[id="telco-core-scalability_{context}"]
+= Scalability
+
+New in this release::
+
+Not applicable
+
+Description::
+
+Clusters will scale to the sizing listed in the limits and requirements section.
++
+Scaling of workloads is described in the use model section.
+
+Limits and requirements::
+
+* Cluster scales to at least 120 nodes
+
+Engineering considerations::
+
+Not applicable
+

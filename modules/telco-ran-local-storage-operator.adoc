@@ -1,0 +1,22 @@
+// Module included in the following assemblies:
+//
+// * telco_ref_design_specs/ran/telco-ran-ref-du-components.adoc
+
+:_mod-docs-content-type: REFERENCE
+[id="telco-ran-local-storage-operator_{context}"]
+= Local Storage Operator
+
+New in this release::
+* No reference design updates in this release
+
+Description::
+You can create persistent volumes that can be used as `PVC` resources by applications with the Local Storage Operator.
+The number and type of `PV` resources that you create depends on your requirements.
+
+Engineering considerations::
+* Create backing storage for `PV` CRs before creating the `PV`.
+This can be a partition, a local volume, LVM volume, or full disk.
+* Refer to the device listing in `LocalVolume` CRs by the hardware path used to access each device to ensure correct allocation of disks and partitions.
+Logical names (for example, `/dev/sda`) are not guaranteed to be consistent across node reboots.
++
+For more information, see the link:https://access.redhat.com/documentation/en-us/red_hat_enterprise_linux/9/html/managing_file_systems/assembly_overview-of-persistent-naming-attributes_managing-file-systems#device-identifiers_assembly_overview-of-persistent-naming-attributes[{op-system-base} 9 documentation on device identifiers].

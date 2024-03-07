@@ -1,0 +1,51 @@
+// Module included in the following assemblies:
+//
+// * telco_ref_design_specs/ran/telco-ran-ref-design-spec.adoc
+
+:_mod-docs-content-type: REFERENCE
+[id="telco-core-ref-design-baseline-model_{context}"]
+= Common baseline model
+
+The following configurations and use model description are applicable to all {rds} use cases.
+
+Cluster::
+
+The cluster conforms to these requirements:
+
+* High-availability (3+ supervisor nodes) control plane
+* Non-schedulable supervisor nodes
+
+Storage::
+
+Core use cases require persistent storage as provided by external {rh-storage}. For more information, see the "Storage" subsection in "Reference core design components".
+
+Networking::
+
+{rds-caps} clusters networking conforms to these requirements:
+
+* Dual stack IPv4/IPv6
+
+* Fully disconnected: Clusters do not have access to public networking at any point in their lifecycle.
+
+* Multiple networks: Segmented networking provides isolation between OAM, signaling, and storage traffic.
+
+* Cluster network type: OVN-Kubernetes is required for IPv6 support.
+
++
+Core clusters have multiple layers of networking supported by underlying RHCOS, SR-IOV Operator, Load Balancer, and other components detailed in the following "Networking" section. At a high level these layers include:
+
+* Cluster networking: The cluster network configuration is defined and applied through the installation configuration. Updates to the configuration can be done at day-2 through the NMState Operator. Initial configuration can be used to establish:
+
+** Host interface configuration
+
+** A/A Bonding (Link Aggregation Control Protocol (LACP))
+
+* Secondary or additional networks: OpenShift CNI is configured through the Network `additionalNetworks` or NetworkAttachmentDefinition CRs.
+
+** MACVLAN
+
+* Application Workload: User plane networking is running in cloud-native network functions (CNFs).
+
+Service Mesh::
+
+Use of Service Mesh by telco CNFs is very common. It is expected that all core clusters will include a Service Mesh implementation. Service Mesh implementation and configuration is outside the scope of this specification.

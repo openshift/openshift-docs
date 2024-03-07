@@ -1,0 +1,103 @@
+// Module included in the following assemblies:
+//
+// * rosa_architecture/rosa_policy_service_definition/rosa-sre-access.adoc
+
+:_mod-docs-content-type: REFERENCE
+
+[id="rosa-policy-rh-access_{context}"]
+= Red Hat support access
+Members of the Red Hat Customer Experience and Engagement (CEE) team typically have read-only access to parts of the cluster. Specifically, CEE has limited access to the core and product namespaces and does not have access to the customer namespaces.
+
+[cols= "2a,4a,4a,4a,4a",options="header"]
+
+|===
+
+| Role | Core namespace | Layered product namespace | Customer namespace | AWS account^*^
+
+|OpenShift SRE| Read: All
+
+Write: Very
+
+limited ^[1]^
+| Read: All
+
+Write: None
+| Read: None^[2]^
+
+Write: None
+|Read: All ^[3]^
+
+Write: All ^[3]^
+
+|CEE
+|Read: All
+
+Write: None
+
+|Read: All
+
+Write: None
+
+|Read: None^[2]^
+
+Write: None
+
+|Read: None
+
+Write: None
+
+|Customer administrator
+|Read: None
+
+Write: None
+
+|Read: None
+
+Write: None
+
+| Read: All
+
+Write: All
+
+|Read: All
+
+Write: All
+
+|Customer user
+|Read: None
+
+Write: None
+
+|Read: None
+
+Write: None
+
+|Read: Limited^[4]^
+
+Write: Limited^[4]^
+
+|Read: None
+
+Write: None
+
+|Everybody else
+|Read: None
+
+Write: None
+|Read: None
+
+Write: None
+|Read: None
+
+Write: None
+|Read: None
+
+Write: None
+
+|===
+--
+1. Limited to addressing common use cases such as failing deployments, upgrading a cluster, and replacing bad worker nodes.
+2. Red Hat associates have no access to customer data by default.
+3. SRE access to the AWS account is an emergency procedure for exceptional troubleshooting during a documented incident.
+4. Limited to what is granted through RBAC by the Customer Administrator and namespaces created by the user.
+--

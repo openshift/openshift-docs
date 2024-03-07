@@ -1,0 +1,71 @@
+// Module included in the following assemblies:
+//
+// * telco_ref_design_specs/ran/telco-ran-ref-du-components.adoc
+
+:_mod-docs-content-type: REFERENCE
+[id="telco-ran-topology-aware-lifecycle-manager-talm_{context}"]
+= {cgu-operator-first}
+
+New in this release::
+* Added support for pre-caching additional user-specified images
+
+Description::
++
+--
+Managed updates::
+{cgu-operator} is an Operator that runs only on the hub cluster for managing how changes (including cluster and Operator upgrades, configuration, and so on) are rolled out to the network.
+{cgu-operator} does the following:
+
+* Progressively applies updates to fleets of clusters in user-configurable batches by using `Policy` CRs.
+* Adds `ztp-done` labels or other user configurable labels on a per-cluster basis
+
+Precaching for {sno} clusters::
+{cgu-operator} supports optional precaching of {product-title}, OLM Operator, and additional user images to {sno} clusters before initiating an upgrade.
++
+* A new `PreCachingConfig` custom resource is available for specifying optional pre-caching configurations.
+For example:
++
+[source,yaml]
+----
+apiVersion: ran.openshift.io/v1alpha1
+kind: PreCachingConfig
+metadata:
+  name: example-config
+  namespace: example-ns
+spec:
+  additionalImages:
+    - quay.io/foobar/application1@sha256:3d5800990dee7cd4727d3fe238a97e2d2976d3808fc925ada29c559a47e2e
+    - quay.io/foobar/application2@sha256:3d5800123dee7cd4727d3fe238a97e2d2976d3808fc925ada29c559a47adf
+    - quay.io/foobar/applicationN@sha256:4fe1334adfafadsf987123adfffdaf1243340adfafdedga0991234afdadfs
+  spaceRequired: 45 GiB <1>
+  overrides:
+    preCacheImage: quay.io/test_images/pre-cache:latest
+    platformImage: quay.io/openshift-release-dev/ocp-release@sha256:3d5800990dee7cd4727d3fe238a97e2d2976d3808fc925ada29c559a47e2e
+  operatorsIndexes:
+    - registry.example.com:5000/custom-redhat-operators:1.0.0
+  operatorsPackagesAndChannels:
+    - local-storage-operator: stable
+    - ptp-operator: stable
+    - sriov-network-operator: stable
+  excludePrecachePatterns: <2>
+    - aws
+    - vsphere
+----
+<1> Configurable `space-required` parameter allows you to validate before and after pre-caching storage space
+<2> Configurable filtering allows exclusion of unused images
+--
+
+Backup and restore for {sno}::
+{cgu-operator} supports taking a snapshot of the cluster operating system and configuration to a dedicated partition on a local disk.
+A restore script is provided that returns the cluster to the backed up state.
+
+Limits and requirements::
+* {cgu-operator} supports concurrent cluster deployment in batches of 400
+
+* Precaching and backup features are for {sno} clusters only.
+
+Engineering considerations::
+* The `PreCachingConfig` CR is optional and does not need to be created if you just wants to precache platform related (OpenShift and OLM Operator) images.
+The `PreCachingConfig` CR must be applied before referencing it in the `ClusterGroupUpgrade` CR.
+
+* Create a recovery partition during installation if you opt to use the {cgu-operator} backup and restore feature.

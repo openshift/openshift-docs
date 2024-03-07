@@ -1,0 +1,44 @@
+// Module included in the following assemblies:
+//
+// * otel/otel-troubleshooting.adoc
+
+:_mod-docs-content-type: PROCEDURE
+[id="exposing-metrics_{context}"]
+= Exposing the metrics
+
+The OpenTelemetry Collector exposes the metrics about the data volumes it has processed. The following metrics are for spans, although similar metrics are exposed for metrics and logs signals:
+
+`otelcol_receiver_accepted_spans`:: The number of spans successfully pushed into the pipeline.
+
+`otelcol_receiver_refused_spans`:: The number of spans that could not be pushed into the pipeline.
+`otelcol_exporter_sent_spans`:: The number of spans successfully sent to the destination.
+
+`otelcol_exporter_enqueue_failed_spans`:: The number of spans failed to be added to the sending queue.
+
+The operator creates a `<cr_name>-collector-monitoring` telemetry service that you can use to scrape the metrics endpoint.
+
+.Procedure
+
+. Enable the telemetry service by adding the following lines in the `OpenTelemetryCollector` custom resource:
+
++
+[source,yaml]
+----
+  config: |
+    service:
+      telemetry:
+        metrics:
+          address: ":8888" # <1>
+----
+<1> The address at which the internal collector metrics are exposed. Defaults to `:8888`.
+
+// TODO Operator 0.82.0 has spec.observability.metrics.enableMetrics config that creates ServiceMonitors for users
+
+. Retrieve the metrics by running the following command, which uses the port-forwarding Collector pod:
++
+[source,terminal]
+----
+$ oc port-forward <collector_pod>
+----
+
+. Access the metrics endpoint at `+http://localhost:8888/metrics+`.

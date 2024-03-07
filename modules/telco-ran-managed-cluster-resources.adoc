@@ -1,0 +1,38 @@
+// Module included in the following assemblies:
+//
+// * telco_ref_design_specs/ran/telco-ran-du-overview.adoc
+
+:_mod-docs-content-type: REFERENCE
+[id="telco-ran-managed-cluster-resources_{context}"]
+= {rds-caps} worker node cluster resource utilization
+
+The maximum number of running pods in the system, inclusive of application workloads and {product-title} pods, is 120.
+
+Resource utilization::
+{product-title} resource utilization varies depending on many factors including application workload characteristics such as:
+
+* Pod count
+
+* Type and frequency of probes
+
+* Messaging rates on primary CNI or secondary CNI with kernel networking
+
+* API access rate
+
+* Logging rates
+
+* Storage IOPS
+
+Cluster resource requirements are applicable under the following conditions:
+
+* The cluster is running the described representative application workload.
+
+* The cluster is managed with the constraints described in xref:../../telco_ref_design_specs/ran/telco-ran-ref-validation-artifacts.html#telco-ran-hub-cluster-management_ran-ref-design-overview[Hub cluster management resources].
+
+* Components noted as optional in the RAN DU use model configuration are not applied.
+
+[IMPORTANT]
+====
+You will need to do additional analysis to determine the impact on resource utilization and ability to meet KPI targets for configurations outside the scope of the {rds-caps} reference design.
+You might have to allocate additional resources in the cluster depending on your requirements.
+====

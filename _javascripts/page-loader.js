@@ -17,7 +17,11 @@ function versionSelector(list) {
   "use strict";
 
   newVersion = list[list.selectedIndex].value;
-  currentVersion = window.location.pathname.split("/")[2];
+  if (dk === "openshift-enterprise") {
+    currentVersion = window.location.pathname.split("/")[2];
+  } else if (dk === "openshift-origin") {
+    currentVersion = window.location.pathname.split("/")[1];
+  }
 
   let baseUrl = urlMappings[dk];
 
@@ -26,7 +30,7 @@ function versionSelector(list) {
     baseUrl = "https://docs.openshift.com/enterprise/";
   }
 
-  if (dk === "openshift-enterprise" && currentVersion.charAt(0) !== newVersion.charAt(0)){
+  if ((dk === "openshift-enterprise" || dk === "openshift-origin") && currentVersion.charAt(0) !== newVersion.charAt(0)){
     fileRequested = "/welcome/index.html";
   } else {
     const versionIndex = window.location.pathname.lastIndexOf(currentVersion) + currentVersion.length;

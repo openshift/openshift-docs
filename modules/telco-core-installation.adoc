@@ -1,0 +1,26 @@
+// Module included in the following assemblies:
+//
+// * telco_ref_design_specs/ran/telco-core-ref-components.adoc
+
+:_mod-docs-content-type: REFERENCE
+[id="telco-core-installation_{context}"]
+= Installation
+
+New in this release::
+
+
+Description::
+
+{rds-caps} clusters can be installed using the Agent Based Installer (ABI). This method allows users to install {product-title} on bare metal servers without requiring additional servers or VMs for managing the installation. The ABI installer can be run on any system for example a laptop to generate an ISO installation image. This ISO is used as the installation media for the cluster supervisor nodes. Progress can be monitored using the ABI tool from any system with network connectivity to the supervisor node’s API interfaces.
+
+* Installation from declarative CRs
+* Does not require additional servers to support installation
+* Supports install in disconnected environment
+
+Limits and requirements::
+
+* Disconnected installation requires a reachable registry with all required content mirrored.
+
+Engineering considerations::
+
+* Networking configuration should be applied as NMState configuration during installation in preference to day-2 configuration by using the NMState Operator.

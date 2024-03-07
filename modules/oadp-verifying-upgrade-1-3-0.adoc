@@ -1,0 +1,98 @@
+// Module included in the following assemblies:
+//
+// * backup_and_restore/oadp-release-notes-1-3.adoc
+
+:_mod-docs-content-type: PROCEDURE
+
+[id="verifying-upgrade-1-3-0_{context}"]
+= Verifying the upgrade
+
+Use the following procedure to verify the upgrade.
+
+.Procedure
+. Verify the installation by viewing the {oadp-first} resources by running the following command:
++
+[source,terminal]
+----
+$ oc get all -n openshift-adp
+----
++
+.Example output
++
+----
+NAME                                                     READY   STATUS    RESTARTS   AGE
+pod/oadp-operator-controller-manager-67d9494d47-6l8z8    2/2     Running   0          2m8s
+pod/node-agent-9cq4q                                     1/1     Running   0          94s
+pod/node-agent-m4lts                                     1/1     Running   0          94s
+pod/node-agent-pv4kr                                     1/1     Running   0          95s
+pod/velero-588db7f655-n842v                              1/1     Running   0          95s
+
+NAME                                                       TYPE        CLUSTER-IP       EXTERNAL-IP   PORT(S)    AGE
+service/oadp-operator-controller-manager-metrics-service   ClusterIP   172.30.70.140    <none>        8443/TCP   2m8s
+service/openshift-adp-velero-metrics-svc                   ClusterIP   172.30.10.0      <none>        8085/TCP   8h
+
+NAME                        DESIRED   CURRENT   READY   UP-TO-DATE   AVAILABLE   NODE SELECTOR   AGE
+daemonset.apps/node-agent    3         3         3       3            3           <none>          96s
+
+NAME                                                READY   UP-TO-DATE   AVAILABLE   AGE
+deployment.apps/oadp-operator-controller-manager    1/1     1            1           2m9s
+deployment.apps/velero                              1/1     1            1           96s
+
+NAME                                                           DESIRED   CURRENT   READY   AGE
+replicaset.apps/oadp-operator-controller-manager-67d9494d47    1         1         1       2m9s
+replicaset.apps/velero-588db7f655                              1         1         1       96s
+----
+
+. Verify that the `DataProtectionApplication` (DPA) is reconciled by running the following command:
++
+[source,terminal]
+----
+$ oc get dpa dpa-sample -n openshift-adp -o jsonpath='{.status}'
+----
+.Example output
+[source,yaml]
++
+----
+{"conditions":[{"lastTransitionTime":"2023-10-27T01:23:57Z","message":"Reconcile complete","reason":"Complete","status":"True","type":"Reconciled"}]}
+----
+
+. Verify the `type` is set to `Reconciled`.
+
+. Verify the backup storage location and confirm that the `PHASE` is `Available` by running the following command:
++
+[source,terminal]
+----
+$ oc get backupStorageLocation -n openshift-adp
+----
+.Example output
+[source,yaml]
++
+----
+NAME           PHASE       LAST VALIDATED   AGE     DEFAULT
+dpa-sample-1   Available   1s               3d16h   true
+----
+
+In OADP 1.3 you can start data movement off cluster per backup versus creating a `DataProtectionApplication` (DPA) configuration.
+
+.Example
+[source,terminal]
+----
+$ velero backup create example-backup --include-namespaces mysql-persistent --snapshot-move-data=true
+----
+
+.Example
+[source,yaml]
+----
+apiVersion: velero.io/v1
+kind: Backup
+metadata:
+  name: example-backup
+  namespace: openshift-adp
+spec:
+  snapshotMoveData: true
+  includedNamespaces:
+  - mysql-persistent
+  storageLocation: dpa-sample-1
+  ttl: 720h0m0s
+# ...
+----

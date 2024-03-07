@@ -1,0 +1,22 @@
+// Module included in the following assemblies:
+//
+// * telco_ref_design_specs/ran/telco-ran-ref-du-components.adoc
+
+:_mod-docs-content-type: REFERENCE
+[id="telco-ran-logging_{context}"]
+= Logging
+
+New in this release::
+* Vector is now the recommended log collector.
+
+Description::
+Use logging to collect logs from the far edge node for remote analysis.
+
+Engineering considerations::
+* Handling logs beyond the infrastructure and audit logs, for example, from the application workload requires additional CPU and network bandwidth based on additional logging rate.
+* As of {product-title} 4.14, vector is the reference log collector.
++
+[NOTE]
+====
+Use of fluentd in the RAN use model is deprecated.
+====
