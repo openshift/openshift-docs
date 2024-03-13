@@ -56,6 +56,7 @@ do
             get_vale_errors "$vale_json" "$pull_comments_json"
         else 
             echo "No existing comments found..."
+            updated_vale_json="$vale_json"
         fi
     else 
         echo "No Vale errors found in the file, moving to next file..."
