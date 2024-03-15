@@ -15,7 +15,7 @@ else
     COMMIT_ID=$2
 fi
 
-FILES=$(git diff --name-only HEAD~1 HEAD --diff-filter=d "*.adoc" ':(exclude)_unused_topics/*')
+FILES=$(git diff --name-only HEAD~1 HEAD --diff-filter=d "*.adoc" ':(exclude)_unused_topics/*' ':(exclude)rest_api/*' ':(exclude)microshift_rest_api/*' ':(exclude)modules/virt-runbook-*' ':(exclude)modules/oc-by-example-content.adoc' ':(exclude)modules/oc-adm-by-example-content.adoc' ':(exclude)monitoring/config-map-reference-for-the-cluster-monitoring-operator.adoc' ':(exclude)modules/microshift-oc-adm-by-example-content.adoc' ':(exclude)modules/microshift-oc-by-example-content.adoc')
 
 function post_review_comment {
 
