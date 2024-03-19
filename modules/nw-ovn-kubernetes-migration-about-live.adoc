@@ -1,0 +1,155 @@
+= OpenShift SDN live migration overview
+
+The OpenShift SDN live migration is the process in which the OpenShift SDN network plugin and its network configurations, connections, and associated resources, are migrated to the OVN-Kubernetes network plugin. The live migration method offers the following benefits: 
+
+* Continuous service availability
+* Minimized downtime
+* Automatic node rebooting
+* Seamless transition from the OpenShift SDN network plugin to the OVN-Kubernetes network plugin. 
+
+The live migration method is valuable for deployment types that require constant service availability, such as Red Hat OpenShift Dedicated or Red Hat OpenShift Service on AWS. It is not currently available for Azure Red Hat OpenShift (ARO) or HyperShift deployment types. 
+
+== Considerations for migrating to the OVN-Kubernetes network plugin
+
+* The live migration procedure is unsupported for clusters with OpenShift SDN multitenant mode enabled. You must disable multitenant mode before beginning the process. 
+
+* During the live migration, when the cluster is running both OVN-Kubernetes and OpenShift SDN, multicast and egress IP are temporarily disabled for both CNIs.
+
+* When the live migration procedure begins, multitenant isolation is permanently disabled. Multitenant isolation is only supported on OpenShift SDN. 
+
+* Egress routers will block the live migration process. This feature must be removed prior to beginning the live migration process. 
+
+* During the live migration, multicast, egress IP addresses, and egress firewalls are temporarily disabled. They can be migrated from OpenShift SDN to OVN-Kubernetes after the live migration process has finished. 
+
+* Although a rollback procedure is provided, the migration is intended to be a one-way process. For users that want to rollback to OpenShift-SDN, migration from OpenShift-SDN to OVN-Kubernetes must have succeeded. Users can follow the same procedure below to migrate to the OpenShift SDN network plugin from the OVN-Kubernetes network plugin.
+
+* The live migration is only supported on managed clusters. It is not supported on HyperShift or Azure Red Hat OpenShift (ARO) clusters. 
+
+* New nodes should not be created during the live migration because both CNIs would try to setup the new node.
+
+
+== Information about the OpenShift SDN live migration script
+
+The live migration method for migrating from OpenShift SDN network plugin to the OVN-Kubernetes network plugin is a two-step procedure that contains multiple internal processes that are executed by a wrapper script. When running the two commands, the following events occur:
+
+1. The Cluster Network Operator checks the current hardware MTU and the cluster MTU to determine a routable MTU during migration. These changes trigger the Machine Config Operator to apply a new machine configuration to each machine config pool and reboot all nodes. After migration, MTU values are reduced by 50 bytes. For example:
+
+     - If the current hardware MTU is `1500`, and the cluster MTU is not specified, the CNO sets the `.spec.migration.mtu` of the `network.operator` CR with the MTU of OVN-Kubernetes: 
+         - `.spec.migration.mtu.network.from` is reduced from `1450` to `1400`
+         - `.spec.migration.mtu.machine.from` remains `1500`
+
+
+. The Cluster Network Operator watches the machine config pool and waits until the machine configs with routable MTUs are applied to all nodes. The CNO then sets the `NetworkTypeMigrationMTUReady` condition to `True` in the status of the `network.config` CR.
+
+. The Cluster Network Operator patches the `network.operator` CR with `{"spec":{"migration":{"networkType":"OVNKubernetes","mode":"Live"}}}`.
+
+. The Cluster Network Operator redeploys the OpenShift SDN network plugin in migration mode. It adds a condition check to the wrapper script of the OpenShift SDN container to see if the bridge, `br-ex`, exists on the node. If `br-ex` exists, the node has already been updated by the Machine Config Operator, and is therefore already running OVN-Kubernetes. If this occurs, the OpenShift SDN pod does not launch the `openshift-sdn-node` process. 
++
+During this process, CNO also deploys OVN-Kubernetes to the cluster with hybrid overlay enabled. To avoid racing, the host subnet allocation is disabled in OVN-Kubernetes. The `ovnkube-node` container script is rendered with the following logic for migration:
+** If `br-ex` does not exist, it means that the node has not yet been updated by the Machine Config Operator. Instead of starting the `ovnkube-node` process, it runs the `hybrid-overlay-node` process. `hybrid-overlay-node` adds the node annotation `k8s.ovn.org/hybrid-overlay-distributed-router-gateway-mac`, which is required by hybrid overlay. The script also adds the node annotation `k8s.ovn.org/hybrid-overlay-node-subnet` according to the HostSubnet CR of this node.
+** If `br-ex` does exist, it means that the node has been updated by the Machine Config Operator. This indicates that the `ovnkube-node` can be started. The script also adds the node annotation `k8s.ovn.org/node-subnets` according to the HostSubnet CR of this node.
++
+The CNO waits until OVN-Kubernetes is deployed in the cluster. It then sets the `NetworkTypeMigrationTargetCNIAvailable` condition to `TRUE` in the status of the `network.config` CR.
+
+. The Cluster Network Operator updates the `.status.migration.networkType` of the `network.config` CR. This change triggers the Machine Config Operator to apply a new MachineConfig to each machine config pool. During this process, the following events occur:
+** The Machine Config Operator cordons, drains, and reboots the node.
+** When the node is back up, the `br-ex` bridge is created, which indicates that the node is ready for OVN-Kubernetes. As a result, the local zone OVN-Kubernetes can be started. The `ovnkube-node` container wrapper script also adds the node annotation `k8s.ovn.org/node-subnets` according to the HostSubnet CR of this node. 
++
+On the local node, OVN-Kubernetes adds all OpenShift SDN nodes as hybrid overlay nodes to the local zone, and all OVN nodes as OVN-IC remote zones. On a remote OVN node, OVN-Kubernetes removes a hybrid overlay node and adds an OVN-IC remote zone. Pods are recreated on the node using OVN-Kubernetes as the default CNI plugin. 
++
+This process is repeated for each node until all nodes have been applied to the new MachineConfig and converted to OVN-Kubernetes. 
+
+. The Cluster Network Operator watches the machine config pools and waits until the new MachineConfig is applied to all nodes. It then sets the `NetworkTypeMigrationTargetCNIInUse` condition to `True` in the status of the `network.config` CR.
+
+. The Cluster Network Operator removes the `spec.migration` field of the `network.operator` custom resource. It then triggers the CNO to perform the following actions:
+** Delete the `openshift-sdn` DaemonSets and the related resources, such as custom resources, ConfigMaps, and so on. 
+** Redeploy OVN-Kubernetes in `normal` mode, so that the migration mode script is not present, hybrid overlay is disabled, host subnet allocation is enabled, and so on. 
+** Remove the hybrid overlay related labels and node hybrid overlay annotations from the nodes.
+
+. The Cluster Network Operator waits until OVN-Kubernetes is redeployed and sets the `NetworkTypeMigrationOriginalCNIPurged` condition to `True` in the status of the `network.config` CR. Then, it sets the `NetworkTypeMigrationInProgress` condition to `False` and the reason as `NetworkTypeMigrationCompleted` in the status of the `network.config` CR. This indicates that the migration has successfully completed. 
+
+== Prerequisites for live migration
+
+The following prerequisites must be met before migrating to the OVN-Kubernetes network plugin from the OpenShift SDN plugin:
+
+* A cluster has been configured with the OpenShift SDN CNI network plugin in the network policy isolation mode.
+
+* You have installed the OpenShift CLI (`oc`).
+
+* You have access to the cluster as a user with the `cluster-admin` role.
+
+* You have created a recent backup of the etcd database is available.
+
+* The cluster is in a known good state without any errors.
+
+* On all cloud platforms after updating software, a security group rule must be in place to allow UDP packets on port `6081` for all nodes.
+
+* Cluster administrators must disable the following custom resources:
++
+** Egress Router
+
+# Checking for Egress router resources
+
+You must disable any egress router custom resources before performing a live migration of OpenShift-SDN to OVN-Kubernetes. You can check the status of egress router custom resources (CRs) with the following procedure.
+
+**Procedure**
+
+1. From the OpenShift Container Platform web console, navigate to *Observe* -> *Metrics*.
+
+2. In the *Expression* box, add the following queries, and then click *Add query*:
+~~~
+network_attachment_definition_instances{networks="egress-router"} > 0
+~~~
+
+3. Click *Run queries*.
+
+If any datapoints are found, you should not proceed with the OpenShift SDN to OVN-Kubernetes live migration procedure. These custom resources must be removed before using the live migration procedure.
+
+## Removing egress custom resources
+
+* To remove an egress router, you can delete the egress router custom resource definition (CRD):
+~~~
+$ oc delete crd egressrouters.network.operator.openshift.io
+~~~
+
+= Using the live migration method to migrate from the OpenShift SDN network plugin to the OVN-Kubernetes network plugin
+
+Administrators should ensure that all prerequisites have been met before beginning the migration process. Afterwards, the following procedure can be used to initiate the live migration from the OpenShift SDN network plugin to the OVN-Kubernetes network plugin.
+
+.Procedure
+
+. Enter the following command to add the `unsupported-red-hat-internal-testing` annotation to the cluster-level network configuration:
++
+[source,terminal]
+----
+$ oc patch Network.config.openshift.io cluster --type='merge' --patch '{"metadata":{"annotations":{"unsupported-red-hat-internal-testing": "true"}}}'
+----
+
+. Enter the following command to patch the cluster-level networking configuration and initiative the migration from OpenShift SDN to OVN-Kubernetes:
++
+[source,terminal]
+----
+$ oc patch Network.config.openshift.io cluster --type='merge' --patch '{"metadata":{"annotations":{"network.openshift.io/network-type-migration":""}},"spec":{"networkType":"OVNKubernetes"}}'
+----
+
+. After running these commands, the migration process begins. The time it takes to complete the process will vary depending on how many nodes are in your cluster. You can enter the following commands to ensure that the migration process has completed, and to check the status of the `network.config`:
++
+----
+$ oc get network.config.openshift.io cluster -o jsonpath='{.status.networkType}'
+----
++
+----
+$ oc get network.config cluster -o=jsonpath='{.status.conditions}' | jq .
+----
+
+= Using the live migration method to migrate from the OVN-Kubernetes network plugin to the OpenShift SDN network plugin
+
+You can roll back to the OpenShift SDN network plugin after the migration to OVN-Kubernetes has completed. 
+
+.Procedure
+
+* Enter the following command to initiate the rollback to OpenShift SDN:
++
+----
+$ oc patch Network.config.openshift.io cluster --type='merge' --patch '{"metadata":{"annotations":{"network.openshift.io/network-type-migration":""}},"spec":{"networkType":"OpenShiftSDN"}}'
+----
