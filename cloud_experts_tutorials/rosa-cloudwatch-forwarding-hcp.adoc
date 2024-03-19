@@ -1,0 +1,290 @@
+:_mod-docs-content-type: ASSEMBLY
+[id="rosa-cloudwatch-forwarding-hcp"]
+= Configuring CloudWatch log forwarding for HCP clusters
+include::_attributes/attributes-openshift-dedicated.adoc[]
+:context: rosa-cloudwatch-forwarding-hcp
+
+toc::[]
+
+
+[id="rosa-cloudwatch-forwarding-hcp-prerequisites"]
+.Prerequisites
+
+* A {product-title} (ROSA) HCP cluster
+* The `jq` command-line interface (CLI)
+* The Amazon Web Services (AWS) CLI (`aws`)
+
+[id="rosa-cloudwatch-forwarding-hcp-environment-setup"]
+== Setting up your environment
+
+. Configure the following environment variables, changing the cluster name to suit your cluster:
++
+[NOTE]
+====
+You must be logged in as an administrator.
+====
++
+[source,terminal]
+----
+$ export ROSA_CLUSTER_NAME=$(oc get clusterversion version -o jsonpath='{.spec.clusterID}{"\n"}'"  | sed 's/-[a-z0-9]\{5\}$//')
+$ export REGION=$(rosa describe cluster -c ${ROSA_CLUSTER_NAME} --output json | jq -r .region.id)
+$ export OIDC_ENDPOINT=$(rosa describe cluster -c $ROSA_CLUSTER_NAME -o yaml | grep "oidc_endpoint_url" | sed -E 's|^.*oidc_endpoint_url: https://(.*)|\1|')
+$ export AWS_ACCOUNT_ID=$(rosa describe cluster -c $ROSA_CLUSTER_NAME | grep "STS Role ARN:" | sed 's|.*arn:aws:iam::\([0-9]*\):.*|\1|g')
+----
+
+. Ensure all fields output correctly before moving to the next section:
++
+[source,terminal]
+----
+$ echo "Cluster: ${ROSA_CLUSTER_NAME}, Region: ${REGION}, OIDC Endpoint: ${OIDC_ENDPOINT}, AWS Account ID: ${AWS_ACCOUNT_ID}"
+----
+
+[id="rosa-cloudwatch-forwarding-hcp-prep-aws"]
+== Preparing your AWS account
+
+. Create the Trust Relationship file `trust-relationship.json`:
++
+[source,terminal]
+----
+$ cat << EOF > trust-relationship.json
+{
+    "Version": "2012-10-17",
+    "Statement": [
+        {
+            "Effect": "Allow",
+            "Principal": {
+                "Federated": "arn:aws:iam::${AWS_ACCOUNT_ID}:oidc-provider/${OIDC_ENDPOINT_URL}"
+            },
+            "Action": "sts:AssumeRoleWithWebIdentity",
+            "Condition": {
+                "StringEquals": {
+                    "${OIDC_ENDPOINT}:sub": "system:serviceaccount:openshift-config-managed:cloudwatch-audit-exporter"
+                }
+            }
+        }
+    ]
+}
+EOF
+----
+
+. Create the CloudWatch IAM Policy file `iam-policy.json`:
++
+[source,terminal]
+----
+$ cat << EOF > iam-policy.json
+{
+  "Version": "2012-10-17",
+  "Statement": [
+    {
+      "Action": [
+        "logs:PutLogEvents",
+        "logs:CreateLogGroup",
+        "logs:PutRetentionPolicy",
+        "logs:CreateLogStream",
+        "logs:DescribeLogGroups",
+        "logs:DescribeLogStreams"
+      ],
+      "Effect": "Allow",
+      "Resource": "arn:aws:logs:*:*:*"
+    }
+  ]
+}
+EOF
+----
+
+. Attach the IAM policy to the IAM role:
+
+$ IAM_POLICY_NAME = <enter_policy_name>
+$ IAM_ROLE_NAME = <enter_role_name>
+$ IAM_POLICY_ARN=$(aws iam create-policy --policy-name $IAM_POLICY_NAME --policy-document file://iam-policy.json | jq -r '.Policy.Arn')
+$ IAM_ROLE_ARN=$(aws iam create-role --role-name $IAM_ROLE_NAME --assume-role-policy-document file://trust-relationship.json | jq -r '.Role.Arn')
+
+[id="rosa-cloudwatch-forwarding-hcp-deploy"]
+== Deploying Operators
+
+. Deploy the {clo}:
++
+[source,terminal]
+----
+$  cat << EOF | oc apply -f -
+   apiVersion: operators.coreos.com/v1alpha1
+   kind: Subscription
+   metadata:
+     labels:
+      operators.coreos.com/cluster-logging.openshift-logging: ""
+     name: cluster-logging
+     namespace: openshift-logging
+   spec:
+     channel: stable
+     config:
+      env:
+        - name: ROLEARN
+          value: '$IAM_ROLE_ARN'
+     installPlanApproval: Automatic
+     name: cluster-logging
+     source: redhat-operators
+     sourceNamespace: openshift-marketplace
+EOF
+----
+
+. Create a secret:
++
+[source,terminal]
+----
+$  cat << EOF | oc apply -f -
+  apiVersion: v1
+  kind: Secret
+  metadata:
+    name: cloudwatch-credentials
+    namespace: openshift-logging
+  stringData:
+    role_arn: $ROLE_ARN
+EOF
+----
+
+[id="rosa-cloudwatch-forwarding-hcp-configure-cluster-logging"]
+== Configuring cluster logging
+
+. Create a `ClusterLogForwarder` custom resource (CR):
++
+[source,terminal]
+----
+$ cat << EOF | oc apply -f -
+  apiVersion: "logging.openshift.io/v1"
+  kind: ClusterLogForwarder
+  metadata:
+    name: instance
+    namespace: openshift-logging
+  spec:
+    outputs:
+      - name: cw
+        type: cloudwatch
+        cloudwatch:
+          groupBy: namespaceName
+          groupPrefix: rosa-${ROSA_CLUSTER_NAME}
+          region: ${REGION}
+        secret:
+          name: cloudwatch-credentials
+    pipelines:
+      - name: to-cloudwatch
+        inputRefs:
+          - infrastructure
+          - audit
+          - application
+        outputRefs:
+          - cw
+EOF
+----
+
+. Create a `ClusterLogging` CR:
++
+[source,terminal]
+----
+$ cat << EOF | oc apply -f -
+  apiVersion: logging.openshift.io/v1
+  kind: ClusterLogging
+  metadata:
+    name: instance
+    namespace: openshift-logging
+  spec:
+    collection:
+      logs:
+         type: vector
+    managementState: Managed
+EOF
+----
+
+rosa edit cluster -c $ROSA_CLUSTER_NAME --audit-log-arn "$IAM_ROLE_ARN"
+
+
+[id="rosa-cloudwatch-forwarding-hcp-check-aws"]
+== Checking CloudWatch for logs
+
+* Use either the AWS console or the AWS CLI to validate that there are log streams from the cluster.
+** To validate the logs in the AWS CLI, run the following command:
++
+[source,terminal]
+----
+$ aws logs describe-log-groups --log-group-name-prefix rosa-${ROSA_CLUSTER_NAME}
+----
++
+.Sample output
++
+[source,c]
+----
+{
+  "logGroups": [
+      {
+        "logGroupName": "rosa-xxxx.audit",
+        "creationTime": 1661286368369,
+        "metricFilterCount": 0,
+        "arn": "arn:aws:logs:us-east-2:xxxx:log-group:rosa-xxxx.audit:*",
+        "storedBytes": 0
+      },
+      {
+        "logGroupName": "rosa-xxxx.infrastructure",
+        "creationTime": 1661286369821,
+        "metricFilterCount": 0,
+        "arn": "arn:aws:logs:us-east-2:xxxx:log-group:rosa-xxxx.infrastructure:*",
+        "storedBytes": 0
+      }
+  ]
+}
+----
++
+[NOTE]
+====
+If this is a new cluster, you might not see a log group for `application` logs as applications are not yet running.
+====
+
+[id="rosa-cloudwatch-forwarding-hcp-clean-up"]
+== Cleaning up your resources
+
+. Delete the `ClusterLogForwarder` CR:
++
+[source,terminal]
+----
+$ oc delete -n openshift-logging clusterlogforwarder instance
+----
+
+. Delete the `ClusterLogging` CR:
++
+[source,terminal]
+----
+$ oc delete -n openshift-logging clusterlogging instance
+----
+
+. Detach the IAM policy to the IAM role:
++
+[source,terminal]
+----
+$ aws iam detach-role-policy --role-name "${ROSA_CLUSTER_NAME}-RosaCloudWatch" \
+   --policy-arn "${POLICY_ARN}"
+----
+
+. Delete the IAM role:
++
+[source,terminal]
+----
+$ aws iam delete-role --role-name "${ROSA_CLUSTER_NAME}-RosaCloudWatch"
+----
+
+. Delete the IAM policy:
++
+[IMPORTANT]
+====
+Only delete the IAM policy if there are no other resources using the policy.
+====
++
+[source,terminal]
+----
+$ aws iam delete-policy --policy-arn "${IAM_POLICY_ARN}"
+----
+
+. Delete the CloudWatch log groups:
++
+[source,terminal]
+----
+$ aws logs delete-log-group --log-group-name "rosa-${ROSA_CLUSTER_NAME}.audit"
+$ aws logs delete-log-group --log-group-name "rosa-${ROSA_CLUSTER_NAME}.infrastructure"
+----
