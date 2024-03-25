@@ -1,0 +1,223 @@
+// Module included in the following assemblies:
+//
+// * virt/monitoring/virt-running-cluster-checkups.adoc
+
+:_mod-docs-content-type: PROCEDURE
+[id="virt-checking-storage-configuration_{context}"]
+= Running a storage checkup
+
+Use a predefined checkup to verify that the {product-title} cluster storage is configured optimally to run {VirtProductName} workloads.
+
+
+.Prerequisites
+* You have installed the OpenShift CLI (`oc`).
+* The cluster administrator has created the required `cluster-reader` permissions for the storage checkup service account and namespace, such as in the following example:
++
+[source,yaml]
+----
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: kubevirt-storage-checkup-clustereader
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: cluster-reader
+subjects:
+- kind: ServiceAccount
+  name: storage-checkup-sa
+  namespace: <target_namespace> # <1>
+----
+<1> The namespace where the checkup is to be run.
+
+
+.Procedure
+
+. Create a `ServiceAccount`, `Role`, and `RoleBinding` manifest file for the storage checkup:
++
+.Example service account, role, and rolebinding manifest
+[%collapsible]
+====
+[source,yaml]
+----
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: storage-checkup-sa
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: storage-checkup-role
+rules:
+  - apiGroups: [ "" ]
+    resources: [ "configmaps" ]
+    verbs: ["get", "update"]
+  - apiGroups: [ "kubevirt.io" ]
+    resources: [ "virtualmachines" ]
+    verbs: [ "create", "delete" ]
+  - apiGroups: [ "kubevirt.io" ]
+    resources: [ "virtualmachineinstances" ]
+    verbs: [ "get" ]
+  - apiGroups: [ "subresources.kubevirt.io" ]
+    resources: [ "virtualmachineinstances/addvolume", "virtualmachineinstances/removevolume" ]
+    verbs: [ "update" ]
+  - apiGroups: [ "kubevirt.io" ]
+    resources: [ "virtualmachineinstancemigrations" ]
+    verbs: [ "create" ]
+  - apiGroups: [ "cdi.kubevirt.io" ]
+    resources: [ "datavolumes" ]
+    verbs: [ "create", "delete" ]
+  - apiGroups: [ "" ]
+    resources: [ "persistentvolumeclaims" ]
+    verbs: [ "delete" ]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: storage-checkup-role
+subjects:
+  - kind: ServiceAccount
+    name: storage-checkup-sa
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: storage-checkup-role
+----
+====
+
+. Apply the `ServiceAccount`, `Role`, and `RoleBinding` manifest in the target namespace:
++
+[source,terminal]
+----
+$ oc apply -n <target_namespace> -f <storage_sa_roles_rolebinding>.yaml
+----
+
+. Create a `ConfigMap` and `Job` manifest file. The config map contains the input parameters for the checkup job.
++
+.Example input config map and job manifest
+[source,yaml,subs="attributes+"]
+----
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: storage-checkup-config
+  namespace: $CHECKUP_NAMESPACE
+data:
+  spec.timeout: 10m
+---
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: storage-checkup
+  namespace: $CHECKUP_NAMESPACE
+spec:
+  backoffLimit: 0
+  template:
+    spec:
+      serviceAccount: storage-checkup-sa
+      restartPolicy: Never
+      containers:
+        - name: storage-checkup
+          image: quay.io/kiagnose/kubevirt-storage-checkup:main
+          imagePullPolicy: Always
+          env:
+            - name: CONFIGMAP_NAMESPACE
+              value: $CHECKUP_NAMESPACE
+            - name: CONFIGMAP_NAME
+              value: storage-checkup-config
+----
+
+. Apply the `ConfigMap` and `Job` manifest file in the target namespace to run the checkup:
++
+[source,terminal]
+----
+$ oc apply -n <target_namespace> -f <storage_configmap_job>.yaml
+----
+
+. Wait for the job to complete:
++
+[source,terminal]
+----
+$ oc wait job storage-checkup -n <target_namespace> --for condition=complete --timeout 10m
+----
+
+. Review the results of the checkup by running the following command:
++
+[source,terminal]
+----
+$ oc get configmap storage-checkup-config -n <target_namespace> -o yaml
+----
++
+.Example output config map (success)
+[source,yaml,subs="attributes+"]
+----
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: storage-checkup-config
+  labels:
+    kiagnose/checkup-type: kubevirt-storage
+data:
+  spec.timeout: 10m
+  status.succeeded: "true" # <1>
+  status.failureReason: "" # <2>
+  status.startTimestamp: "2023-07-31T13:14:38Z" # <3>
+  status.completionTimestamp: "2023-07-31T13:19:41Z" # <4>
+  status.result.cnvVersion: 4.15.2
+  status.result.defaultStorageClass: trident-nfs <5>
+  status.result.goldenImagesNoDataSource: <data_import_cron_list> # <6>
+  status.result.goldenImagesNotUpToDate: <data_import_cron_list> # <7>
+  status.result.ocpVersion: 4.15.0
+  status.result.storageMissingVolumeSnapshotClass: <storage_class_list> 
+  status.result.storageProfilesWithEmptyClaimPropertySets: <storage_profile_list> # <8>
+  status.result.storageProfilesWithSpecClaimPropertySets: <storage_profile_list> 
+  status.result.storageWithRWX: |-
+    ocs-storagecluster-ceph-rbd
+    ocs-storagecluster-ceph-rbd-virtualization
+    ocs-storagecluster-cephfs
+    trident-iscsi
+    trident-minio
+    trident-nfs
+    windows-vms
+  status.result.vmBootFromGoldenImage: VMI "vmi-under-test-dhkb8" successfully booted
+  status.result.vmHotplugVolume: |-
+    VMI "vmi-under-test-dhkb8" hotplug volume ready
+    VMI "vmi-under-test-dhkb8" hotplug volume removed
+  status.result.vmLiveMigration: VMI "vmi-under-test-dhkb8" migration completed
+  status.result.vmVolumeClone: 'DV cloneType: "csi-clone"'
+  status.result.vmsWithNonVirtRbdStorageClass: <vm_list> # <9>
+  status.result.vmsWithUnsetEfsStorageClass: <vm_list> # <10>
+----
+<1> Specifies if the checkup is successful (`true`) or not (`false`).
+<2> The reason for failure if the checkup fails.
+<3> The time when the checkup started, in RFC 3339 time format.
+<4> The time when the checkup has completed, in RFC 3339 time format.
+<5> Specifies if there is a default storage class.
+<6> The list of golden images whose data source is not ready.
+<7> The list of golden images whose data import cron is not up-to-date.
+<8> The list of storage profiles with unknown provisioners.
+<9> The list of virtual machines that use the Ceph RBD storage class when the virtualization storage class exists.
+<10> The list of virtual machines that use an Elastic File Store (EFS) storage class where the GID and UID are not set in the storage class.
+
+
+. Delete the job and config map that you previously created by running the following commands:
++
+[source,terminal]
+----
+$ oc delete job -n <target_namespace> storage-checkup
+----
++
+[source,terminal]
+----
+$ oc delete config-map -n <target_namespace> storage-checkup-config
+----
+
+. Optional: If you do not plan to run another checkup, delete the `ServiceAccount`, `Role`, and `RoleBinding` manifest:
++
+[source,terminal]
+----
+$ oc delete -f <storage_sa_roles_rolebinding>.yaml
+----
