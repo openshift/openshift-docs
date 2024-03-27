@@ -2,24 +2,17 @@
 // * scalability_and_performance/ztp-image-based-upgrade.adoc
 
 :_mod-docs-content-type: PROCEDURE
-[id="ztp-image-based-upgrade-prep_{context}"]
-= Preparing the {sno} cluster for the image-based upgrade
+[id="ztp-image-based-upgrade-creating-backup-resources_{context}"]
+= Creating backup and restore resources with the OADP Operator
 
-When you deploy the {lcao} on a cluster, an `ImageBasedUpgrade` CR is automatically created.
-You edit this CR to specify the image repository of the seed image and to move through the different stages.
+The {lcao} provides functionality for backing up and restoring platform and application resources with the OADP Operator.
+
+You can specify the CRs you want to back up as `ConfigMap` objects in the `spec.oadpContent` section in the `ImageBasedUpgrade` CR. 
 
 .Prerequisites
 
-* Install {lcao} on the target cluster.
-* Generate a seed image from a compatible seed cluster.
 * Install the OADP Operator, the `DataProtectionApplication` CR and its secret on the target cluster.
 * Create an S3-compatible storage solution and a ready-to-use bucket with proper credentials configured. For more information, see _Additional resources_.
-* Create a separate partition on the target cluster for the container images that is shared between stateroots. For more information about, see _Additional resources_.
-
-[WARNING]
-====
-If the target cluster has multiple IPs and one of them belongs to the subnet that was used for creating the seed image, the upgrade fails if the target cluster's node IP does not belong to that subnet.
-====
 
 .Procedure
 
@@ -30,7 +23,7 @@ This example procedure demonstrates how to back up and upgrade a cluster with ap
 The target cluster does not need to be detached from the hub cluster.
 ====
 
-. Create your OADP `Backup` and `Restore` CRs.
+. Create your OADP `Backup` and `Restore` CRs in the same namespace where the OADP Operator is installed, which is `openshift-adp`.
 
 .. To filter for backup-specific CRs, use the `lca.openshift.io/apply-label` annotation in your `Backup` CRs. Based on which resources you define in the annotation, the {lcao} applies the `lca.openshift.io/backup: <backup_name>` label and adds the `labelSelector.matchLabels.lca.openshift.io/backup: <backup_name>` label selector to the specified resources when creating the `Backup` CRs.
 +
@@ -41,20 +34,30 @@ apiVersion: velero.io/v1
 kind: Backup
 metadata:
   name: backup-acm-klusterlet
+  annotations:
+    lca.openshift.io/apply-label: "apps/v1/deployments/open-cluster-management-agent/klusterlet,v1/secrets/open-cluster-management-agent/bootstrap-hub-kubeconfig,rbac.authorization.k8s.io/v1/clusterroles/klusterlet,v1/serviceaccounts/open-cluster-management-agent/klusterlet,rbac.authorization.k8s.io/v1/clusterroles/open-cluster-management:klusterlet-admin-aggregate-clusterrole,rbac.authorization.k8s.io/v1/clusterrolebindings/klusterlet,operator.open-cluster-management.io/v1/klusterlets/klusterlet,apiextensions.k8s.io/v1/customresourcedefinitions/klusterlets.operator.open-cluster-management.io,v1/secrets/open-cluster-management-agent/open-cluster-management-image-pull-credentials" <1>
+  labels:
+    velero.io/storage-location: default
   namespace: openshift-adp
-annotations:
-  lca.openshift.io/apply-label: rbac.authorization.k8s.io/v1/clusterroles/klusterlet,apps/v1/deployments/open-cluster-management-agent/klusterlet <1>
-labels:
-  velero.io/storage-location: default
 spec:
-  includeNamespace:
-   - open-cluster-management-agent
-  includeClusterScopedResources:
-   - clusterroles
-  includeNamespaceScopedResources:
-   - deployments
+  includedNamespaces:
+  - open-cluster-management-agent
+  includedClusterScopedResources:
+  - klusterlets.operator.open-cluster-management.io
+  - clusterclaims.cluster.open-cluster-management.io
+  - clusterroles.rbac.authorization.k8s.io
+  - clusterrolebindings.rbac.authorization.k8s.io
+  includedNamespaceScopedResources:
+  - deployments
+  - serviceaccounts
+  - secrets
 ----
-<1> The value must be a list of comma-separated objects in the `group/version/resource/name` format for cluster-scoped resources, or in the `group/version/resource/namespace/name` format for namespace-scoped resources. It must be attached to the related `Backup` CR.
+<1> The value must be a list of comma-separated objects in the `group/version/resource/name` format for cluster-scoped resources, or in the `group/version/resource/namespace/name` format for namespace-scoped resources. It must be attached to the related `Backup` CR. 
+
+[NOTE]
+====
+Depending on your {rh-rhacm} configuration, you might need to include the `v1/secrets/open-cluster-management-agent/open-cluster-management-image-pull-credentials` object  for backup. If your `multiclusterHub` CR has `.spec.imagePullSecret` defined and the secret exists on the `open-cluster-management-agent` namespace in your hub cluster, ensure that the object is included in the `lca.openshift.io/apply-label` annotation. If the secret does not exist, you can remove the object from the apply-label annotation.
+====
 
 [IMPORTANT]
 ====
@@ -69,6 +72,24 @@ If the `lca.openshift.io/apply-label` annotation is used in the `Backup` CR, onl
 [source,yaml]
 ----
 apiVersion: velero.io/v1
+kind: Backup
+metadata:
+  labels:
+    velero.io/storage-location: default
+  name: backup-example-app
+  namespace: openshift-adp
+spec:
+  includedNamespaces:
+  - test
+  includedNamespaceScopedResources:
+  - secrets
+  - persistentvolumeclaims
+  - deployments
+  - statefulsets
+  excludedClusterScopedResources:
+  - persistentVolumes
+---
+apiVersion: velero.io/v1
 kind: Restore
 metadata:
   name: restore-acm-klusterlet
@@ -79,7 +100,7 @@ metadata:
     lca.openshift.io/apply-wave: "1"
 spec:
   backupName:
-    acm-klusterlet
+    backup-acm-klusterlet
 ---
 apiVersion: velero.io/v1
 kind: Restore
@@ -89,23 +110,10 @@ metadata:
   labels:
     velero.io/storage-location: default
   annotations:
-    lca.openshift.io/apply-wave: "3"
-spec:
-  backupName:
-    example-app
----
-apiVersion: velero.io/v1
-kind: Restore
-metadata:
-  name: restore-localvolume
-  namespace: openshift-adp
-  labels:
-    velero.io/storage-location: default
-  annotations:
     lca.openshift.io/apply-wave: "2"
 spec:
   backupName:
-    localvolume
+    backup-example-app
 ----
 
 [NOTE]
@@ -123,10 +131,8 @@ configMapGenerator:
   namespace: openshift-adp
   files:
   - backup-acm-klusterlet.yaml
-  - backup-localvolume.yaml
   - backup-example-app.yaml
   - restore-acm-klusterlet.yaml
-  - restore-localvolume.yaml
   - restore-example-app.yaml
 generatorOptions:
   disableNameSuffixHash: true <1>
@@ -150,12 +156,14 @@ metadata:
 [...]
 ----
 
-.. Apply the `ConfigMap`:
+.. If you are using {rh-rhacm}, apply the `ConfigMap`:
 +
 [source,terminal]
 ----
 $ oc apply -f oadp-cm-example.yaml
 ----
+
+.. If you are using GitOps ZTP, push the generated `ConfigMap` object to your git repository.
 
 . (Optional) To keep your custom catalog sources after the upgrade, add them to the `spec.extraManifest` in the `ImageBasedUpgrade` CR. For more information, see xref:https://access.redhat.com/documentation/en-us/openshift_container_platform/4.15/html-single/operators/index#olm-catalogsource_olm-understanding-olm[Catalog source].
 
@@ -198,52 +206,3 @@ spec:
 <8> (Optional) Specifies the time frame in seconds. If not defined or set to `0`, the default value of `1800` seconds (30 minutes) is used.
 <9> (Optional) Specify the extra manifests to apply to the target cluster that are not part of the seed image. You can also add your custom catalog sources that you want to retain after the upgrade.
 <10> Add the `oadpContent` section with the OADP `ConfigMap` information.
-
-. Change the value of the `stage` field to `Prep` in the `ImageBasedUpgrade` CR:
-+
-[source,terminal]
-----
-$ oc patch imagebasedupgrades.lca.openshift.io example-upgrade -p='{"spec": {"stage": "Prep"}}' --type=merge -n openshift-lifecycle-agent
-----
-
-+
-The {lcao} checks for the health of the cluster, creates a new `ostree` stateroot, and pulls the seed image to the target cluster.
-Then, the Operator precaches all the required images on the target cluster.
-
-.Verification
-
-. Check the status of the `ImageBasedUpgrade` CR.
-+
-[source,terminal]
-----
-$ oc get ibu -A -oyaml
-----
-
-+
-.Example output
-[source,yaml]
-----
-status:
-  conditions:
-  - lastTransitionTime: "2024-01-01T09:00:00Z"
-    message: In progress
-    observedGeneration: 2
-    reason: InProgress
-    status: "False"
-    type: Idle
-  - lastTransitionTime: "2024-01-01T09:00:00Z"
-    message: 'Prep completed: total: 121 (pulled: 1, skipped: 120, failed: 0)'
-    observedGeneration: 2
-    reason: Completed
-    status: "True"
-    type: PrepCompleted
-  - lastTransitionTime: "2024-01-01T09:00:00Z"
-    message: Prep completed
-    observedGeneration: 2
-    reason: Completed
-    status: "False"
-    type: PrepInProgress
-  observedGeneration: 2
-----
-
-// Troubleshooting?
