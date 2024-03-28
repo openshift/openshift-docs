@@ -1,0 +1,253 @@
+// Module included in the following assemblies:
+//
+// * backup_and_restore/application_backup_and_restore/oadp-aws-sts/oadp-aws-sts.adoc
+
+:_mod-docs-content-type: PROCEDURE
+[id="installing-oadp-aws-sts_{context}"]
+= Installing the OADP Operator and providing the IAM role
+
+AWS Security Token Service (AWS STS) is a global web service that provides short-term credentials for IAM or federated users. This document describes how to install {oadp-first} on an {aws-short} {sts-short} cluster manually.
+
+[IMPORTANT]
+====
+Restic and Kopia are not supported in the OADP {aws-short} {sts-short} environment. Verify that the Restic and Kopia node agent is disabled.
+For backing up volumes, OADP on {aws-short} {sts-short} supports only native snapshots and Container Storage Interface (CSI) snapshots.
+
+In an {aws-short} cluster that uses STS authentication, restoring backed-up data in a different {aws-short} region is not supported.
+
+The Data Mover feature is not currently supported in {aws-short} {sts-short} clusters. You can use native {aws-short} S3 tools for moving data.
+====
+
+.Prerequisites
+
+* An {product-title} {aws-short} {sts-short} cluster with the required access and tokens. For instructions, see the previous procedure _Preparing AWS credentials for OADP_. If you plan to use two different clusters for backing up and restoring, you must prepare {aws-short} credentials, including `ROLE_ARN`, for each cluster.
+
+.Procedure
+
+. Create an {product-title} secret from your {aws-short} token file by entering the following commands:
+
+.. Create the credentials file:
++
+[source,terminal]
+----
+$ cat <<EOF > ${SCRATCH}/credentials
+  [default]
+  role_arn = ${ROLE_ARN}
+  web_identity_token_file = /var/run/secrets/openshift/serviceaccount/token
+EOF
+----
+
+.. Create a namespace for OADP:
++
+[source,terminal]
+----
+$ oc create namespace openshift-adp
+----
+
+.. Create the {product-title} secret:
++
+[source,terminal]
+----
+$ oc -n openshift-adp create secret generic cloud-credentials \
+  --from-file=${SCRATCH}/credentials
+----
++
+[NOTE]
+====
+In {product-title} versions 4.14 and later, the OADP Operator supports a new standardized {sts-short} workflow through the Operator Lifecycle Manager (OLM)
+and Cloud Credentials Operator (CCO). In this workflow, you do not need to create the above
+secret, you only need to supply the role ARN during the installation of OLM-managed operators using the {product-title} web console, for more information see _Installing from OperatorHub using the web console_.
+
+The preceding secret is created automatically by CCO.
+====
+
+. Install the OADP Operator:
+.. In the {product-title} web console, browse to *Operators* -> *OperatorHub*.
+.. Search for the *OADP Operator*.
+.. In the *role_ARN* field, paste the role_arn that you created previously and click *Install*.
+
+. Create {aws-short} cloud storage using your {aws-short} credentials by entering the following command:
++
+[source,terminal]
+----
+$ cat << EOF | oc create -f -
+  apiVersion: oadp.openshift.io/v1alpha1
+  kind: CloudStorage
+  metadata:
+    name: ${CLUSTER_NAME}-oadp
+    namespace: openshift-adp
+  spec:
+    creationSecret:
+      key: credentials
+      name: cloud-credentials
+    enableSharedConfig: true
+    name: ${CLUSTER_NAME}-oadp
+    provider: aws
+    region: $REGION
+EOF
+----
+// bringing over from MOB docs
+. Check your application's storage default storage class by entering the following command:
++
+[source,terminal]
+----
+$ oc get pvc -n <namespace>
+----
++
+.Example output
++
+[source,terminal]
+----
+NAME     STATUS   VOLUME                                     CAPACITY   ACCESS MODES   STORAGECLASS   AGE
+applog   Bound    pvc-351791ae-b6ab-4e8b-88a4-30f73caf5ef8   1Gi        RWO            gp3-csi        4d19h
+mysql    Bound    pvc-16b8e009-a20a-4379-accc-bc81fedd0621   1Gi        RWO            gp3-csi        4d19h
+----
+
+. Get the storage class by running the following command:
++
+[source,terminal]
+----
+$ oc get storageclass
+----
++
+.Example output
++
+[source,terminal]
+----
+NAME                PROVISIONER             RECLAIMPOLICY   VOLUMEBINDINGMODE      ALLOWVOLUMEEXPANSION   AGE
+gp2                 kubernetes.io/aws-ebs   Delete          WaitForFirstConsumer   true                   4d21h
+gp2-csi             ebs.csi.aws.com         Delete          WaitForFirstConsumer   true                   4d21h
+gp3                 ebs.csi.aws.com         Delete          WaitForFirstConsumer   true                   4d21h
+gp3-csi (default)   ebs.csi.aws.com         Delete          WaitForFirstConsumer   true                   4d21h
+----
++
+[NOTE]
+====
+The following storage classes will work:
+
+  * gp3-csi
+  * gp2-csi
+  * gp3
+  * gp2
+====
++
+If the application or applications that are being backed up are all using persistent volumes (PVs) with Container Storage Interface (CSI), it is advisable to include the CSI plugin in the OADP DPA configuration.
+
+. Create the `DataProtectionApplication` resource to configure the connection to the storage where the backups and volume snapshots are stored:
+
+.. If you are using only CSI volumes, deploy a Data Protection Application by entering the following command:
++
+[source,terminal]
+----
+$ cat << EOF | oc create -f -
+  apiVersion: oadp.openshift.io/v1alpha1
+  kind: DataProtectionApplication
+  metadata:
+    name: ${CLUSTER_NAME}-dpa
+    namespace: openshift-adp
+  spec:
+    backupImages: true <1>
+    features:
+      dataMover:
+        enable: false
+    backupLocations:
+    - bucket:
+        cloudStorageRef:
+          name: ${CLUSTER_NAME}-oadp
+        credential:
+          key: credentials
+          name: cloud-credentials
+        prefix: velero
+        default: true
+        config:
+          region: ${REGION}
+    configuration:
+      velero:
+        defaultPlugins:
+        - openshift
+        - aws
+        - csi
+      restic:
+        enable: false
+EOF
+----
+<1> Set this field to `false` if you do not want to use image backup.
+
+// . Create the `DataProtectionApplication` resource, which is used to configure the connection to the storage where the backups and volume snapshots are stored:
+
+.. If you are using CSI or non-CSI volumes, deploy a Data Protection Application by entering the following command:
++
+[source,terminal]
+----
+$ cat << EOF | oc create -f -
+  apiVersion: oadp.openshift.io/v1alpha1
+  kind: DataProtectionApplication
+  metadata:
+    name: ${CLUSTER_NAME}-dpa
+    namespace: openshift-adp
+  spec:
+    backupImages: true <1>
+    features:
+      dataMover:
+         enable: false
+    backupLocations:
+    - bucket:
+        cloudStorageRef:
+          name: ${CLUSTER_NAME}-oadp
+        credential:
+          key: credentials
+          name: cloud-credentials
+        prefix: velero
+        default: true
+        config:
+          region: ${REGION}
+    configuration:
+      velero:
+        defaultPlugins:
+        - openshift
+        - aws
+      nodeAgent: <2>
+        enable: false
+        uploaderType: restic
+    snapshotLocations:
+      - velero:
+          config:
+            credentialsFile: /tmp/credentials/openshift-adp/cloud-credentials-credentials <3>
+            enableSharedConfig: "true" <4>
+            profile: default <5>
+            region: ${REGION} <6>
+          provider: aws
+EOF
+----
+<1> Set this field to `false` if you do not want to use image backup.
+<2> See the first note regarding the `nodeAgent` attribute.
+<3> The `credentialsFile` field is the mounted location of the bucket credential on the pod.
+<4> The `enableSharedConfig` field allows the `snapshotLocations` to share or reuse the credential defined for the bucket.
+<5> Use the profile name set in the {aws-short} credentials file.
+<6> Specify `region` as your {aws-short} region. This must be the same as the cluster region.
++
+You are now ready to back up and restore {product-title} applications, as described in _Backing up applications_.
+
+[NOTE]
+====
+If you use OADP 1.2, replace this configuration:
+
+[source,terminal]
+----
+nodeAgent:
+  enable: false
+  uploaderType: restic
+----
+with the following configuration:
+
+[source,terminal]
+----
+restic:
+  enable: false
+----
+====
+
+[NOTE]
+====
+If you want to use two different clusters for backing up and restoring, the two clusters must have the same {aws-short} S3 storage names in both the cloud storage CR and the OADP `DataProtectionApplication` configuration.
+====
