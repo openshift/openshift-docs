@@ -42,8 +42,10 @@ function get_vale_errors {
 # Run vale with the custom template on updated files and determine if a review comment should be posted
 for FILE in ${FILES};
 do
-    # Clean out conditional markup in place and parse for vale errors
-    sed -i 's/ifdef::.*\|ifndef::.*\|ifeval::.*\|endif::.*/ /' "$FILE"
+    # Update conditional markup in place
+    sed -i 's/ifdef::.*/ifdef::temp-ifdef[]/; s/ifeval::.*/ifeval::["{temp-ifeval}" == "temp"]/; s/ifndef::.*/ifndef::temp-ifndef[]/; s/endif::.*/endif::[]/;' "$FILE"
+
+    # Parse for vale errors
     vale_json=$(vale --minAlertLevel=error --output=.vale/templates/bot-comment-output.tmpl "$FILE" | jq)
 
     # Check if there are Vale errors before processing the file further.
