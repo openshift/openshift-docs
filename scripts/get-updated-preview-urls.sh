@@ -46,9 +46,6 @@ done
 # Make the HTML URL slug
 if [ ${#assemblies[@]} -gt 0 ]; then
     updated_pages=$(echo "${assemblies[@]}" | sed 's/\.adoc$/.html/' | sort | uniq)
-else
-    # No updated pages, just add default URL
-    pages+=("${preview_url}")
 fi
 
 # Search built_pages for every entry in updated_pages and add to pages array when it is found
