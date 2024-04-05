@@ -10,13 +10,14 @@
 #%    Validates openshift-docs AsciiDoc source files using the same tools that run in the Prow CI
 #%
 #%OPTIONS ⚙️
-#%    -v, --validate                                    Validate the AsciiDoc source
+#%    -v, --validate $DISTRO                            Validate the AsciiDoc source. Use --validate to run with default options
 #%    -l, --lint-topicmaps                              Lint topic-map YAML
 #%    -p, --preview $DISTRO "$PRODUCT_NAME" $VERSION    Use --preview to run with default options
 #%    -h, --help                                        Print this help
 #%
 #%EXAMPLES 🤔
 #%    ./scripts/prow-smoke-test.sh --validate
+#%    ./scripts/prow-smoke-test.sh --validate openshift-rosa
 #%    ./scripts/prow-smoke-test.sh --lint-topicmaps
 #%    ./scripts/prow-smoke-test.sh --preview
 #%    ./scripts/prow-smoke-test.sh --preview openshift-rosa
@@ -86,10 +87,10 @@ elif [[ "$TEST" == "--preview" || "$TEST" == "-p" ]] && [[ -n "$DISTRO" ]]; then
 elif [[ "$TEST" == "--validate" || "$TEST" == "-v" ]]; then
     echo ""
     echo "🚧 Validating the docs..."
-  $CONTAINER_ENGINE run --rm -it -v "$(pwd)":${CONTAINER_WORKDIR}:Z $CONTAINER_IMAGE sh -c 'scripts/check-asciidoctor-build.sh && python3 build_for_portal.py --distro '${DISTRO}' --product "'"${PRODUCT_NAME}"'" --version '${VERSION}' --no-upstream-fetch && python3 makeBuild.py'
+    $CONTAINER_ENGINE run --rm -it -v "$(pwd)":${CONTAINER_WORKDIR}:Z $CONTAINER_IMAGE sh -c 'scripts/check-asciidoctor-build.sh && python3 build_for_portal.py --distro '${DISTRO}' --product "'"${PRODUCT_NAME}"'" --version '${VERSION}' --no-upstream-fetch && python3 makeBuild.py'
 
 elif [[ "$TEST" == "--lint-topicmaps" || "$TEST" == "-l" ]]; then
     echo ""
     echo "🚧 Linting the topicmap YAML..."
-  $CONTAINER_ENGINE run --rm -it -v "$(pwd)":${CONTAINER_WORKDIR}:Z $CONTAINER_IMAGE sh -c 'yamllint _topic_maps'
+    $CONTAINER_ENGINE run --rm -it -v "$(pwd)":${CONTAINER_WORKDIR}:Z $CONTAINER_IMAGE sh -c 'yamllint _topic_maps'
 fi
