@@ -31,7 +31,13 @@ TEST=$1
 DISTRO=$2
 PRODUCT_NAME=$3
 VERSION=$4
-CONTAINER_IMAGE=quay.io/redhat-docs/openshift-docs-asciidoc
+ARCH=$(uname -m)
+if [[ $ARCH == x86_64 ]]; then
+    TAG=latest
+elif [[ $ARCH == aarch64 ]]; then
+    TAG=multiarch
+fi
+CONTAINER_IMAGE=quay.io/redhat-docs/openshift-docs-asciidoc:$TAG
 SCRIPT_HEADSIZE=$(head -30 ${0} |grep -n "^# END_OF_HEADER" | cut -f1 -d:)
 
 if [[ "$1" == "--help" || "$1" == "-h" ]]; then
@@ -54,6 +60,7 @@ else
 fi
 
 echo "CONTAINER_ENGINE=$CONTAINER_ENGINE 🐳"
+echo "CONTAINER_IMAGE=$CONTAINER_IMAGE"
 
 # Get the default container $WORKDIR
 CONTAINER_WORKDIR=$($CONTAINER_ENGINE run --rm $CONTAINER_IMAGE /bin/bash -c 'echo $PWD')
