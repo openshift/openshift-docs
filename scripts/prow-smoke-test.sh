@@ -33,12 +33,11 @@ DISTRO=$2
 PRODUCT_NAME=$3
 VERSION=$4
 ARCH=$(uname -m)
-if [[ $ARCH == x86_64 ]]; then
-    TAG=latest
-elif [[ $ARCH == aarch64 ]]; then
+TAG=latest # default tag
+if [[ $ARCH == "aarch64" || $ARCH == "arm64" ]]; then
     TAG=multiarch
 fi
-CONTAINER_IMAGE=quay.io/redhat-docs/openshift-docs-asciidoc:$TAG
+CONTAINER_IMAGE="quay.io/redhat-docs/openshift-docs-asciidoc:$TAG"
 SCRIPT_HEADSIZE=$(head -30 ${0} |grep -n "^# END_OF_HEADER" | cut -f1 -d:)
 
 if [[ "$1" == "--help" || "$1" == "-h" ]]; then
