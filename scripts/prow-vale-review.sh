@@ -42,11 +42,18 @@ function get_vale_errors {
 # Run vale with the custom template on updated files and determine if a review comment should be posted
 for FILE in ${FILES};
 do
+    # Check if Vale should use the modules config or the root config. Ensures correct rule enabling/disabling
+    if [[ $FILE == modules/* ]]; then
+        INI="modules/.vale.ini"
+    else
+        INI=".vale.ini"
+    fi
+
     # Update conditional markup in place
     sed -i 's/ifdef::.*/ifdef::temp-ifdef[]/; s/ifeval::.*/ifeval::["{temp-ifeval}" == "temp"]/; s/ifndef::.*/ifndef::temp-ifndef[]/; s/endif::.*/endif::[]/;' "$FILE"
 
     # Parse for vale errors
-    vale_json=$(vale --minAlertLevel=error --output=.vale/templates/bot-comment-output.tmpl "$FILE" | jq)
+    vale_json=$(vale --minAlertLevel=error --output=.vale/templates/bot-comment-output.tmpl --config="$INI" "$FILE" | jq)
 
     # Check if there are Vale errors before processing the file further.
     if [[ "$vale_json" != "[]" ]]; then
