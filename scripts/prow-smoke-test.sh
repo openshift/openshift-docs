@@ -33,9 +33,11 @@ DISTRO=$2
 PRODUCT_NAME=$3
 VERSION=$4
 ARCH=$(uname -m)
-TAG=latest # default tag
+TAG=latest # Default tag
+SELINUX_LABEL=":Z"
 if [[ $ARCH == "aarch64" || $ARCH == "arm64" ]]; then
     TAG=multiarch
+    SELINUX_LABEL=""
 fi
 CONTAINER_IMAGE="quay.io/redhat-docs/openshift-docs-asciidoc:$TAG"
 SCRIPT_HEADSIZE=$(head -30 ${0} |grep -n "^# END_OF_HEADER" | cut -f1 -d:)
@@ -76,20 +78,20 @@ fi
 if [[ "$TEST" == "--preview" || "$TEST" == "-p" ]] && [[ -z "$DISTRO" ]]; then
     echo ""
     echo "🚧 Building with openshift-enterprise distro..."
-    $CONTAINER_ENGINE run --rm -it -v "$(pwd)":${CONTAINER_WORKDIR}:Z $CONTAINER_IMAGE asciibinder build -d "$DISTRO"
+    $CONTAINER_ENGINE run --rm -it -v "$(pwd)":${CONTAINER_WORKDIR}${SELINUX_LABEL} $CONTAINER_IMAGE asciibinder build -d "$DISTRO"
 
 elif [[ "$TEST" == "--preview" || "$TEST" == "-p" ]] && [[ -n "$DISTRO" ]]; then
     echo ""
     echo "🚧 Building $DISTRO distro..."
-    $CONTAINER_ENGINE run --rm -it -v "$(pwd)":${CONTAINER_WORKDIR}:Z $CONTAINER_IMAGE asciibinder build -d "$DISTRO"
+    $CONTAINER_ENGINE run --rm -it -v "$(pwd)":${CONTAINER_WORKDIR}${SELINUX_LABEL} $CONTAINER_IMAGE asciibinder build -d "$DISTRO"
 
 elif [[ "$TEST" == "--validate" || "$TEST" == "-v" ]]; then
     echo ""
     echo "🚧 Validating the docs..."
-    $CONTAINER_ENGINE run --rm -it -v "$(pwd)":${CONTAINER_WORKDIR}:Z $CONTAINER_IMAGE sh -c 'scripts/check-asciidoctor-build.sh && python3 build_for_portal.py --distro '${DISTRO}' --product "'"${PRODUCT_NAME}"'" --version '${VERSION}' --no-upstream-fetch && python3 makeBuild.py'
+    $CONTAINER_ENGINE run --rm -it -v "$(pwd)":${CONTAINER_WORKDIR}${SELINUX_LABEL} $CONTAINER_IMAGE sh -c 'scripts/check-asciidoctor-build.sh && python3 build_for_portal.py --distro '${DISTRO}' --product "'"${PRODUCT_NAME}"'" --version '${VERSION}' --no-upstream-fetch && python3 makeBuild.py'
 
 elif [[ "$TEST" == "--lint-topicmaps" || "$TEST" == "-l" ]]; then
     echo ""
     echo "🚧 Linting the topicmap YAML..."
-    $CONTAINER_ENGINE run --rm -it -v "$(pwd)":${CONTAINER_WORKDIR}:Z $CONTAINER_IMAGE sh -c 'yamllint _topic_maps'
+    $CONTAINER_ENGINE run --rm -it -v "$(pwd)":${CONTAINER_WORKDIR}${SELINUX_LABEL} $CONTAINER_IMAGE sh -c 'yamllint _topic_maps'
 fi
