@@ -1,0 +1,24 @@
+:_mod-docs-content-type: ASSEMBLY
+[id="run-gitops-control-plane-workload-on-infra-nodes"]
+= Running {gitops-shortname} control plane workloads on infrastructure nodes
+:context: run-gitops-control-plane-workload-on-infra-nodes
+include::_attributes/common-attributes.adoc[]
+
+toc::[]
+
+You can use infrastructure nodes to prevent additional billing cost against subscription counts.
+
+You can use the {product-title} to run certain workloads on infrastructure nodes installed by the {gitops-title} Operator. This comprises the workloads that are installed by the {gitops-title} Operator by default in the `openshift-gitops` namespace, including the default Argo CD instance in that namespace.
+
+[NOTE]
+====
+Any other Argo CD instances installed to user namespaces are not eligible to run on infrastructure nodes.
+====
+
+include::modules/go-add-infra-nodes.adoc[leveloffset=+1]
+
+[role="_additional-resources"]
+[id="additional-resources_run-gitops-control-plane-workload-on-infra-nodes"]
+== Additional resources
+* To learn more about taints and tolerations, see xref:../../nodes/scheduling/nodes-scheduler-taints-tolerations.adoc#nodes-scheduler-taints-tolerations[Controlling pod placement using node taints].
+* For more information on infrastructure machine sets, see xref:../../machine_management/creating-infrastructure-machinesets.adoc#creating-infrastructure-machinesets[Creating infrastructure machine sets].

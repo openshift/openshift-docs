@@ -1,0 +1,45 @@
+:_mod-docs-content-type: ASSEMBLY
+[id="ossm-create-mesh"]
+= Adding services to a service mesh
+include::_attributes/common-attributes.adoc[]
+:context: ossm-create-mesh
+
+toc::[]
+
+A project contains services; however, the services are only available if you add the project to the service mesh.
+
+include::modules/ossm-about-adding-namespace.adoc[leveloffset=+1]
+
+include::modules/ossm-member-roll-create.adoc[leveloffset=+1]
+
+include::modules/ossm-about-adding-projects-using-smmr.adoc[leveloffset=+1]
+
+include::modules/ossm-add-project-member-roll-resource-console.adoc[leveloffset=+2]
+
+include::modules/ossm-add-project-member-roll-resource-cli.adoc[leveloffset=+2]
+
+include::modules/ossm-about-adding-projects-using-smm.adoc[leveloffset=+1]
+
+include::modules/ossm-adding-project-using-smm-resource-console.adoc[leveloffset=+2]
+
+include::modules/ossm-adding-project-using-smm-resource-cli.adoc[leveloffset=+2]
+
+include::modules/ossm-about-adding-projects-using-label-selectors.adoc[leveloffset=+1]
+
+include::modules/ossm-add-project-using-label-selectors-console.adoc[leveloffset=+2]
+
+include::modules/ossm-add-project-using-label-selectors-cli.adoc[leveloffset=+2]
+
+include::modules/ossm-tutorial-bookinfo-overview.adoc[leveloffset=+1]
+
+include::modules/ossm-tutorial-bookinfo-install.adoc[leveloffset=+2]
+
+include::modules/ossm-tutorial-bookinfo-adding-destination-rules.adoc[leveloffset=+2]
+
+include::modules/ossm-tutorial-bookinfo-verify-install.adoc[leveloffset=+2]
+
+include::modules/ossm-tutorial-bookinfo-removing.adoc[leveloffset=+2]
+
+== Next steps
+
+* To continue the installation process, you must xref:../../service_mesh/v2x/prepare-to-deploy-applications-ossm.adoc#deploying-applications-ossm[enable sidecar injection].

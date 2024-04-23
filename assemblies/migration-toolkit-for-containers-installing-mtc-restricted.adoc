@@ -1,0 +1,95 @@
+:_mod-docs-content-type: ASSEMBLY
+[id="installing-mtc-restricted"]
+= Installing the Migration Toolkit for Containers in a restricted network environment
+include::_attributes/common-attributes.adoc[]
+:context: installing-mtc-restricted
+:installing-mtc-restricted:
+
+toc::[]
+
+You can install the {mtc-full} ({mtc-short}) on {product-title} 4 in a restricted network environment by performing the following procedures:
+
+. Create a xref:../operators/admin/olm-restricted-networks.adoc#olm-mirror-catalog_olm-restricted-networks[mirrored Operator catalog].
++
+This process creates a `mapping.txt` file, which contains the mapping between the `registry.redhat.io` image and your mirror registry image. The `mapping.txt` file is required for installing the _legacy_ {mtc-full} Operator on an {product-title} 4.2 to 4.5 source cluster.
+. Install the {mtc-full} Operator on the {product-title} {product-version} target cluster by using Operator Lifecycle Manager.
++
+By default, the {mtc-short} web console and the `Migration Controller` pod run on the target cluster. You can configure the `Migration Controller` custom resource manifest to run the {mtc-short} web console and the `Migration Controller` pod on a link:https://access.redhat.com/articles/5064151[remote cluster].
+
+. Install the {mtc-full} Operator on the source cluster:
+
+* {product-title} 4.6 or later: Install the {mtc-full} Operator by using Operator Lifecycle Manager.
+* {product-title} 4.2 to 4.5: Install the legacy {mtc-full} Operator from the command line interface.
+
+. Configure object storage to use as a replication repository.
+
+[NOTE]
+====
+To install {mtc-short} on {product-title} 3, see xref:../migrating_from_ocp_3_to_4/installing-restricted-3-4.adoc#migration-installing-legacy-operator_installing-restricted-3-4[Installing the legacy {mtc-full} Operator on {product-title} 3].
+====
+To uninstall {mtc-short}, see xref:../migration_toolkit_for_containers/installing-mtc-restricted.adoc#migration-uninstalling-mtc-clean-up_installing-mtc-restricted[Uninstalling {mtc-short} and deleting resources].
+
+include::modules/migration-compatibility-guidelines.adoc[leveloffset=+1]
+include::modules/migration-installing-mtc-on-ocp-4.adoc[leveloffset=+1]
+include::modules/migration-installing-legacy-operator.adoc[leveloffset=+1]
+include::modules/migration-about-configuring-proxies.adoc[leveloffset=+1]
+include::modules/migration-configuring-proxies.adoc[leveloffset=+2]
+
+For more information, see xref:../networking/enable-cluster-wide-proxy.adoc#nw-proxy-configure-object_config-cluster-wide-proxy[Configuring the cluster-wide proxy].
+
+[id="migration-rsync-root-non-root_{context}"]
+== Running Rsync as either root or non-root
+
+[IMPORTANT]
+====
+This section applies only when you are working with the OpenShift API, not the web console.
+====
+
+OpenShift environments have the `PodSecurityAdmission` controller enabled by default. This controller requires cluster administrators to enforce Pod Security Standards by means of namespace labels. All workloads in the cluster are expected to run one of the following Pod Security Standard levels: `Privileged`, `Baseline` or `Restricted`. Every cluster has its own default policy set.
+
+To guarantee successful data transfer in all environments, {mtc-full} ({mtc-short}) 1.7.5 introduced changes in Rsync pods, including running Rsync pods as non-root user by default. This ensures that data transfer is possible even for workloads that do not necessarily require higher privileges. This change was made because it is best to run workloads with the lowest level of privileges possible.
+
+[discrete]
+[id="migration-rsync-override-data-transfer_{context}"]
+=== Manually overriding default non-root operation for data transfer
+
+Although running Rsync pods as non-root user works in most cases, data transfer might fail when you run workloads as root user on the source side. {mtc-short} provides two ways to manually override default non-root operation for data transfer:
+
+* Configure all migrations to run an Rsync pod as root on the destination cluster for all migrations.
+* Run an Rsync pod as root on the destination cluster per migration.
+
+In both cases, you must set the following labels on the source side of any namespaces that are running workloads with higher privileges prior to migration: `enforce`, `audit`, and `warn.`
+
+To learn more about Pod Security Admission and setting values for labels, see xref:../authentication/understanding-and-managing-pod-security-admission.adoc#security-context-constraints-psa-opting_understanding-and-managing-pod-security-admission[Controlling pod security admission synchronization].
+
+include::modules/migration-rsync-migration-controller-root-non-root.adoc[leveloffset=+1]
+
+include::modules/migration-rsync-mig-migration-root-non-root.adoc[leveloffset=+1]
+
+[id="configuring-replication-repository_{context}"]
+== Configuring a replication repository
+
+The Multicloud Object Gateway is the only supported option for a restricted network environment.
+
+{mtc-short} supports the xref:../migration_toolkit_for_containers/about-mtc.adoc#migration-understanding-data-copy-methods_about-mtc[file system and snapshot data copy methods] for migrating data from the source cluster to the target cluster. You can select a method that is suited for your environment and is supported by your storage provider.
+
+[id="replication-repository-prerequisites_{context}"]
+=== Prerequisites
+
+* All clusters must have uninterrupted network access to the replication repository.
+* If you use a proxy server with an internally hosted replication repository, you must ensure that the proxy allows access to the replication repository.
+
+include::modules/migration-configuring-mcg.adoc[leveloffset=+2]
+
+[role="_additional-resources"]
+[id="{context}_configuring-replication-repository-additional-resources"]
+=== Additional resources
+
+* link:https://access.redhat.com/documentation/en-us/red_hat_openshift_data_foundation/4.9/html/planning_your_deployment/disconnected-environment_rhodf[Disconnected environment] in the {rh-storage-first} documentation.
+* xref:../migration_toolkit_for_containers/about-mtc.adoc#migration-mtc-workflow_about-mtc[{mtc-short} workflow]
+* xref:../migration_toolkit_for_containers/about-mtc.adoc#migration-understanding-data-copy-methods_about-mtc[About data copy methods]
+* xref:../migration_toolkit_for_containers/migrating-applications-with-mtc.adoc#migration-adding-replication-repository-to-cam_migrating-applications-with-mtc[Adding a replication repository to the {mtc-short} web console]
+
+include::modules/migration-uninstalling-mtc-clean-up.adoc[leveloffset=+1]
+
+:installing-mtc-restricted!:

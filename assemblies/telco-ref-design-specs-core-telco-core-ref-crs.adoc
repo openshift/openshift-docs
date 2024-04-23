@@ -1,0 +1,41 @@
+:_mod-docs-content-type: ASSEMBLY
+:telco-core:
+[id="telco-core-ref-du-crs"]
+= {rds-caps} {product-version} reference configuration CRs
+:context: ran-core-ref-design-crs
+include::_attributes/common-attributes.adoc[]
+
+toc::[]
+
+Use the following custom resources (CRs) to configure and deploy {product-title} clusters with the {rds} profile.
+Use the CRs to form the common baseline used in all the specific use models unless otherwise indicated.
+
+[NOTE]
+====
+The {rds} CRs are available in link:https://github.com/openshift-kni/telco-reference/tree/release-4.14[GitHub].
+====
+
+include::modules/telco-core-crs-resource-tuning.adoc[leveloffset=+1]
+
+include::modules/telco-core-crs-storage.adoc[leveloffset=+1]
+
+include::modules/telco-core-crs-networking.adoc[leveloffset=+1]
+
+include::modules/telco-core-crs-scheduling.adoc[leveloffset=+1]
+
+include::modules/telco-core-crs-other.adoc[leveloffset=+1]
+
+[id="telco-reference-core-use-case-yaml_{context}"]
+== YAML reference
+
+include::modules/telco-core-yaml-ref-resource-tuning.adoc[leveloffset=+2]
+
+include::modules/telco-core-yaml-ref-storage.adoc[leveloffset=+2]
+
+include::modules/telco-core-yaml-ref-networking.adoc[leveloffset=+2]
+
+include::modules/telco-core-yaml-ref-scheduling.adoc[leveloffset=+2]
+
+include::modules/telco-core-yaml-ref-other.adoc[leveloffset=+2]
+
+:!telco-core:

@@ -1,0 +1,51 @@
+:_mod-docs-content-type: ASSEMBLY
+[id="migrating-applications-with-mtc"]
+= Migrating your applications
+include::_attributes/common-attributes.adoc[]
+:context: migrating-applications-with-mtc
+
+toc::[]
+
+You can migrate your applications by using the {mtc-full} ({mtc-short}) web console or the xref:../migration_toolkit_for_containers/advanced-migration-options-mtc.adoc#migrating-applications-cli_advanced-migration-options-mtc[command line].
+
+Most cluster-scoped resources are not yet handled by {mtc-short}. If your applications require cluster-scoped resources, you might have to create them manually on the target cluster.
+
+You can use stage migration and cutover migration to migrate an application between clusters:
+
+* Stage migration copies data from the source cluster to the target cluster without stopping the application. You can run a stage migration multiple times to reduce the duration of the cutover migration.
+* Cutover migration stops the transactions on the source cluster and moves the resources to the target cluster.
+
+You can use state migration to migrate an application's state:
+
+* State migration copies selected persistent volume claims (PVCs).
+* You can use state migration to migrate a namespace within the same cluster.
+
+During migration, the {mtc-full} ({mtc-short}) preserves the following namespace annotations:
+
+* `openshift.io/sa.scc.mcs`
+* `openshift.io/sa.scc.supplemental-groups`
+* `openshift.io/sa.scc.uid-range`
++
+These annotations preserve the UID range, ensuring that the containers retain their file system permissions on the target cluster. There is a risk that the migrated UIDs could duplicate UIDs within an existing or future namespace on the target cluster.
+
+include::modules/migration-prerequisites.adoc[leveloffset=+1]
+
+[id="migrating-applications-mtc-web-console_{context}"]
+== Migrating your applications by using the {mtc-short} web console
+
+You can configure clusters and a replication repository by using the {mtc-short} web console. Then, you can create and run a migration plan.
+
+include::modules/migration-launching-cam.adoc[leveloffset=+2]
+include::modules/migration-adding-cluster-to-cam.adoc[leveloffset=+2]
+include::modules/migration-adding-replication-repository-to-cam.adoc[leveloffset=+2]
+include::modules/migration-creating-migration-plan-cam.adoc[leveloffset=+2]
+
+[discrete]
+[id="additional-resources-for-persistent-volume-copy-methods_{context}"]
+[role="_additional-resources"]
+=== Additional resources for persistent volume copy methods
+
+* xref:../migration_toolkit_for_containers/about-mtc.adoc#file-system-copy-method_about-mtc[{mtc-short} file system copy method]
+* xref:../migration_toolkit_for_containers/about-mtc.adoc#snapshot-copy-method_about-mtc[{mtc-short} snapshot copy method]
+
+include::modules/migration-running-migration-plan-cam.adoc[leveloffset=+2]

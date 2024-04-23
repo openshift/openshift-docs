@@ -1,0 +1,54 @@
+:_mod-docs-content-type: ASSEMBLY
+[id="cli-osdk-ref"]
+= Operator SDK CLI reference
+include::_attributes/common-attributes.adoc[]
+:context: cli-osdk-ref
+
+toc::[]
+
+The Operator SDK command-line interface (CLI) is a development kit designed to make writing Operators easier.
+
+.Operator SDK CLI syntax
+[source,terminal]
+----
+$ operator-sdk <command> [<subcommand>] [<argument>] [<flags>]
+----
+ifndef::openshift-rosa,openshift-dedicated[]
+See xref:../../operators/operator_sdk/osdk-about.adoc#osdk-about[Developing Operators] for full documentation on the Operator SDK.
+endif::openshift-rosa,openshift-dedicated[]
+
+include::modules/osdk-cli-ref-bundle.adoc[leveloffset=+1]
+include::modules/osdk-cli-ref-cleanup.adoc[leveloffset=+1]
+include::modules/osdk-cli-ref-completion.adoc[leveloffset=+1]
+include::modules/osdk-cli-ref-create.adoc[leveloffset=+1]
+include::modules/osdk-cli-ref-generate.adoc[leveloffset=+1]
+include::modules/osdk-cli-ref-generate-bundle.adoc[leveloffset=+2]
+
+ifndef::openshift-rosa,openshift-dedicated[]
+[role="_additional-resources"]
+.Additional resources
+
+* See xref:../../operators/operator_sdk/osdk-working-bundle-images.adoc#osdk-bundle-deploy-olm_osdk-working-bundle-images[Bundling an Operator and deploying with Operator Lifecycle Manager] for a full procedure that includes using the `make bundle` command to call the `generate bundle` subcommand.
+endif::openshift-rosa,openshift-dedicated[]
+
+include::modules/osdk-cli-ref-generate-kustomize.adoc[leveloffset=+2]
+
+include::modules/osdk-cli-ref-init.adoc[leveloffset=+1]
+include::modules/osdk-cli-ref-run.adoc[leveloffset=+1]
+include::modules/osdk-cli-ref-run-bundle.adoc[leveloffset=+2]
+ifndef::openshift-rosa,openshift-dedicated[]
+[role="_additional-resources"]
+.Additional resources
+
+* See xref:../../operators/understanding/olm/olm-understanding-operatorgroups.adoc#olm-operatorgroups-membership_olm-understanding-operatorgroups[Operator group membership] for details on possible install modes.
+endif::openshift-rosa,openshift-dedicated[]
+
+include::modules/osdk-cli-ref-run-bundle-upgrade.adoc[leveloffset=+2]
+include::modules/osdk-cli-ref-scorecard.adoc[leveloffset=+1]
+ifndef::openshift-rosa,openshift-dedicated[]
+
+[role="_additional-resources"]
+.Additional resources
+
+* See xref:../../operators/operator_sdk/osdk-scorecard.adoc#osdk-scorecard[Validating Operators using the scorecard tool] for details about running the scorecard tool.
+endif::openshift-rosa,openshift-dedicated[]

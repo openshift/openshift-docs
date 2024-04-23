@@ -1,0 +1,50 @@
+:_mod-docs-content-type: ASSEMBLY
+[id="about-advertise-for-ipaddress-pools"]
+= About advertising for the IP address pools
+include::_attributes/common-attributes.adoc[]
+:context: about-advertising-ip-address-pool
+
+toc::[]
+
+You can configure MetalLB so that the IP address is advertised with layer 2 protocols, the BGP protocol, or both.
+With layer 2, MetalLB provides a fault-tolerant external IP address. With BGP, MetalLB provides fault-tolerance for the external IP address and load balancing.
+
+MetalLB supports advertising using L2 and BGP for the same set of IP addresses.
+
+MetalLB provides the flexibility to assign address pools to specific BGP peers effectively to a subset of nodes on the network. This allows for more complex configurations, for example facilitating the isolation of nodes or the segmentation of the network.
+
+// BGP advertisement custom resource
+include::modules/nw-metallb-bgpadvertisement-cr.adoc[leveloffset=+1]
+
+// Configure MetalLB with a BGP advertisement
+include::modules/nw-metallb-configure-bgp-advertisement.adoc[leveloffset=+1]
+
+// Advertise MetalLB with a BGP advertisement
+include::modules/nw-metallb-advertise-address-pool-with-bgp.adoc[leveloffset=+2]
+
+// Configure MetalLB with a BGP advertisement
+include::modules/nw-metallb-configure-bgp-advertisement-advanced.adoc[leveloffset=+1]
+
+// Advertise MetalLB with a BGP advertisement
+include::modules/nw-metallb-advertise-address-pool-with-bgp-advanced.adoc[leveloffset=+2]
+
+// Advertise IP address pools from a subset of nodes
+include::modules/nw-metallb-advertise-ip-pools-from-node-subset.adoc[leveloffset=+1]
+
+// L2 advertisement custom resource
+include::modules/nw-metallb-l2padvertisement-cr.adoc[leveloffset=+1]
+
+// Configure MetalLB with a L2 advertisement
+include::modules/nw-metallb-configure-l2-advertisement.adoc[leveloffset=+1]
+
+// Configure MetalLB with a L2 advertisement using label
+include::modules/nw-metallb-configure-l2-advertisement-label.adoc[leveloffset=+1]
+
+// Configure MetalLB with a L2 advertisement using interface
+include::modules/nw-metallb-configure-l2-advertisement-interface.adoc[leveloffset=+1]
+
+[role="_additional-resources"]
+[id="additional-resources_about-advertiseipaddress"]
+== Additional resources
+
+* xref:../../networking/metallb/metallb-configure-community-alias.adoc#metallb-configure-community-alias[Configuring a community alias].

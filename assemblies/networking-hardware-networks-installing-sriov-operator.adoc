@@ -1,0 +1,16 @@
+:_mod-docs-content-type: ASSEMBLY
+[id="installing-sriov-operator"]
+= Installing the SR-IOV Network Operator
+include::_attributes/common-attributes.adoc[]
+:context: installing-sriov-operator
+
+toc::[]
+
+You can install the Single Root I/O Virtualization (SR-IOV) Network Operator on your cluster to manage SR-IOV network devices and network attachments.
+
+include::modules/nw-sriov-installing-operator.adoc[leveloffset=+1]
+
+[id="installing-sriov-operator-next-steps"]
+== Next steps
+
+* Optional: xref:../../networking/hardware_networks/configuring-sriov-operator.adoc#configuring-sriov-operator[Configuring the SR-IOV Network Operator]

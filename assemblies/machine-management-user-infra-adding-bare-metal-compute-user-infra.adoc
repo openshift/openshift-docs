@@ -1,0 +1,37 @@
+:_mod-docs-content-type: ASSEMBLY
+[id="adding-bare-metal-compute-user-infra"]
+= Adding compute machines to bare metal
+include::_attributes/common-attributes.adoc[]
+:context: adding-bare-metal-compute-user-infra
+
+toc::[]
+
+You can add more compute machines to your {product-title} cluster on bare metal.
+
+== Prerequisites
+
+* You xref:../../installing/installing_bare_metal/installing-bare-metal.adoc#installing-bare-metal[installed a cluster on bare metal].
+* You have installation media and {op-system-first} images that you used to create your cluster. If you do not have these files, you must obtain them by following the instructions in the xref:../../installing/installing_bare_metal/installing-bare-metal.adoc#installing-bare-metal[installation procedure].
+* If a DHCP server is available for your user-provisioned infrastructure, you have added the details for the additional compute machines to your DHCP server configuration. This includes a persistent IP address, DNS server information, and a hostname for each machine.
+* You have updated your DNS configuration to include the record name and IP address of each compute machine that you are adding. You have validated that DNS lookup and reverse DNS lookup resolve correctly.
+
+[IMPORTANT]
+====
+If you do not have access to the {op-system-first} images that were used to create your cluster, you can add more compute machines to your {product-title} cluster with newer versions of {op-system-first} images. For instructions, see link:https://access.redhat.com/solutions/5514051[Adding new nodes to UPI cluster fails after upgrading to OpenShift 4.6+].
+====
+
+[id="creating-rhcos-machines-bare-metal"]
+== Creating {op-system-first} machines
+
+Before you add more compute machines to a cluster that you installed on bare metal infrastructure, you must create {op-system} machines for it to use. You can either use an ISO image or network PXE booting to create the machines.
+
+[NOTE]
+====
+You must use the same ISO image that you used to install a cluster to deploy all new nodes in a cluster. It is recommended to use the same Ignition config file. The nodes automatically upgrade themselves on the first boot before running the workloads. You can add the nodes before or after the upgrade.
+====
+
+include::modules/machine-user-infra-machines-iso.adoc[leveloffset=+2]
+
+include::modules/machine-user-infra-machines-pxe.adoc[leveloffset=+2]
+
+include::modules/installation-approve-csrs.adoc[leveloffset=+1]

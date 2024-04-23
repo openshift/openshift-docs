@@ -1,0 +1,39 @@
+:_mod-docs-content-type: ASSEMBLY
+[id="olm-rh-catalogs"]
+= Red Hat-provided Operator catalogs
+include::_attributes/common-attributes.adoc[]
+:context: olm-rh-catalogs
+
+toc::[]
+
+Red Hat provides several Operator catalogs that are included with {product-title} by default.
+
+[IMPORTANT]
+====
+As of {product-title} 4.11, the default Red Hat-provided Operator catalog releases in the file-based catalog format. The default Red Hat-provided Operator catalogs for {product-title} 4.6 through 4.10 released in the deprecated SQLite database format.
+
+The `opm` subcommands, flags, and functionality related to the SQLite database format are also deprecated and will be removed in a future release. The features are still supported and must be used for catalogs that use the deprecated SQLite database format.
+
+Many of the `opm` subcommands and flags for working with the SQLite database format, such as `opm index prune`, do not work with the file-based catalog format.
+ifndef::openshift-dedicated,openshift-rosa[]
+For more information about working with file-based catalogs, see xref:../../operators/admin/olm-managing-custom-catalogs.adoc#olm-managing-custom-catalogs[Managing custom catalogs],
+xref:../../operators/understanding/olm-packaging-format.adoc#olm-file-based-catalogs_olm-packaging-format[Operator Framework packaging format], and xref:../../installing/disconnected_install/installing-mirroring-disconnected.adoc#installing-mirroring-disconnected[Mirroring images for a disconnected installation using the oc-mirror plugin].
+endif::openshift-dedicated,openshift-rosa[]
+ifdef::openshift-dedicated,openshift-rosa[]
+For more information about working with file-based catalogs, see xref:../../operators/admin/olm-managing-custom-catalogs.adoc#olm-managing-custom-catalogs[Managing custom catalogs], and
+xref:../../operators/understanding/olm-packaging-format.adoc#olm-file-based-catalogs_olm-packaging-format[Operator Framework packaging format].
+endif::openshift-dedicated,openshift-rosa[]
+====
+
+include::modules/olm-about-catalogs.adoc[leveloffset=+1]
+
+[role="_additional-resources"]
+.Additional resources
+
+* xref:../../operators/admin/olm-managing-custom-catalogs.adoc#olm-managing-custom-catalogs[Managing custom catalogs]
+* xref:../../operators/understanding/olm-packaging-format.adoc#olm-file-based-catalogs_olm-packaging-format[Packaging format]
+ifndef::openshift-dedicated,openshift-rosa[]
+* xref:../../operators/admin/olm-restricted-networks.adoc#olm-restricted-networks[Using Operator Lifecycle Manager on restricted networks]
+endif::openshift-dedicated,openshift-rosa[]
+
+include::modules/olm-rh-catalogs.adoc[leveloffset=+1]

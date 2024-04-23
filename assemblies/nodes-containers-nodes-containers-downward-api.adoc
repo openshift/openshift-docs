@@ -1,0 +1,46 @@
+:_mod-docs-content-type: ASSEMBLY
+:context: nodes-containers-downward-api
+[id="nodes-containers-downward-api"]
+= Allowing containers to consume API objects
+include::_attributes/common-attributes.adoc[]
+
+toc::[]
+
+
+
+
+
+The _Downward API_ is a mechanism that allows containers to consume information
+about API objects without coupling to {product-title}.
+Such information includes the pod's name, namespace, and resource values.
+Containers can consume information from the downward API using environment
+variables or a volume plugin.
+
+
+
+// The following include statements pull in the module files that comprise
+// the assembly. Include any combination of concept, procedure, or reference
+// modules required to cover the user story. You can also include other
+// assemblies.
+
+include::modules/nodes-containers-downward-api-about.adoc[leveloffset=+1]
+
+include::modules/nodes-containers-downward-api-container-values.adoc[leveloffset=+1]
+
+include::modules/nodes-containers-downward-api-container-values-envars.adoc[leveloffset=+2]
+
+include::modules/nodes-containers-downward-api-container-values-plugin.adoc[leveloffset=+2]
+
+include::modules/nodes-containers-downward-api-container-resources.adoc[leveloffset=+1]
+
+include::modules/nodes-containers-downward-api-container-resources-envars.adoc[leveloffset=+2]
+
+include::modules/nodes-containers-downward-api-container-resources-plugin.adoc[leveloffset=+2]
+
+include::modules/nodes-containers-downward-api-container-secrets.adoc[leveloffset=+1]
+
+include::modules/nodes-containers-downward-api-container-configmaps.adoc[leveloffset=+1]
+
+include::modules/nodes-containers-downward-api-container-envars.adoc[leveloffset=+1]
+
+include::modules/nodes-containers-downward-api-container-escaping.adoc[leveloffset=+1]

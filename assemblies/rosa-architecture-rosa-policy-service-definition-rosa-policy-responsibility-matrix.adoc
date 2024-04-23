@@ -1,0 +1,29 @@
+:_mod-docs-content-type: ASSEMBLY
+include::_attributes/attributes-openshift-dedicated.adoc[]
+:context: rosa-policy-responsibility-matrix
+[id="rosa-policy-responsibility-matrix"]
+= Overview of responsibilities for Red Hat OpenShift Service on AWS
+
+toc::[]
+
+This documentation outlines Red Hat, Amazon Web Services (AWS), and customer responsibilities for the {product-title} (ROSA) managed service.
+
+include::modules/rosa-policy-responsibilities.adoc[leveloffset=+1]
+include::modules/rosa-policy-shared-responsibility.adoc[leveloffset=+1]
+
+include::modules/rosa-policy-incident.adoc[leveloffset=+1]
+include::modules/rosa-policy-change-management.adoc[leveloffset=+1]
+include::modules/rosa-policy-security-and-compliance.adoc[leveloffset=+1]
+include::modules/rosa-policy-disaster-recovery.adoc[leveloffset=+1]
+
+[role="_additional-resources"]
+.Additional resources
+
+* xref:../../rosa_cluster_admin/rosa_nodes/rosa-nodes-machinepools-about.adoc#rosa-nodes-machinepools-about[About machine pools]
+
+include::modules/rosa-policy-customer-responsibility.adoc[leveloffset=+1]
+
+[role="_additional-resources"]
+== Additional resources
+
+* For more information about Red Hat site reliability engineering (SRE) teams access, see xref:../../rosa_architecture/rosa_policy_service_definition/rosa-sre-access.adoc#rosa-policy-identity-access-management_rosa-sre-access[Identity and access management].

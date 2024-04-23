@@ -1,0 +1,11 @@
+:_mod-docs-content-type: ASSEMBLY
+include::_attributes/common-attributes.adoc[]
+[id="https-redirect-global"]
+= Global HTTPS redirection
+:context: https-redirect-global
+
+HTTPS redirection provides redirection for incoming HTTP requests. These redirected HTTP requests are encrypted. You can enable HTTPS redirection for all services on the cluster by configuring the `httpProtocol` spec for the `KnativeServing` custom resource (CR).
+
+// global https redirect
+include::modules/serverless-https-redirect-global.adoc[leveloffset=+1]
+

@@ -1,0 +1,156 @@
+:_mod-docs-content-type: ASSEMBLY
+[id="installing-restricted-networks-gcp"]
+= Installing a cluster on GCP in a restricted network with user-provisioned infrastructure
+include::_attributes/common-attributes.adoc[]
+:context: installing-restricted-networks-gcp
+
+toc::[]
+
+In {product-title} version {product-version}, you can install a cluster on Google Cloud Platform (GCP) that uses infrastructure that you provide and an internal mirror of the installation release content.
+
+[IMPORTANT]
+====
+While you can install an {product-title} cluster by using mirrored installation release content, your cluster still requires internet access to use the GCP APIs.
+====
+
+The steps for performing a user-provided infrastructure install are outlined here. Several link:https://cloud.google.com/deployment-manager/docs[Deployment Manager] templates are provided to assist in completing these steps or to help model your own. You are also free to create the required resources through other methods.
+
+[IMPORTANT]
+====
+The steps for performing a user-provisioned infrastructure installation are provided as an example only. Installing a cluster with infrastructure you provide requires knowledge of the cloud provider and the installation process of {product-title}. Several Deployment Manager templates are provided to assist in completing these steps or to help model your own. You are also free to create the required resources through other methods; the templates are just an example.
+====
+
+
+== Prerequisites
+
+* You reviewed details about the xref:../../architecture/architecture-installation.adoc#architecture-installation[{product-title} installation and update] processes.
+* You read the documentation on xref:../../installing/installing-preparing.adoc#installing-preparing[selecting a cluster installation method and preparing it for users].
+* You xref:../../installing/disconnected_install/installing-mirroring-installation-images.adoc#installing-mirroring-installation-images[created a registry on your mirror host] and obtained the `imageContentSources` data for your version of {product-title}.
++
+[IMPORTANT]
+====
+Because the installation media is on the mirror host, you can use that computer to complete all installation steps.
+====
+* If you use a firewall, you xref:../../installing/install_config/configuring-firewall.adoc#configuring-firewall[configured it to allow the sites] that your cluster requires access to. While you might need to grant access to more sites, you must grant access to `*.googleapis.com` and `accounts.google.com`.
+* If the cloud identity and access management (IAM) APIs are not accessible in your environment, or if you do not want to store an administrator-level credential secret in the `kube-system` namespace, you can xref:../../installing/installing_gcp/installing-gcp-customizations.adoc#manually-create-iam_installing-gcp-customizations[manually create and maintain long-term credentials].
+
+include::modules/installation-about-restricted-network.adoc[leveloffset=+1]
+
+include::modules/cluster-entitlements.adoc[leveloffset=+1]
+
+[id="installation-restricted-networks-gcp-user-infra-config-project"]
+== Configuring your GCP project
+
+Before you can install {product-title}, you must configure a Google Cloud Platform (GCP) project to host it.
+
+include::modules/installation-gcp-project.adoc[leveloffset=+2]
+include::modules/installation-gcp-enabling-api-services.adoc[leveloffset=+2]
+include::modules/installation-gcp-dns.adoc[leveloffset=+2]
+include::modules/installation-gcp-limits.adoc[leveloffset=+2]
+include::modules/installation-gcp-service-account.adoc[leveloffset=+2]
+include::modules/installation-gcp-permissions.adoc[leveloffset=+2]
+include::modules/minimum-required-permissions-upi-gcp.adoc[leveloffset=+2]
+
+[role="_additional-resources"]
+.Additional resources
+
+* xref:../../scalability_and_performance/optimization/optimizing-storage.adoc#optimizing-storage[Optimizing storage]
+
+include::modules/installation-gcp-regions.adoc[leveloffset=+2]
+include::modules/installation-gcp-install-cli.adoc[leveloffset=+2]
+
+[id="installation-requirements-user-infra_{context}"]
+== Requirements for a cluster with user-provisioned infrastructure
+
+For a cluster that contains user-provisioned infrastructure, you must deploy all
+of the required machines.
+
+This section describes the requirements for deploying {product-title} on user-provisioned infrastructure.
+
+include::modules/installation-machine-requirements.adoc[leveloffset=+2]
+include::modules/installation-minimum-resource-requirements.adoc[leveloffset=+2]
+include::modules/installation-gcp-tested-machine-types.adoc[leveloffset=+2]
+include::modules/installation-using-gcp-custom-machine-types.adoc[leveloffset=+2]
+
+include::modules/installation-user-infra-generate.adoc[leveloffset=+1]
+include::modules/installation-disk-partitioning-upi-templates.adoc[leveloffset=+2]
+include::modules/installation-initializing.adoc[leveloffset=+2]
+
+[role="_additional-resources"]
+.Additional resources
+* xref:../../installing/installing_gcp/installation-config-parameters-gcp.adoc#installation-config-parameters-gcp[Installation configuration parameters for GCP]
+
+include::modules/installation-gcp-enabling-shielded-vms.adoc[leveloffset=+2]
+include::modules/installation-gcp-enabling-confidential-vms.adoc[leveloffset=+2]
+include::modules/installation-configure-proxy.adoc[leveloffset=+2]
+include::modules/installation-user-infra-generate-k8s-manifest-ignition.adoc[leveloffset=+2]
+
+[role="_additional-resources"]
+.Additional resources
+
+* xref:../../installing/installing_gcp/installing-gcp-user-infra.adoc#installation-gcp-user-infra-adding-ingress_installing-gcp-user-infra[Optional: Adding the ingress DNS records]
+
+[id="installation-restricted-networks-gcp-user-infra-exporting-common-variables"]
+== Exporting common variables
+
+include::modules/installation-extracting-infraid.adoc[leveloffset=+2]
+include::modules/installation-user-infra-exporting-common-variables.adoc[leveloffset=+2]
+
+include::modules/installation-creating-gcp-vpc.adoc[leveloffset=+1]
+include::modules/installation-deployment-manager-vpc.adoc[leveloffset=+2]
+
+include::modules/installation-network-user-infra.adoc[leveloffset=+1]
+
+include::modules/installation-creating-gcp-lb.adoc[leveloffset=+1]
+include::modules/installation-deployment-manager-ext-lb.adoc[leveloffset=+2]
+include::modules/installation-deployment-manager-int-lb.adoc[leveloffset=+2]
+
+include::modules/installation-creating-gcp-private-dns.adoc[leveloffset=+1]
+include::modules/installation-deployment-manager-private-dns.adoc[leveloffset=+2]
+
+include::modules/installation-creating-gcp-firewall-rules-vpc.adoc[leveloffset=+1]
+include::modules/installation-deployment-manager-firewall-rules.adoc[leveloffset=+2]
+
+include::modules/installation-creating-gcp-iam-shared-vpc.adoc[leveloffset=+1]
+include::modules/installation-deployment-manager-iam-shared-vpc.adoc[leveloffset=+2]
+
+include::modules/installation-gcp-user-infra-rhcos.adoc[leveloffset=+1]
+
+include::modules/installation-creating-gcp-bootstrap.adoc[leveloffset=+1]
+include::modules/installation-deployment-manager-bootstrap.adoc[leveloffset=+2]
+
+include::modules/installation-creating-gcp-control-plane.adoc[leveloffset=+1]
+include::modules/installation-deployment-manager-control-plane.adoc[leveloffset=+2]
+
+include::modules/installation-gcp-user-infra-wait-for-bootstrap.adoc[leveloffset=+1]
+
+include::modules/installation-creating-gcp-worker.adoc[leveloffset=+1]
+include::modules/installation-deployment-manager-worker.adoc[leveloffset=+2]
+
+//You install the CLI on the mirror host.
+
+include::modules/cli-logging-in-kubeadmin.adoc[leveloffset=+1]
+
+include::modules/olm-restricted-networks-configuring-operatorhub.adoc[leveloffset=+1]
+
+include::modules/installation-approve-csrs.adoc[leveloffset=+1]
+
+include::modules/installation-gcp-user-infra-adding-ingress.adoc[leveloffset=+1]
+
+include::modules/installation-gcp-user-infra-completing.adoc[leveloffset=+1]
+
+include::modules/cluster-telemetry.adoc[leveloffset=+1]
+
+[role="_additional-resources"]
+.Additional resources
+
+* See xref:../../support/remote_health_monitoring/about-remote-health-monitoring.adoc#about-remote-health-monitoring[About remote health monitoring] for more information about the Telemetry service
+
+== Next steps
+
+* xref:../../post_installation_configuration/cluster-tasks.adoc#available_cluster_customizations[Customize your cluster].
+* xref:../../post_installation_configuration/cluster-tasks.adoc#post-install-must-gather-disconnected[Configure image streams] for the Cluster Samples Operator and the `must-gather` tool.
+* Learn how to xref:../../operators/admin/olm-restricted-networks.adoc#olm-restricted-networks[use Operator Lifecycle Manager (OLM) on restricted networks].
+* If the mirror registry that you used to install your cluster has a trusted CA, add it to the cluster by xref:../../openshift_images/image-configuration.adoc#images-configuration-cas_image-configuration[configuring additional trust stores].
+* If necessary, you can xref:../../support/remote_health_monitoring/opting-out-of-remote-health-reporting.adoc#opting-out-remote-health-reporting_opting-out-remote-health-reporting[opt out of remote health reporting].
+* If necessary, see xref:../../support/remote_health_monitoring/opting-out-of-remote-health-reporting.adoc#insights-operator-register-disconnected-cluster_opting-out-remote-health-reporting[Registering your disconnected cluster]

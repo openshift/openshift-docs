@@ -1,0 +1,21 @@
+:_mod-docs-content-type: ASSEMBLY
+[id="osdk-ansible-k8s-collection"]
+= Kubernetes Collection for Ansible
+include::_attributes/common-attributes.adoc[]
+:context: osdk-ansible-k8s-collection
+
+toc::[]
+
+To manage the lifecycle of your application on Kubernetes using Ansible, you can use the link:https://galaxy.ansible.com/community/kubernetes[Kubernetes Collection for Ansible]. This collection of Ansible modules allows a developer to either leverage their existing Kubernetes resource files written in YAML or express the lifecycle management in native Ansible.
+
+One of the biggest benefits of using Ansible in conjunction with existing Kubernetes resource files is the ability to use Jinja templating so that you can customize resources with the simplicity of a few variables in Ansible.
+
+This section goes into detail on usage of the Kubernetes Collection. To get started, install the collection on your local workstation and test it using a playbook before moving on to using it within an Operator.
+
+include::modules/osdk-ansible-k8s-install.adoc[leveloffset=+1]
+include::modules/osdk-ansible-k8s-local.adoc[leveloffset=+1]
+
+[id="osdk-ansible-k8s-collection-next-steps"]
+== Next steps
+
+* See xref:../../../operators/operator_sdk/ansible/osdk-ansible-inside-operator.adoc#osdk-ansible-inside-operator[Using Ansible inside an Operator] for details on triggering your custom Ansible logic inside of an Operator when a custom resource (CR) changes.

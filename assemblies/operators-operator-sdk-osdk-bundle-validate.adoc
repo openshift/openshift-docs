@@ -1,0 +1,28 @@
+:_mod-docs-content-type: ASSEMBLY
+[id="osdk-bundle-validate"]
+= Validating Operator bundles
+include::_attributes/common-attributes.adoc[]
+:context: osdk-bundle-validate
+
+toc::[]
+
+As an Operator author, you can run the `bundle validate` command in the Operator SDK to validate the content and format of an Operator bundle. You can run the command on a remote Operator bundle image or a local Operator bundle directory.
+
+include::modules/osdk-bundle-validate-about.adoc[leveloffset=+1]
+include::modules/osdk-bundle-validate-tests.adoc[leveloffset=+1]
+
+[role="_additional-resources"]
+.Additional resources
+
+* xref:../../operators/understanding/olm-packaging-format.adoc#olm-bundle-format_olm-packaging-format[Bundle format]
+
+include::modules/osdk-bundle-validate-run.adoc[leveloffset=+1]
+
+ifndef::openshift-rosa,openshift-dedicated[]
+include::modules/osdk-multi-arch-validate.adoc[leveloffset=+1]
+
+[role="_additional-resources"]
+.Additional resources
+
+* xref:../../operators/operator_sdk/osdk-multi-arch-support.adoc#osdk-multi-platform-support[Configuring Operator projects for multi-platform support]
+endif::[]

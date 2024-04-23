@@ -1,0 +1,113 @@
+:_mod-docs-content-type: ASSEMBLY
+[id="premigration-checklists-3-4"]
+= Premigration checklists
+include::_attributes/common-attributes.adoc[]
+:context: premigration-checklists-3-4
+
+toc::[]
+
+Before you migrate your application workloads with the {mtc-full} ({mtc-short}), review the following checklists.
+
+[id="resources_{context}"]
+== Resources
+
+* [ ] If your application uses an internal service network or an external route for communicating with services, the relevant route exists.
+* [ ] If your application uses cluster-level resources, you have re-created them on the target cluster.
+* [ ] You have xref:../migrating_from_ocp_3_to_4/advanced-migration-options-3-4.adoc#migration-excluding-resources_advanced-migration-options-3-4[excluded] persistent volumes (PVs), image streams, and other resources that you do not want to migrate.
+* [ ] PV data has been backed up in case an application displays unexpected behavior after migration and corrupts the data.
+
+[id="source-cluster_{context}"]
+== Source cluster
+
+* [ ] The cluster meets the link:https://docs.openshift.com/container-platform/3.11/install/prerequisites.html#hardware[minimum hardware requirements].
+* [ ] You have installed the correct legacy {mtc-full} Operator version:
+** `operator-3.7.yml` on {product-title} version 3.7.
+** `operator.yml` on {product-title} versions 3.9 to 4.5.
+* [ ] All nodes have an active {product-title} subscription.
+* [ ] You have performed all the link:https://docs.openshift.com/container-platform/3.11/day_two_guide/run_once_tasks.html#day-two-guide-default-storage-class[run-once tasks].
+* [ ] You have performed all the link:https://docs.openshift.com/container-platform/3.11/day_two_guide/environment_health_checks.html[environment health checks].
+* [ ] You have checked for PVs with abnormal configurations  stuck in a *Terminating* state by running the following command:
++
+[source,terminal]
+----
+$ oc get pv
+----
+
+* [ ] You have checked for pods whose status is other than *Running* or *Completed* by running the following command:
++
+[source,terminal]
+----
+$ oc get pods --all-namespaces | egrep -v 'Running | Completed'
+----
+
+* [ ] You have checked for pods with a high restart count by running the following command:
++
+[source,terminal]
+----
+$ oc get pods --all-namespaces --field-selector=status.phase=Running \
+  -o json | jq '.items[]|select(any( .status.containerStatuses[]; \
+  .restartCount > 3))|.metadata.name'
+----
++
+Even if the pods are in a *Running* state, a high restart count might indicate underlying problems.
+
+* [ ] You have removed old builds, deployments, and images from each namespace to be migrated by xref:../applications/pruning-objects.adoc#pruning-objects[pruning].
+* [ ] The {product-registry} uses a link:https://docs.openshift.com/container-platform/3.11/scaling_performance/optimizing_storage.html#registry[supported storage type].
+* [ ] Direct image migration only: The {product-registry} is link:https://docs.openshift.com/container-platform/3.11/install_config/registry/securing_and_exposing_registry.html#exposing-the-registry[exposed] to external traffic.
+* [ ] You can read and write images to the registry.
+* [ ] The link:https://access.redhat.com/articles/3093761[etcd cluster] is healthy.
+* [ ] The link:https://docs.openshift.com/container-platform/3.11/install_config/master_node_configuration.html#master-node-configuration-node-qps-burst[average API server response time] on the source cluster is less than 50 ms.
+* [ ] The cluster certificates are link:https://docs.openshift.com/container-platform/3.11/install_config/redeploying_certificates.html#install-config-cert-expiry[valid] for the duration of the migration process.
+* [ ] You have checked for pending certificate-signing requests by running the following command:
++
+[source,terminal]
+----
+$ oc get csr -A | grep pending -i
+----
+
+* [ ] The link:https://docs.openshift.com/container-platform/3.11/install_config/configuring_authentication.html#overview[identity provider] is working.
+* [ ] You have set the value of the `openshift.io/host.generated` annotation parameter to `true` for each {product-title} route, which updates the host name of the route for the target cluster. Otherwise, the migrated routes retain the source cluster host name.
+
+[id="target-cluster_{context}"]
+== Target cluster
+
+* [ ] You have installed {mtc-full} Operator version 1.5.1.
+* [ ] All xref:../migrating_from_ocp_3_to_4/migrating-applications-3-4.adoc#migration-prerequisites_migrating-applications-3-4[{mtc-short} prerequisites] are met.
+* [ ] The cluster meets the minimum hardware requirements for the specific platform and installation method, for example, on xref:../installing/installing_bare_metal/installing-bare-metal.adoc#minimum-resource-requirements_installing-bare-metal[bare metal].
+* [ ] The cluster has xref:../storage/dynamic-provisioning.adoc#defining-storage-classes_dynamic-provisioning[storage classes] defined for the storage types used by the source cluster, for example, block volume, file system, or object storage.
++
+[NOTE]
+====
+NFS does not require a defined storage class.
+====
+
+* [ ] The cluster has the correct network configuration and permissions to access external services, for example, databases, source code repositories, container image registries, and CI/CD tools.
+* [ ] External applications and services that use services provided by the cluster have the correct network configuration and permissions to access the cluster.
+* [ ] Internal container image dependencies are met.
++
+If an application uses an internal image in the `openshift` namespace that is not supported by {product-title} {product-version}, you can manually update the xref:../migrating_from_ocp_3_to_4/troubleshooting-3-4.adoc#migration-updating-deprecated-internal-images_troubleshooting-3-4[{product-title} 3 image stream tag] with `podman`.
+* [ ] The target cluster and the replication repository have sufficient storage space.
+* [ ] The xref:../authentication/understanding-identity-provider.adoc#supported-identity-providers[identity provider] is working.
+* [ ] DNS records for your application exist on the target cluster.
+* [ ] Certificates that your application uses exist on the target cluster.
+* [ ] You have configured appropriate firewall rules on the target cluster.
+* [ ] You have correctly configured load balancing on the target cluster.
+* [ ] If you migrate objects to an existing namespace on the target cluster that has the same name as the namespace being migrated from the source, the target namespace contains no objects of the same name and type as the objects being migrated.
++
+[NOTE]
+====
+Do not create namespaces for your application on the target cluster before migration because this might cause quotas to change.
+====
+
+[id="performance_{context}"]
+== Performance
+
+* [ ] The migration network has a minimum throughput of 10 Gbps.
+* [ ] The clusters have sufficient resources for migration.
++
+[NOTE]
+====
+Clusters require additional memory, CPUs, and storage in order to run a migration on top of normal workloads. Actual resource requirements depend on the number of Kubernetes resources being migrated in a single migration plan. You must test migrations in a non-production environment in order to estimate the resource requirements.
+====
+* [ ] The xref:../support/troubleshooting/verifying-node-health.adoc#reviewing-node-status-use-and-configuration_verifying-node-health[memory and CPU usage] of the nodes are healthy.
+* [ ] The link:https://access.redhat.com/solutions/4885641[etcd disk performance] of the clusters has been checked with `fio`.

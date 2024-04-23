@@ -1,0 +1,49 @@
+:_mod-docs-content-type: ASSEMBLY
+[id="working-with-pipelines-web-console"]
+= Working with {pipelines-title} in the web console
+include::_attributes/common-attributes.adoc[]
+:context: working-with-pipelines-web-console
+
+toc::[]
+
+You can use the *Administrator* or *Developer* perspective to create and modify `Pipeline`, `PipelineRun`, and `Repository` objects from the *Pipelines* page in the {product-title} web console.
+You can also use the *+Add* page in the *Developer* perspective of the web console to create CI/CD pipelines for your software delivery process.
+
+// Dev console
+include::modules/op-odc-pipelines-abstract.adoc[leveloffset=+1]
+
+[discrete]
+[id="prerequisites_working-with-pipelines-web-console"]
+== Prerequisites
+
+* You have access to an {product-title} cluster, and have xref:../../web_console/web-console-overview.adoc#about-developer-perspective_web-console-overview[switched to the *Developer* perspective].
+* You have the xref:../../cicd/pipelines/installing-pipelines.adoc#installing-pipelines[{pipelines-shortname} Operator installed] in your cluster.
+* You are a cluster administrator or a user with create and edit permissions.
+* You have created a project.
+
+include::modules/op-constructing-pipelines-using-pipeline-builder.adoc[leveloffset=+2]
+
+include::modules/op-creating-pipelines-along-with-applications.adoc[leveloffset=+2]
+
+include::modules/odc-adding-a-GitHub-repository-containing-pipelines.adoc[leveloffset=+2]
+
+include::modules/op-interacting-with-pipelines-using-the-developer-perspective.adoc[leveloffset=+2]
+
+include::modules/op-starting-pipelines-from-pipelines-view.adoc[leveloffset=+2]
+
+include::modules/op-starting-pipelines-from-topology-view.adoc[leveloffset=+2]
+
+include::modules/op-interacting-pipelines-from-topology-view.adoc[leveloffset=+2]
+
+include::modules/op-editing-pipelines.adoc[leveloffset=+2]
+
+include::modules/op-deleting-pipelines.adoc[leveloffset=+2]
+
+[role="_additional-resources"]
+[id="additional-resources_working-with-pipelines-web-console"]
+=== Additional resources
+
+* xref:../../cicd/pipelines/using-tekton-hub-with-openshift-pipelines.adoc#using-tekton-hub-with-openshift-pipelines[Using Tekton Hub with {pipelines-shortname}]
+
+// Admin console
+include::modules/op-creating-pipeline-templates-admin-console.adoc[leveloffset=+1]

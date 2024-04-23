@@ -1,0 +1,81 @@
+:_mod-docs-content-type: ASSEMBLY
+[id="creating-machineset-azure"]
+= Creating a compute machine set on Azure
+include::_attributes/common-attributes.adoc[]
+:context: creating-machineset-azure
+
+toc::[]
+
+You can create a different compute machine set to serve a specific purpose in your {product-title} cluster on Microsoft Azure. For example, you might create infrastructure machine sets and related machines so that you can move supporting workloads to the new machines.
+
+//[IMPORTANT] admonition for UPI
+include::modules/machine-user-provisioned-limitations.adoc[leveloffset=+1]
+
+//Sample YAML for a compute machine set custom resource on Azure
+include::modules/machineset-yaml-azure.adoc[leveloffset=+1]
+
+//Creating a compute machine set
+include::modules/machineset-creating.adoc[leveloffset=+1]
+
+//Selecting an Azure Marketplace image
+include::modules/installation-azure-marketplace-subscribe.adoc[leveloffset=+1]
+
+//Enabling Azure boot diagnostics
+include::modules/machineset-azure-boot-diagnostics.adoc[leveloffset=+1]
+
+//Machine sets that deploy machines as Spot VMs
+include::modules/machineset-non-guaranteed-instance.adoc[leveloffset=+1]
+
+//Creating Spot VMs by using compute machine sets
+include::modules/machineset-creating-non-guaranteed-instances.adoc[leveloffset=+2]
+
+//Machine sets that deploy machines on Ephemeral OS disks
+include::modules/machineset-azure-ephemeral-os.adoc[leveloffset=+1]
+
+//Creating machines on Ephemeral OS disks by using compute machine sets
+include::modules/machineset-creating-azure-ephemeral-os.adoc[leveloffset=+2]
+
+//Machine sets that deploy machines on ultra disks as data disks
+include::modules/machineset-azure-ultra-disk.adoc[leveloffset=+1]
+
+[role="_additional-resources"]
+.Additional resources
+* link:https://docs.microsoft.com/en-us/azure/virtual-machines/disks-types#ultra-disks[Microsoft Azure ultra disks documentation]
+* xref:../../storage/container_storage_interface/persistent-storage-csi-azure.adoc#machineset-azure-ultra-disk_persistent-storage-csi-azure[Machine sets that deploy machines on ultra disks using CSI PVCs]
+* xref:../../storage/persistent_storage/persistent-storage-azure.adoc#machineset-azure-ultra-disk_persistent-storage-azure[Machine sets that deploy machines on ultra disks using in-tree PVCs]
+
+//Creating machines on ultra disks by using machine sets
+include::modules/machineset-creating-azure-ultra-disk.adoc[leveloffset=+2]
+
+//Troubleshooting resources for machine sets that enable ultra disks
+include::modules/machineset-troubleshooting-azure-ultra-disk.adoc[leveloffset=+2]
+
+//Enabling customer-managed encryption keys for a machine set
+include::modules/machineset-customer-managed-encryption-azure.adoc[leveloffset=+1]
+
+//Configuring trusted launch for Azure virtual machines by using machine sets
+include::modules/machineset-azure-trusted-launch.adoc[leveloffset=+1]
+
+//Configuring Azure confidential virtual machines by using machine sets
+include::modules/machineset-azure-confidential-vms.adoc[leveloffset=+1]
+
+// Accelerated Networking for Microsoft Azure VMs
+include::modules/machineset-azure-accelerated-networking.adoc[leveloffset=+1]
+
+//Adding a GPU node to a machine set (stesmith)
+include::modules/nvidia-gpu-azure-adding-a-gpu-node.adoc[leveloffset=+1]
+
+//Deploying the Node Feature Discovery Operator (stesmith)
+include::modules/nvidia-gpu-aws-deploying-the-node-feature-discovery-operator.adoc[leveloffset=+1]
+
+[role="_additional-resources"]
+.Additional resources
+
+* xref:../../installing/installing_azure/installing-azure-customizations.adoc#machineset-azure-enabling-accelerated-networking-new-install_installing-azure-customizations[Enabling Accelerated Networking during installation]
+
+// Enabling Accelerated Networking on an existing Microsoft Azure cluster
+include::modules/machineset-azure-enabling-accelerated-networking-existing.adoc[leveloffset=+2]
+
+[role="_additional-resources"]
+.Additional resources
+* xref:../../machine_management/manually-scaling-machineset.adoc#manually-scaling-machineset[Manually scaling a compute machine set]

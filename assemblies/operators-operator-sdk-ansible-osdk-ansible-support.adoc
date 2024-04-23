@@ -1,0 +1,12 @@
+:_mod-docs-content-type: ASSEMBLY
+[id="osdk-ansible-support"]
+= Ansible support in Operator SDK
+include::_attributes/common-attributes.adoc[]
+:context: osdk-ansible-support
+
+toc::[]
+
+include::modules/osdk-ansible-custom-resource-files.adoc[leveloffset=+1]
+include::modules/osdk-ansible-watches-file.adoc[leveloffset=+1]
+include::modules/osdk-ansible-extra-variables.adoc[leveloffset=+1]
+include::modules/osdk-ansible-runner-directory.adoc[leveloffset=+1]

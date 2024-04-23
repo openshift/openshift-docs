@@ -1,0 +1,30 @@
+////
+:_mod-docs-content-type: ASSEMBLY
+[id='installing-odo']
+= Installing odo
+include::_attributes/common-attributes.adoc[]
+:context: installing-odo
+
+toc::[]
+
+// The following section describes how to install `{odo-title}` on different platforms using the CLI or the Visual Studio Code (VS Code) IDE.
+
+You can install the `{odo-title}` CLI on Linux, Windows, or macOS by downloading a binary. You can also install the OpenShift VS Code extension, which uses both the `{odo-title}` and the `oc` binaries to interact with your OpenShift Container Platform cluster. For {op-system-base-full}, you can install the `{odo-title}` CLI as an RPM.
+
+[NOTE]
+====
+Currently, `{odo-title}` does not support installation in a restricted network environment.
+====
+
+// You can also find the URL to the latest binaries from the {product-title} web console by clicking the *?* icon in the upper-right corner and selecting *Command Line Tools*
+
+include::modules/developer-cli-odo-installing-odo-on-linux.adoc[leveloffset=+1]
+
+include::modules/developer-cli-odo-installing-odo-on-windows.adoc[leveloffset=+1]
+
+include::modules/developer-cli-odo-installing-odo-on-macos.adoc[leveloffset=+1]
+
+include::modules/developer-cli-odo-installing-odo-on-vs-code.adoc[leveloffset=+1]
+
+include::modules/developer-cli-odo-installing-odo-on-linux-rpm.adoc[leveloffset=+1]
+////

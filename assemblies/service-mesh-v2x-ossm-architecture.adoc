@@ -1,0 +1,48 @@
+:_mod-docs-content-type: ASSEMBLY
+[id="ossm-architecture"]
+= Understanding Service Mesh
+include::_attributes/common-attributes.adoc[]
+:context: ossm-architecture
+
+toc::[]
+
+{SMProductName} provides a platform for behavioral insight and operational control over your networked microservices in a service mesh. With {SMProductName}, you can connect, secure, and monitor microservices in your {product-title} environment.
+
+include::modules/ossm-understanding-service-mesh.adoc[leveloffset=+1]
+
+include::modules/ossm-architecture.adoc[leveloffset=+1]
+
+For information about how to install the 3scale adapter, refer to the xref:../../service_mesh/v2x/threescale-adapter.adoc#threescale-adapter[3scale Istio adapter documentation]
+
+== Understanding Kiali
+
+Kiali provides visibility into your service mesh by showing you the microservices in your service mesh, and how they are connected.
+
+include::modules/ossm-kiali-overview.adoc[leveloffset=+2]
+
+include::modules/ossm-kiali-architecture.adoc[leveloffset=+2]
+
+include::modules/ossm-kiali-features.adoc[leveloffset=+2]
+
+== Understanding distributed tracing
+
+Every time a user takes an action in an application, a request is executed by the architecture that may require dozens of different services to participate to produce a response.
+The path of this request is a distributed transaction. The {JaegerShortName} lets you perform distributed tracing, which follows the path of a request through various microservices that make up an application.
+
+*Distributed tracing* is a technique that is used to tie the information about different units of work together—usually executed in different processes or hosts—to understand a whole chain of events in a distributed transaction.
+Distributed tracing lets developers visualize call flows in large service oriented architectures.
+It can be invaluable in understanding serialization, parallelism, and sources of latency.
+
+The {JaegerShortName} records the execution of individual requests across the whole stack of microservices, and presents them as traces. A *trace* is a data/execution path through the system. An end-to-end trace comprises one or more spans.
+
+A *span* represents a logical unit of work that has an operation name, the start time of the operation, and the duration. Spans may be nested and ordered to model causal relationships.
+
+include::modules/distr-tracing-product-overview.adoc[leveloffset=+2]
+
+include::modules/distr-tracing-architecture.adoc[leveloffset=+2]
+
+include::modules/distr-tracing-features.adoc[leveloffset=+2]
+
+== Next steps
+
+* xref:../../service_mesh/v2x/preparing-ossm-installation.adoc#preparing-ossm-installation[Prepare to install {SMProductName}] in your {product-title} environment.

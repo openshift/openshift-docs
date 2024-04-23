@@ -1,0 +1,21 @@
+:_mod-docs-content-type: ASSEMBLY
+[id="osdk-scorecard"]
+= Validating Operators using the scorecard tool
+include::_attributes/common-attributes.adoc[]
+:context: osdk-scorecard
+
+toc::[]
+
+As an Operator author, you can use the scorecard tool in the Operator SDK to do the following tasks:
+
+* Validate that your Operator project is free of syntax errors and packaged correctly
+* Review suggestions about ways you can improve your Operator
+
+include::modules/osdk-scorecard-about.adoc[leveloffset=+1]
+include::modules/osdk-scorecard-config.adoc[leveloffset=+1]
+include::modules/osdk-scorecard-tests.adoc[leveloffset=+1]
+include::modules/osdk-scorecard-run.adoc[leveloffset=+1]
+include::modules/osdk-scorecard-output.adoc[leveloffset=+1]
+include::modules/osdk-scorecard-select-tests.adoc[leveloffset=+1]
+include::modules/osdk-scorecard-parallel.adoc[leveloffset=+1]
+include::modules/osdk-scorecard-custom-tests.adoc[leveloffset=+1]

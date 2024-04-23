@@ -1,0 +1,22 @@
+:_mod-docs-content-type: ASSEMBLY
+[id="osdk-helm-updating-projects"]
+= Updating Helm-based projects for newer Operator SDK versions
+include::_attributes/common-attributes.adoc[]
+:context: osdk-helm-updating-projects
+
+toc::[]
+
+{product-title} {product-version} supports Operator SDK {osdk_ver}. If you already have the {osdk_ver_n1} CLI installed on your workstation, you can update the CLI to {osdk_ver} by xref:../../../operators/operator_sdk/osdk-installing-cli.adoc#osdk-installing-cli[installing the latest version].
+
+However, to ensure your existing Operator projects maintain compatibility with Operator SDK {osdk_ver}, update steps are required for the associated breaking changes introduced since {osdk_ver_n1}. You must perform the update steps manually in any of your Operator projects that were previously created or maintained with {osdk_ver_n1}.
+
+include::modules/osdk-updating-128-to-131.adoc[leveloffset=+1]
+
+[id="additional-resources_osdk-helm-upgrading-projects"]
+[role="_additional-resources"]
+== Additional resources
+
+* xref:../../../operators/operator_sdk/osdk-pkgman-to-bundle.adoc#osdk-pkgman-to-bundle[Migrating package manifest projects to bundle format]
+* link:https://access.redhat.com/documentation/en-us/openshift_container_platform/4.10/html-single/operators/index#osdk-upgrading-v1101-to-v1160_osdk-upgrading-projects[Upgrading projects for Operator SDK 1.16.0]
+* link:https://access.redhat.com/documentation/en-us/openshift_container_platform/4.9/html/operators/developing-operators#osdk-upgrading-v180-to-v1101_osdk-upgrading-projects[Upgrading projects for Operator SDK v1.10.1]
+* link:https://access.redhat.com/documentation/en-us/openshift_container_platform/4.8/html/operators/developing-operators#osdk-upgrading-v130-to-v180_osdk-upgrading-projects[Upgrading projects for Operator SDK v1.8.0]

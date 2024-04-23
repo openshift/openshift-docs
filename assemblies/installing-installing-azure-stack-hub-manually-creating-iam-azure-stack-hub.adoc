@@ -1,0 +1,33 @@
+:_mod-docs-content-type: ASSEMBLY
+[id="manually-creating-iam-azure-stack-hub"]
+= Manually creating IAM for Azure Stack Hub
+include::_attributes/common-attributes.adoc[]
+:context: manually-creating-iam-azure-stack-hub
+
+toc::[]
+
+In environments where the cloud identity and access management (IAM) APIs are not reachable, you must put the Cloud Credential Operator (CCO) into manual mode before you install the cluster.
+
+////
+In environments where the cloud identity and access management (IAM) APIs are not reachable, or the administrator prefers not to store an administrator-level credential secret in the cluster `kube-system` namespace, you can put the Cloud Credential Operator (CCO) into manual mode before you install the cluster.
+////
+// Until ASH supports other credential scenarios besides manual mode, the tone for this article will be manual mode use only.
+
+include::modules/alternatives-to-storing-admin-secrets-in-kube-system.adoc[leveloffset=+1]
+
+[role="_additional-resources"]
+.Additional resources
+
+* For a detailed description of all available CCO credential modes and their supported platforms, see xref:../../authentication/managing_cloud_provider_credentials/about-cloud-credential-operator.adoc#about-cloud-credential-operator[About the Cloud Credential Operator].
+
+include::modules/manually-create-identity-access-management.adoc[leveloffset=+1]
+
+// I was going to update this but I think the assembly is no longer used and will ask install team if I can get rid of it entirely.
+include::modules/manually-maintained-credentials-upgrade.adoc[leveloffset=+1]
+
+[id="next-steps_manually-creating-iam-azure-stack-hub"]
+== Next steps
+
+* Install an {product-title} cluster:
+** xref:../../installing/installing_azure_stack_hub/installing-azure-stack-hub-default.adoc#installing-azure-stack-hub-default[Installing a cluster quickly on Azure Stack Hub].
+** xref:../../installing/installing_azure_stack_hub/installing-azure-stack-hub-user-infra.adoc#installing-azure-stack-hub-user-infra[Installing a cluster on Azure Stack Hub using ARM templates].

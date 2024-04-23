@@ -1,0 +1,22 @@
+:_mod-docs-content-type: ASSEMBLY
+:context: creating-multi-arch-compute-nodes-gcp
+[id="creating-multi-arch-compute-nodes-gcp"]
+= Creating a cluster with multi-architecture compute machines on GCP
+include::_attributes/common-attributes.adoc[]
+
+toc::[]
+
+To create a Google Cloud Platform (GCP) cluster with multi-architecture compute machines, you must first create a single-architecture GCP installer-provisioned cluster with the multi-architecture installer binary. For more information on AWS installations, refer to xref:../../installing/installing_gcp/installing-gcp-customizations.adoc[Installing a cluster on GCP with customizations]. You can then add ARM64 compute machines sets to your GCP cluster.
+
+[NOTE]
+====
+Secure booting is currently not supported on ARM64 machines for GCP
+====
+
+include::modules/multi-architecture-verifying-cluster-compatibility.adoc[leveloffset=+1]
+
+include::modules/multi-architecture-modify-machine-set-gcp.adoc[leveloffset=+1]
+
+.Additional resources
+
+* xref:../../installing/installing_gcp/installing-gcp-customizations.adoc#installation-gcp-tested-machine-types-arm_installing-gcp-customizations[Tested instance types for GCP on 64-bit ARM infrastructures]

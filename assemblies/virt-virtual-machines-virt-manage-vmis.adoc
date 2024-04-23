@@ -1,0 +1,23 @@
+:_mod-docs-content-type: ASSEMBLY
+[id="virt-manage-vmis"]
+= Managing virtual machine instances
+include::_attributes/common-attributes.adoc[]
+:context: virt-manage-vmis
+
+toc::[]
+
+If you have standalone virtual machine instances (VMIs) that were created independently outside of the {VirtProductName} environment, you can manage them by using the web console or by using `oc` or xref:../../virt/getting_started/virt-using-the-cli-tools.adoc#virt-using-the-cli-tools[`virtctl`] commands from the command-line interface (CLI).
+
+The `virtctl` command provides more virtualization options than the `oc` command. For example, you can use `virtctl` to pause a VM or expose a port.
+
+include::modules/virt-about-vmis.adoc[leveloffset=+1]
+
+include::modules/virt-listing-vmis-cli.adoc[leveloffset=+1]
+
+include::modules/virt-listing-vmis-web.adoc[leveloffset=+1]
+
+include::modules/virt-editing-vmis-web.adoc[leveloffset=+1]
+
+include::modules/virt-deleting-vmis-cli.adoc[leveloffset=+1]
+
+include::modules/virt-deleting-vmis-web.adoc[leveloffset=+1]

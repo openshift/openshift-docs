@@ -1,0 +1,29 @@
+:_mod-docs-content-type: ASSEMBLY
+:context: nodes-cma-autoscaling-custom-debugging
+[id="nodes-cma-autoscaling-custom-debugging"]
+= Gathering debugging data
+include::_attributes/common-attributes.adoc[]
+
+toc::[]
+
+ifndef::openshift-origin[]
+When opening a support case, it is helpful to provide debugging information about your cluster to Red Hat Support.
+
+To help troubleshoot your issue, provide the following information:
+
+* Data gathered using the `must-gather` tool.
+* The unique cluster ID.
+endif::openshift-origin[]
+
+You can use the `must-gather` tool to collect data about the Custom Metrics Autoscaler Operator and its components, including the following items:
+
+ifndef::openshift-rosa,openshift-dedicated[]
+* The `openshift-keda` namespace and its child objects.
+endif::openshift-rosa,openshift-dedicated[]
+ifdef::openshift-rosa,openshift-dedicated[]
+* The `keda` namespace and its child objects.
+endif::openshift-rosa,openshift-dedicated[]
+* The Custom Metric Autoscaler Operator installation objects.
+* The Custom Metric Autoscaler Operator CRD objects.
+
+include::modules/nodes-cma-autoscaling-custom-gather.adoc[leveloffset=+1]

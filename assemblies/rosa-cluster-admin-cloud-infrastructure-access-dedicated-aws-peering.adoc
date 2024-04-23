@@ -1,0 +1,28 @@
+:_mod-docs-content-type: ASSEMBLY
+[id="dedicated-aws-peering"]
+= Configuring AWS VPC peering
+include::_attributes/common-attributes.adoc[]
+:context: dedicated-aws-peering
+
+toc::[]
+
+This sample process configures an Amazon Web Services (AWS) VPC containing an
+{product-title} cluster to peer with another AWS VPC network. For more
+information about creating an AWS VPC Peering connection or for other possible
+configurations, see the
+link:http://docs.aws.amazon.com/AmazonVPC/latest/PeeringGuide/Welcome.html[AWS VPC Peering]
+guide.
+
+include::modules/dedicated-aws-vpc-peering-terms.adoc[leveloffset=+1]
+include::modules/dedicated-aws-vpc-initiating-peering.adoc[leveloffset=+1]
+
+ifdef::openshift-dedicated[]
+[role="_additional-resources"]
+.Additional resources
+
+* xref:../../rosa_cluster_admin/cloud_infrastructure_access/dedicated-aws-access.adoc#dedicated-aws-ocm-iam-role[Logging into the Web Console for the AWS Account]
+endif::[]
+
+include::modules/dedicated-aws-vpc-accepting-peering.adoc[leveloffset=+1]
+include::modules/dedicated-aws-vpc-configuring-routing-tables.adoc[leveloffset=+1]
+include::modules/dedicated-aws-vpc-verifying-troubleshooting.adoc[leveloffset=+1]
