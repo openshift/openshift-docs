@@ -39,7 +39,7 @@ if [[ $ARCH == "aarch64" || $ARCH == "arm64" ]]; then
     TAG=multiarch
     SELINUX_LABEL=""
 fi
-CONTAINER_IMAGE=quay.io/redhat-docs/openshift-docs-asciidoc:$TAG
+CONTAINER_IMAGE="quay.io/redhat-docs/openshift-docs-asciidoc:$TAG"
 SCRIPT_HEADSIZE=$(head -30 ${0} |grep -n "^# END_OF_HEADER" | cut -f1 -d:)
 
 if [[ "$1" == "--help" || "$1" == "-h" ]]; then
