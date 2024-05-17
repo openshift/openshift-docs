@@ -10,12 +10,15 @@
 #%    Validates openshift-docs AsciiDoc source files using the same tools that run in the Prow CI
 #%
 #%OPTIONS ⚙️
-#%    -v, --validate                                    Validate the AsciiDoc source
+#%    -v, --validate $DISTRO                            Validate the AsciiDoc source. Use --validate to run with default options
+#%    -l, --lint-topicmaps                              Lint topic-map YAML
 #%    -p, --preview $DISTRO "$PRODUCT_NAME" $VERSION    Use --preview to run with default options
 #%    -h, --help                                        Print this help
 #%
 #%EXAMPLES 🤔
 #%    ./scripts/prow-smoke-test.sh --validate
+#%    ./scripts/prow-smoke-test.sh --validate openshift-rosa
+#%    ./scripts/prow-smoke-test.sh --lint-topicmaps
 #%    ./scripts/prow-smoke-test.sh --preview
 #%    ./scripts/prow-smoke-test.sh --preview openshift-rosa
 #%    ./scripts/prow-smoke-test.sh --preview openshift-pipelines "Red Hat OpenShift Pipelines" 1.14
@@ -29,7 +32,14 @@ TEST=$1
 DISTRO=$2
 PRODUCT_NAME=$3
 VERSION=$4
-CONTAINER_IMAGE=quay.io/redhat-docs/openshift-docs-asciidoc
+ARCH=$(uname -m)
+TAG=latest # Default tag
+SELINUX_LABEL=":Z"
+if [[ $ARCH == "aarch64" || $ARCH == "arm64" ]]; then
+    TAG=multiarch
+    SELINUX_LABEL=""
+fi
+CONTAINER_IMAGE="quay.io/redhat-docs/openshift-docs-asciidoc:$TAG"
 SCRIPT_HEADSIZE=$(head -30 ${0} |grep -n "^# END_OF_HEADER" | cut -f1 -d:)
 
 if [[ "$1" == "--help" || "$1" == "-h" ]]; then
@@ -52,6 +62,7 @@ else
 fi
 
 echo "CONTAINER_ENGINE=$CONTAINER_ENGINE 🐳"
+echo "CONTAINER_IMAGE=$CONTAINER_IMAGE"
 
 # Get the default container $WORKDIR
 CONTAINER_WORKDIR=$($CONTAINER_ENGINE run --rm $CONTAINER_IMAGE /bin/bash -c 'echo $PWD')
@@ -67,15 +78,20 @@ fi
 if [[ "$TEST" == "--preview" || "$TEST" == "-p" ]] && [[ -z "$DISTRO" ]]; then
     echo ""
     echo "🚧 Building with openshift-enterprise distro..."
-    $CONTAINER_ENGINE run --rm -it -v "$(pwd)":${CONTAINER_WORKDIR}:Z $CONTAINER_IMAGE asciibinder build -d "$DISTRO"
+    $CONTAINER_ENGINE run --rm -it -v "$(pwd)":${CONTAINER_WORKDIR}${SELINUX_LABEL} $CONTAINER_IMAGE asciibinder build -d "$DISTRO"
 
 elif [[ "$TEST" == "--preview" || "$TEST" == "-p" ]] && [[ -n "$DISTRO" ]]; then
     echo ""
     echo "🚧 Building $DISTRO distro..."
-    $CONTAINER_ENGINE run --rm -it -v "$(pwd)":${CONTAINER_WORKDIR}:Z $CONTAINER_IMAGE asciibinder build -d "$DISTRO"
+    $CONTAINER_ENGINE run --rm -it -v "$(pwd)":${CONTAINER_WORKDIR}${SELINUX_LABEL} $CONTAINER_IMAGE asciibinder build -d "$DISTRO"
 
 elif [[ "$TEST" == "--validate" || "$TEST" == "-v" ]]; then
     echo ""
     echo "🚧 Validating the docs..."
-  $CONTAINER_ENGINE run --rm -it -v "$(pwd)":${CONTAINER_WORKDIR}:Z $CONTAINER_IMAGE sh -c 'scripts/check-asciidoctor-build.sh && python3 build_for_portal.py --distro '${DISTRO}' --product "'"${PRODUCT_NAME}"'" --version '${VERSION}' --no-upstream-fetch && python3 makeBuild.py'
+    $CONTAINER_ENGINE run --rm -it -v "$(pwd)":${CONTAINER_WORKDIR}${SELINUX_LABEL} $CONTAINER_IMAGE sh -c 'scripts/check-asciidoctor-build.sh && python3 build_for_portal.py --distro '${DISTRO}' --product "'"${PRODUCT_NAME}"'" --version '${VERSION}' --no-upstream-fetch && python3 makeBuild.py'
+
+elif [[ "$TEST" == "--lint-topicmaps" || "$TEST" == "-l" ]]; then
+    echo ""
+    echo "🚧 Linting the topicmap YAML..."
+    $CONTAINER_ENGINE run --rm -it -v "$(pwd)":${CONTAINER_WORKDIR}${SELINUX_LABEL} $CONTAINER_IMAGE sh -c 'yamllint _topic_maps'
 fi
