@@ -1,0 +1,89 @@
+:_mod-docs-content-type: ASSEMBLY
+[id="creating-build-inputs"]
+= Creating build inputs
+include::_attributes/common-attributes.adoc[]
+:context: creating-build-inputs
+
+toc::[]
+
+Use the following sections for an overview of build inputs, instructions on how
+to use inputs to provide source content for builds to operate on, and how to use
+build environments and create secrets.
+
+include::modules/builds-define-build-inputs.adoc[leveloffset=+1]
+
+include::modules/builds-dockerfile-source.adoc[leveloffset=+1]
+
+include::modules/builds-image-source.adoc[leveloffset=+1]
+
+include::modules/builds-source-code.adoc[leveloffset=+1]
+
+include::modules/builds-using-proxy-git-cloning.adoc[leveloffset=+2]
+
+include::modules/builds-adding-source-clone-secrets.adoc[leveloffset=+2]
+
+include::modules/builds-automatically-add-source-clone-secrets.adoc[leveloffset=+3]
+
+include::modules/builds-manually-add-source-clone-secrets.adoc[leveloffset=+3]
+
+include::modules/builds-gitconfig-file.adoc[leveloffset=+3]
+
+include::modules/builds-gitconfig-file-secured-git.adoc[leveloffset=+3]
+
+include::modules/builds-source-secret-basic-auth.adoc[leveloffset=+3]
+
+include::modules/builds-source-secret-ssh-key-auth.adoc[leveloffset=+3]
+
+include::modules/builds-source-secret-trusted-ca.adoc[leveloffset=+3]
+
+include::modules/builds-source-secret-combinations.adoc[leveloffset=+3]
+
+include::modules/builds-source-secret-combinations-ssh-gitconfig.adoc[leveloffset=+4]
+
+include::modules/builds-source-secret-combinations-gitconfig-ca.adoc[leveloffset=+4]
+
+include::modules/builds-source-secret-combinations-basic-auth-ca.adoc[leveloffset=+4]
+
+include::modules/builds-source-secret-combinations-basic-auth-gitconfig.adoc[leveloffset=+4]
+
+include::modules/builds-source-secret-combinations-basic-auth-gitconfig-ca.adoc[leveloffset=+4]
+
+include::modules/builds-binary-source.adoc[leveloffset=+1]
+
+include::modules/builds-input-secrets-configmaps.adoc[leveloffset=+1]
+
+include::modules/builds-secrets-overview.adoc[leveloffset=+2]
+
+include::modules/builds-creating-secrets.adoc[leveloffset=+2]
+
+include::modules/builds-using-secrets.adoc[leveloffset=+2]
+
+include::modules/builds-adding-input-secrets-configmaps.adoc[leveloffset=+2]
+
+include::modules/builds-source-to-image.adoc[leveloffset=+2]
+
+ifdef::openshift-enterprise,openshift-webscale,openshift-origin[]
+
+include::modules/builds-docker-strategy.adoc[leveloffset=+2]
+
+include::modules/builds-custom-strategy.adoc[leveloffset=+2]
+endif::[]
+
+include::modules/builds-using-external-artifacts.adoc[leveloffset=+1]
+
+include::modules/builds-docker-credentials-private-registries.adoc[leveloffset=+1]
+
+include::modules/builds-build-environment.adoc[leveloffset=+1]
+
+include::modules/builds-using-build-fields-as-environment-variables.adoc[leveloffset=+2]
+
+include::modules/builds-using-secrets-as-environment-variables.adoc[leveloffset=+2]
+
+[role="_additional-resources"]
+.Additional resources
+
+* xref:../../cicd/builds/creating-build-inputs.adoc#builds-input-secrets-configmaps_creating-build-inputs[Input secrets and config maps]
+
+include::modules/builds-service-serving-certificate-secrets.adoc[leveloffset=+1]
+
+include::modules/builds-secrets-restrictions.adoc[leveloffset=+1]

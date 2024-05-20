@@ -1,0 +1,36 @@
+:_mod-docs-content-type: ASSEMBLY
+[id="persistent-storage-csi"]
+= Configuring CSI volumes
+include::_attributes/common-attributes.adoc[]
+:context: persistent-storage-csi
+
+toc::[]
+
+The Container Storage Interface (CSI) allows {product-title} to consume
+storage from storage back ends that implement the
+link:https://github.com/container-storage-interface/spec[CSI interface]
+as persistent storage.
+
+[NOTE]
+====
+{product-title} {product-version} supports version 1.6.0 of the link:https://github.com/container-storage-interface/spec[CSI specification].
+====
+
+include::modules/persistent-storage-csi-architecture.adoc[leveloffset=+1]
+
+include::modules/persistent-storage-csi-external-controllers.adoc[leveloffset=+2]
+
+include::modules/persistent-storage-csi-driver-daemonset.adoc[leveloffset=+2]
+
+include::modules/persistent-storage-csi-drivers-supported.adoc[leveloffset=+1]
+
+include::modules/persistent-storage-csi-dynamic-provisioning.adoc[leveloffset=+1]
+
+include::modules/persistent-storage-csi-mysql-example.adoc[leveloffset=+1]
+
+// TP features should be excluded from OSD and ROSA. When this feature is GA, it can be included in the OSD/ROSA docs, but with a warning that it is available as of version 4.x.
+ifndef::openshift-dedicated,openshift-rosa[]
+include::modules/persistent-storage-csi-vol-populator.adoc[leveloffset=+1]
+
+For more information about volume populators, see link:https://kubernetes.io/blog/2022/05/16/volume-populators-beta/[Kubernetes volume populators].
+endif::openshift-dedicated,openshift-rosa[]

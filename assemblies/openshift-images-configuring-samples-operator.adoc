@@ -1,0 +1,84 @@
+ifndef::openshift-rosa,openshift-dedicated[]
+:_mod-docs-content-type: ASSEMBLY
+[id="configuring-samples-operator"]
+= Configuring the Cluster Samples Operator
+include::_attributes/common-attributes.adoc[]
+:context: configuring-samples-operator
+endif::openshift-rosa,openshift-dedicated[]
+ifdef::openshift-rosa,openshift-dedicated[]
+:_mod-docs-content-type: ASSEMBLY
+[id="configuring-samples-operator"]
+= Overview of the Cluster Samples Operator
+include::_attributes/common-attributes.adoc[]
+:context: configuring-samples-operator
+endif::openshift-rosa,openshift-dedicated[]
+
+toc::[]
+
+ifndef::openshift-rosa,openshift-dedicated[]
+The Cluster Samples Operator, which operates in the `openshift` namespace, installs and updates the {op-system-base-full}-based {product-title} image streams and {product-title} templates.
+endif::openshift-rosa,openshift-dedicated[]
+ifdef::openshift-rosa,openshift-dedicated[]
+The Cluster Samples Operator, which operates in the `openshift` namespace, installs and updates the {product-title} image streams and {product-title} templates.
+endif::openshift-rosa,openshift-dedicated[]
+
+[IMPORTANT]
+.Cluster Samples Operator is being downsized  
+====
+* Starting from {product-title} 4.13, Cluster Samples Operator is downsized. Cluster Samples Operator will stop providing the following updates for non-Source-to-Image (Non-S2I) image streams and templates:
+- new image streams and templates
+- updates to the existing image streams and templates unless it is a CVE update
+
+* Cluster Samples Operator will provide support for Non-S2I image streams and templates as per the link:https://access.redhat.com/support/policy/updates/openshift#dates[{product-title} lifecycle policy dates and support guidelines].
+
+* Cluster Samples Operator will continue to support the S2I builder image streams and templates and accept the updates. S2I image streams and templates include:
+- Ruby
+- Python
+- Node.js
+- Perl
+- PHP
+- HTTPD
+- Nginx
+- EAP
+- Java
+- Webserver
+- .NET
+- Go
+
+* Starting from {product-title} 4.16, Cluster Samples Operator will stop managing non-S2I image streams and templates. You can contact the image stream or template owner for any requirements and future plans. In addition, refer to the link:https://github.com/openshift/library/blob/master/official.yaml[list of the repositories hosting the image stream or templates].
+====
+
+include::modules/samples-operator-overview.adoc[leveloffset=+1]
+
+[discrete]
+[role="_additional-resources"]
+== Additional resources
+
+* If the Cluster Samples Operator is removed during installation, you can xref:../openshift_images/samples-operator-alt-registry.adoc#samples-operator-alt-registry[use the Cluster Samples Operator with an alternate registry] so content can be imported, and then set the Cluster Samples Operator to `Managed` to get the samples.
+// Restricted network not supported ROSA/OSD 
+ifndef::openshift-rosa,openshift-dedicated[]
+* To ensure the Cluster Samples Operator bootstraps as `Removed` in a restricted network installation with initial network access to defer samples installation until you have decided which samples are desired, follow the instructions for xref:../installing/install_config/installing-customizing.adoc#installing-customizing[customizing nodes] to override the Cluster Samples Operator default configuration and initially come up as `Removed`.
+** To host samples in your disconnected environment, follow the instructions for xref:../openshift_images/samples-operator-alt-registry.adoc#samples-operator-alt-registry[using the Cluster Samples Operator with an alternate registry].
+endif::openshift-rosa,openshift-dedicated[]
+
+// Restricted network not supported ROSA/OSD 
+ifndef::openshift-rosa,openshift-dedicated[]
+include::modules/installation-images-samples-disconnected-mirroring-assist.adoc[leveloffset=+2]
+
+See xref:../openshift_images/samples-operator-alt-registry.adoc#installation-restricted-network-samples_samples-operator-alt-registry[Using Cluster Samples Operator image streams with alternate or mirrored registries] for a detailed procedure.
+endif::openshift-rosa,openshift-dedicated[]
+
+// cannot patch resource "configs" in API group "samples.operator.openshift.io"
+ifndef::openshift-rosa,openshift-dedicated[]
+include::modules/samples-operator-configuration.adoc[leveloffset=+1]
+
+include::modules/samples-operator-crd.adoc[leveloffset=+1]
+endif::openshift-rosa,openshift-dedicated[]
+
+include::modules/images-samples-operator-deprecated-image-stream.adoc[leveloffset=+1]
+
+[discrete]
+[role="_additional-resources"]
+== Additional resources
+
+* For more information about configuring credentials, see xref:../openshift_images/managing_images/using-image-pull-secrets.adoc#using-image-pull-secrets[Using image pull secrets].

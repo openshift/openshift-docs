@@ -1,0 +1,46 @@
+:_mod-docs-content-type: ASSEMBLY
+[id="dynamic-provisioning"]
+= Dynamic provisioning
+include::_attributes/common-attributes.adoc[]
+:context: dynamic-provisioning
+
+toc::[]
+
+include::modules/dynamic-provisioning-about.adoc[leveloffset=+1]
+
+include::modules/dynamic-provisioning-available-plugins.adoc[leveloffset=+1]
+
+include::modules/dynamic-provisioning-defining-storage-class.adoc[leveloffset=+1]
+
+include::modules/dynamic-provisioning-storage-class-definition.adoc[leveloffset=+2]
+
+include::modules/dynamic-provisioning-annotations.adoc[leveloffset=+2]
+
+ifndef::openshift-dedicated,openshift-rosa[]
+include::modules/dynamic-provisioning-cinder-definition.adoc[leveloffset=+2]
+
+include::modules/dynamic-provisioning-manila-csi-definition.adoc[leveloffset=+2]
+endif::openshift-dedicated,openshift-rosa[]
+
+include::modules/dynamic-provisioning-aws-definition.adoc[leveloffset=+2]
+
+ifndef::openshift-dedicated,openshift-rosa[]
+include::modules/dynamic-provisioning-azure-disk-definition.adoc[leveloffset=+2]
+
+include::modules/dynamic-provisioning-azure-file-definition.adoc[leveloffset=+2]
+
+include::modules/dynamic-provisioning-azure-file-considerations.adoc[leveloffset=+3]
+endif::openshift-dedicated,openshift-rosa[]
+
+ifndef::openshift-rosa[]
+include::modules/dynamic-provisioning-gce-definition.adoc[leveloffset=+2]
+endif::openshift-rosa[]
+// include::modules/dynamic-provisioning-gluster-definition.adoc[leveloffset=+2]
+
+// include::modules/dynamic-provisioning-ceph-rbd-definition.adoc[leveloffset=+2]
+
+ifndef::openshift-dedicated,openshift-rosa[]
+include::modules/dynamic-provisioning-vsphere-definition.adoc[leveloffset=+2]
+endif::openshift-dedicated,openshift-rosa[]
+
+include::modules/dynamic-provisioning-change-default-class.adoc[leveloffset=+1]

@@ -1,0 +1,18 @@
+:_mod-docs-content-type: ASSEMBLY
+[id="compatibility-guidelines"]
+= Understanding API compatibility guidelines
+include::_attributes/common-attributes.adoc[]
+:context: compatibility-guidelines
+
+toc::[]
+
+[IMPORTANT]
+====
+This guidance does not cover layered {product-title} offerings.
+====
+
+include::modules/api-compatibility-guidelines.adoc[leveloffset=+1]
+
+include::modules/api-compatibility-exceptions.adoc[leveloffset=+1]
+
+include::modules/api-compatibility-common-terminology.adoc[leveloffset=+1]

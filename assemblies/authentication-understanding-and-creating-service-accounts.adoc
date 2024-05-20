@@ -1,0 +1,17 @@
+:_mod-docs-content-type: ASSEMBLY
+[id="understanding-and-creating-service-accounts"]
+= Understanding and creating service accounts
+include::_attributes/common-attributes.adoc[]
+:context: understanding-service-accounts
+
+toc::[]
+
+include::modules/service-accounts-overview.adoc[leveloffset=+1]
+
+// include::modules/service-accounts-enabling-authentication.adoc[leveloffset=+1]
+
+include::modules/service-accounts-creating.adoc[leveloffset=+1]
+
+// include::modules/service-accounts-configuration-parameters.adoc[leveloffset=+1]
+
+include::modules/service-accounts-granting-roles.adoc[leveloffset=+1]

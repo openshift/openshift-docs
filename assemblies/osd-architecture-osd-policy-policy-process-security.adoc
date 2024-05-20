@@ -1,0 +1,18 @@
+:_mod-docs-content-type: ASSEMBLY
+[id="policy-process-security"]
+= Understanding process and security for {product-title}
+include::_attributes/attributes-openshift-dedicated.adoc[]
+:context: policy-process-security
+
+toc::[]
+
+
+include::modules/policy-incident.adoc[leveloffset=+1]
+include::modules/policy-change-management.adoc[leveloffset=+1]
+include::modules/policy-security-regulation-compliance.adoc[leveloffset=+1]
+include::modules/policy-disaster-recovery.adoc[leveloffset=+1]
+
+[role="_additional-resources"]
+== Additional resources
+
+* For more information about Red Hat site reliability engineering (SRE) teams access, see xref:../../osd_architecture/osd_policy/osd-sre-access.adoc#policy-identity-access-management_osd-sre-access[Identity and access management].

@@ -1,0 +1,29 @@
+:_mod-docs-content-type: ASSEMBLY
+[id="logging-5-7-release-notes"]
+include::_attributes/common-attributes.adoc[]
+= Logging 5.7
+:context: logging-5-7-release-notes
+
+toc::[]
+
+include::snippets/logging-compatibility-snip.adoc[]
+
+include::snippets/logging-stable-updates-snip.adoc[]
+
+include::modules/logging-release-notes-5-7-8.adoc[leveloffset=+1]
+
+include::modules/logging-rn-5.7.7.adoc[leveloffset=+1]
+
+include::modules/logging-rn-5.7.6.adoc[leveloffset=+1]
+
+// No release notes for 5.7.5 since this was a CVE only releases. In the future, add a link to the CVE.
+
+include::modules/logging-rn-5.7.4.adoc[leveloffset=+1]
+
+include::modules/logging-rn-5.7.3.adoc[leveloffset=+1]
+
+include::modules/logging-rn-5.7.2.adoc[leveloffset=+1]
+
+include::modules/logging-rn-5.7.1.adoc[leveloffset=+1]
+
+include::modules/logging-rn-5.7.0.adoc[leveloffset=+1]
