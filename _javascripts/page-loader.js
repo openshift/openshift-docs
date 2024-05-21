@@ -11,6 +11,7 @@ const urlMappings = {
   "openshift-origin": "https://docs.okd.io/",
   "openshift-pipelines": "https://docs.openshift.com/pipelines/",
   "openshift-serverless": "https://docs.openshift.com/serverless/",
+  "openshift-telco": "https://docs.openshift.com/container-platform-telco/",
 };
 
 function versionSelector(list) {
