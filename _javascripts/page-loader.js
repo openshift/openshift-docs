@@ -18,10 +18,11 @@ function versionSelector(list) {
   "use strict";
 
   newVersion = list[list.selectedIndex].value;
-  if (dk === "openshift-enterprise") {
-    currentVersion = window.location.pathname.split("/")[2];
-  } else if (dk === "openshift-origin") {
+
+  if (dk === "openshift-origin") {
     currentVersion = window.location.pathname.split("/")[1];
+  } else {
+    currentVersion = window.location.pathname.split("/")[2];
   }
 
   let baseUrl = urlMappings[dk];
