@@ -1,0 +1,189 @@
+// Module included in the following assemblies:
+// * edge_computing/image-based-upgrade/ztp-image-based-upgrade.adoc
+
+:_mod-docs-content-type: PROCEDURE
+[id="ztp-image-based-upgrade-prep-gitops_{context}"]
+= Moving to the Prep stage of the image-based upgrade with {lcao} and GitOps ZTP
+
+When you deploy the {lcao} on a cluster, an `ImageBasedUpgrade` CR is automatically created. You update this CR to specify the image repository of the seed image and to move through the different stages.
+
+.Prerequisites
+
+* Create policies and `ConfigMap` objects for resources used in the image-based upgrade. For more information, see _Creating ConfigMap objects for the image-based upgrade with GitOps ZTP_
+
+.Procedure
+
+. Add policies for the `Prep`, `Upgrade`, and `Idle` stages to your existing group `PolicyGenTemplate` called `ibu-upgrade-ranGen.yaml`.
++
+[source,yaml]
+----
+apiVersion: ran.openshift.io/v1
+kind: PolicyGenTemplate
+metadata:
+  name: example-group-ibu
+  namespace: "ztp-group"
+spec:
+  bindingRules:
+    group-du-sno: ""
+  mcp: "master"
+  evaluationInterval: <1>
+    compliant: 10s
+    noncompliant: 10s
+  sourceFiles:
+    - fileName: ConfigMapGeneric.yaml
+      policyName: "oadp-cm-policy"
+      metadata:
+        name: oadp-cm
+        namespace: openshift-adp
+    - fileName: ibu/ImageBasedUpgrade.yaml
+      policyName: "prep-policy"
+      spec:
+        stage: Prep
+        seedImageRef: <2>
+          version: "4.15.0"
+          image: "quay.io/user/lca-seed:4.15.0"
+          pullSecretRef:
+            name: "<seed_pull_secret>"
+        oadpContent: <3>
+        - name: "oadp-cm"
+          namespace: "openshift-adp"
+      status:
+        conditions:
+          - reason: Completed
+            status: "True"
+            type: PrepCompleted
+            message: "Prep stage completed successfully"
+    - fileName: ibu/ImageBasedUpgrade.yaml
+      policyName: "upgrade-policy"
+      spec:
+        stage: Upgrade
+      status:
+        conditions:
+          - reason: Completed
+            status: "True"
+            type: UpgradeCompleted
+    - fileName: ibu/ImageBasedUpgrade.yaml
+      policyName: "finalize-policy"
+      spec:
+        stage: Idle
+      status:
+        conditions:
+          - status: "True"
+            type: Idle
+----
+<1> The policy evaluation interval for compliant and non-compliant policies. Set them to `10s` to ensure that the policies status accurately reflects the current upgrade status.
+<2> Define the seed image, OpenShift Container Platform version, and pull secret for the upgrade in the Prep stage.
+<3> Define the OADP `ConfigMap` resources required for backup and restore.
+
+. Verify that the policies required for an image-based upgrade are created:
++
+--
+[source,terminal]
+----
+$ oc get policies -n spoke1 | grep -E "example-group-ibu"
+----
+
+.Example output
+[source,terminal]
+----
+ztp-group.example-group-ibu-oadp-cm-policy       inform               NonCompliant          31h
+ztp-group.example-group-ibu-prep-policy          inform               NonCompliant          31h
+ztp-group.example-group-ibu-upgrade-policy       inform               NonCompliant          31h
+ztp-group.example-group-ibu-finalize-policy      inform               NonCompliant          31h
+ztp-group.example-group-ibu-rollback-policy      inform               NonCompliant          31h
+----
+--
+
+. Update the `du-profile` cluster label to the target platform version or the corresponding policy-binding label in the `SiteConfig` CR.
++
+--
+[source,yaml]
+----
+apiVersion: ran.openshift.io/v1
+kind: SiteConfig
+[...]
+spec:
+  [...]
+    clusterLabels:
+      du-profile: "4.15.0"
+----
+
+[IMPORTANT]
+====
+Updating the labels to the target platform version unbinds the existing set of policies.
+====
+--
+
+. Commit and push the updated `SiteConfig` CR to the Git repository.
+
+. When you are ready to move to the `Prep` stage, create the `ClusterGroupUpgrade` CR with the `Prep` and OADP `ConfigMap` policies:
++
+[source,yaml]
+----
+apiVersion: ran.openshift.io/v1alpha1
+kind: ClusterGroupUpgrade
+metadata:
+  name: cgu-ibu-prep
+  namespace: default
+spec:
+  clusters:
+  - spoke1
+  enable: true
+  managedPolicies:
+  - example-group-oadp-cm-policy
+  - example-group-ibu-prep-policy
+  remediationStrategy:
+    canaries:
+      - spoke1
+    maxConcurrency: 1
+    timeout: 240
+----
+
+. Apply the `Prep` policy:
++
+--
+[source,terminal]
+----
+$ oc apply -f cgu-ibu-prep.yml
+----
+
+If you provide `ConfigMap` objects for OADP resources and extra manifests, {lcao} validates the specified `ConfigMap` objects during the `Prep` stage.
+You may encounter the following issues: 
+
+* validation warnings or errors if the {lcao} detects any issues with `extraManifests` 
+* validation errors if the {lcao} detects any issues with with `oadpContent`
+
+Validation warnings do not block the `Upgrade` stage but you must decide if it is safe to proceed with the upgrade.
+These warnings, for example missing CRDs, namespaces or dry run failures, update the `status.conditions` in the `Prep` stage and `annotation` fields in the `ImageBasedUpgrade` CR with details about the warning.
+
+.Example validation warning
+[source,yaml]
+----
+[...]
+metadata:
+annotations:
+  extra-manifest.lca.openshift.io/validation-warning: '...'
+[...]
+----
+
+However, validation errors, such as adding `MachineConfig` or Operator manifests to extra manifests, cause the `Prep` stage to fail and block the `Upgrade` stage.
+
+When the validations pass, the cluster creates a new `ostree` stateroot, which involves pulling and unpacking the seed image, and running host level commands.
+Finally, all the required images are precached on the target cluster.
+--
+
+. Monitor the status and wait for the `cgu-ibu-prep` `ClusterGroupUpgrade` to report `Completed`.
++
+--
+[source,terminal]
+----
+$ oc get cgu -n default
+----
+
+.Example output
+[source,terminal]
+----
+NAME                    AGE   STATE       DETAILS
+cgu-ibu-prep            31h   Completed   All clusters are compliant with all the managed policies
+----
+--
