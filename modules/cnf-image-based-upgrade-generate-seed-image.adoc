@@ -1,0 +1,183 @@
+// Module included in the following assemblies:
+// * edge_computing/image-based-upgrade/cnf-preparing-for-image-based-upgrade.adoc
+
+:_mod-docs-content-type: PROCEDURE
+[id="ztp-image-based-upgrade-seed-generation_{context}"]
+= Generating a seed image with the {lcao}
+
+Use the {lcao} to generate the seed image with the `SeedGenerator` CR. The Operator checks for required system configurations, performs any necessary system cleanup before generating the seed image, and launches the image generation. The seed image generation includes the following tasks:
+
+* Stopping cluster operators
+* Preparing the seed image configuration
+* Generating and pushing the seed image to the image repository specified in the `SeedGenerator` CR
+* Restoring cluster operators
+* Expiring seed cluster certificates
+* Generating new certificates for the seed cluster
+* Restoring and updating the `SeedGenerator` CR on the seed cluster
+
+.Prerequisites
+
+* Install the OADP Operator on the seed cluster.
+
+.Procedure
+
+. Detach the cluster from the hub to delete any cluster-specific resources from the seed cluster that must not be in the seed image:
+
+.. If you are using {rh-rhacm}, manually detach the seed cluster by running the following command:
++
+[source,terminal]
+----
+$ oc delete managedcluster sno-worker-example
+----
+
+... Wait until the `ManagedCluster` CR is removed. Once the CR is removed, create the proper `SeedGenerator` CR. The {lcao} cleans up the {rh-rhacm} artifacts.
+
+.. If you are using GitOps ZTP, detach your cluster by removing the seed cluster's `SiteConfig` CR from the `kustomization.yaml`:
+
+... Remove your seed cluster's `SiteConfig` CR from the `kustomization.yaml`.
++
+[source,yaml]
+----
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+generators:
+#- example-seed-sno1.yaml
+- example-target-sno2.yaml
+- example-target-sno3.yaml
+----
+
+... Commit the `kustomization.yaml` changes in your Git repository and push the changes.
+
++
+The ArgoCD pipeline detects the changes and removes the managed cluster.
+
+. Create the `Secret`.
+
+.. Create the authentication file by running the following command:
++
+--
+.Authentication file
+[source,terminal]
+----
+$ MY_USER=myuserid
+$ AUTHFILE=/tmp/my-auth.json
+$ podman login --authfile ${AUTHFILE} -u ${MY_USER} quay.io/${MY_USER}
+----
+
+[source,terminal]
+----
+$ base64 -w 0 ${AUTHFILE} ; echo
+----
+--
+
+.. Copy the output into the `seedAuth` field in the `Secret` YAML file named `seedgen` in the `openshift-lifecycle-agent` namespace.
++
+--
+[source,yaml]
+----
+apiVersion: v1
+kind: Secret
+metadata:
+  name: seedgen <1>
+  namespace: openshift-lifecycle-agent
+type: Opaque
+data:
+  seedAuth: <encoded_AUTHFILE> <2>
+----
+<1> The `Secret` resource must have the `name: seedgen` and `namespace: openshift-lifecycle-agent` fields.
+<2> Specifies a base64-encoded authfile for write-access to the registry for pushing the generated seed images.
+--
+
+.. Apply the `Secret`.
++
+[source,terminal]
+----
+$ oc apply -f secretseedgenerator.yaml
+----
+
+. Create the `SeedGenerator` CR:
++
+--
+[source,yaml]
+----
+apiVersion: lca.openshift.io/v1
+kind: SeedGenerator
+metadata:
+  name: seedimage <1>
+spec:
+  seedImage: <seed_container_image> <2>
+----
+<1> The `SeedGenerator` CR must be named `seedimage`.
+<2> Specify the container image URL, for example, `quay.io/example/seed-container-image:<tag>`. It is recommended to use the `<seed_cluster_name>:<ocp_version>` format.
+--
+
+. Generate the seed image by running the following command:
++
+[source,terminal]
+----
+$ oc apply -f seedgenerator.yaml
+----
+
++
+[IMPORTANT]
+====
+The cluster reboots and loses API capabilities while the {lcao} generates the seed image.
+Applying the `SeedGenerator` CR stops the `kubelet` and the CRI-O operations, then it starts the image generation.
+====
+
+If you want to generate further seed images, you must provision a new seed cluster with the version you want to generate a seed image from.
+
+.Verification
+
+. Once the cluster recovers and it is available, you can check the status of the `SeedGenerator` CR:
++
+--
+[source,terminal]
+----
+$ oc get seedgenerator -oyaml
+----
+
+.Example output
+[source,yaml]
+----
+status:
+  conditions:
+  - lastTransitionTime: "2024-02-13T21:24:26Z"
+    message: Seed Generation completed
+    observedGeneration: 1
+    reason: Completed
+    status: "False"
+    type: SeedGenInProgress
+  - lastTransitionTime: "2024-02-13T21:24:26Z"
+    message: Seed Generation completed
+    observedGeneration: 1
+    reason: Completed
+    status: "True"
+    type: SeedGenCompleted <1>
+  observedGeneration: 1
+----
+<1> The seed image generation is complete.
+--
+
+. Verify that the {sno} cluster is running and is attached to the {rh-rhacm} hub cluster:
++
+--
+[source,terminal]
+----
+$ oc get managedclusters sno-worker-example
+----
+
+.Example output
+[source,terminal]
+----
+NAME                 HUB ACCEPTED   MANAGED CLUSTER URLS                                  JOINED   AVAILABLE   AGE
+sno-worker-example   true           https://api.sno-worker-example.example.redhat.com     True     True        21h <1>
+----
+<1> The cluster is attached if you see that the value is `True` for both `JOINED` and `AVAILABLE`.
+
+[NOTE]
+====
+The cluster requires time to recover after restarting the `kubelet` operation.
+====
+--
