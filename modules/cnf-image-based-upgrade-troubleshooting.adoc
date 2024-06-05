@@ -1,0 +1,289 @@
+// Module included in the following assemblies:
+// * edge_computing/image-based-upgrade/cnf-image-based-upgrade-base.adoc
+// * edge_computing/image-based-upgrade/ztp-image-based-upgrade.adoc
+
+:_mod-docs-content-type: PROCEDURE
+[id="ztp-image-based-upgrade-troubleshooting_{context}"]
+= Troubleshooting image-based upgrades with {lcao}
+
+You can encounter issues during the image-based upgrade.
+
+[id="ztp-image-based-upgrade-troubleshooting-must-gather_{context}"]
+== Collecting logs
+
+You can use the `oc adm must-gather` CLI to collect information for debugging and troubleshooting.
+
+.Procedure
+
+. Collect data about the Operators by running the following command:
++
+[source,terminal]
+----
+$  oc adm must-gather \
+--dest-dir=must-gather/tmp \
+--image=$(oc -n openshift-lifecycle-agent get deployment.apps/lifecycle-agent-controller-manager -o jsonpath='{.spec.template.spec.containers[?(@.name == "manager")].image}') \
+--image=quay.io/konveyor/oadp-must-gather:latest \ <1>
+--image=quay.io/openshift/origin-must-gather:latest <1>
+----
+<1> (Optional) You can add these options if you need to gather more information from the OADP and the SR-IOV Operators.
+
+[id="ztp-image-based-upgrade-troubleshooting-manual-cleanup_{context}"]
+== AbortFailed or FinalizeFailed error
+
+Issue::
+During the finalize stage or when you stop the process at the `Prep` stage, normally, {lcao} cleans up the following resources:
+
+* Stateroot that is no longer required
+* Precaching resources
+* OADP CRs
+* `ImageBasedUpgrade` CR
+
+If the {lcao} fails to perform the above steps, it transitions to the `AbortFailed` or `FinalizeFailed` states.
+The condition message and log show which steps failed.
+
+.Example error message
+[source,yaml]
+----
+message: failed to delete all the backup CRs. Perform cleanup manually then add 'lca.openshift.io/manual-cleanup-done' annotation to ibu CR to transition back to Idle
+      observedGeneration: 5
+      reason: AbortFailed
+      status: "False"
+      type: Idle
+----
+
+Resolution::
+
+. Inspect the logs to determine why the failure occurred.
+
+. To prompt {lcao} to retry the cleanup, add the `lca.openshift.io/manual-cleanup-done` annotation to the `ImageBasedUpgrade` CR.
+
+After observing this annotation, {lcao} retries the cleanup and if it is successful, the `ImageBasedUpgrade` stage transitions to `Idle`.
+
+If the cleanup fails again, you can manually clean up the resources.
+
+[id="ztp-image-based-upgrade-troubleshooting-stateroot_{context}"]
+=== Cleaning up stateroot manually
+
+Issue::
+
+Normally, the {lcao} cleans up the new stateroot when you stop at the `Prep` stage or the {lcao} cleans up the old stateroot when you finalize after a successful upgrade or a rollback.
+If this step fails, it is recommended that you inspect the logs to determine why the failure occurred. 
+
+Resolution::
+
+. Check if there are any existing deployments in the stateroot by running the following command directly on the node being upgraded:
++
+[source,terminal]
+----
+$ ostree admin status
+----
+
+. Clean up the existing deployment:
++
+[source,terminal]
+----
+$ ostree admin undeploy <index_of_deployment> 
+----
+
+. After cleaning up all the deployments of the stateroot, wipe the stateroot directory:
++
+--
+[WARNING]
+====
+Ensure that the booted deployment is not in this stateroot.
+====
+
+[source,terminal]
+----
+$ stateroot="<stateroot_to_delete>"
+$ unshare -m /bin/sh -c "mount -o remount,rw /sysroot && rm -rf /sysroot/ostree/deploy/${stateroot}"
+----
+--
+
+[id="ztp-image-based-upgrade-troubleshooting-oadp-resources_{context}"]
+=== Cleaning up OADP resources manually
+
+Issue::
+
+This step can fail due to connection issues between {lcao} and the S3 backend. By restoring the connection and adding the `lca.openshift.io/manual-cleanup-done` annotation, the {lcao} can successfully cleanup backup resources.
+
+Resolution::
+
+. Check the backend connectivity by running the following command:
++
+--
+[source,terminal]
+----
+$ oc get backupstoragelocations.velero.io -n openshift-adp
+----
+
+.Example output
+[source,terminal]
+----
+NAME                          PHASE       LAST VALIDATED   AGE   DEFAULT
+dataprotectionapplication-1   Available   33s              8d    true
+----
+--
+
+. Remove all backup resources and then add the `lca.openshift.io/manual-cleanup-done` annotation to the `ImageBasedUpgrade` CR.
+
+[id="ztp-image-based-upgrade-troubleshooting-lvms_{context}"]
+== {lvms} volume contents not restored
+
+When {lvms} is used to provide dynamic persistent volume storage, {lvms} might not restore the persistent volume contents if it is configured incorrectly.
+
+[id="ztp-image-based-upgrade-troubleshooting-lvms-backup_{context}"]
+=== Missing {lvms}-related fields in Backup CR
+
+Issue::
+Your `Backup` CRs might be missing fields that are needed to restore your persistent volumes.
+You have the following output when you check for events in your application pod:
++
+--
+[source,terminal]
+----
+$ oc describe pod <your_app_name>
+----
+
+.Example
+[source,terminal]
+----
+Events:
+  Type     Reason            Age                From               Message
+  ----     ------            ----               ----               -------
+  Warning  FailedScheduling  58s (x2 over 66s)  default-scheduler  0/1 nodes are available: pod has unbound immediate PersistentVolumeClaims. preemption: 0/1 nodes are available: 1 Preemption is not helpful for scheduling..
+  Normal   Scheduled         56s                default-scheduler  Successfully assigned default/db-1234 to sno1.example.lab
+  Warning  FailedMount       24s (x7 over 55s)  kubelet            MountVolume.SetUp failed for volume "pvc-1234" : rpc error: code = Unknown desc = VolumeID is not found
+----
+--
+
+Resolution::
+You must include `logicalvolumes.topolvm.io` in the application `Backup` CR.
+Without this resource, the application restores its persistent volume claims and persistent volume manifests correctly, however, the `logicalvolume` associated with this persistent volume is not restored properly after pivot.
++
+.Example Backup CR
+[source,yaml]
+----
+apiVersion: velero.io/v1
+kind: Backup
+metadata:
+  labels:
+    velero.io/storage-location: default
+  name: small-app
+  namespace: openshift-adp
+spec:
+  includedNamespaces:
+  - test
+  includedNamespaceScopedResources:
+  - secrets
+  - persistentvolumeclaims
+  - deployments
+  - statefulsets
+  includedClusterScopedResources:
+  - persistentVolumes <1>
+  - volumesnapshotcontents <1>
+  - logicalvolumes.topolvm.io <1>
+----
+<1> Required to restore the persistent volumes for your application. 
+
+[id="ztp-image-based-upgrade-troubleshooting-lvms-restore_{context}"]
+=== Missing {lvms}-related fields in Restore CR
+
+Issue::
+The expected resources for the applications are restored but the persistent volume contents are not preserved after upgrading.
++
+--
+.Example output before pivot
+[source,terminal]
+----
+$ oc get pv,pvc,logicalvolumes.topolvm.io -A
+----
+
+[source,terminal]
+----
+NAME                        CAPACITY   ACCESS MODES   RECLAIM POLICY   STATUS   CLAIM            STORAGECLASS   REASON   AGE
+persistentvolume/pvc-1234   1Gi        RWO            Retain           Bound    default/pvc-db   lvms-vg1                4h45m
+
+NAMESPACE   NAME                           STATUS   VOLUME     CAPACITY   ACCESS MODES   STORAGECLASS   AGE
+default     persistentvolumeclaim/pvc-db   Bound    pvc-1234   1Gi        RWO            lvms-vg1       4h45m
+
+NAMESPACE   NAME                                AGE
+            logicalvolume.topolvm.io/pvc-1234   4h45m
+----
+
+.Example output after pivot
+[source,terminal]
+----
+$ oc get pv,pvc,logicalvolumes.topolvm.io -A
+----
+
+[source,terminal]
+----
+NAME                        CAPACITY   ACCESS MODES   RECLAIM POLICY   STATUS   CLAIM            STORAGECLASS   REASON   AGE
+persistentvolume/pvc-1234   1Gi        RWO            Delete           Bound    default/pvc-db   lvms-vg1                19s
+
+NAMESPACE   NAME                           STATUS   VOLUME     CAPACITY   ACCESS MODES   STORAGECLASS   AGE
+default     persistentvolumeclaim/pvc-db   Bound    pvc-1234   1Gi        RWO            lvms-vg1       19s
+
+NAMESPACE   NAME                                AGE
+            logicalvolume.topolvm.io/pvc-1234   18s
+----
+--
+
+Resolution::
+The reason for this issue is that the `logicalvolume` status is not preserved in the `Restore` CR.
+This status is important because it is required for Velero to reference the volumes that must be preserved after pivoting.
+You must include the following fields in the application `Restore` CR:
++
+.Example Restore CR
+[source,yaml]
+----
+apiVersion: velero.io/v1
+kind: Restore
+metadata:
+  name: sample-vote-app
+  namespace: openshift-adp
+  labels:
+    velero.io/storage-location: default
+  annotations:
+    lca.openshift.io/apply-wave: "3"
+spec:
+  backupName:
+    sample-vote-app
+  restorePVs: true <1>
+  restoreStatus: <1>
+    includedResources: <1>
+      - logicalvolumes <1>
+----
+<1> Required to preserve the persistent volumes for your application.
+
+[id="ztp-image-based-upgrade-troubleshooting-debugging-oadp-crs_{context}"]
+== Debugging failed Backup and Restore CRs
+
+Issue::
+The backup or restore of artifacts failed.
+
+Resolution::
+You can debug `Backup` and `Restore` CRs and retrieve logs with the Velero CLI tool.
+The Velero CLI tool provides more detailed information than the OpenShift CLI tool.
+
+. Describe the `Backup` CR that contains errors:
++
+[source,terminal]
+----
+$ oc exec -n openshift-adp velero-7c87d58c7b-sw6fc -c velero -- ./velero describe backup -n openshift-adp backup-acm-klusterlet --details
+----
+
+. Describe the `Restore` CR that contains errors:
++
+[source,terminal]
+----
+$ oc exec -n openshift-adp velero-7c87d58c7b-sw6fc -c velero -- ./velero describe restore -n openshift-adp restore-acm-klusterlet --details
+----
+
+. Download the backed up resources to a local directory:
++
+[source,terminal]
+----
+$ oc exec -n openshift-adp velero-7c87d58c7b-sw6fc -c velero -- ./velero backup download -n openshift-adp backup-acm-klusterlet -o ~/backup-acm-klusterlet.tar.gz
+----
