@@ -1,0 +1,38 @@
+:_mod-docs-content-type: ASSEMBLY
+:context: nodes-containers-projected-volumes
+[id="nodes-containers-projected-volumes"]
+= Mapping volumes using projected volumes
+include::_attributes/common-attributes.adoc[]
+
+toc::[]
+
+
+
+
+
+
+A _projected volume_ maps several existing volume sources into the same directory.
+
+The following types of volume sources can be projected:
+
+* Secrets
+
+* Config Maps
+
+* Downward API
+
+[NOTE]
+====
+All sources are required to be in the same namespace as the pod.
+====
+
+// The following include statements pull in the module files that comprise
+// the assembly. Include any combination of concept, procedure, or reference
+// modules required to cover the user story. You can also include other
+// assemblies.
+
+include::modules/nodes-containers-projected-volumes-about.adoc[leveloffset=+1]
+
+include::modules/nodes-containers-projected-volumes-creating.adoc[leveloffset=+1]
+
+

@@ -1,0 +1,31 @@
+// Module included in the following assemblies:
+//
+// * virt/virtual_machines/advanced_vm_management/virt-schedule-vms.adoc
+
+:_mod-docs-content-type: PROCEDURE
+[id="virt-setting-policy-attributes_{context}"]
+= Setting a policy attribute and CPU feature
+
+You can set a policy attribute and CPU feature for each virtual machine (VM) to ensure that it is scheduled on a node according to policy and feature. The CPU feature that you set is verified to ensure that it is supported by the host CPU or emulated by the hypervisor.
+
+.Procedure
+
+* Edit the `domain` spec of your VM configuration file. The following example sets the CPU feature and the `require` policy for a virtual machine (VM):
++
+[source,yaml]
+----
+apiVersion: kubevirt.io/v1
+kind: VirtualMachine
+metadata:
+  name: myvm
+spec:
+  template:
+    spec:
+      domain:
+        cpu:
+          features:
+            - name: apic <1>
+              policy: require <2>
+----
+<1> Name of the CPU feature for the VM.
+<2> Policy attribute for the VM.

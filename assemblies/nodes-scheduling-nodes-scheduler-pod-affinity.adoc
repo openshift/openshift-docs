@@ -1,0 +1,21 @@
+:_mod-docs-content-type: ASSEMBLY
+:context: nodes-scheduler-pod-affinity
+[id="nodes-scheduler-pod-affinity"]
+= Placing pods relative to other pods using affinity and anti-affinity rules
+include::_attributes/common-attributes.adoc[]
+
+toc::[]
+
+include::snippets/about-pod-affinity.adoc[]
+
+include::modules/nodes-scheduler-pod-affinity-about.adoc[leveloffset=+1]
+
+include::modules/nodes-scheduler-pod-affinity-configuring.adoc[leveloffset=+1]
+
+include::modules/nodes-scheduler-pod-anti-affinity-configuring.adoc[leveloffset=+1]
+
+include::modules/nodes-scheduler-pod-affinity-example.adoc[leveloffset=+1]
+
+ifndef::openshift-rosa,openshift-dedicated[]
+include::modules/olm-overriding-operator-pod-affinity.adoc[leveloffset=+1]
+endif::openshift-rosa,openshift-dedicated[]

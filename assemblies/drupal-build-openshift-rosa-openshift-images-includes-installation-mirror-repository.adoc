@@ -1,0 +1,311 @@
+// Module included in the following assemblies:
+//
+// * installing/install_config/installing-restricted-networks-preparations.adoc
+// * openshift_images/samples-operator-alt-registry.adoc
+
+:_mod-docs-content-type: PROCEDURE
+[id="installation-mirror-repository_{context}"]
+= Mirroring the {product-title} image repository
+
+Mirror the {product-title} image repository to your registry to use during cluster installation or upgrade.
+
+.Prerequisites
+
+* Your mirror host has access to the internet.
+ifndef::openshift-rosa,openshift-dedicated[]
+* You configured a mirror registry to use in your restricted network and
+can access the certificate and credentials that you configured.
+endif::openshift-rosa,openshift-dedicated[]
+ifdef::openshift-rosa,openshift-dedicated[]
+* You configured a mirror registry to use.
+endif::openshift-rosa,openshift-dedicated[]
+ifndef::openshift-origin[]
+* You downloaded the {cluster-manager-url-pull} and modified it to include authentication to your mirror repository.
+endif::[]
+ifdef::openshift-origin[]
+* You have created a pull secret for your mirror repository.
+endif::[]
+
+* If you use self-signed certificates, you have specified a Subject Alternative Name in the certificates.
+
+.Procedure
+
+Complete the following steps on the mirror host:
+
+. Review the
+link:https://access.redhat.com/downloads/content/290/[{product-title} downloads page]
+to determine the version of {product-title} that you want to install and determine the corresponding tag on the link:https://quay.io/repository/openshift-release-dev/ocp-release?tab=tags[Repository Tags] page.
+
+. Set the required environment variables:
+.. Export the release version:
++
+[source,terminal]
+----
+$ OCP_RELEASE=<release_version>
+----
++
+For `<release_version>`, specify the tag that corresponds to the version of {product-title} to
+install, such as `4.5.4`.
+
+.. Export the local registry name and host port:
++
+[source,terminal]
+----
+$ LOCAL_REGISTRY='<local_registry_host_name>:<local_registry_host_port>'
+----
++
+For `<local_registry_host_name>`, specify the registry domain name for your mirror
+repository, and for `<local_registry_host_port>`, specify the port that it
+serves content on.
+
+.. Export the local repository name:
++
+[source,terminal]
+----
+$ LOCAL_REPOSITORY='<local_repository_name>'
+----
++
+For `<local_repository_name>`, specify the name of the repository to create in your
+registry, such as `ocp4/openshift4`.
+
+.. Export the name of the repository to mirror:
++
+ifndef::openshift-origin[]
+[source,terminal]
+----
+$ PRODUCT_REPO='openshift-release-dev'
+----
++
+For a production release, you must specify `openshift-release-dev`.
+endif::[]
+ifdef::openshift-origin[]
+[source,terminal]
+----
+$ PRODUCT_REPO='openshift'
+----
+endif::[]
+
+.. Export the path to your registry pull secret:
++
+[source,terminal]
+----
+$ LOCAL_SECRET_JSON='<path_to_pull_secret>'
+----
++
+For `<path_to_pull_secret>`, specify the absolute path to and file name of the pull secret for your mirror registry that you created.
+
+.. Export the release mirror:
++
+ifndef::openshift-origin[]
+[source,terminal]
+----
+$ RELEASE_NAME="ocp-release"
+----
++
+For a production release, you must specify `ocp-release`.
+endif::[]
+ifdef::openshift-origin[]
+[source,terminal]
+----
+$ RELEASE_NAME="okd"
+----
+endif::[]
+
+ifndef::openshift-origin[]
+.. Export the type of architecture for your cluster:
++
+[source,terminal]
+----
+$ ARCHITECTURE=<cluster_architecture> <1>
+----
+<1> Specify the architecture of the cluster, such as `x86_64`, `aarch64`, `s390x`, or `ppc64le`.
+
+endif::[]
+
+.. Export the path to the directory to host the mirrored images:
++
+[source,terminal]
+----
+$ REMOVABLE_MEDIA_PATH=<path> <1>
+----
+<1> Specify the full path, including the initial forward slash (/) character.
+
+ifndef::openshift-rosa,openshift-dedicated[]
+. Mirror the version images to the mirror registry:
+** If your mirror host does not have internet access, take the following actions:
+... Connect the removable media to a system that is connected to the internet.
+... Review the images and configuration manifests to mirror:
++
+ifdef::openshift-origin[]
+[source,terminal]
+----
+$ oc adm release mirror -a ${LOCAL_SECRET_JSON}  \
+     --from=quay.io/${PRODUCT_REPO}/${RELEASE_NAME}:${OCP_RELEASE} \
+     --to=${LOCAL_REGISTRY}/${LOCAL_REPOSITORY} \
+     --to-release-image=${LOCAL_REGISTRY}/${LOCAL_REPOSITORY}:${OCP_RELEASE} --dry-run
+----
+endif::[]
+ifndef::openshift-origin[]
+[source,terminal]
+----
+$ oc adm release mirror -a ${LOCAL_SECRET_JSON}  \
+     --from=quay.io/${PRODUCT_REPO}/${RELEASE_NAME}:${OCP_RELEASE}-${ARCHITECTURE} \
+     --to=${LOCAL_REGISTRY}/${LOCAL_REPOSITORY} \
+     --to-release-image=${LOCAL_REGISTRY}/${LOCAL_REPOSITORY}:${OCP_RELEASE}-${ARCHITECTURE} --dry-run
+----
+endif::[]
+
+... Record the entire `imageContentSources` section from the output of the previous
+command. The information about your mirrors is unique to your mirrored repository, and you must add the `imageContentSources` section to the `install-config.yaml` file during installation.
+... Mirror the images to a directory on the removable media:
++
+ifdef::openshift-origin[]
+[source,terminal]
+----
+$ oc adm release mirror -a ${LOCAL_SECRET_JSON} --to-dir=${REMOVABLE_MEDIA_PATH}/mirror quay.io/${PRODUCT_REPO}/${RELEASE_NAME}:${OCP_RELEASE}
+----
+endif::[]
+ifndef::openshift-origin[]
+[source,terminal]
+----
+$ oc adm release mirror -a ${LOCAL_SECRET_JSON} --to-dir=${REMOVABLE_MEDIA_PATH}/mirror quay.io/${PRODUCT_REPO}/${RELEASE_NAME}:${OCP_RELEASE}-${ARCHITECTURE}
+----
+endif::[]
+
+... Take the media to the restricted network environment and upload the images to the local container registry.
++
+[source,terminal]
+----
+$ oc image mirror -a ${LOCAL_SECRET_JSON} --from-dir=${REMOVABLE_MEDIA_PATH}/mirror "file://openshift/release:${OCP_RELEASE}*" ${LOCAL_REGISTRY}/${LOCAL_REPOSITORY} <1>
+----
++
+<1> For `REMOVABLE_MEDIA_PATH`, you must use the same path that you specified when you mirrored the images.
++
+[IMPORTANT]
+====
+Running `oc image mirror` might result in the following error: `error: unable to retrieve source image`. This error occurs when image indexes include references to images that no longer exist on the image registry. Image indexes might retain older references to allow users running those images an upgrade path to newer points on the upgrade graph. As a temporary workaround, you can use the `--skip-missing` option to bypass the error and continue downloading the image index. For more information, see link:https://access.redhat.com/solutions/6975305[Service Mesh Operator mirroring failed].
+====
+
+** If the local container registry is connected to the mirror host, take the following actions:
+... Directly push the release images to the local registry by using following command:
++
+ifdef::openshift-origin[]
+[source,terminal]
+----
+$ oc adm release mirror -a ${LOCAL_SECRET_JSON}  \
+     --from=quay.io/${PRODUCT_REPO}/${RELEASE_NAME}:${OCP_RELEASE} \
+     --to=${LOCAL_REGISTRY}/${LOCAL_REPOSITORY} \
+     --to-release-image=${LOCAL_REGISTRY}/${LOCAL_REPOSITORY}:${OCP_RELEASE}
+----
+endif::[]
+ifndef::openshift-origin[]
+[source,terminal]
+----
+$ oc adm release mirror -a ${LOCAL_SECRET_JSON}  \
+     --from=quay.io/${PRODUCT_REPO}/${RELEASE_NAME}:${OCP_RELEASE}-${ARCHITECTURE} \
+     --to=${LOCAL_REGISTRY}/${LOCAL_REPOSITORY} \
+     --to-release-image=${LOCAL_REGISTRY}/${LOCAL_REPOSITORY}:${OCP_RELEASE}-${ARCHITECTURE}
+----
+endif::[]
++
+This command pulls the release information as a digest, and its output includes
+the `imageContentSources` data that you require when you install your cluster.
+
+... Record the entire `imageContentSources` section from the output of the previous
+command. The information about your mirrors is unique to your mirrored repository, and you must add the `imageContentSources` section to the `install-config.yaml` file during installation.
++
+[NOTE]
+====
+The image name gets patched to Quay.io during the mirroring process, and the podman images will show Quay.io in the registry on the bootstrap virtual machine.
+====
+
+. To create the installation program that is based on the content that you
+mirrored, extract it and pin it to the release:
+** If your mirror host does not have internet access, run the following command:
++
+[source,terminal]
+----
+$ oc adm release extract -a ${LOCAL_SECRET_JSON} --icsp-file=<file> \ --command=openshift-install "${LOCAL_REGISTRY}/${LOCAL_REPOSITORY}:${OCP_RELEASE}"
+----
+** If the local container registry is connected to the mirror host, run the following command:
++
+ifdef::openshift-origin[]
+[source,terminal]
+----
+$ oc adm release extract -a ${LOCAL_SECRET_JSON} --command=openshift-install "${LOCAL_REGISTRY}/${LOCAL_REPOSITORY}:${OCP_RELEASE}"
+----
+endif::[]
+ifndef::openshift-origin[]
+[source,terminal]
+----
+$ oc adm release extract -a ${LOCAL_SECRET_JSON} --command=openshift-install "${LOCAL_REGISTRY}/${LOCAL_REPOSITORY}:${OCP_RELEASE}-${ARCHITECTURE}"
+----
+endif::[]
++
+[IMPORTANT]
+====
+To ensure that you use the correct images for the version of {product-title}
+that you selected, you must extract the installation program from the mirrored
+content.
+
+You must perform this step on a machine with an active internet connection.
+====
+
+. For clusters using installer-provisioned infrastructure, run the following command:
++
+[source,terminal]
+----
+$ openshift-install
+----
+
+endif::openshift-rosa,openshift-dedicated[]
+
+ifdef::openshift-rosa,openshift-dedicated[]
+. Mirror the version images to the mirror registry:
+
+.. Directly push the release images to the local registry by using following command:
++
+[source,terminal]
+----
+$ oc adm release mirror -a ${LOCAL_SECRET_JSON}  \
+     --from=quay.io/${PRODUCT_REPO}/${RELEASE_NAME}:${OCP_RELEASE}-${ARCHITECTURE} \
+     --to=${LOCAL_REGISTRY}/${LOCAL_REPOSITORY} \
+     --to-release-image=${LOCAL_REGISTRY}/${LOCAL_REPOSITORY}:${OCP_RELEASE}-${ARCHITECTURE}
+----
++
+This command pulls the release information as a digest, and its output includes
+the `imageContentSources` data that you require when you install your cluster.
+
+.. Record the entire `imageContentSources` section from the output of the previous
+command. The information about your mirrors is unique to your mirrored repository, and you must add the `imageContentSources` section to the `install-config.yaml` file during installation.
++
+[NOTE]
+====
+The image name gets patched to Quay.io during the mirroring process, and the podman images will show Quay.io in the registry on the bootstrap virtual machine.
+====
+
+. To create the installation program that is based on the content that you
+mirrored, extract it and pin it to the release by running the following command:
++
+[source,terminal]
+----
+$ oc adm release extract -a ${LOCAL_SECRET_JSON} --command=openshift-install "${LOCAL_REGISTRY}/${LOCAL_REPOSITORY}:${OCP_RELEASE}-${ARCHITECTURE}"
+----
++
+[IMPORTANT]
+====
+To ensure that you use the correct images for the version of {product-title}
+that you selected, you must extract the installation program from the mirrored
+content.
+
+You must perform this step on a machine with an active internet connection.
+====
+
+. For clusters using installer-provisioned infrastructure, run the following command:
++
+[source,terminal]
+----
+$ openshift-install
+----
+endif::openshift-rosa,openshift-dedicated[]
+

@@ -1,0 +1,80 @@
+// Module included in the following assemblies:
+//
+// * osd_install_access_delete_cluster/config-identity-providers.adoc
+// * rosa_install_access_delete_clusters/rosa-sts-config-identity-providers.adoc
+// * rosa_install_access_delete_clusters/rosa_getting_started_iam/rosa-config-identity-providers.adoc
+
+ifeval::["{context}" == "config-identity-providers"]
+:osd-distro:
+endif::[]
+ifeval::["{context}" == "rosa-sts-config-identity-providers"]
+:rosa-distro:
+endif::[]
+ifeval::["{context}" == "rosa-config-identity-providers"]
+:rosa-distro:
+endif::[]
+
+:_mod-docs-content-type: PROCEDURE
+[id="config-htpasswd-idp_{context}"]
+= Configuring an htpasswd identity provider
+
+Configure an htpasswd identity provider to create a single, static user with cluster administration privileges. You can log in to your cluster as the user to troubleshoot issues.
+
+[IMPORTANT]
+====
+The htpasswd identity provider option is included only to enable the creation of a single, static administration user. htpasswd is not supported as a general-use identity provider for {product-title}.
+====
+
+.Procedure
+
+. From {cluster-manager-url}, navigate to the *Clusters* page and select your cluster.
+
+. Select *Access control* -> *Identity providers*.
+
+. Click *Add identity provider*.
+
+. Select *HTPasswd* from the *Identity Provider* drop-down menu.
+
+. Add a unique name in the *Name* field for the identity provider.
+
+. Use the suggested username and password for the static user, or create your own.
++
+[NOTE]
+====
+The credentials defined in this step are not visible after you select *Add* in the following step. If you lose the credentials, you must recreate the identity provider and define the credentials again.
+====
+
+. Select *Add* to create the htpasswd identity provider and the single, static user.
+
+. Grant the static user permission to manage the cluster:
+.. Under *Access control* -> *Cluster Roles and Access*, select *Add user*.
+.. Enter the *User ID* of the static user that you created in the preceding step.
+ifdef::osd-distro[]
+.. Select a *Group.*
+** If you are installing {product-title} using the Customer Cloud Subscription (CCS) infrastructure type, choose either the `dedicated-admins` or `cluster-admins` group. Users in the `dedicated-admins` group have standard administrative privileges for {product-title}. Users in the `cluster-admins` group have full administrative access to the cluster.
+** If you are installing {product-title} using the Red Hat cloud account infrastructure type, the `dedicated-admins` group is automatically selected.
+endif::osd-distro[]
+ifdef::rosa-distro[]
+.. Select a *Group*. Users in the `dedicated-admins` group have standard administrative privileges for {product-title}. Users in the `cluster-admins` group have full administrative access to the cluster.
+endif::rosa-distro[]
+.. Select *Add user* to grant the administration privileges to the user.
+
+.Verification
+
+* The configured htpasswd identity provider is visible on the *Access control* -> *Identity providers* page.
++
+[NOTE]
+====
+After creating the identity provider, synchronization usually completes within two minutes. You can log in to the cluster as the user after the htpasswd identity provider becomes available.
+====
+* The single, administrative user is visible on the *Access control* -> *Cluster Roles and Access* page. The administration group membership of the user is also displayed.
+
+ifeval::["{context}" == "config-identity-providers"]
+:!osd-distro:
+endif::[]
+ifeval::["{context}" == "rosa-sts-config-identity-providers"]
+:!rosa-distro:
+endif::[]
+ifeval::["{context}" == "rosa-config-identity-providers"]
+:!rosa-distro:
+endif::[]

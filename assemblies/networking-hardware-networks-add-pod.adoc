@@ -1,0 +1,26 @@
+:_mod-docs-content-type: ASSEMBLY
+[id="add-pod"]
+= Adding a pod to an SR-IOV additional network
+include::_attributes/common-attributes.adoc[]
+:context: configuring-sr-iov
+
+toc::[]
+
+You can add a pod to an existing Single Root I/O Virtualization (SR-IOV) network.
+
+include::modules/nw-sriov-runtime-config.adoc[leveloffset=+1]
+
+include::modules/nw-multus-add-pod.adoc[leveloffset=+1]
+
+include::modules/nw-sriov-topology-manager.adoc[leveloffset=+1]
+
+include::modules/nw-openstack-sr-iov-testpmd-pod.adoc[leveloffset=+1]
+
+[role="_additional-resources"]
+[id="add-pod-additional-resources"]
+== Additional resources
+
+* xref:../../networking/hardware_networks/configuring-sriov-device.adoc#configuring-sriov-device[Configuring an SR-IOV Ethernet network attachment]
+* xref:../../networking/hardware_networks/configuring-sriov-ib-attach.adoc#configuring-sriov-ib-attach[Configuring an SR-IOV InfiniBand network attachment]
+* xref:../../scalability_and_performance/using-cpu-manager.adoc#using-cpu-manager[Using CPU Manager]
+* xref:../../networking/hardware_networks/configuring-sriov-device.adoc#nw-sriov-exclude-topology-manager_configuring-sriov-device[Exclude SR-IOV network topology for NUMA-aware scheduling]

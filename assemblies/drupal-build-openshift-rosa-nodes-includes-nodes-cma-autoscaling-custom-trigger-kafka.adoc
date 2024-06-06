@@ -1,0 +1,65 @@
+// Module included in the following assemblies:
+//
+// * nodes/cma/nodes-cma-autoscaling-custom-trigger.adoc
+
+:_mod-docs-content-type: PROCEDURE
+[id="nodes-cma-autoscaling-custom-trigger-kafka_{context}"]
+= Understanding the Kafka trigger
+
+You can scale pods based on an Apache Kafka topic or other services that support the Kafka protocol. The custom metrics autoscaler does not scale higher than the number of Kafka partitions, unless you set the `allowIdleConsumers` parameter to `true` in the scaled object or scaled job.
+
+[NOTE]
+====
+If the number of consumer groups exceeds the number of partitions in a topic, the extra consumer groups remain idle. To avoid this, by default the number of replicas does not exceed:
+
+* The number of partitions on a topic, if a topic is specified
+* The number of partitions of all topics in the consumer group, if no topic is specified
+* The `maxReplicaCount` specified in scaled object or scaled job CR
+
+You can use the `allowIdleConsumers` parameter to disable these default behaviors.
+====
+
+.Example scaled object with a Kafka target
+[source,yaml,options="nowrap"]
+----
+apiVersion: keda.sh/v1alpha1
+kind: ScaledObject
+metadata:
+  name: kafka-scaledobject
+  namespace: my-namespace
+spec:
+# ...
+  triggers:
+  - type: kafka <1>
+    metadata:
+      topic: my-topic <2>
+      bootstrapServers: my-cluster-kafka-bootstrap.openshift-operators.svc:9092 <3>
+      consumerGroup: my-group <4>
+      lagThreshold: '10' <5>
+      activationLagThreshold: '5' <6>
+      offsetResetPolicy: latest <7>
+      allowIdleConsumers: true <8>
+      scaleToZeroOnInvalidOffset: false <9>
+      excludePersistentLag: false <10>
+      version: '1.0.0' <11>
+      partitionLimitation: '1,2,10-20,31' <12>
+----
+<1> Specifies Kafka as the trigger type.
+<2> Specifies the name of the Kafka topic on which Kafka is processing the offset lag.
+<3> Specifies a comma-separated list of Kafka brokers to connect to.
+<4> Specifies the name of the Kafka consumer group used for checking the offset on the topic and processing the related lag.
+<5> Optional: Specifies the average target value that triggers scaling. Must be specified as a quoted string value. The default is `5`.
+<6> Optional: Specifies the target value for the activation phase. Must be specified as a quoted string value.
+<7> Optional: Specifies the Kafka offset reset policy for the Kafka consumer. The available values are: `latest` and `earliest`. The default is `latest`.
+<8> Optional: Specifies whether the number of Kafka replicas can exceed the number of partitions on a topic.
+     * If `true`, the number of Kafka replicas can exceed the number of partitions on a topic. This allows for idle Kafka consumers.
+     * If `false`, the number of Kafka replicas cannot exceed the number of partitions on a topic. This is the default.
+<9> Specifies how the trigger behaves when a Kafka partition does not have a valid offset.
+     * If `true`, the consumers are scaled to zero for that partition.
+     * If `false`, the scaler keeps a single consumer for that partition. This is the default.
+<10> Optional: Specifies whether the trigger includes or excludes partition lag for partitions whose current offset is the same as the current offset of the previous polling cycle.
+      * If `true`, the scaler excludes partition lag in these partitions.
+      * If `false`, the trigger includes all consumer lag in all partitions. This is the default.
+<11> Optional: Specifies the version of your Kafka brokers. Must be specified as a quoted string value. The default is `1.0.0`.
+<12> Optional: Specifies a comma-separated list of partition IDs to scope the scaling on. If set, only the listed IDs are considered when calculating lag. Must be specified as a quoted string value. The default is to consider all partitions.
+

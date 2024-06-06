@@ -1,0 +1,68 @@
+// Module included in the following assemblies:
+//
+// * rosa_install_access_delete_clusters/rosa-sts-interactive-mode-reference.adoc
+
+:_mod-docs-content-type: REFERENCE
+[id="rosa-sts-interactive-ocm-and-user-role-creation-mode-options_{context}"]
+= Interactive OCM and user role creation mode options
+
+Before you can use {cluster-manager-first} to create {product-title} (ROSA) clusters that use the AWS Security Token Service (STS), you must associate your AWS account with your Red Hat organization by creating and linking the OCM and user roles. You can enable interactive mode by specifying the `--interactive` option when you run the `rosa create ocm-role` command or the `rosa create user-role` command.
+
+The following tables describe the interactive OCM role creation mode options:
+
+.`--interactive` OCM role creation mode options
+[cols=".^2,.^3a",options="header"]
+|===
+
+|Field|Description
+
+|`Role prefix`
+|Specify the prefix to include in the OCM IAM role name. The default is `ManagedOpenShift`. You can create only one OCM role per AWS account for your Red Hat organization.
+
+|`Enable admin capabilities for the OCM role (optional)`
+|Enable the admin OCM IAM role, which is equivalent to specifying the `--admin` argument. The admin role is required if you want to use `auto` mode to automatically provision the cluster-specific Operator roles and the OIDC provider by using {cluster-manager}.
+
+|`Permissions boundary ARN (optional)`
+|Specify a permissions boundary Amazon Resource Name (ARN) for the OCM role. For more information, see link:https://docs.aws.amazon.com/IAM/latest/UserGuide/access_policies_boundaries.html[Permissions boundaries for IAM entities] in the AWS documentation.
+
+|`Role Path (optional)`
+|Specify a custom ARN path for your OCM role. The path must contain alphanumeric characters only and start and end with `/`, for example `/test/path/dev/`. For more information, see _ARN path customization for IAM roles and policies_.
+
+|`Role creation mode`
+|Select the role creation mode. You can use `auto` mode to automatically create the OCM role and link it to your Red Hat organization account. In `manual` mode, the ROSA CLI (`rosa`) generates the `aws` commands needed to create and link the role. In `manual` mode, the corresponding policy JSON files are also saved to the current directory. `manual` mode enables you to review the details before running the `aws` commands manually.
+
+|`Create the '<ocm_role_name>' role?`
+|Confirm if you want to create the OCM role.
+
+|`Link the '<ocm_role_arn>' role with organization '<red_hat_organization_id>'?`
+|Confirm if you want to link the OCM role with your Red Hat organization.
+
+|===
+
+The following tables describe the interactive user role creation mode options:
+
+.`--interactive` user role creation mode options
+[cols=".^2,.^3a",options="header"]
+|===
+
+|Field|Description
+
+|`Role prefix`
+|Specify the prefix to include in the user role name. The default is `ManagedOpenShift`.
+
+|`Permissions boundary ARN (optional)`
+|Specify a permissions boundary Amazon Resource Name (ARN) for the user role. For more information, see link:https://docs.aws.amazon.com/IAM/latest/UserGuide/access_policies_boundaries.html[Permissions boundaries for IAM entities] in the AWS documentation.
+
+|`Role Path (optional)`
+|Specify a custom ARN path for your user role. The path must contain alphanumeric characters only and start and end with `/`, for example `/test/path/dev/`. For more information, see _ARN path customization for IAM roles and policies_.
+
+|`Role creation mode`
+|Selects the role creation mode. You can use `auto` mode to automatically create the user role and link it to your {cluster-manager} user account. In `manual` mode, the ROSA CLI generates the `aws` commands needed to create and link the role. In `manual` mode, the corresponding policy JSON files are also saved to the current directory. `manual` mode enables you to review the details before running the `aws` commands manually.
+
+|`Create the '<user_role_name>' role?`
+|Confirm if you want to create the user role.
+
+|`Link the '<user_role_arn>' role with account '<red_hat_user_account_id>'?`
+|Confirm if you want to link the user role with your Red Hat user account.
+
+|===

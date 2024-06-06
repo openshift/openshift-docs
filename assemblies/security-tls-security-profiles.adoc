@@ -1,0 +1,35 @@
+:_mod-docs-content-type: ASSEMBLY
+[id="tls-security-profiles"]
+= Configuring TLS security profiles
+include::_attributes/common-attributes.adoc[]
+:context: tls-security-profiles
+
+toc::[]
+
+TLS security profiles provide a way for servers to regulate which ciphers a client can use when connecting to the server. This ensures that {product-title} components use cryptographic libraries that do not allow known insecure protocols, ciphers, or algorithms.
+
+Cluster administrators can choose which TLS security profile to use for each of the following components:
+
+* the Ingress Controller
+* the control plane
++
+This includes the Kubernetes API server, Kubernetes controller manager, Kubernetes scheduler, OpenShift API server, OpenShift OAuth API server, OpenShift OAuth server, and etcd.
++
+// NOTE: OpenShift controller manager are not included
+
+* the kubelet, when it acts as an HTTP server for the Kubernetes API server
+
+// Understanding TLS security profiles
+include::modules/tls-profiles-understanding.adoc[leveloffset=+1]
+
+// Viewing TLS security profile details
+include::modules/tls-profiles-view-details.adoc[leveloffset=+1]
+
+// Configuring for ingress
+include::modules/tls-profiles-ingress-configuring.adoc[leveloffset=+1]
+
+// Configuring for the control plane
+include::modules/tls-profiles-kubernetes-configuring.adoc[leveloffset=+1]
+
+// Configuring for kubelet
+include::modules/tls-profiles-kubelet-configuring.adoc[leveloffset=+1]

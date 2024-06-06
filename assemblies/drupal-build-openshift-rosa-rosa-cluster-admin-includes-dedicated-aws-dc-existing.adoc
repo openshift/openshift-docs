@@ -1,0 +1,36 @@
+// Module included in the following assemblies:
+//
+// * rosa_cluster_admin/cloud_infrastructure_access/dedicated-aws-dc.adoc
+
+:_mod-docs-content-type: PROCEDURE
+[id="dedicated-aws-dc-existing"]
+= Connecting to an existing Direct Connect Gateway
+
+.Prerequisites
+
+* Confirm the CIDR range of the {product-title} VPC will not conflict with any other VGWs you have associated.
+* Gather the following information:
+** The Direct Connect Gateway ID.
+** The AWS Account ID associated with the virtual interface.
+** The BGP ASN assigned for the DXGateway. Optional: the Amazon default ASN may also be used.
+
+.Procedure
+
+. Log in to the {product-title} AWS Account Dashboard and select the correct region.
+. From the {product-title} AWS Account region, select *VPC* from the *Services* menu.
+. From *VPN Connections*, select *Virtual Private Gateways*.
+. Select *Create Virtual Private Gateway*.
+. Give the Virtual Private Gateway a suitable name.
+. Click *Custom ASN* and enter the *Amazon side ASN* value gathered previously or use the Amazon Provided ASN.
+. Create the Virtual Private Gateway.
+. In the *Navigation* pane of the {product-title} AWS Account Dashboard, choose *Virtual private gateways* and select the virtual private gateway. Choose *View details*.
+. Choose *Direct Connect gateway associations* and click *Associate Direct Connect gateway*.
+. Under *Association account type*, for Account owner, choose *Another account*.
+. For *Direct Connect gateway owner*, enter the ID of the AWS account that owns the Direct Connect gateway.
+. Under *Association settings*, for Direct Connect gateway ID, enter the ID of the Direct Connect gateway.
+. Under *Association settings*, for Virtual interface owner, enter the ID of the AWS account that owns the virtual interface for the association.
+. Optional: Add prefixes to Allowed prefixes, separating them using commas.
+. Choose *Associate Direct Connect gateway*.
+. After the Association Proposal has been sent, it will be waiting for your
+acceptance. The final steps you must perform are available in the
+link:https://docs.aws.amazon.com/directconnect/latest/UserGuide/multi-account-associate-vgw.html[AWS Documentation].

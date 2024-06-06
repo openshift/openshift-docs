@@ -1,0 +1,265 @@
+// Module included in the following assemblies:
+//
+// * nodes/cluster/limit-ranges.adoc
+
+:_mod-docs-content-type: CONCEPT
+[id="nodes-cluster-limit-ranges-limits_{context}"]
+= About component limits
+
+The following examples show limit range parameters for each component. The
+examples are broken out for clarity. You can create a single `LimitRange` object
+for any or all components as necessary.
+
+[id="nodes-cluster-limit-container-limits"]
+== Container limits
+
+A limit range allows you to specify the minimum and maximum CPU and memory that each container
+in a pod can request for a specific project. If a container is created in the project,
+the container CPU and memory requests in the `Pod` spec must comply with the values set in the
+`LimitRange` object. If not, the pod does not get created.
+
+* The container CPU or memory request and limit must be greater than or equal to the
+`min` resource constraint for containers that are specified in the `LimitRange` object.
+
+* The container CPU or memory request and limit must be less than or equal to the
+`max` resource constraint for containers that are specified in the `LimitRange` object.
++
+If the `LimitRange` object defines a `max` CPU, you do not need to define a CPU
+`request` value in the `Pod` spec. But you must specify a CPU `limit` value that
+satisfies the maximum CPU constraint specified in the limit range.
+
+* The ratio of the container limits to requests must be
+less than or equal to the `maxLimitRequestRatio` value for containers that
+is specified in the `LimitRange` object.
++
+If the `LimitRange` object defines a `maxLimitRequestRatio` constraint, any new
+containers must have both a `request` and a `limit` value. {product-title}
+calculates the limit-to-request ratio by dividing the `limit` by the
+`request`. This value should be a non-negative integer greater than 1.
++
+For example, if a container has `cpu: 500` in the `limit` value, and
+`cpu: 100` in the `request` value, the limit-to-request ratio for `cpu` is
+`5`. This ratio must be less than or equal to the `maxLimitRequestRatio`.
+
+If the `Pod` spec does not specify a container resource memory or limit,
+the `default` or `defaultRequest` CPU and memory values for containers
+specified in the limit range object are assigned to the container.
+
+.Container `LimitRange` object definition
+
+[source,yaml]
+----
+apiVersion: "v1"
+kind: "LimitRange"
+metadata:
+  name: "resource-limits" <1>
+spec:
+  limits:
+    - type: "Container"
+      max:
+        cpu: "2" <2>
+        memory: "1Gi" <3>
+      min:
+        cpu: "100m" <4>
+        memory: "4Mi" <5>
+      default:
+        cpu: "300m" <6>
+        memory: "200Mi" <7>
+      defaultRequest:
+        cpu: "200m" <8>
+        memory: "100Mi" <9>
+      maxLimitRequestRatio:
+        cpu: "10" <10>
+----
+<1> The name of the LimitRange object.
+<2> The maximum amount of CPU that a single container in a pod can request.
+<3> The maximum amount of memory that a single container in a pod can request.
+<4> The minimum amount of CPU that a single container in a pod can request.
+<5> The minimum amount of memory that a single container in a pod can request.
+<6> The default amount of CPU that a container can use if not specified in the `Pod` spec.
+<7> The default amount of memory that a container can use if not specified in the `Pod` spec.
+<8> The default amount of CPU that a container can request if not specified in the `Pod` spec.
+<9> The default amount of memory that a container can request if not specified in the `Pod` spec.
+<10> The maximum limit-to-request ratio for a container.
+
+
+[id="nodes-cluster-limit-pod-limits"]
+== Pod limits
+
+A limit range allows you to specify the minimum and maximum CPU and memory limits for all containers
+across a pod in a given project. To create a container in the project, the container CPU and memory
+requests in the `Pod` spec must comply with the values set in the `LimitRange` object. If not,
+the pod does not get created.
+
+If the `Pod` spec does not specify a container resource memory or limit,
+the `default` or `defaultRequest` CPU and memory values for containers
+specified in the limit range object are assigned to the container.
+
+Across all containers in a pod, the following must hold true:
+
+* The container CPU or memory request and limit must be greater than or equal to the
+`min` resource constraints for pods that are specified in the `LimitRange` object.
+
+* The container CPU or memory request and limit must be less than or equal to the
+`max` resource constraints for pods that are specified in the `LimitRange` object.
+
+* The ratio of the container limits to requests must be less than or equal to
+the `maxLimitRequestRatio` constraint specified in the `LimitRange` object.
+
+.Pod `LimitRange` object definition
+
+[source,yaml]
+----
+apiVersion: "v1"
+kind: "LimitRange"
+metadata:
+  name: "resource-limits" <1>
+spec:
+  limits:
+    - type: "Pod"
+      max:
+        cpu: "2" <2>
+        memory: "1Gi" <3>
+      min:
+        cpu: "200m" <4>
+        memory: "6Mi" <5>
+      maxLimitRequestRatio:
+        cpu: "10" <6>
+----
+<1> The name of the limit range object.
+<2> The maximum amount of CPU that a pod can request across all containers.
+<3> The maximum amount of memory that a pod can request across all containers.
+<4> The minimum amount of CPU that a pod can request across all containers.
+<5> The minimum amount of memory that a pod can request across all containers.
+<6> The maximum limit-to-request ratio for a container.
+
+[id="nodes-cluster-limit-image-limits"]
+== Image limits
+
+A `LimitRange` object allows you to specify the maximum size of an image
+that can be pushed to an {product-registry}.
+
+When pushing images to an {product-registry}, the following must hold true:
+
+* The size of the image must be less than or equal to the `max` size for
+images that is specified in the `LimitRange` object.
+
+.Image `LimitRange` object definition
+
+[source,yaml]
+----
+apiVersion: "v1"
+kind: "LimitRange"
+metadata:
+  name: "resource-limits" <1>
+spec:
+  limits:
+    - type: openshift.io/Image
+      max:
+        storage: 1Gi <2>
+----
+<1> The name of the `LimitRange` object.
+<2> The maximum size of an image that can be pushed to an {product-registry}.
+
+ifdef::openshift-enterprise,openshift-origin[]
+[NOTE]
+====
+To prevent blobs that exceed the limit from being uploaded to the registry, the
+registry must be configured to enforce quotas.
+====
+endif::[]
+
+[WARNING]
+====
+The image size is not always available in the manifest of an uploaded image.
+This is especially the case for images built with Docker 1.10 or higher and
+pushed to a v2 registry. If such an image is pulled with an older Docker daemon,
+the image manifest is converted by the registry to schema v1 lacking all
+the size information. No storage limit set on images prevent it from being
+uploaded.
+
+link:https://github.com/openshift/origin/issues/7706[The issue] is being
+addressed.
+====
+
+[id="nodes-cluster-limit-stream-limits"]
+== Image stream limits
+
+A `LimitRange` object allows you to specify limits for image streams.
+
+For each image stream, the following must hold true:
+
+* The number of image tags in an `ImageStream` specification must be less
+than or equal to the `openshift.io/image-tags` constraint in the `LimitRange` object.
+
+* The number of unique references to images in an `ImageStream` specification
+must be less than or equal to the `openshift.io/images` constraint in the limit
+range object.
+
+.Imagestream `LimitRange` object definition
+
+[source,yaml]
+----
+apiVersion: "v1"
+kind: "LimitRange"
+metadata:
+  name: "resource-limits" <1>
+spec:
+  limits:
+    - type: openshift.io/ImageStream
+      max:
+        openshift.io/image-tags: 20 <2>
+        openshift.io/images: 30 <3>
+----
+<1> The name of the `LimitRange` object.
+<2> The maximum number of unique image tags in the `imagestream.spec.tags`
+parameter in imagestream spec.
+<3> The maximum number of unique image references in the `imagestream.status.tags`
+parameter in the `imagestream` spec.
+
+The `openshift.io/image-tags` resource represents unique image
+references. Possible references are an `*ImageStreamTag*`, an
+`*ImageStreamImage*` and a `*DockerImage*`. Tags can be created using
+the `oc tag` and `oc import-image` commands. No distinction
+is made between internal and external references. However, each unique reference
+tagged in an `ImageStream` specification is counted just once. It does not
+restrict pushes to an internal container image registry in any way, but is useful for tag
+restriction.
+
+The `openshift.io/images` resource represents unique image names recorded in
+image stream status. It allows for restriction of a number of images that can be
+pushed to the {product-registry}. Internal and external references are not
+distinguished.
+
+[id="nodes-cluster-limit-pvc-limits"]
+== Persistent volume claim limits
+
+A `LimitRange` object allows you to restrict the storage requested in a persistent volume claim (PVC).
+
+Across all persistent volume claims in a project, the following must hold true:
+
+* The resource request in a persistent volume claim (PVC) must be greater than or equal
+the `min` constraint for PVCs that is specified in the `LimitRange` object.
+
+* The resource request in a persistent volume claim (PVC) must be less than or equal
+the `max` constraint for PVCs that is specified in the `LimitRange` object.
+
+.PVC `LimitRange` object definition
+
+[source,yaml]
+----
+apiVersion: "v1"
+kind: "LimitRange"
+metadata:
+  name: "resource-limits" <1>
+spec:
+  limits:
+    - type: "PersistentVolumeClaim"
+      min:
+        storage: "2Gi" <2>
+      max:
+        storage: "50Gi" <3>
+----
+<1> The name of the `LimitRange` object.
+<2> The minimum amount of storage that can be requested in a persistent volume claim.
+<3> The maximum amount of storage that can be requested in a persistent volume claim.

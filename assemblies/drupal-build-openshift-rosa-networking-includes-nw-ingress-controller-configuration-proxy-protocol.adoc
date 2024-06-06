@@ -1,0 +1,57 @@
+// Module included in the following assemblies:
+//
+// * ingress/configure-ingress-operator.adoc
+
+:_mod-docs-content-type: PROCEDURE
+[id="nw-ingress-controller-configuration-proxy-protocol_{context}"]
+= Configuring the PROXY protocol for an Ingress Controller
+
+A cluster administrator can configure https://www.haproxy.org/download/1.8/doc/proxy-protocol.txt[the PROXY protocol] when an Ingress Controller uses either the `HostNetwork` or `NodePortService` endpoint publishing strategy types. The PROXY protocol enables the load balancer to preserve the original client addresses for connections that the Ingress Controller receives. The original client addresses are useful for logging, filtering, and injecting HTTP headers. In the default configuration, the connections that the Ingress Controller receives only contain the source address that is associated with the load balancer.
+
+This feature is not supported in cloud deployments. This restriction is because when {product-title} runs in a cloud platform, and an IngressController specifies that a service load balancer should be used, the Ingress Operator configures the load balancer service and enables the PROXY protocol based on the platform requirement for preserving source addresses.
+
+[IMPORTANT]
+====
+You must configure both {product-title} and the external load balancer to either use the PROXY protocol or to use TCP.
+====
+
+[WARNING]
+====
+The PROXY protocol is unsupported for the default Ingress Controller with installer-provisioned clusters on non-cloud platforms that use a Keepalived Ingress VIP.
+====
+
+.Prerequisites
+* You created an Ingress Controller.
+
+.Procedure
+. Edit the Ingress Controller resource:
++
+[source,terminal]
+----
+$ oc -n openshift-ingress-operator edit ingresscontroller/default
+----
+
+. Set the PROXY configuration:
++
+* If your Ingress Controller uses the hostNetwork endpoint publishing strategy type, set the `spec.endpointPublishingStrategy.hostNetwork.protocol` subfield to `PROXY`:
++
+.Sample `hostNetwork` configuration to `PROXY`
+[source,yaml]
+----
+  spec:
+    endpointPublishingStrategy:
+      hostNetwork:
+        protocol: PROXY
+      type: HostNetwork
+----
+* If your Ingress Controller uses the NodePortService endpoint publishing strategy type, set the `spec.endpointPublishingStrategy.nodePort.protocol` subfield to `PROXY`:
++
+.Sample `nodePort` configuration to `PROXY`
+[source,yaml]
+----
+  spec:
+    endpointPublishingStrategy:
+      nodePort:
+        protocol: PROXY
+      type: NodePortService
+----

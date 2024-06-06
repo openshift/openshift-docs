@@ -1,0 +1,367 @@
+// Module included in the following assemblies:
+//
+// * networking/aws-load-balancer-operator.adoc
+
+:_mod-docs-content-type: PROCEDURE
+[id="aws-installing-an-aws-load-balancer-operator_{context}"]
+= Installing an AWS Load Balancer Operator
+You can install an AWS Load Balancer Operator (ALBO) if you meet certain requirements.
+
+.Prerequisites
+
+* You have an existing
+ifndef::openshift-rosa[]
+{product-title}
+endif::openshift-rosa[]
+ifdef::openshift-rosa[]
+{product-title} (ROSA)
+endif::openshift-rosa[]
+cluster with bring-your-own-VPC (BYO-VPC) configuration across multiple availability zones (AZ) installed in STS mode.
+* You have access to the cluster as a user with the `dedicated-admin` role.
+* You have access to modify the VPC and subnets of the created
+ifndef::openshift-rosa[]
+{product-title}
+endif::openshift-rosa[]
+ifdef::openshift-rosa[]
+ROSA
+endif::openshift-rosa[]
+cluster.
+* You have installed the
+ifndef::openshift-rosa[]
+{product-title}
+endif::openshift-rosa[]
+ifdef::openshift-rosa[]
+ROSA
+endif::openshift-rosa[]
+CLI (`rosa`).
+* You have installed the Amazon Web Services (AWS) CLI.
+* You have installed the OpenShift CLI (oc).
+* You are using OpenShift Container Platform (OCP) 4.13 or later.
+
+[IMPORTANT]
+====
+When installing an ALBO for use with
+ifndef::openshift-rosa[]
+a {product-title}
+endif::openshift-rosa[]
+ifdef::openshift-rosa[]
+a ROSA
+endif::openshift-rosa[]
+cluster in an AWS Local Zone (LZ), you must enable the AWS LZ for the account, and AWS Elastic Load Balancing v2 (ELBv2) services must be available in the AWS LZ.
+====
+.Procedure
+
+. Identify the cluster infrastructure ID and the cluster OpenID Connect (OIDC) DNS by running the following commands:
+.. Identify the
+ifndef::openshift-rosa[]
+{product-title}
+endif::openshift-rosa[]
+ifdef::openshift-rosa[]
+ROSA
+endif::openshift-rosa[]
+cluster INFRA ID:
++
+[source,terminal]
+----
+$ rosa describe cluster --cluster=<cluster_name> | grep -i 'Infra ID'
+----
++
+or
++
+[source,terminal]
+----
+$ oc get infrastructure cluster -o json | jq -r '.status.infrastructureName'
+----
+.. Identify the
+ifndef::openshift-rosa[]
+{product-title}
+endif::openshift-rosa[]
+ifdef::openshift-rosa[]
+ROSA
+endif::openshift-rosa[]
+cluster OIDC DNS:
++
+--
+[source, terminal]
+----
+$ rosa describe cluster --cluster=<cluster_name> | grep -i 'OIDC'
+----
+Save the output from the commands. You will use this information in future steps within this procedure.
+--
+. Create the AWS IAM policy required for the ALBO:
++
+.. Log in to the
+ifndef::openshift-rosa[]
+{product-title}
+endif::openshift-rosa[]
+ifdef::openshift-rosa[]
+ROSA
+endif::openshift-rosa[]
+cluster as a user with the `dedicated-admin` role and create a new project using the following command:
++
+[source, terminal]
+----
+$ oc new-project aws-load-balancer-operator
+----
+
++
+.. Assign the following trust policy to the newly-created AWS IAM role:
++
+[source,terminal]
+----
+$ IDP='{Cluster_OIDC_Endpoint}'
+$ IDP_ARN="arn:aws:iam::{AWS_AccountNo}:oidc-provider/${IDP}" <1>
+$ cat <<EOF > albo-operator-trusted-policy.json
+{
+    "Version": "2012-10-17",
+    "Statement": [
+        {
+            "Effect": "Allow",
+            "Principal": {
+                "Federated": "${IDP_ARN}"
+            },
+            "Action": "sts:AssumeRoleWithWebIdentity",
+            "Condition": {
+                "StringEquals": {
+                    "${IDP}:sub": "system:serviceaccount:aws-load-balancer-operator:aws-load-balancer-operator-controller-manager"
+                }
+            }
+        }
+    ]
+}
+EOF
+----
+<1> Replace '{AWS_AccountNo}' with your AWS account number and '{Cluster_OIDC_Endpoint}' with the OIDC DNS identified earlier in this procedure.
++
+[IMPORTANT]
+====
+Do not include the `https` portion of the OIDC DNS URL when replacing `{Cluster_OIDC_Endpoint}` with the OIDC DNS you identified earlier. Only the alphanumeric information that follows the `/` within the URL is needed.
+====
++
+For more information on assigning trust policies to AWS IAM roles, see link:https://aws.amazon.com/blogs/security/how-to-use-trust-policies-with-iam-roles/[How to use trust policies with IAM roles].
+.. Create and verify the role by using the generated trust policy:
++
+[source, terminal]
+----
+$ aws iam create-role --role-name albo-operator --assume-role-policy-document file://albo-operator-trusted-policy.json
+$ OPERATOR_ROLE_ARN=$(aws iam get-role --role-name albo-operator --output json | jq -r '.Role.Arn')
+$ echo $OPERATOR_ROLE_ARN
+----
++
+For more information on creating AWS IAM roles, see link:https://docs.aws.amazon.com/IAM/latest/UserGuide/id_roles_create.html[Creating IAM roles].
++
+.. Attach the operator's permission policy to the role:
++
+[source, terminal]
+----
+$ curl -o albo-operator-permission-policy.json https://raw.githubusercontent.com/openshift/aws-load-balancer-operator/release-1.1/hack/operator-permission-policy.json
+$ aws iam put-role-policy --role-name albo-operator --policy-name perms-policy-albo-operator --policy-document file://albo-operator-permission-policy.json
+----
++
+For more information on adding AWS IAM permissions to AWS IAM roles, see link:https://docs.aws.amazon.com/IAM/latest/UserGuide/access_policies_manage-attach-detach.html[Adding and removing IAM identity permissions].
++
+.. Generate the operator's AWS credentials:
++
+[source,terminal]
+----
+$ cat <<EOF> albo-operator-aws-credentials.cfg
+[default]
+sts_regional_endpoints = regional
+role_arn = ${OPERATOR_ROLE_ARN}
+web_identity_token_file = /var/run/secrets/openshift/serviceaccount/token
+EOF
+----
++
+For more information about formatting credentials files, see link:https://access.redhat.com/documentation/en-us/openshift_container_platform/4.13/html/authentication_and_authorization/managing-cloud-provider-credentials#cco-mode-sts[Using manual mode with Amazon Web Services Security Token Service].
++
+.. Create the operator's credentials secret with the generated AWS credentials:
++
+[source, terminal]
+----
+$ oc -n aws-load-balancer-operator create secret generic aws-load-balancer-operator --from-file=credentials=albo-operator-aws-credentials.cfg
+----
+. Create the AWS IAM policy required for the AWS Load Balancer Controller (ALBC):
++
+.. Generate a trust policy file for your identity provider. The following example uses OpenID Connect:
++
+[source,terminal]
+----
+$ IDP='{Cluster_OIDC_Endpoint}'
+$ IDP_ARN="arn:aws:iam::{AWS_AccountNo}:oidc-provider/${IDP}"
+$ cat <<EOF > albo-controller-trusted-policy.json
+{
+    "Version": "2012-10-17",
+    "Statement": [
+        {
+            "Effect": "Allow",
+            "Principal": {
+                "Federated": "${IDP_ARN}"
+            },
+            "Action": "sts:AssumeRoleWithWebIdentity",
+            "Condition": {
+                "StringEquals": {
+                    "${IDP}:sub": "system:serviceaccount:aws-load-balancer-operator:aws-load-balancer-controller-cluster"
+                }
+            }
+        }
+    ]
+}
+EOF
+----
++
+.. Create and verify the role by using the generated trust policy:
++
+[source, terminal]
+----
+$ aws iam create-role --role-name albo-controller --assume-role-policy-document file://albo-controller-trusted-policy.json
+$ CONTROLLER_ROLE_ARN=$(aws iam get-role --role-name albo-controller --output json | jq -r '.Role.Arn')
+$ echo $CONTROLLER_ROLE_ARN
+----
++
+.. Attach the controller's permission policy to the role:
++
+[source,terminal]
+----
+$ curl -o albo-controller-permission-policy.json https://raw.githubusercontent.com/kubernetes-sigs/aws-load-balancer-controller/v2.4.7/docs/install/iam_policy.json
+$ aws iam put-role-policy --role-name albo-controller --policy-name perms-policy-albo-controller --policy-document file://albo-controller-permission-policy.json
+----
++
+.. Generate the controller's AWS credentials:
++
+[source,terminal]
+----
+$ cat <<EOF > albo-controller-aws-credentials.cfg
+[default]
+sts_regional_endpoints = regional
+role_arn = ${CONTROLLER_ROLE_ARN}
+web_identity_token_file = /var/run/secrets/openshift/serviceaccount/token
+EOF
+----
++
+.. Create the controller's credentials secret by using the generated AWS credentials:
++
+[source,terminal]
+----
+$ oc -n aws-load-balancer-operator create secret generic aws-load-balancer-controller-cluster --from-file=credentials=albo-controller-aws-credentials.cfg
+----
++
+. Add the tags necessary for subnet discovery:
+.. Add the following `{Key: Value}` tag to the VPC hosting the
+ifndef::openshift-rosa[]
+{product-title}
+endif::openshift-rosa[]
+ifdef::openshift-rosa[]
+ROSA
+endif::openshift-rosa[]
+cluster and to all its subnets. Replace `{Cluster Infra ID}` with the Infra ID specified previously:
++
+[source, terminal]
+----
+* kubernetes.io/cluster/${Cluster Infra ID}:owned
+----
++
+.. Add the following ELBv2 `{Key: Value}` tags to the private subnets and, optionally, to the public subnets:
+
+* Private subnets: `kubernetes.io/role/internal-elb:1`
+* Public subnets: `kubernetes.io/role/elb:1`
++
+[NOTE]
+====
+Internet-facing and internal load balancers will be created within the AZ to which these subnets belong.
+====
++
+For more information on adding tags to AWS resources, including VPCs and subnets, see link:https://docs.aws.amazon.com/AWSEC2/latest/UserGuide/Using_Tags.html[Tag your Amazon EC2 resources].
++
+[IMPORTANT]
+====
+ELBv2 resources (such as ALBs and NLBs) created by ALBO do not inherit custom tags set for
+ifndef::openshift-rosa[]
+{product-title}
+endif::openshift-rosa[]
+ifdef::openshift-rosa[]
+ROSA
+endif::openshift-rosa[]
+clusters. You must set tags separately for these resources.
+====
++
+. Create ALBO:
++
+[source,yaml]
+----
+apiVersion: operators.coreos.com/v1
+kind: OperatorGroup
+metadata:
+  name: aws-load-balancer-operator
+  namespace: aws-load-balancer-operator
+spec:
+  upgradeStrategy: Default
+---
+apiVersion: operators.coreos.com/v1alpha1
+kind: Subscription
+metadata:
+  name: aws-load-balancer-operator
+  namespace: aws-load-balancer-operator
+spec:
+  channel: stable-v1.0
+  installPlanApproval: Automatic
+  name: aws-load-balancer-operator
+  source: redhat-operators
+  sourceNamespace: openshift-marketplace
+  startingCSV: aws-load-balancer-operator.v1.0.0
+----
++
+. Create an AWS ALBC:
++
+[source,yaml]
+----
+apiVersion: networking.olm.openshift.io/v1
+kind: AWSLoadBalancerController
+metadata:
+  name: cluster
+spec:
+  subnetTagging: Manual
+  credentials:
+    name: aws-load-balancer-controller-cluster
+----
++
+[IMPORTANT]
+====
+Because AWS ALBCs do not support creating ALBs associated with both AZs and AWS LZs,
+ifndef::openshift-rosa[]
+{product-title}
+endif::openshift-rosa[]
+ifdef::openshift-rosa[]
+ROSA
+endif::openshift-rosa[]
+clusters can have ALBs associated exclusively with either AWS LZs or AZs but not both simultaneously.
+====
++
+For more information regarding AWS ALBC configurations, see the following topics:
+
+* link:https://access.redhat.com/documentation/en-us/openshift_container_platform/4.13/html/networking/aws-load-balancer-operator-1#nw-multiple-ingress-through-single-alb[Creating multiple ingresses]
+* link:https://access.redhat.com/documentation/en-us/openshift_container_platform/4.13/html/networking/aws-load-balancer-operator-1#nw-adding-tls-termination_adding-tls-termination[Adding TLS termination]
+
+.Verification
+
+* Confirm successful installation by running the following commands:
+
+. Gather information about pods within the project:
++
+[source, terminal]
+----
+$ oc get pods -n aws-load-balancer-operator
+----
+. View the logs within the project:
++
+[source, terminal]
+----
+$ oc logs -n aws-load-balancer-operator deployment/aws-load-balancer-operator-controller-manager -c manager
+----
+For detailed instructions on verifying that the ELBv2 was created for the application running in the
+ifndef::openshift-rosa[]
+{product-title}
+endif::openshift-rosa[]
+ifdef::openshift-rosa[]
+ROSA
+endif::openshift-rosa[]
+cluster, see link:https://docs.openshift.com/container-platform/4.13/networking/aws_load_balancer_operator/create-instance-aws-load-balancer-controller.html[Creating an instance of AWS Load Balancer Controller].

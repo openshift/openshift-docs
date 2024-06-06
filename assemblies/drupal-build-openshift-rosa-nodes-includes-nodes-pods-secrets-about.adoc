@@ -1,0 +1,86 @@
+// Module included in the following assemblies:
+//
+// * nodes/nodes-pods-secrets.adoc
+
+:_mod-docs-content-type: CONCEPT
+[id="nodes-pods-secrets-about_{context}"]
+= Understanding secrets
+
+The `Secret` object type provides a mechanism to hold sensitive information such
+as passwords, {product-title} client configuration files,
+private source repository credentials, and so on. Secrets decouple sensitive
+content from the pods. You can mount secrets into containers using a volume
+plugin or the system can use secrets to perform actions on behalf of a pod.
+
+Key properties include:
+
+- Secret data can be referenced independently from its definition.
+- Secret data volumes are backed by temporary file-storage facilities (tmpfs) and never come to rest on a node.
+- Secret data can be shared within a namespace.
+
+.YAML `Secret` object definition
+
+[source,yaml]
+----
+apiVersion: v1
+kind: Secret
+metadata:
+  name: test-secret
+  namespace: my-namespace
+type: Opaque <1>
+data: <2>
+  username: <username> <3>
+  password: <password>
+stringData: <4>
+  hostname: myapp.mydomain.com <5>
+----
+<1> Indicates the structure of the secret's key names and values.
+<2> The allowable format for the keys in the `data` field must meet the
+guidelines in the *DNS_SUBDOMAIN* value in
+link:https://github.com/kubernetes/kubernetes/blob/v1.0.0/docs/design/identifiers.md[the
+Kubernetes identifiers glossary].
+<3> The value associated with keys in the `data` map must be base64 encoded.
+<4> Entries in the `stringData` map are converted to base64
+and the entry will then be moved to the `data` map automatically. This field
+is write-only; the value will only be returned via the `data` field.
+<5> The value associated with keys in the `stringData` map is made up of
+plain text strings.
+
+You must create a secret before creating the pods that depend on that secret.
+
+When creating secrets:
+
+- Create a secret object with secret data.
+- Update the pod's service account to allow the reference to the secret.
+- Create a pod, which consumes the secret as an environment variable or as a file
+(using a `secret` volume).
+
+[id="nodes-pods-secrets-about-types_{context}"]
+== Types of secrets
+
+The value in the `type` field indicates the structure of the secret's key names and values. The type can be used to
+enforce the presence of user names and keys in the secret object. If you do not want validation, use the `opaque` type,
+which is the default.
+
+Specify one of the following types to trigger minimal server-side validation to ensure the presence of specific key names in the secret data:
+
+* `kubernetes.io/service-account-token`. Uses a service account token.
+* `kubernetes.io/basic-auth`. Use with Basic Authentication.
+* `kubernetes.io/ssh-auth`. Use with SSH Key Authentication.
+* `kubernetes.io/tls`. Use with TLS certificate authorities.
+
+Specify `type: Opaque` if you do not want validation, which means the secret does not claim to conform to any convention for key names or values.
+An _opaque_ secret, allows for unstructured `key:value` pairs that can contain arbitrary values.
+
+[NOTE]
+====
+You can specify other arbitrary types, such as `example.com/my-secret-type`. These types are not enforced server-side,
+but indicate that the creator of the secret intended to conform to the key/value requirements of that type.
+====
+
+For examples of different secret types, see the code samples in _Using Secrets_.
+
+[id="nodes-pods-secrets-about-keys_{context}"]
+== Secret data keys
+
+Secret keys must be in a DNS subdomain.

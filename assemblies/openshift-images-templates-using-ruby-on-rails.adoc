@@ -1,0 +1,45 @@
+:_mod-docs-content-type: ASSEMBLY
+[id="templates-using-ruby-on-rails"]
+= Using Ruby on Rails
+include::_attributes/common-attributes.adoc[]
+:context: templates-ruby-on-rails
+
+toc::[]
+
+Ruby on Rails is a web framework written in Ruby. This guide covers using Rails 4 on {product-title}.
+
+[WARNING]
+====
+Go through the whole tutorial to have an overview of all the steps necessary to run your application on the {product-title}. If you experience a problem try reading through the entire tutorial and then going back to your issue. It can also be useful to review your previous steps to ensure that all the steps were run correctly.
+====
+
+== Prerequisites
+
+* Basic Ruby and Rails knowledge.
+* Locally installed version of Ruby 2.0.0+, Rubygems, Bundler.
+* Basic Git knowledge.
+ifndef::openshift-online[]
+* Running instance of {product-title} 4.
+endif::[]
+ifdef::openshift-online[]
+* Provisioned account in OpenShift Online.
+endif::[]
+* Make sure that an instance of {product-title} is running and is available. Also make sure that your `oc` CLI client is installed and the command is accessible from your command shell, so you can use it to log in using your email address and password.
+
+include::modules/templates-rails-setting-up-database.adoc[leveloffset=+1]
+
+include::modules/templates-rails-writing-application.adoc[leveloffset=+1]
+
+include::modules/templates-rails-creating-welcome-page.adoc[leveloffset=+2]
+
+include::modules/templates-rails-configuring-application.adoc[leveloffset=+2]
+
+include::modules/templates-rails-storing-application-in-git.adoc[leveloffset=+2]
+
+include::modules/templates-rails-deploying-application.adoc[leveloffset=+1]
+
+include::modules/templates-rails-creating-database-service.adoc[leveloffset=+2]
+
+include::modules/templates-rails-creating-frontend-service.adoc[leveloffset=+2]
+
+include::modules/templates-rails-creating-route-for-application.adoc[leveloffset=+2]

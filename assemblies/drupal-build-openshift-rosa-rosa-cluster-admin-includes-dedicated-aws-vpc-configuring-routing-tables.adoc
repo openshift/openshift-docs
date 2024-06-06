@@ -1,0 +1,42 @@
+// Module included in the following assemblies:
+//
+// * rosa_cluster_admin/cloud_infrastructure_access/dedicated-aws-peering.adoc
+
+:_mod-docs-content-type: PROCEDURE
+[id="dedicated-aws-vpc-configuring-routing-tables"]
+= Configuring the routing tables
+
+After you accept the VPC peering request, both VPCs must configure their routes
+to communicate across the peering connection.
+
+.Prerequisites
+
+* Initiate and accept the VPC peer request.
+
+.Procedure
+
+. Log in to the AWS Web Console for the {product-title} AWS Account.
+. Navigate to the *VPC Service*, then *Route Tables*.
+. Select the Route Table for the {product-title} Cluster VPC.
++
+[NOTE]
+====
+On some clusters, there may be more than one route table for a particular VPC.
+Select the private one that has a number of explicitly associated subnets.
+====
+
+. Select the *Routes* tab, then *Edit*.
+. Enter the Customer VPC CIDR block in the *Destination* text box.
+. Enter the Peering Connection ID in the *Target* text box.
+. Click *Save*.
+
+. You must complete the same process with the other VPC's CIDR block:
+.. Log into the Customer AWS Web Console → *VPC Service* → *Route Tables*.
+.. Select the Route Table for your VPC.
+.. Select the *Routes* tab, then *Edit*.
+.. Enter the {product-title} Cluster VPC CIDR block in the *Destination* text box.
+.. Enter the Peering Connection ID in the *Target* text box.
+.. Click *Save*.
+
+The VPC peering connection is now complete. Follow the verification procedure to
+ensure connectivity across the peering connection is working.

@@ -1,0 +1,64 @@
+// Module included in the following assemblies:
+//
+// * rosa_cluster_admin/cloud_infrastructure_access/dedicated-aws-vpn.adoc
+
+:_mod-docs-content-type: PROCEDURE
+[id="dedicated-aws-vpn-verifying"]
+= Verifying the VPN connection
+
+After you have set up your side of the VPN tunnel, you can verify that the
+tunnel is up in the AWS console and that connectivity across the tunnel is
+working.
+
+.Prerequisites
+
+* Created a VPN connection.
+
+.Procedure
+
+. *Verify the tunnel is up in AWS.*
+
+.. From the VPC Dashboard, click on *VPN Connections*.
+.. Select the VPN connection you created previously and click the *Tunnel Details* tab.
+.. You should be able to see that at least one of the VPN tunnels is *Up*.
+
+. *Verify the connection.*
++
+To test network connectivity to an endpoint device, `nc` (or `netcat`) is a
+helpful troubleshooting tool. It is included in the default image and provides
+quick and clear output if a connection can be established:
+
+.. Create a temporary pod using the `busybox` image, which cleans up after itself:
++
+----
+$ oc run netcat-test \
+    --image=busybox -i -t \
+    --restart=Never --rm \
+    -- /bin/sh
+----
+
+.. Check the connection using `nc`.
++
+--
+* Example successful connection results:
++
+----
+/ nc -zvv 192.168.1.1 8080
+10.181.3.180 (10.181.3.180:8080) open
+sent 0, rcvd 0
+----
+
+* Example failed connection results:
++
+----
+/ nc -zvv 192.168.1.2 8080
+nc: 10.181.3.180 (10.181.3.180:8081): Connection refused
+sent 0, rcvd 0
+----
+--
+
+.. Exit the container, which automatically deletes the Pod:
++
+----
+/ exit
+----

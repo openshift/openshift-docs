@@ -1,0 +1,45 @@
+// Module included in the following assemblies:
+//
+// web_console/web_terminal/odc-using-web-terminal.adoc
+
+:_mod-docs-content-type: PROCEDURE
+[id="odc-access-web-terminal_{context}"]
+= Accessing the web terminal
+
+After the {web-terminal-op} is installed, you can access the web terminal. After the web terminal is initialized, you can use the preinstalled CLI tools like `oc`, `kubectl`, `odo`, `kn`, `tkn`, `helm`, and `subctl` in the web terminal.
+You can re-run commands by selecting them from the list of commands you have run in the terminal. These commands persist across multiple terminal sessions.
+The web terminal remains open until you close it or until you close the browser window or tab.
+
+.Prerequisites
+
+* You have access to an {product-title} cluster and are logged into the web console.
+* The {web-terminal-op} is installed on your cluster.
+
+.Procedure
+
+. To launch the web terminal, click the command line terminal icon (image:odc-wto-icon.png[title="wto icon"]) in the masthead of the console. A web terminal instance is displayed in the *Command line terminal* pane. This instance is automatically logged in with your credentials.
+
+. If a project has not been selected in the current session, select the project where the `DevWorkspace` CR must be created from the *Project* drop-down list. By default, the current project is selected.
++
+[NOTE]
+====
+* The `DevWorkspace` CR is created only if it does not already exist.
+ifndef::openshift-rosa,openshift-dedicated[]
+* The `openshift-terminal` project is the default project used for cluster administrators. They do not have the option to choose another project.  The {web-terminal-op} installs the DevWorkspace Operator as a dependency.
+endif::openshift-rosa,openshift-dedicated[]
+====
+
+ifndef::openshift-rosa,openshift-dedicated[]
+. Optional: Set the web terminal timeout for the current session:
+.. Click Timeout.
+.. In the field that appears, enter the timeout value.
+.. From the drop-down list, select a timeout interval of *Seconds*, *Minutes*, *Hours*, or *Milliseconds*.
+
+. Optional: Select a custom image for the web terminal to use.
+.. Click Image.
+.. In the field that appears, enter the URL of the image that you want to use.
+endif::openshift-rosa,openshift-dedicated[]
+
+. Click *Start* to initialize the web terminal using the selected project.
+
+. Click *+* to open multiple tabs within the web terminal in the console.

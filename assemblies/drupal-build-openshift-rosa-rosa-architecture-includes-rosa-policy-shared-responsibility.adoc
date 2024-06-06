@@ -1,0 +1,8 @@
+// Module included in the following assemblies:
+//
+// * rosa_architecture/rosa_policy_service_definition/rosa-policy-responsibility-matrix.adoc
+
+[id="rosa-policy-shared-responsibility_{context}"]
+= Tasks for shared responsibilities by area
+
+Red Hat, AWS, and the customer all share responsibility for the monitoring, maintenance, and overall health of a {product-title} (ROSA) cluster. This documentation illustrates the delineation of responsibilities for each of the listed resources as shown in the tables below.

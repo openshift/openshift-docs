@@ -1,0 +1,92 @@
+// Module included in the following assemblies:
+//
+// * rosa_getting_started/rosa-getting-started.adoc
+// * rosa_getting_started/rosa-quickstart-guide-ui.adoc
+
+:_mod-docs-content-type: PROCEDURE
+[id="rosa-getting-started-deleting-a-cluster_{context}"]
+= Deleting a ROSA cluster and the AWS STS resources
+
+ifeval::["{context}" == "rosa-getting-started"]
+:getting-started:
+endif::[]
+ifeval::["{context}" == "rosa-quickstart"]
+:quickstart:
+endif::[]
+
+You can delete a ROSA cluster that uses the AWS Security Token Service (STS) by using the {product-title} (ROSA) CLI, `rosa`. You can also use the ROSA CLI to delete the AWS Identity and Access Management (IAM) account-wide roles, the cluster-specific Operator roles, and the OpenID Connect (OIDC) provider. To delete the account-wide inline and Operator policies, you can use the AWS IAM Console.
+
+[IMPORTANT]
+====
+Account-wide IAM roles and policies might be used by other ROSA clusters in the same AWS account. You must only remove the resources if they are not required by other clusters.
+====
+
+ifdef::getting-started[]
+.Prerequisites
+
+* You installed and configured the latest {product-title} (ROSA) CLI, `rosa`, on your workstation.
+* You logged in to your Red Hat account using the ROSA CLI (`rosa`).
+* You created a ROSA cluster.
+endif::[]
+
+.Procedure
+
+. Delete a cluster and watch the logs, replacing `<cluster_name>` with the name or ID of your cluster:
++
+[source,terminal]
+----
+$ rosa delete cluster --cluster=<cluster_name> --watch
+----
++
+[IMPORTANT]
+====
+You must wait for the cluster deletion to complete before you remove the IAM roles, policies, and OIDC provider. The account-wide roles are required to delete the resources created by the installer. The cluster-specific Operator roles are required to clean-up the resources created by the OpenShift Operators. The Operators use the OIDC provider to authenticate.
+====
+
+.  Delete the OIDC provider that the cluster Operators use to authenticate:
++
+[source,terminal]
+----
+$ rosa delete oidc-provider -c <cluster_id> --mode auto <1>
+----
+<1> Replace `<cluster_id>` with the ID of the cluster.
++
+[NOTE]
+====
+You can use the `-y` option to automatically answer yes to the prompts.
+====
+
+. Delete the cluster-specific Operator IAM roles:
++
+[source,terminal]
+----
+$ rosa delete operator-roles -c <cluster_id> --mode auto <1>
+----
+<1> Replace `<cluster_id>` with the ID of the cluster.
+
+. Delete the account-wide roles:
++
+[IMPORTANT]
+====
+Account-wide IAM roles and policies might be used by other ROSA clusters in the same AWS account. You must only remove the resources if they are not required by other clusters.
+====
++
+[source,terminal]
+----
+$ rosa delete account-roles --prefix <prefix> --mode auto <1>
+----
+<1> You must include the `--<prefix>` argument. Replace `<prefix>` with the prefix of the account-wide roles to delete. If you did not specify a custom prefix when you created the account-wide roles, specify the default prefix, `ManagedOpenShift`.
+
+. Delete the account-wide inline and Operator IAM policies that you created for ROSA deployments that use STS:
+.. Log in to the link:https://console.aws.amazon.com/iamv2/home#/home[AWS IAM Console].
+.. Navigate to *Access management* -> *Policies* and select the checkbox for one of the account-wide policies.
+.. With the policy selected, click on *Actions* -> *Delete* to open the delete policy dialog.
+.. Enter the policy name to confirm the deletion and select *Delete* to delete the policy.
+.. Repeat this step to delete each of the account-wide inline and Operator policies for the cluster.
+
+ifeval::["{context}" == "rosa-getting-started"]
+:getting-started:
+endif::[]
+ifeval::["{context}" == "rosa-quickstart"]
+:quickstart:
+endif::[]

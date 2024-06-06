@@ -1,0 +1,117 @@
+[id="cluster-logging-configuration-of-json-log-data-for-default-elasticsearch_{context}"]
+= Configuring JSON log data for Elasticsearch
+
+If your JSON logs follow more than one schema, storing them in a single index might cause type conflicts and cardinality problems. To avoid that, you must configure the `ClusterLogForwarder` custom resource (CR) to group each schema into a single output definition. This way, each schema is forwarded to a separate index.
+
+[IMPORTANT]
+====
+If you forward JSON logs to the default Elasticsearch instance managed by OpenShift Logging, it generates new indices based on your configuration. To avoid performance issues associated with having too many indices, consider keeping the number of possible schemas low by standardizing to common schemas.
+====
+
+.Structure types
+
+You can use the following structure types in the `ClusterLogForwarder` CR to construct index names for the Elasticsearch log store:
+
+* `structuredTypeKey` is the name of a message field. The value of that field is used to construct the index name.
+** `kubernetes.labels.<key>` is the Kubernetes pod label whose value is used to construct the index name.
+** `openshift.labels.<key>` is the `pipeline.label.<key>` element in the `ClusterLogForwarder` CR whose value is used to construct the index name.
+** `kubernetes.container_name` uses the container name to construct the index name.
+* `structuredTypeName`: If the `structuredTypeKey` field is not set or its key is not present, the `structuredTypeName` value is used as the structured type. When you use both the `structuredTypeKey` field and the `structuredTypeName` field together, the `structuredTypeName` value provides a fallback index name if the key in the `structuredTypeKey` field is missing from the JSON log data.
+
+[NOTE]
+====
+Although you can set the value of `structuredTypeKey` to any field shown in the "Log Record Fields" topic, the most useful fields are shown in the preceding list of structure types.
+====
+
+.A structuredTypeKey: kubernetes.labels.<key> example
+
+Suppose the following:
+
+* Your cluster is running application pods that produce JSON logs in two different formats, "apache" and "google".
+* The user labels these application pods with `logFormat=apache` and `logFormat=google`.
+* You use the following snippet in your `ClusterLogForwarder` CR YAML file.
+
+[source,yaml]
+----
+apiVersion: logging.openshift.io/v1
+kind: ClusterLogForwarder
+metadata:
+# ...
+spec:
+# ...
+  outputDefaults:
+    elasticsearch:
+      structuredTypeKey: kubernetes.labels.logFormat <1>
+      structuredTypeName: nologformat
+  pipelines:
+  - inputRefs:
+    - application
+    outputRefs:
+    - default
+    parse: json <2>
+----
+<1> Uses the value of the key-value pair that is formed by the Kubernetes `logFormat` label.
+<2> Enables parsing JSON logs.
+
+In that case, the following structured log record goes to the `app-apache-write` index:
+
+[source]
+----
+{
+  "structured":{"name":"fred","home":"bedrock"},
+  "kubernetes":{"labels":{"logFormat": "apache", ...}}
+}
+----
+
+And the following structured log record goes to the `app-google-write` index:
+
+[source]
+----
+{
+  "structured":{"name":"wilma","home":"bedrock"},
+  "kubernetes":{"labels":{"logFormat": "google", ...}}
+}
+----
+
+.A structuredTypeKey: openshift.labels.<key> example
+
+Suppose that you use the following snippet in your `ClusterLogForwarder` CR YAML file.
+
+[source,yaml]
+----
+outputDefaults:
+ elasticsearch:
+    structuredTypeKey: openshift.labels.myLabel <1>
+    structuredTypeName: nologformat
+pipelines:
+ - name: application-logs
+   inputRefs:
+   - application
+   - audit
+   outputRefs:
+   - elasticsearch-secure
+   - default
+   parse: json
+   labels:
+     myLabel: myValue <2>
+----
+<1> Uses the value of the key-value pair that is formed by the OpenShift `myLabel` label.
+<2> The `myLabel` element gives its string value, `myValue`, to the structured log record.
+
+In that case, the following structured log record goes to the `app-myValue-write` index:
+
+[source]
+----
+{
+  "structured":{"name":"fred","home":"bedrock"},
+  "openshift":{"labels":{"myLabel": "myValue", ...}}
+}
+----
+
+.Additional considerations
+
+* The Elasticsearch _index_ for structured records is formed by prepending "app-" to the structured type and appending "-write".
+* Unstructured records are not sent to the structured index. They are indexed as usual in the application, infrastructure, or audit indices.
+* If there is no non-empty structured type, forward an _unstructured_ record with no `structured` field.
+
+It is important not to overload Elasticsearch with too many indices. Only use distinct structured types for distinct log _formats_, *not* for each application or namespace. For example, most Apache applications use the same JSON log format and structured type, such as `LogApache`.

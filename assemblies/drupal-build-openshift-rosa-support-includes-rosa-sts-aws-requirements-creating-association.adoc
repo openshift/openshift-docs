@@ -1,0 +1,65 @@
+// Module included in the following assemblies:
+//
+// * rosa_planning/rosa-sts-ocm-role.adoc
+// * rosa_planning/rosa-sts-aws-prereqs.adoc
+:_mod-docs-content-type: PROCEDURE
+[id="rosa-associating-account_{context}"]
+= Linking your AWS account
+
+You can link your AWS account to existing IAM roles by using the {product-title} (ROSA) CLI, `rosa`.
+
+.Prerequisites
+
+* You have an AWS account.
+* You are using {cluster-manager-url} to create clusters.
+* You have the permissions required to install AWS account-wide roles. See the "Additional resources" of this section for more information.
+* You have installed and configured the latest AWS (`aws`) and ROSA (`rosa`) CLIs on your installation host.
+* You have created your `ocm-role` and `user-role` IAM roles, but have not yet linked them to your AWS account. You can check whether your IAM roles are already linked by running the following commands:
++
+[source,terminal]
+----
+$ rosa list ocm-role
+----
++
+[source,terminal]
+----
+$ rosa list user-role
+----
++
+If `Yes` is displayed in the `Linked` column for both roles, you have already linked the roles to an AWS account.
+
+.Procedure
+
+. From the CLI, link your `ocm-role` resource to your Red Hat organization by using your Amazon Resource Name (ARN):
++
+[NOTE]
+====
+You must have Red Hat Organization Administrator privileges to run the `rosa link` command. After you link the `ocm-role` resource with your AWS account, it is visible for all users in the organization.
+====
++
+[source,terminal]
+----
+$ rosa link ocm-role --role-arn <arn>
+----
++
+.Example output
+[source,terminal]
+----
+I: Linking OCM role
+? Link the '<AWS ACCOUNT ID>` role with organization '<ORG ID>'? Yes
+I: Successfully linked role-arn '<AWS ACCOUNT ID>' with organization account '<ORG ID>'
+----
+. From the CLI, link your `user-role` resource to your Red Hat user account by using your Amazon Resource Name (ARN):
++
+[source,terminal]
+----
+$ rosa link user-role --role-arn <arn>
+----
++
+.Example output
+[source,terminal]
+----
+I: Linking User role
+? Link the 'arn:aws:iam::<ARN>:role/ManagedOpenShift-User-Role-125' role with organization '<AWS ID>'? Yes
+I: Successfully linked role-arn 'arn:aws:iam::<ARN>:role/ManagedOpenShift-User-Role-125' with organization account '<AWS ID>'
+----

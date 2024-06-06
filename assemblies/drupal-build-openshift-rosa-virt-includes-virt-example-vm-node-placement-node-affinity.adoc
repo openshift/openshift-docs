@@ -1,0 +1,43 @@
+// Module included in the following assemblies:
+//
+// * virt/virtual_machines/advanced_vm_management/virt-specifying-nodes-for-vms.adoc
+
+[id="virt-example-vm-node-placement-node-affinity_{context}"]
+= Example: VM node placement with node affinity
+
+In this example, the VM must be scheduled on a node that has the label `example.io/example-key = example-value-1` or the label `example.io/example-key = example-value-2`. The constraint is met if only one of the labels is present on the node. If neither label is present, the VM is not scheduled.
+
+If possible, the scheduler avoids nodes that have the label `example-node-label-key = example-node-label-value`. However, if all candidate nodes have this label, the scheduler ignores this constraint.
+
+.Example VM manifest
+[source,yaml]
+----
+metadata:
+  name: example-vm-node-affinity
+apiVersion: kubevirt.io/v1
+kind: VirtualMachine
+spec:
+  template:
+    spec:
+      affinity:
+        nodeAffinity:
+          requiredDuringSchedulingIgnoredDuringExecution: <1>
+            nodeSelectorTerms:
+            - matchExpressions:
+              - key: example.io/example-key
+                operator: In
+                values:
+                - example-value-1
+                - example-value-2
+          preferredDuringSchedulingIgnoredDuringExecution: <2>
+          - weight: 1
+            preference:
+              matchExpressions:
+              - key: example-node-label-key
+                operator: In
+                values:
+                - example-node-label-value
+# ...
+----
+<1> If you use the `requiredDuringSchedulingIgnoredDuringExecution` rule type, the VM is not scheduled if the constraint is not met.
+<2> If you use the `preferredDuringSchedulingIgnoredDuringExecution` rule type, the VM is still scheduled if the constraint is not met, as long as all required constraints are met.

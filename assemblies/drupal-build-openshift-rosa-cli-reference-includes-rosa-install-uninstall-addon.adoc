@@ -1,0 +1,101 @@
+// Module included in the following assemblies:
+//
+// * rosa_cli/rosa-manage-objects-cli.adoc
+
+[id="rosa-install-uninstall-addon_{context}"]
+= Install and uninstall add-ons
+
+
+This section describes how to install and uninstall Red Hat managed service add-ons to a cluster.
+
+[id="rosa-install-addon_{context}"]
+== install addon
+
+Installs a managed service add-on on a cluster.
+
+.Syntax
+[source,terminal]
+----
+$ rosa install addon --cluster=<cluster_name> | <cluster_id> [arguments]
+----
+
+.Arguments
+[cols="30,70"]
+|===
+|Option |Definition
+
+|--cluster
+|Required: The name or ID (string) of the cluster where the add-on will be installed.
+|===
+
+.Optional arguments inherited from parent commands
+[cols="30,70"]
+|===
+|Option |Definition
+
+|--help
+|Shows help for this command.
+
+|--debug
+|Enables debug mode.
+
+|--profile
+|Uses a specific AWS profile (string) from your credentials file.
+
+|--yes
+|Automatically answers `yes` to confirm the operation.
+|===
+
+.Example
+Add the `dbaas-operator` add-on installation to a cluster named `mycluster`.
+
+[source,terminal]
+----
+$ rosa install addon --cluster=mycluster dbaas-operator
+----
+
+[id="rosa-uninstall-addon_{context}"]
+== uninstall addon
+
+Uninstalls a managed service add-on from a cluster.
+
+.Syntax
+[source,terminal]
+----
+$ rosa uninstall addon --cluster=<cluster_name> | <cluster_id> [arguments]
+----
+
+.Arguments
+[cols="30,70"]
+|===
+|Option |Definition
+
+|--cluster
+|Required: The name or ID (string) of the cluster that the add-on will be uninstalled from.
+|===
+
+.Optional arguments inherited from parent commands
+[cols="30,70"]
+|===
+|Option |Definition
+
+|--help
+|Shows help for this command.
+
+|--debug
+|Enables debug mode.
+
+|--profile
+|Uses a specific AWS profile (string) from your credentials file.
+
+|--yes
+|Automatically answers `yes` to confirm the operation.
+|===
+
+.Example
+Remove the `dbaas-operator` add-on installation from a cluster named `mycluster`.
+
+[source,terminal]
+----
+$ rosa uninstall addon --cluster=mycluster dbaas-operator
+----

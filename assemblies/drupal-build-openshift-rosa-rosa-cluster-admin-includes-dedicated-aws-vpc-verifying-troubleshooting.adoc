@@ -1,0 +1,66 @@
+// Module included in the following assemblies:
+//
+// * rosa_cluster_admin/cloud_infrastructure_access/dedicated-aws-peering.adoc
+
+:_mod-docs-content-type: PROCEDURE
+[id="dedicated-aws-vpc-verifying-troubleshooting"]
+= Verifying and troubleshooting VPC peering
+
+After you set up a VPC peering connection, it is best to confirm it has been
+configured and is working correctly.
+
+.Prerequisites
+
+* Initiate and accept the VPC peer request.
+* Configure the routing tables.
+
+.Procedure
+
+* In the AWS console, look at the route table for the cluster VPC that is peered.
+Ensure that the steps for configuring the routing tables were followed and that
+there is a route table entry pointing the VPC CIDR range destination to the
+peering connection target.
++
+If the routes look correct on both the {product-title} Cluster VPC route table
+and Customer VPC route table, then the connection should be tested using the
+`netcat` method below. If the test calls are successful, then VPC peering is
+working correctly.
+
+* To test network connectivity to an endpoint device, `nc` (or `netcat`) is a
+helpful troubleshooting tool. It is included in the default image and provides
+quick and clear output if a connection can be established:
+
+.. Create a temporary pod using the `busybox` image, which cleans up after itself:
++
+----
+$ oc run netcat-test \
+    --image=busybox -i -t \
+    --restart=Never --rm \
+    -- /bin/sh
+----
+
+.. Check the connection using `nc`.
++
+--
+* Example successful connection results:
++
+----
+/ nc -zvv 192.168.1.1 8080
+10.181.3.180 (10.181.3.180:8080) open
+sent 0, rcvd 0
+----
+
+* Example failed connection results:
++
+----
+/ nc -zvv 192.168.1.2 8080
+nc: 10.181.3.180 (10.181.3.180:8081): Connection refused
+sent 0, rcvd 0
+----
+--
+
+.. Exit the container, which automatically deletes the Pod:
++
+----
+/ exit
+----

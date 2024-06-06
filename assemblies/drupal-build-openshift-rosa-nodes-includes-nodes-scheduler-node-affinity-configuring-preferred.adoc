@@ -1,0 +1,63 @@
+// Module included in the following assemblies:
+//
+// * nodes/nodes-scheduler-node-affinity.adoc
+
+:_mod-docs-content-type: PROCEDURE
+[id="nodes-scheduler-node-affinity-configuring-preferred_{context}"]
+= Configuring a preferred node affinity rule
+
+Preferred rules specify that, if the rule is met, the scheduler tries to enforce the rules, but does not guarantee enforcement.
+
+.Procedure
+
+The following steps demonstrate a simple configuration that creates a node and a pod that the scheduler tries to place on the node.
+
+ifndef::openshift-rosa,openshift-dedicated[]
+. Add a label to a node using the `oc label node` command:
++
+[source,terminal]
+----
+$ oc label node node1 e2e-az-name=e2e-az3
+----
+endif::openshift-rosa,openshift-dedicated[]
+
+. Create a pod with a specific label:
++
+.. Create a YAML file with the following content:
++
+[NOTE]
+====
+You cannot add an affinity directly to a scheduled pod.
+====
++
+[source,yaml]
+----
+apiVersion: v1
+kind: Pod
+metadata:
+  name: s1
+spec:
+  affinity: <1>
+    nodeAffinity:
+      preferredDuringSchedulingIgnoredDuringExecution: <2>
+      - weight: <3>
+        preference:
+          matchExpressions:
+          - key: e2e-az-name <4>
+            values:
+            - e2e-az3
+            operator: In <5>
+#...
+----
+<1> Adds a pod affinity.
+<2> Configures the `preferredDuringSchedulingIgnoredDuringExecution` parameter.
+<3> Specifies a weight for the node, as a number 1-100. The node with highest weight is preferred.
+<4> Specifies the `key` and `values` that must be met. If you want the new pod to be scheduled on the node you edited, use the same `key` and `values` parameters as the label in the node.
+<5> Specifies an `operator`. The operator can be `In`, `NotIn`, `Exists`, or `DoesNotExist`. For example, use the operator `In` to require the label to be in the node.
+
+.. Create the pod.
++
+[source,terminal]
+----
+$ oc create -f <file-name>.yaml
+----

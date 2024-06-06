@@ -1,0 +1,47 @@
+// Module included in the following assemblies:
+//
+// * rosa_install_access_delete_clusters/rosa-sts-creating-a-cluster-quickly.adoc
+// * rosa_getting_started/rosa-quickstart-guide-ui.adoc
+
+:_mod-docs-content-type: PROCEDURE
+[id="rosa-sts-creating-account-wide-sts-roles-and-policies_{context}"]
+= Creating the account-wide STS roles and policies
+
+ifeval::["{context}" == "rosa-sts-creating-a-cluster-quickly"]
+:quick-install:
+endif::[]
+ifeval::["{context}" == "rosa-quickstart"]
+:quickstart:
+endif::[]
+
+Before using the {cluster-manager-first} {hybrid-console-second} to create {product-title} (ROSA) clusters that use the AWS Security Token Service (STS), create the required account-wide STS roles and policies, including the Operator policies.
+
+ifdef::quick-install[]
+.Prerequisites
+
+* You have completed the AWS prerequisites for ROSA with STS.
+* You have available AWS service quotas.
+* You have enabled the ROSA service in the AWS Console.
+* You have installed and configured the latest ROSA CLI (`rosa`) on your installation host. Run `rosa version` to see your currently installed version of the ROSA CLI. If a newer version is available, the CLI provides a link to download this upgrade.
+* You have logged in to your Red Hat account by using the ROSA CLI.
+endif::[]
+
+.Procedure
+
+ifdef::quick-install[]
+. Check your AWS account for existing roles and policies:
++
+[source,terminal]
+----
+$ rosa list account-roles
+----
+endif::[]
+
+. If they do not exist in your AWS account, create the required account-wide STS roles and policies:
++
+[source,terminal]
+----
+$ rosa create account-roles
+----
++
+Select the default values at the prompts to quickly create the roles and policies.

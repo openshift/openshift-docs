@@ -1,0 +1,35 @@
+// Module included in the following assemblies:
+//  * openshift_images/templates-ruby-on-rails.adoc
+
+:_mod-docs-content-type: PROCEDURE
+[id="templates-rails-creating-route-for-application_{context}"]
+= Creating a route for your application
+
+You can expose a service to create a route for your application.
+
+ifdef::openshift-enterprise,openshift-webscale,openshift-origin[]
+.Procedure
+
+* To expose a service by giving it an externally-reachable hostname like `www.example.com` use {product-title} route. In your case you need to expose the frontend service by typing:
++
+[source,terminal]
+----
+$ oc expose service rails-app --hostname=www.example.com
+----
+
+
+ifdef::openshift-online[]
+.Procedure
+
+* Expose the frontend service by typing:
++
+[source,terminal]
+----
+$ oc expose service rails-app
+----
+endif::[]
+
+[WARNING]
+====
+Ensure the hostname you specify resolves into the IP address of the router.
+====

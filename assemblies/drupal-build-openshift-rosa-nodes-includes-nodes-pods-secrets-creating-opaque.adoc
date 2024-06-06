@@ -1,0 +1,41 @@
+// Module included in the following assemblies:
+//
+// * nodes/nodes-pods-secrets.adoc
+
+:_mod-docs-content-type: PROCEDURE
+[id="nodes-pods-secrets-creating-opaque_{context}"]
+= Creating an opaque secret
+
+As an administrator, you can create an opaque secret, which allows you to store unstructured `key:value` pairs that can contain arbitrary values.
+
+.Procedure
+
+. Create a `Secret` object in a YAML file on a control plane node.
++
+For example:
++
+[source,yaml]
+----
+apiVersion: v1
+kind: Secret
+metadata:
+  name: mysecret
+type: Opaque <1>
+data:
+  username: <username>
+  password: <password>
+----
+<1> Specifies an opaque secret.
+
+. Use the following command to create a `Secret` object:
++
+[source,terminal]
+----
+$ oc create -f <filename>.yaml
+----
+
+. To use the secret in a pod:
+
+.. Update the pod's service account to reference the secret, as shown in the "Understanding how to create secrets" section.
+
+.. Create the pod, which consumes the secret as an environment variable or as a file (using a `secret` volume), as shown in the "Understanding how to create secrets" section.

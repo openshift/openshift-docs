@@ -1,0 +1,138 @@
+// Module included in the following assemblies:
+//
+// * nodes/nodes-nodes-jobs.adoc
+
+:_mod-docs-content-type: PROCEDURE
+[id="nodes-nodes-jobs-creating-cron_{context}"]
+= Creating cron jobs
+
+You create a cron job in {product-title} by creating a job object.
+
+.Procedure
+
+To create a cron job:
+
+. Create a YAML file similar to the following:
++
+ifndef::openshift-rosa,openshift-dedicated[]
+[source,yaml]
+----
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: pi
+spec:
+  schedule: "*/1 * * * *"          <1>
+  timeZone: Etc/UTC                <2>
+  concurrencyPolicy: "Replace"     <3>
+  startingDeadlineSeconds: 200     <4>
+  suspend: true                    <5>
+  successfulJobsHistoryLimit: 3    <6>
+  failedJobsHistoryLimit: 1        <7>
+  jobTemplate:                     <8>
+    spec:
+      template:
+        metadata:
+          labels:                  <9>
+            parent: "cronjobpi"
+        spec:
+          containers:
+          - name: pi
+            image: perl
+            command: ["perl",  "-Mbignum=bpi", "-wle", "print bpi(2000)"]
+          restartPolicy: OnFailure <10>
+#...
+----
++
+<1> Schedule for the job specified in link:https://en.wikipedia.org/wiki/Cron[cron format]. In this example, the job will run every minute.
+<2> An optional time zone for the schedule. See link:https://en.wikipedia.org/wiki/List_of_tz_database_time_zones[List of tz database time zones] for valid options. If not specified, the Kubernetes controller manager interprets the schedule relative to its local time zone.
+<3> An optional concurrency policy, specifying how to treat concurrent jobs within a cron job. Only one of the following concurrent policies may be specified. If not specified, this defaults to allowing concurrent executions.
+* `Allow` allows cron jobs to run concurrently.
+* `Forbid` forbids concurrent runs, skipping the next run if the previous has not
+finished yet.
+* `Replace` cancels the currently running job and replaces
+it with a new one.
+<4> An optional deadline (in seconds) for starting the job if it misses its
+scheduled time for any reason. Missed jobs executions will be counted as failed
+ones. If not specified, there is no deadline.
+<5> An optional flag allowing the suspension of a cron job. If set to `true`,
+all subsequent executions will be suspended.
+<6> The number of successful finished jobs to retain (defaults to 3).
+<7> The number of failed finished jobs to retain (defaults to 1).
+<8> Job template. This is similar to the job example.
+<9> Sets a label for jobs spawned by this cron job.
+<10> The restart policy of the pod. This does not apply to the job controller.
+endif::openshift-rosa,openshift-dedicated[]
+ifdef::openshift-rosa,openshift-dedicated[]
+[source,yaml]
+----
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: pi
+spec:
+  schedule: "*/1 * * * *"          <1>
+  concurrencyPolicy: "Replace"     <2>
+  startingDeadlineSeconds: 200     <3>
+  suspend: true                    <4>
+  successfulJobsHistoryLimit: 3    <5>
+  failedJobsHistoryLimit: 1        <6>
+  jobTemplate:                     <7>
+    spec:
+      template:
+        metadata:
+          labels:                  <8>
+            parent: "cronjobpi"
+        spec:
+          containers:
+          - name: pi
+            image: perl
+            command: ["perl",  "-Mbignum=bpi", "-wle", "print bpi(2000)"]
+          restartPolicy: OnFailure <9>
+----
++
+<1> Schedule for the job specified in link:https://en.wikipedia.org/wiki/Cron[cron format]. In this example, the job will run every minute.
+<2> An optional concurrency policy, specifying how to treat concurrent jobs within a cron job. Only one of the following concurrent policies may be specified. If not specified, this defaults to allowing concurrent executions.
+* `Allow` allows cron jobs to run concurrently.
+* `Forbid` forbids concurrent runs, skipping the next run if the previous has not
+finished yet.
+* `Replace` cancels the currently running job and replaces
+it with a new one.
+<3> An optional deadline (in seconds) for starting the job if it misses its
+scheduled time for any reason. Missed jobs executions will be counted as failed
+ones. If not specified, there is no deadline.
+<4> An optional flag allowing the suspension of a cron job. If set to `true`,
+all subsequent executions will be suspended.
+<5> The number of successful finished jobs to retain (defaults to 3).
+<6> The number of failed finished jobs to retain (defaults to 1).
+<7> Job template. This is similar to the job example.
+<8> Sets a label for jobs spawned by this cron job.
+<9> The restart policy of the pod. This does not apply to the job controller.
++
+[NOTE]
+====
+The `.spec.successfulJobsHistoryLimit` and `.spec.failedJobsHistoryLimit` fields are optional.
+These fields specify how many completed and failed jobs should be kept.  By default, they are
+set to `3` and `1` respectively.  Setting a limit to `0` corresponds to keeping none of the corresponding
+kind of jobs after they finish.
+====
+endif::openshift-rosa,openshift-dedicated[]
+
+. Create the cron job:
++
+[source,terminal]
+----
+$ oc create -f <file-name>.yaml
+----
+
+[NOTE]
+====
+You can also create and launch a cron job from a single command using `oc create cronjob`. The following command creates and launches a cron job similar to the one specified in the previous example:
+
+[source,terminal]
+----
+$ oc create cronjob pi --image=perl --schedule='*/1 * * * *' -- perl -Mbignum=bpi -wle 'print bpi(2000)'
+----
+
+With `oc create cronjob`, the `--schedule` option accepts schedules in link:https://en.wikipedia.org/wiki/Cron[cron format].
+====

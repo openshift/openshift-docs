@@ -1,0 +1,126 @@
+// Module included in the following assemblies:
+//
+// * backup_and_restore/application_backup_and_restore/backing_up_and_restoring/restoring-applications.adoc
+
+:_mod-docs-content-type: PROCEDURE
+[id="oadp-creating-restore-cr_{context}"]
+= Creating a Restore CR
+
+You restore a `Backup` custom resource (CR) by creating a `Restore` CR.
+
+.Prerequisites
+
+* You must install the OpenShift API for Data Protection (OADP) Operator.
+* The `DataProtectionApplication` CR must be in a `Ready` state.
+* You must have a Velero `Backup` CR.
+* The persistent volume (PV) capacity must match the requested size at backup time. Adjust the requested size if needed.
+
+.Procedure
+
+. Create a `Restore` CR, as in the following example:
++
+[source,yaml]
+----
+apiVersion: velero.io/v1
+kind: Restore
+metadata:
+  name: <restore>
+  namespace: openshift-adp
+spec:
+  backupName: <backup> <1>
+  includedResources: [] <2>
+  excludedResources:
+  - nodes
+  - events
+  - events.events.k8s.io
+  - backups.velero.io
+  - restores.velero.io
+  - resticrepositories.velero.io
+  restorePVs: true <3>
+----
+<1> Name of the `Backup` CR.
+<2> Optional: Specify an array of resources to include in the restore process. Resources might be shortcuts (for example, `po` for `pods`) or fully-qualified. If unspecified, all resources are included.
+<3> Optional: The `restorePVs` parameter can be set to `false` to turn off restore of `PersistentVolumes` from `VolumeSnapshot` of Container Storage Interface (CSI) snapshots or from native snapshots when `VolumeSnapshotLocation` is configured.
+
+. Verify that the status of the `Restore` CR is `Completed` by entering the following command:
++
+[source,terminal]
+----
+$ oc get restore -n openshift-adp <restore> -o jsonpath='{.status.phase}'
+----
+
+. Verify that the backup resources have been restored by entering the following command:
++
+[source,terminal]
+----
+$ oc get all -n <namespace> <1>
+----
+<1> Namespace that you backed up.
+
+. If you restore `DeploymentConfig` with volumes or if you use post-restore hooks, run the `dc-post-restore.sh` cleanup script by entering the following command:
++
+[source,terminal]
+----
+$ bash dc-restic-post-restore.sh -> dc-post-restore.sh
+----
++
+[NOTE]
+====
+During the restore process, the OADP Velero plug-ins scale down the `DeploymentConfig` objects and restore the pods as standalone pods. This is done to prevent the cluster from deleting the restored `DeploymentConfig` pods immediately on restore and to allow the restore and post-restore hooks to complete their actions on the restored pods. The cleanup script shown below removes these disconnected pods and scales any `DeploymentConfig` objects back up to the appropriate number of replicas.
+====
++
+.`dc-restic-post-restore.sh -> dc-post-restore.sh` cleanup script
+[%collapsible]
+====
+[source,bash]
+----
+#!/bin/bash
+set -e
+
+# if sha256sum exists, use it to check the integrity of the file
+if command -v sha256sum >/dev/null 2>&1; then
+  CHECKSUM_CMD="sha256sum"
+else
+  CHECKSUM_CMD="shasum -a 256"
+fi
+
+label_name () {
+    if [ "${#1}" -le "63" ]; then
+	echo $1
+	return
+    fi
+    sha=$(echo -n $1|$CHECKSUM_CMD)
+    echo "${1:0:57}${sha:0:6}"
+}
+
+OADP_NAMESPACE=${OADP_NAMESPACE:=openshift-adp}
+
+if [[ $# -ne 1 ]]; then
+    echo "usage: ${BASH_SOURCE} restore-name"
+    exit 1
+fi
+
+echo using OADP Namespace $OADP_NAMESPACE
+echo restore: $1
+
+label=$(label_name $1)
+echo label: $label
+
+echo Deleting disconnected restore pods
+oc delete pods -l oadp.openshift.io/disconnected-from-dc=$label
+
+for dc in $(oc get dc --all-namespaces -l oadp.openshift.io/replicas-modified=$label -o jsonpath='{range .items[*]}{.metadata.namespace}{","}{.metadata.name}{","}{.metadata.annotations.oadp\.openshift\.io/original-replicas}{","}{.metadata.annotations.oadp\.openshift\.io/original-paused}{"\n"}')
+do
+    IFS=',' read -ra dc_arr <<< "$dc"
+    if [ ${#dc_arr[0]} -gt 0 ]; then
+	echo Found deployment ${dc_arr[0]}/${dc_arr[1]}, setting replicas: ${dc_arr[2]}, paused: ${dc_arr[3]}
+	cat <<EOF | oc patch dc  -n ${dc_arr[0]} ${dc_arr[1]} --patch-file /dev/stdin
+spec:
+  replicas: ${dc_arr[2]}
+  paused: ${dc_arr[3]}
+EOF
+    fi
+done
+----
+
+====

@@ -1,0 +1,78 @@
+:_mod-docs-content-type: ASSEMBLY
+:context: nodes-containers-using
+[id="nodes-containers-using"]
+= Understanding Containers
+include::_attributes/common-attributes.adoc[]
+
+toc::[]
+
+
+
+
+The basic units of {product-title} applications are called _containers_.
+link:https://www.redhat.com/en/topics/containers#overview[Linux container technologies]
+are lightweight mechanisms for isolating running processes so that they are
+limited to interacting with only their designated resources.
+
+Many application instances can be running in containers on a single host without
+visibility into each others' processes, files, network, and so on. Typically,
+each container provides a single service (often called a "micro-service"), such
+as a web server or a database, though containers can be used for arbitrary
+workloads.
+
+The Linux kernel has been incorporating capabilities for container technologies
+for years. {product-title} and
+Kubernetes add the ability to orchestrate containers across
+multi-host installations.
+
+[id="nodes-containers-memory"]
+== About containers and RHEL kernel memory
+
+Due to Red Hat Enterprise Linux (RHEL) behavior, a container on a node with high CPU usage might seem to consume more memory than expected. The higher memory consumption could be caused by the `kmem_cache` in the RHEL kernel. The RHEL kernel creates a `kmem_cache` for each cgroup. For added performance, the `kmem_cache` contains a `cpu_cache`, and a node cache for any NUMA nodes. These caches all consume kernel memory.
+
+The amount of memory stored in those caches is proportional to the number of CPUs that the system uses. As a result, a higher number of CPUs results in a greater amount of kernel memory being held in these caches. Higher amounts of kernel memory in these caches can cause {product-title} containers to exceed the configured memory limits, resulting in the container being killed.
+
+To avoid losing containers due to kernel memory issues, ensure that the containers request sufficient memory. You can use the following formula to estimate the amount of memory consumed by the `kmem_cache`, where `nproc` is the number of processing units available that are reported by the `nproc` command. The lower limit of container requests should be this value plus the container memory requirements:
+
+[source,terminal]
+----
+$(nproc) X 1/2 MiB
+----
+
+[id="nodes-containers-runtimes"]
+== About the container engine and container runtime
+
+A _container engine_ is a piece of software that processes user requests, including command line options and image pulls. The container engine uses a _container runtime_, also called a _lower-level container runtime_, to run and manage the components required to deploy and operate containers. You likely will not need to interact with the container engine or container runtime.
+
+[NOTE]
+====
+The {product-title} documentation uses the term _container runtime_ to refer to the lower-level container runtime. Other documentation can refer to the container engine as the container runtime.
+====
+
+ifndef::openshift-rosa,openshift-dedicated[]
+{product-title} uses CRI-O as the container engine and runC or crun as the container runtime. The default container runtime is runC. Both container runtimes adhere to the link:https://www.opencontainers.org/[Open Container Initiative (OCI)] runtime specifications.
+
+include::snippets/about-crio-snippet.adoc[]
+
+runC, developed by Docker and maintained by the Open Container Project, is a lightweight, portable container runtime written in Go. crun, developed by Red Hat, is a fast and low-memory container runtime fully written in C. As of {product-title} {product-version}, you can select between the two.
+
+crun has several improvements over runC, including:
+
+* Smaller binary
+* Quicker processing
+* Lower memory footprint
+
+runC has some benefits over crun, including:
+
+* Most popular OCI container runtime.
+* Longer tenure in production.
+* Default container runtime of CRI-O.
+
+You can move between the two container runtimes as needed.
+
+For information on setting which container runtime to use, see xref:../../post_installation_configuration/machine-configuration-tasks.adoc#create-a-containerruntimeconfig_post-install-machine-configuration-tasks[Creating a `ContainerRuntimeConfig` CR to edit CRI-O parameters].
+endif::openshift-rosa,openshift-dedicated[]
+
+ifdef::openshift-rosa,openshift-dedicated[]
+{product-title} uses CRI-O as the container engine and runC or crun as the container runtime. The default container runtime is runC.
+endif::openshift-rosa,openshift-dedicated[]

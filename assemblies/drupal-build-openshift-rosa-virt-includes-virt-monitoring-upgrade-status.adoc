@@ -1,0 +1,60 @@
+// Module included in the following assemblies:
+//
+// * virt/updating/upgrading-virt.adoc
+
+:_mod-docs-content-type: PROCEDURE
+[id="virt-monitoring-upgrade-status_{context}"]
+= Monitoring {VirtProductName} upgrade status
+
+To monitor the status of a {VirtProductName} Operator upgrade, watch the cluster service version (CSV) `PHASE`. You can also monitor the CSV conditions in the web console or by running the command provided here.
+
+[NOTE]
+====
+The `PHASE` and conditions values are approximations that are based on
+available information.
+====
+
+.Prerequisites
+
+* Log in to the cluster as a user with the `cluster-admin` role.
+* Install the OpenShift CLI (`oc`).
+
+.Procedure
+
+. Run the following command:
++
+[source,terminal,subs="attributes+"]
+----
+$ oc get csv -n {CNVNamespace}
+----
+
+. Review the output, checking the `PHASE` field. For example:
++
+.Example output
+[source,terminal,subs="attributes+"]
+----
+VERSION  REPLACES                                        PHASE
+4.9.0    kubevirt-hyperconverged-operator.v4.8.2         Installing
+4.9.0    kubevirt-hyperconverged-operator.v4.9.0         Replacing
+----
+
+. Optional: Monitor the aggregated status of all {VirtProductName} component
+conditions by running the following command:
++
+[source,terminal,subs="attributes+"]
+----
+$ oc get hyperconverged kubevirt-hyperconverged -n {CNVNamespace} \
+  -o=jsonpath='{range .status.conditions[*]}{.type}{"\t"}{.status}{"\t"}{.message}{"\n"}{end}'
+----
++
+A successful upgrade results in the following output:
++
+.Example output
+[source,terminal]
+----
+ReconcileComplete  True  Reconcile completed successfully
+Available          True  Reconcile completed successfully
+Progressing        False Reconcile completed successfully
+Degraded           False Reconcile completed successfully
+Upgradeable        True  Reconcile completed successfully
+----

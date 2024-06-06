@@ -1,0 +1,129 @@
+// Module included in the following assemblies:
+//
+// * authentication/managing-security-context-constraints.adoc
+
+[id="security-context-constraints-example_{context}"]
+= Example security context constraints
+
+The following examples show the security context constraints (SCC) format and
+annotations:
+
+.Annotated `privileged` SCC
+[source,yaml]
+----
+allowHostDirVolumePlugin: true
+allowHostIPC: true
+allowHostNetwork: true
+allowHostPID: true
+allowHostPorts: true
+allowPrivilegedContainer: true
+allowedCapabilities: <1>
+- '*'
+apiVersion: security.openshift.io/v1
+defaultAddCapabilities: [] <2>
+fsGroup: <3>
+  type: RunAsAny
+groups: <4>
+- system:cluster-admins
+- system:nodes
+kind: SecurityContextConstraints
+metadata:
+  annotations:
+    kubernetes.io/description: 'privileged allows access to all privileged and host
+      features and the ability to run as any user, any group, any fsGroup, and with
+      any SELinux context.  WARNING: this is the most relaxed SCC and should be used
+      only for cluster administration. Grant with caution.'
+  creationTimestamp: null
+  name: privileged
+priority: null
+readOnlyRootFilesystem: false
+requiredDropCapabilities: <5>
+- KILL
+- MKNOD
+- SETUID
+- SETGID
+runAsUser: <6>
+  type: RunAsAny
+seLinuxContext: <7>
+  type: RunAsAny
+seccompProfiles:
+- '*'
+supplementalGroups: <8>
+  type: RunAsAny
+users: <9>
+- system:serviceaccount:default:registry
+- system:serviceaccount:default:router
+- system:serviceaccount:openshift-infra:build-controller
+volumes: <10>
+- '*'
+----
+
+<1> A list of capabilities that a pod can request. An empty list means
+that none of capabilities can be requested while the special symbol `***`
+allows any capabilities.
+<2> A list of additional capabilities that are added to any pod.
+<3> The `FSGroup` strategy, which dictates the allowable values for the
+security context.
+<4> The groups that can access this SCC.
+<5> A list of capabilities to drop from a pod. Or, specify `ALL` to drop all
+capabilities.
+<6> The `runAsUser` strategy type, which dictates the allowable values for the
+security context.
+//could use the available strategies
+<7> The `seLinuxContext` strategy type, which dictates the allowable values for
+the security context.
+<8> The `supplementalGroups` strategy, which dictates the allowable supplemental
+groups for the security context.
+<9> The users who can access this SCC.
+<10> The allowable volume types for the security context. In the example, `*` allows the use of all volume types.
+
+The `users` and `groups` fields on the SCC control which users can access the
+SCC.
+By default, cluster administrators, nodes, and the build controller are granted
+access to the privileged SCC. All authenticated users are granted access to the
+`restricted-v2` SCC.
+
+.Without explicit `runAsUser` setting
+[source,yaml]
+----
+apiVersion: v1
+kind: Pod
+metadata:
+  name: security-context-demo
+spec:
+  securityContext: <1>
+  containers:
+  - name: sec-ctx-demo
+    image: gcr.io/google-samples/node-hello:1.0
+----
+<1> When a container or pod does not request a user ID under which it should be run,
+the effective UID depends on the SCC that emits this pod. Because the `restricted-v2` SCC
+is granted to all authenticated users by default, it will be available to all
+users and service accounts and used in most cases. The `restricted-v2` SCC uses
+`MustRunAsRange` strategy for constraining and defaulting the possible values of
+the `securityContext.runAsUser` field. The admission plugin will look for the
+`openshift.io/sa.scc.uid-range` annotation on the current project to populate
+range fields, as it does not provide this range. In the end, a container will
+have `runAsUser` equal to the first value of the range that is
+hard to predict because every project has different ranges.
+
+.With explicit `runAsUser` setting
+[source,yaml]
+----
+apiVersion: v1
+kind: Pod
+metadata:
+  name: security-context-demo
+spec:
+  securityContext:
+    runAsUser: 1000 <1>
+  containers:
+    - name: sec-ctx-demo
+      image: gcr.io/google-samples/node-hello:1.0
+----
+<1> A container or pod that requests a specific user ID will be accepted by
+{product-title} only when a service account or a user is granted access to a SCC
+that allows such a user ID. The SCC can allow arbitrary IDs, an ID that falls
+into a range, or the exact user ID specific to the request.
+
+This configuration is valid for SELinux, fsGroup, and Supplemental Groups.

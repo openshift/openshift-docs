@@ -1,0 +1,53 @@
+// Module included in the following assemblies:
+//
+// * rosa_getting_started/rosa-getting-started.adoc
+// * rosa_getting_started/rosa-quickstart-guide-ui.adoc
+
+:_mod-docs-content-type: PROCEDURE
+[id="rosa-getting-started-verifying-rosa-prerequisites_{context}"]
+= Verifying ROSA prerequisites
+
+Use the steps in this procedure to enable {product-title} (ROSA) in your AWS account.
+
+.Prerequisites
+
+* You have a Red Hat account.
+* You have an AWS account.
++
+[NOTE]
+====
+Consider using a dedicated AWS account to run production clusters. If you are using AWS Organizations, you can use an AWS account within your organization or link:https://docs.aws.amazon.com/organizations/latest/userguide/orgs_manage_accounts_create.html#orgs_manage_accounts_create-new[create a new one].
+====
+
+.Procedure
+
+. Sign in to the https://console.aws.amazon.com/rosa/home[AWS Management Console].
+
+. Navigate to the link:https://console.aws.amazon.com/rosa/home[ROSA service].
+
+. Click *Get started*.
++
+The *Verify ROSA prerequisites* page opens.
+
+. Under *ROSA enablement*, ensure that a green check mark and `You previously enabled ROSA` are displayed.
++
+If not, follow these steps:
+
+.. Select the checkbox beside `I agree to share my contact information with Red Hat`.
+.. Click *Enable ROSA*.
++
+After a short wait, a green check mark and `You enabled ROSA` message are displayed.
+
+. Under *Service Quotas*, ensure that a green check and `Your quotas meet the requirements for ROSA` are displayed.
++
+If you see `Your quotas don't meet the minimum requirements`, take note of the quota type and the minimum listed in the error message. See Amazon's documentation on link:https://docs.aws.amazon.com/servicequotas/latest/userguide/request-quota-increase.html[requesting a quota increase] for guidance. It may take several hours for Amazon to approve your quota request.
+
+. Under *ELB service-linked role*, ensure that a green check mark and `AWSServiceRoleForElasticLoadBalancing already exists` are displayed.
+
+. Click *Continue to Red Hat*.
++
+The *Get started with {product-title} (ROSA)* page opens in a new tab. You have already completed Step 1 on this page, and can now continue with Step 2.
+
+[role="_additional-resources"]
+.Additional resources
+* link:https://docs.aws.amazon.com/ROSA/latest/userguide/troubleshoot-rosa-enablement.html#error-aws-orgs-scp-denies-permissions[Troubleshoot ROSA enablement errors]

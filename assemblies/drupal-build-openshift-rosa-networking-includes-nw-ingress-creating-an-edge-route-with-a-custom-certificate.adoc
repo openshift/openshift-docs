@@ -1,0 +1,84 @@
+// Module included in the following assemblies:
+//
+// * ingress/routes.adoc
+
+:_mod-docs-content-type: PROCEDURE
+[id="nw-ingress-creating-an-edge-route-with-a-custom-certificate_{context}"]
+= Creating an edge route with a custom certificate
+
+You can configure a secure route using edge TLS termination with a custom
+certificate by using the `oc create route` command. With an edge route, the
+Ingress Controller terminates TLS encryption before forwarding traffic to the
+destination pod. The route specifies the TLS certificate and key that the
+Ingress Controller uses for the route.
+
+.Prerequisites
+
+* You must have a certificate/key pair in PEM-encoded files, where the certificate
+is valid for the route host.
+
+* You may have a separate CA certificate in a PEM-encoded file that completes
+the certificate chain.
+
+* You must have a service that you want to expose.
+
+[NOTE]
+====
+Password protected key files are not supported. To remove a passphrase from a
+key file, use the following command:
+
+[source,terminal]
+----
+$ openssl rsa -in password_protected_tls.key -out tls.key
+----
+====
+
+.Procedure
+
+This procedure creates a `Route` resource with a custom certificate and edge TLS
+termination. The following assumes that the certificate/key pair are in the
+`tls.crt` and `tls.key` files in the current working directory. You may also
+specify a CA certificate if needed to complete the certificate chain.
+Substitute the actual path names for `tls.crt`, `tls.key`, and (optionally)
+`ca.crt`. Substitute the name of the service that you want to expose
+for `frontend`. Substitute the appropriate hostname for `www.example.com`.
+
+* Create a secure `Route` resource using edge TLS termination and a custom certificate.
++
+[source,terminal]
+----
+$ oc create route edge --service=frontend --cert=tls.crt --key=tls.key --ca-cert=ca.crt --hostname=www.example.com
+----
++
+If you examine the resulting `Route` resource, it should look similar to the
+following:
++
+.YAML Definition of the Secure Route
+[source,yaml]
+----
+apiVersion: route.openshift.io/v1
+kind: Route
+metadata:
+  name: frontend
+spec:
+  host: www.example.com
+  to:
+    kind: Service
+    name: frontend
+  tls:
+    termination: edge
+    key: |-
+      -----BEGIN PRIVATE KEY-----
+      [...]
+      -----END PRIVATE KEY-----
+    certificate: |-
+      -----BEGIN CERTIFICATE-----
+      [...]
+      -----END CERTIFICATE-----
+    caCertificate: |-
+      -----BEGIN CERTIFICATE-----
+      [...]
+      -----END CERTIFICATE-----
+----
++
+See `oc create route edge --help` for more options.

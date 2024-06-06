@@ -1,0 +1,73 @@
+// Module included in the following assemblies:
+//
+// * scalability_and_performance/using-node-tuning-operator.adoc
+// * operators/operator-reference.adoc
+// * post_installation_configuration/node-tasks.adoc
+
+ifeval::["{context}" == "cluster-operators-ref"]
+:operators:
+endif::[]
+ifeval::["{context}" == "node-tuning-operator"]
+:perf:
+endif::[]
+ifeval::["{context}" == "cluster-capabilities"]
+:cluster-caps:
+endif::[]
+
+:_mod-docs-content-type: CONCEPT
+[id="about-node-tuning-operator_{context}"]
+ifdef::operators[]
+= Node Tuning Operator
+endif::operators[]
+ifdef::perf[]
+= About the Node Tuning Operator
+endif::perf[]
+ifdef::cluster-caps[= Node Tuning capability]
+
+ifndef::perf[]
+[discrete]
+== Purpose
+endif::perf[]
+
+ifdef::cluster-caps[]
+The Node Tuning Operator provides features for the `NodeTuning` capability.
+endif::cluster-caps[]
+
+The Node Tuning Operator helps you manage node-level tuning by orchestrating the TuneD daemon and achieves low latency performance by using the Performance Profile controller. The majority of high-performance applications require some level of kernel tuning. The Node Tuning Operator provides a unified management interface to users of node-level sysctls and more flexibility to add custom tuning specified by user needs.
+
+ifdef::cluster-caps[]
+If you disable the NodeTuning capability, some default tuning settings will not be applied to the control-plane nodes. This might limit the scalability and performance of large clusters with over 900 nodes or 900 routes.
+endif::[]
+
+ifndef::cluster-caps[]
+The Operator manages the containerized TuneD daemon for {product-title} as a Kubernetes daemon set. It ensures the custom tuning specification is passed to all containerized TuneD daemons running in the cluster in the format that the daemons understand. The daemons run on all nodes in the cluster, one per node.
+
+Node-level settings applied by the containerized TuneD daemon are rolled back on an event that triggers a profile change or when the containerized TuneD daemon is terminated gracefully by receiving and handling a termination signal.
+
+The Node Tuning Operator uses the Performance Profile controller to implement automatic tuning to achieve low latency performance for {product-title} applications.
+
+The cluster administrator configures a performance profile to define node-level settings such as the following:
+
+* Updating the kernel to kernel-rt.
+* Choosing CPUs for housekeeping.
+* Choosing CPUs for running workloads.
+
+[NOTE]
+====
+Currently, disabling CPU load balancing is not supported by cgroup v2. As a result, you might not get the desired behavior from performance profiles if you have cgroup v2 enabled. Enabling cgroup v2 is not recommended if you are using performance profiles.
+====
+
+The Node Tuning Operator is part of a standard {product-title} installation in version 4.1 and later.
+
+[NOTE]
+====
+In earlier versions of {product-title}, the Performance Addon Operator was used to implement automatic tuning to achieve low latency performance for OpenShift applications. In {product-title} 4.11 and later, this functionality is part of the Node Tuning Operator.
+====
+endif::cluster-caps[]
+
+ifdef::operators[]
+[discrete]
+== Project
+
+link:https://github.com/openshift/cluster-node-tuning-operator[cluster-node-tuning-operator]
+endif::operators[]

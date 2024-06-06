@@ -1,0 +1,43 @@
+// Module included in the following assemblies:
+//
+// * rosa_getting_started/rosa-getting-started.adoc
+// * rosa_getting_started/rosa-quickstart-guide-ui.adoc
+
+:_mod-docs-content-type: PROCEDURE
+[id="rosa-getting-started-grant-user-access_{context}"]
+= Granting user access to a cluster
+
+ifeval::["{context}" == "rosa-getting-started"]
+:getting-started:
+endif::[]
+ifeval::["{context}" == "rosa-quickstart"]
+:quickstart:
+endif::[]
+
+You can grant a user access to your {product-title} (ROSA) cluster by adding them to your configured identity provider.
+
+You can configure different types of identity providers for your ROSA cluster. The following example procedure adds a user to a GitHub organization that is configured for identity provision to the cluster.
+
+ifdef::getting-started[]
+.Prerequisites
+
+* You have an AWS account.
+* You installed and configured the latest {product-title} (ROSA) CLI, `rosa`, on your workstation.
+* You logged in to your Red Hat account using the ROSA CLI (`rosa`).
+* You created a ROSA cluster.
+* You have a GitHub user account.
+* You have configured a GitHub identity provider for your cluster.
+endif::[]
+
+.Procedure
+
+. Navigate to link:https://github.com[github.com] and log in to your GitHub account.
+
+. Invite users that require access to the ROSA cluster to your GitHub organization. Follow the steps in link:https://docs.github.com/en/organizations/managing-membership-in-your-organization/inviting-users-to-join-your-organization[Inviting users to join your organization] in the GitHub documentation.
+
+ifeval::["{context}" == "rosa-getting-started"]
+:getting-started:
+endif::[]
+ifeval::["{context}" == "rosa-quickstart"]
+:quickstart:
+endif::[]
