@@ -1,0 +1,29 @@
+// Module included in the following assemblies:
+//
+// * virt/virtual_machines/advanced_vm_management/virt-specifying-nodes-for-vms.adoc
+
+[id="virt-example-vm-node-placement-node-selector_{context}"]
+= Example: VM node placement with nodeSelector
+
+In this example, the virtual machine requires a node that has metadata containing both `example-key-1 = example-value-1` and `example-key-2 = example-value-2` labels.
+
+[WARNING]
+====
+If there are no nodes that fit this description, the virtual machine is not scheduled.
+====
+
+.Example VM manifest
+[source,yaml]
+----
+metadata:
+  name: example-vm-node-selector
+apiVersion: kubevirt.io/v1
+kind: VirtualMachine
+spec:
+  template:
+    spec:
+      nodeSelector:
+        example-key-1: example-value-1
+        example-key-2: example-value-2
+# ...
+----

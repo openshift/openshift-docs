@@ -1,0 +1,39 @@
+// Module included in the following assemblies:
+//
+// * registry/index.adoc
+
+:_mod-docs-content-type: PROCEDURE
+[id="registry-third-party-registries_{context}"]
+= Third-party registries
+
+{product-title} can create containers using images from third-party registries, but it is unlikely that these registries offer the same image notification support as the integrated {product-registry}. In this situation, {product-title} will fetch tags from the remote registry upon imagestream creation. To refresh the fetched tags, run `oc import-image <stream>`. When new images are detected, the previously described build and deployment reactions occur.
+
+[id="authentication_{context}"]
+== Authentication
+{product-title} can communicate with registries to access private image repositories using credentials supplied by the user. This allows {product-title} to push and pull images to and from private repositories.
+
+[id="registry-authentication_{context}"]
+=== Registry authentication with Podman
+Some container image registries require access authorization. Podman is an open source tool for managing containers and container images and interacting with image registries. You can use Podman to authenticate your credentials, pull the registry image, and store local images in a local file system. The following is a generic example of authenticating the registry with Podman.
+
+.Procedure
+
+. Use the link:https://catalog.redhat.com/software/containers/explore[Red Hat Ecosystem Catalog] to search for specific container images from the Red Hat Repository and select the required image.
+
+. Click *Get this image* to find the command for your container image.
+
+. Log in by running the following command and entering your username and password to authenticate:
++
+[source,terminal]
+----
+$ podman login registry.redhat.io
+ Username:<your_registry_account_username>
+ Password:<your_registry_account_password>
+----
+
+. Download the image and save it locally by running the following command:
++
+[source,terminal]
+----
+$ podman pull registry.redhat.io/<repository_name>
+----

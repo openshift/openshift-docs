@@ -1,0 +1,25 @@
+// Module included in the following assemblies:
+//
+// * virt/backup_restore/virt-managing-vm-snapshots.adoc
+
+:_mod-docs-content-type: PROCEDURE
+[id="virt-creating-vm-snapshot-web_{context}"]
+= Creating a snapshot by using the web console
+
+You can create a snapshot of a virtual machine (VM) by using the {product-title} web console.
+
+The VM snapshot includes disks that meet the following requirements:
+
+* Either a data volume or a persistent volume claim
+* Belong to a storage class that supports Container Storage Interface (CSI) volume snapshots
+
+.Procedure
+
+. Navigate to *Virtualization* -> *VirtualMachines* in the web console.
+. Select a VM to open the *VirtualMachine details* page.
+. If the VM is running, click the options menu {kebab} and select *Stop* to power it down.
+. Click the *Snapshots* tab and then click *Take Snapshot*.
+. Enter the snapshot name.
+. Expand *Disks included in this Snapshot* to see the storage volumes to be included in the snapshot.
+. If your VM has disks that cannot be included in the snapshot and you wish to proceed, select *I am aware of this warning and wish to proceed*.
+. Click *Save*.

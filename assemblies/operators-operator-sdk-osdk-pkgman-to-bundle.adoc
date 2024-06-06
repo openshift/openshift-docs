@@ -1,0 +1,18 @@
+:_mod-docs-content-type: ASSEMBLY
+[id="osdk-pkgman-to-bundle"]
+= Migrating package manifest projects to bundle format
+include::_attributes/common-attributes.adoc[]
+:context: osdk-pkgman-to-bundle
+
+toc::[]
+
+Support for the legacy _package manifest format_ for Operators is removed in {product-title} 4.8 and later. If you have an Operator project that was initially created using the package manifest format, you can use the Operator SDK to migrate the project to the bundle format. The bundle format is the preferred packaging format for Operator Lifecycle Manager (OLM) starting in {product-title} 4.6.
+//Consider updating this during the 4.10 to 4.11 version scrub.
+
+include::modules/osdk-about-pkg-format-migration.adoc[leveloffset=+1]
+
+[role="_additional-resources"]
+.Additional resources
+* xref:../../operators/understanding/olm-packaging-format.adoc#olm-packaging-format[Operator Framework packaging format]
+
+include::modules/osdk-migrating-pkgman.adoc[leveloffset=+1]

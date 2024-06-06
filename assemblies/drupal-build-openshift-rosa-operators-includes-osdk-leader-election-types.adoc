@@ -1,0 +1,59 @@
+// Module included in the following assemblies:
+//
+// * operators/operator_sdk/osdk-leader-election.adoc
+
+[id="osdk-leader-election-types_{context}"]
+= Operator leader election examples
+
+The following examples illustrate how to use the two leader election options for an Operator, Leader-for-life and Leader-with-lease.
+
+[id="osdk-leader-for-life-election_{context}"]
+== Leader-for-life election
+
+With the Leader-for-life election implementation, a call to `leader.Become()` blocks the Operator as it retries until it can become the leader by creating the config map named `memcached-operator-lock`:
+
+[source,go]
+----
+import (
+  ...
+  "github.com/operator-framework/operator-sdk/pkg/leader"
+)
+
+func main() {
+  ...
+  err = leader.Become(context.TODO(), "memcached-operator-lock")
+  if err != nil {
+    log.Error(err, "Failed to retry for leader lock")
+    os.Exit(1)
+  }
+  ...
+}
+----
+
+If the Operator is not running inside a cluster, `leader.Become()` simply returns without error to skip the leader election since it cannot detect the name of the Operator.
+
+[id="osdk-leader-with-lease-election_{context}"]
+== Leader-with-lease election
+
+The Leader-with-lease implementation can be enabled using the link:https://godoc.org/github.com/kubernetes-sigs/controller-runtime/pkg/manager#Options[Manager Options] for leader election:
+
+[source,go]
+----
+import (
+  ...
+  "sigs.k8s.io/controller-runtime/pkg/manager"
+)
+
+func main() {
+  ...
+  opts := manager.Options{
+    ...
+    LeaderElection: true,
+    LeaderElectionID: "memcached-operator-lock"
+  }
+  mgr, err := manager.New(cfg, opts)
+  ...
+}
+----
+
+When the Operator is not running in a cluster, the Manager returns an error when starting because it cannot detect the namespace of the Operator to create the config map for leader election. You can override this namespace by setting the `LeaderElectionNamespace` option for the Manager.

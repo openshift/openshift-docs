@@ -1,0 +1,20 @@
+:_mod-docs-content-type: ASSEMBLY
+[id="virt-configuring-default-cpu-model"]
+= Configuring the default CPU model
+include::_attributes/common-attributes.adoc[]
+:context: virt-configuring-default-cpu-model
+
+Use the `defaultCPUModel` setting in the `HyperConverged` custom resource (CR) to define a cluster-wide default CPU model.
+
+The virtual machine (VM) CPU model depends on the availability of CPU models within the VM and the cluster.
+
+* If the VM does not have a defined CPU model:
+** The `defaultCPUModel` is automatically set using the CPU model defined at the cluster-wide level.
+* If both the VM and the cluster have a defined CPU model:
+** The VM’s CPU model takes precedence.
+* If neither the VM nor the cluster have a defined CPU model:
+** The host-model is automatically set using the CPU model defined at the host level.
+
+toc::[]
+
+include::modules/virt-configuring-default-cpu-model.adoc[leveloffset=+1]

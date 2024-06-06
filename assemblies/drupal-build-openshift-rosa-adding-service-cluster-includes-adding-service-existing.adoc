@@ -1,0 +1,43 @@
+// Module included in the following assemblies:
+//
+// * assemblies/adding-service.adoc
+
+:_mod-docs-content-type: PROCEDURE
+[id="adding-service-existing_{context}"]
+
+= Adding an add-on service to a cluster
+
+You can add an add-on service to an existing {product-title}
+ifdef::openshift-rosa[]
+(ROSA)
+endif::openshift-rosa[]
+cluster by using {cluster-manager-first}.
+
+.Prerequisites
+
+* You have created and provisioned a cluster for {product-title}.
+* Your cluster meets all of the prerequisites for the service that you want to add on to your cluster.
+* For paid add-on services, note the following considerations:
+** If the organization has sufficient quota, and if the service is compatible with the cluster, the service appears in {cluster-manager}.
+** If the organization has never had quota, or if the cluster is not compatible, then the service does not display.
+** If the organization had quota in the past, but the quota is currently `0`, the service is still visible but disabled in {cluster-manager} until you get more quota.
+
+// TODO: Could this just be one of the above prereqs instead of its own NOTE?
+[NOTE]
+====
+To add a service to a cluster, you must be the cluster owner.
+====
+
+.Procedure
+
+. Navigate to the *Clusters* page in  {cluster-manager-url}.
+
+. Select the cluster you want to add a service to.
+
+. Click the *Add-ons* tab.
+
+. Click the service option you want to add, click *Install*. An installing icon appears, indicating that the service has begun installing.
++
+A green check mark appears in the service option when the installation is complete. You might have to refresh your browser to see the installation status.
+
+. When the service is *Installed*, click *View in console* to access the service.

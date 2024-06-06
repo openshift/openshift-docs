@@ -1,0 +1,24 @@
+:_mod-docs-content-type: ASSEMBLY
+[id="cert-types-control-plane-certificates"]
+= Control plane certificates
+include::_attributes/common-attributes.adoc[]
+:context: cert-types-control-plane-certificates
+
+toc::[]
+
+== Location
+
+Control plane certificates are included in these namespaces:
+
+* openshift-config-managed
+* openshift-kube-apiserver
+* openshift-kube-apiserver-operator
+* openshift-kube-controller-manager
+* openshift-kube-controller-manager-operator
+* openshift-kube-scheduler
+
+== Management
+
+Control plane certificates are managed by the system and rotated automatically.
+
+In the rare case that your control plane certificates have expired, see xref:../../backup_and_restore/control_plane_backup_and_restore/disaster_recovery/scenario-3-expired-certs.adoc#dr-recovering-expired-certs[Recovering from expired control plane certificates].

@@ -1,0 +1,19 @@
+:_mod-docs-content-type: ASSEMBLY
+[id="compliance-operator-understanding"]
+= Managing the Compliance Operator
+include::_attributes/common-attributes.adoc[]
+:context: managing-compliance
+
+toc::[]
+
+This section describes the lifecycle of security content, including how to use an updated version of compliance content and how to create a custom `ProfileBundle` object.
+
+include::modules/compliance-profilebundle.adoc[leveloffset=+1]
+
+include::modules/compliance-update.adoc[leveloffset=+1]
+
+[id="additional-resources_managing-the-compliance-operator"]
+[role="_additional-resources"]
+== Additional resources
+
+* The Compliance Operator is supported in a restricted network environment. For more information, see xref:../../../operators/admin/olm-restricted-networks.adoc#olm-restricted-networks[Using Operator Lifecycle Manager on restricted networks].

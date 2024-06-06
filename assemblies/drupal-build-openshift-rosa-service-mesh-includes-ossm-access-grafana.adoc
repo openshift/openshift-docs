@@ -1,0 +1,21 @@
+// Module included in the following assemblies:
+//
+// * service_mesh/v2x/ossm-observability.adoc
+
+:_mod-docs-content-type: PROCEDURE
+[id="ossm-access-grafana_{context}"]
+= Accessing the Grafana console
+
+Grafana is an analytics tool you can use to view, query, and analyze your service mesh metrics. In this example, `istio-system` is the {SMProductShortName} control plane namespace. To access Grafana, do the following:
+
+.Procedure
+
+. Log in to the {product-title} web console.
+
+. Click the *Project* menu and select the project where you installed the {SMProductShortName} control plane, for example *istio-system*.
+
+. Click *Routes*.
+
+. Click the link in the *Location* column for the *Grafana* row.
+
+. Log in to the Grafana console with your {product-title} credentials.

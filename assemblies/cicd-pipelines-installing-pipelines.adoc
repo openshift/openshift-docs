@@ -1,0 +1,58 @@
+:_mod-docs-content-type: ASSEMBLY
+[id="installing-pipelines"]
+= Installing {pipelines-shortname}
+include::_attributes/common-attributes.adoc[]
+:context: installing-pipelines
+
+toc::[]
+
+[role="_abstract"]
+This guide walks cluster administrators through the process of installing the {pipelines-title} Operator to an {product-title} cluster.
+
+// Prerequisites for installing OpenShift Operator
+[discrete]
+== Prerequisites
+
+* You have access to an {product-title} cluster using an account with `cluster-admin` permissions.
+* You have installed `oc` CLI.
+* You have installed xref:../../cli_reference/tkn_cli/installing-tkn.adoc#installing-tkn[{pipelines-shortname} (`tkn`) CLI] on your local system.
+* Your cluster has the xref:../../installing/cluster-capabilities.adoc#marketplace-operator_cluster-capabilities[Marketplace capability] enabled or the Red Hat Operator catalog source configured manually.
+
+ifdef::openshift-origin[]
+* Ensure that you have downloaded the {cluster-manager-url-pull} as shown in the xref:../../installing/installing_gcp/installing-gcp-customizations.adoc#installation-obtaining-installer_installing-gcp-customizations[Obtaining the installation program] to install this Operator.
++
+If you have the pull secret, add the `redhat-operators` catalog to the OperatorHub custom resource (CR) as shown in xref:../../post_installation_configuration/preparing-for-users.adoc#olm-installing-operators-from-operatorhub-configure_post-install-preparing-for-users[Configuring {product-title} to use Red Hat Operators].
+endif::[]
+
+
+//Installing pipelines Operator using web console
+
+include::modules/op-installing-pipelines-operator-in-web-console.adoc[leveloffset=+1]
+
+// Installing pipelines Operator using CLI
+
+include::modules/op-installing-pipelines-operator-using-the-cli.adoc[leveloffset=+1]
+
+// {pipelines-title} Operator in a restricted environment
+
+include::modules/op-pipelines-operator-in-restricted-environment.adoc[leveloffset=+1]
+
+include::modules/op-performance-tuning-using-tektonconfig-cr.adoc[leveloffset=+1]
+
+[role="_additional-resources"]
+== Additional resources
+
+* You can learn more about installing Operators on {product-title} in the xref:../../operators/admin/olm-adding-operators-to-cluster.adoc#olm-adding-operators-to-a-cluster[adding Operators to a cluster] section.
+
+* To install {tekton-chains} using the {pipelines-title} Operator, see xref:../../cicd/pipelines/using-tekton-chains-for-openshift-pipelines-supply-chain-security.adoc#using-tekton-chains-for-openshift-pipelines-supply-chain-security[Using {tekton-chains} for {pipelines-title} supply chain security].
+
+* To install and deploy in-cluster {tekton-hub}, see xref:../../cicd/pipelines/using-tekton-hub-with-openshift-pipelines.adoc#using-tekton-hub-with-openshift-pipelines[Using {tekton-hub} with {pipelines-title}].
+
+* For more information on using pipelines in a restricted environment, see:
+
+** xref:../../cicd/pipelines/creating-applications-with-cicd-pipelines.adoc#op-mirroring-images-to-run-pipelines-in-restricted-environment_creating-applications-with-cicd-pipelines[Mirroring images to run pipelines in a restricted environment]
+
+** xref:../../openshift_images/configuring-samples-operator.adoc#samples-operator-restricted-network-install[Configuring Samples Operator for a restricted cluster]
+
+** xref:../../installing/disconnected_install/installing-mirroring-installation-images.adoc#installation-about-mirror-registry_installing-mirroring-installation-images[Creating a cluster with a mirrored registry]
+

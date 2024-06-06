@@ -1,0 +1,11 @@
+// Module included in the following assemblies:
+//
+// * rosa_planning/rosa-sts-ocm-role.adoc
+// * rosa_planning/rosa-sts-aws-prereqs.adoc
+:_mod-docs-content-type: CONCEPT
+[id="rosa-associating-concept_{context}"]
+= AWS account association
+
+{product-title} (ROSA) cluster-provisioning tasks require linking `ocm-role` and `user-role` IAM roles to your AWS account using your Amazon Resource Name (ARN).
+
+The `ocm-role` ARN is stored as a label in your Red Hat organization while the `user-role` ARN is stored as a label inside your Red Hat user account. Red Hat uses these ARN labels to confirm that the user is a valid account holder and that the correct permissions are available to perform the necessary tasks in the AWS account.

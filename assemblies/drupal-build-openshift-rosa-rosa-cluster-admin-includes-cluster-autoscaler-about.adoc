@@ -1,0 +1,68 @@
+// Module included in the following assemblies:
+//
+// * nodes/nodes-about-autoscaling-nodes.adoc
+// * post_installation_configuration/cluster-tasks.adoc
+// * machine_management/applying-autoscaling.adoc
+// * osd_cluster_admin/osd_nodes/osd-nodes-about-autoscaling-nodes.adoc
+// * osd_cluster_admin/osd-cluster-autoscaling.adoc
+// * rosa_cluster_admin/rosa-cluster-autoscaling.adoc
+
+:_mod-docs-content-type: CONCEPT
+[id="cluster-autoscaler-about_{context}"]
+= About the cluster autoscaler
+
+The cluster autoscaler adjusts the size of an {product-title} cluster to meet its current deployment needs. It uses declarative, Kubernetes-style arguments to provide infrastructure management that does not rely on objects of a specific cloud provider. The cluster autoscaler has a cluster scope, and is not associated with a particular namespace.
+
+The cluster autoscaler increases the size of the cluster when there are pods that fail to schedule on any of the current worker nodes due to insufficient resources or when another node is necessary to meet deployment needs. The cluster autoscaler does not increase the cluster resources beyond the limits that you specify.
+
+The cluster autoscaler computes the total
+ifndef::openshift-dedicated,openshift-rosa[]
+memory, CPU, and GPU
+endif::[]
+ifdef::openshift-dedicated,openshift-rosa[]
+memory and CPU
+endif::[]
+on all nodes the cluster, even though it does not manage the control plane nodes. These values are not single-machine oriented. They are an aggregation of all the resources in the entire cluster. For example, if you set the maximum memory resource limit, the cluster autoscaler includes all the nodes in the cluster when calculating the current memory usage. That calculation is then used to determine if the cluster autoscaler has the capacity to add more worker resources.
+
+[IMPORTANT]
+====
+Ensure that the `maxNodesTotal` value in the `ClusterAutoscaler` resource definition that you create is large enough to account for the total possible number of machines in your cluster. This value must encompass the number of control plane machines and the possible number of compute machines that you might scale to.
+====
+
+Every 10 seconds, the cluster autoscaler checks which nodes are unnecessary in the cluster and removes them. The cluster autoscaler considers a node for removal if the following conditions apply:
+
+* The node utilization is less than the _node utilization level_ threshold for the cluster. The node utilization level is the sum of the requested resources divided by the allocated resources for the node. If you do not specify a value in the `ClusterAutoscaler` custom resource, the cluster autoscaler uses a default value of `0.5`, which corresponds to 50% utilization.
+* The cluster autoscaler can move all pods running on the node to the other nodes. The Kubernetes scheduler is responsible for scheduling pods on the nodes.
+* The cluster autoscaler does not have scale down disabled annotation.
+
+If the following types of pods are present on a node, the cluster autoscaler will not remove the node:
+
+* Pods with restrictive pod disruption budgets (PDBs).
+* Kube-system pods that do not run on the node by default.
+* Kube-system pods that do not have a PDB or have a PDB that is too restrictive.
+* Pods that are not backed by a controller object such as a deployment, replica set, or stateful set.
+* Pods with local storage.
+* Pods that cannot be moved elsewhere because of a lack of resources, incompatible node selectors or affinity, matching anti-affinity, and so on.
+* Unless they also have a `"cluster-autoscaler.kubernetes.io/safe-to-evict": "true"` annotation, pods that have a `"cluster-autoscaler.kubernetes.io/safe-to-evict": "false"` annotation.
+
+For example, you set the maximum CPU limit to 64 cores and configure the cluster autoscaler to only create machines that have 8 cores each. If your cluster starts with 30 cores, the cluster autoscaler can add up to 4 more nodes with 32 cores, for a total of 62.
+
+If you configure the cluster autoscaler, additional usage restrictions apply:
+
+* Do not modify the nodes that are in autoscaled node groups directly. All nodes within the same node group have the same capacity and labels and run the same system pods.
+* Specify requests for your pods.
+* If you have to prevent pods from being deleted too quickly, configure appropriate PDBs.
+* Confirm that your cloud provider quota is large enough to support the maximum node pools that you configure.
+* Do not run additional node group autoscalers, especially the ones offered by your cloud provider.
+
+The horizontal pod autoscaler (HPA) and the cluster autoscaler modify cluster resources in different ways. The HPA changes the deployment's or replica set's number of replicas based on the current CPU load. If the load increases, the HPA creates new replicas, regardless of the amount of resources available to the cluster. If there are not enough resources, the cluster autoscaler adds resources so that the HPA-created pods can run. If the load decreases, the HPA stops some replicas. If this action causes some nodes to be underutilized or completely empty, the cluster autoscaler deletes the unnecessary nodes.
+
+The cluster autoscaler takes pod priorities into account. The Pod Priority and Preemption feature enables scheduling pods based on priorities if the cluster does not have enough resources, but the cluster autoscaler ensures that the cluster has resources to run all pods. To honor the intention of both features, the cluster autoscaler includes a priority cutoff function. You can use this cutoff to schedule "best-effort" pods, which do not cause the cluster autoscaler to increase resources but instead run only when spare resources are available.
+
+Pods with priority lower than the cutoff value do not cause the cluster to scale up or prevent the cluster from scaling down. No new nodes are added to run the pods, and nodes running these pods might be deleted to free resources.
+
+Cluster autoscaling is supported for the platforms that have machine API available on it.
+
+////
+Default priority cutoff is 0. It can be changed using `--expendable-pods-priority-cutoff` flag, but we discourage it. cluster autoscaler also doesn't trigger scale-up if an unschedulable Pod is already waiting for a lower priority Pod preemption.
+////

@@ -1,0 +1,313 @@
+// Module included in the following assemblies:
+//
+// * operators/operator_sdk/osdk-migrating-to-v0-1-0.adoc
+
+:_mod-docs-content-type: PROCEDURE
+[id="migrating-reconcile-code_{context}"]
+= Migrating reconcile code
+
+Migrate your project's reconcile code to the update Operator SDK v0.1.0 usage.
+
+.Prerequisites
+
+- Operator SDK v0.1.0 CLI installed on the development workstation
+- `memcached-operator` project previously deployed using an earlier version of
+Operator SDK
+- Custom types migrated from `pkg/apis/`
+
+.Procedure
+
+. *Add a controller to watch your CR.*
++
+In v0.0.x projects, resources to be watched were previously defined in
+`cmd/<operator-name>/main.go`:
++
+[source,golang]
+----
+sdk.Watch("cache.example.com/v1alpha1", "Memcached", "default", time.Duration(5)*time.Second)
+----
++
+For v0.1.0 projects, you must define a
+link:https://godoc.org/github.com/kubernetes-sigs/controller-runtime/pkg#hdr-Controller[Controller]
+to watch resources:
+
+.. Add a controller to watch your CR type with `operator-sdk add controller --api-version=<apiversion> --kind=<kind>`.
++
+[source,terminal]
+----
+$ operator-sdk add controller --api-version=cache.example.com/v1alpha1 --kind=Memcached
+
+$ tree pkg/controller
+pkg/controller/
+├── add_memcached.go
+├── controller.go
+└── memcached
+    └── memcached_controller.go
+----
+
+.. Inspect the `add()` function in your `pkg/controller/<kind>/<kind>_controller.go` file:
++
+[source,golang]
+----
+import (
+    cachev1alpha1 "github.com/example-inc/memcached-operator/pkg/apis/cache/v1alpha1"
+    ...
+)
+
+func add(mgr manager.Manager, r reconcile.Reconciler) error {
+    c, err := controller.New("memcached-controller", mgr, controller.Options{Reconciler: r})
+
+    // Watch for changes to the primary resource Memcached
+    err = c.Watch(&source.Kind{Type: &cachev1alpha1.Memcached{}}, &handler.EnqueueRequestForObject{})
+
+    // Watch for changes to the secondary resource pods and enqueue reconcile requests for the owner Memcached
+    err = c.Watch(&source.Kind{Type: &corev1.Pod{}}, &handler.EnqueueRequestForOwner{
+		IsController: true,
+		OwnerType:    &cachev1alpha1.Memcached{},
+	})
+}
+----
++
+Remove the second `Watch()` or modify it to watch a secondary resource type that
+is owned by your CR.
++
+Watching multiple resources lets you trigger the reconcile loop for multiple
+resources relevant to your application. See the
+link:https://godoc.org/github.com/kubernetes-sigs/controller-runtime/pkg#hdr-Watching_and_EventHandling[watching and eventhandling]
+documentation and the Kubernetes
+link:https://github.com/kubernetes/community/blob/master/contributors/devel/sig-api-machinery/controllers.md[controller conventions]
+documentation for more details.
++
+If your Operator is watching more than one CR type, you can do one of the
+following depending on your application:
++
+--
+** If the CR is owned by your primary CR, watch it as a secondary resource in
+the same controller to trigger the reconcile loop for the primary resource.
++
+[source,golang]
+----
+// Watch for changes to the primary resource Memcached
+    err = c.Watch(&source.Kind{Type: &cachev1alpha1.Memcached{}}, &handler.EnqueueRequestForObject{})
+
+    // Watch for changes to the secondary resource AppService and enqueue reconcile requests for the owner Memcached
+    err = c.Watch(&source.Kind{Type: &appv1alpha1.AppService{}}, &handler.EnqueueRequestForOwner{
+		IsController: true,
+		OwnerType:    &cachev1alpha1.Memcached{},
+	})
+----
+
+** Add a new controller to watch and reconcile the CR independently of the other CR.
++
+[source,terminal]
+----
+$ operator-sdk add controller --api-version=app.example.com/v1alpha1 --kind=AppService
+----
++
+[source,golang]
+----
+  // Watch for changes to the primary resource AppService
+    err = c.Watch(&source.Kind{Type: &appv1alpha1.AppService{}}, &handler.EnqueueRequestForObject{})
+----
+--
+
+. *Copy and modify reconcile code from `pkg/stub/handler.go`.*
++
+In a v0.1.0 project, the reconcile code is defined in the `Reconcile()` method
+of a controller's
+link:https://godoc.org/github.com/kubernetes-sigs/controller-runtime/pkg/reconcile#Reconciler[Reconciler].
+This is similar to the `Handle()` function in the older project. Note the
+difference in the arguments and return values:
++
+--
+- Reconcile:
++
+[source,golang]
+----
+    func (r *ReconcileMemcached) Reconcile(request reconcile.Request) (reconcile.Result, error)
+----
+
+- Handle:
++
+[source,golang]
+----
+    func (h *Handler) Handle(ctx context.Context, event sdk.Event) error
+----
+--
++
+Instead of receiving an `sdk.Event` (with the object), the `Reconcile()`
+function receives a
+link:https://godoc.org/github.com/kubernetes-sigs/controller-runtime/pkg/reconcile#Request[Request]
+(`Name`/`Namespace` key) to look up the object.
++
+If the `Reconcile()` function returns an error, the controller will requeue and
+retry the `Request`. If no error is returned, then depending on the
+link:https://godoc.org/github.com/kubernetes-sigs/controller-runtime/pkg/reconcile#Result[Result],
+the controller will either not retry the `Request`, immediately retry, or retry
+after a specified duration.
+
+.. Copy the code from the old project's `Handle()` function to the existing code
+in your controller's `Reconcile()` function. Be sure to keep the initial section
+in the `Reconcile()` code that looks up the object for the `Request` and checks
+to see if it is deleted.
++
+[source,golang]
+----
+import (
+    apierrors "k8s.io/apimachinery/pkg/api/errors"
+    cachev1alpha1 "github.com/example-inc/memcached-operator/pkg/apis/cache/v1alpha1"
+    ...
+)
+func (r *ReconcileMemcached) Reconcile(request reconcile.Request) (reconcile.Result, error) {
+    // Fetch the Memcached instance
+	instance := &cachev1alpha1.Memcached{}
+    err := r.client.Get(context.TODO()
+    request.NamespacedName, instance)
+    if err != nil {
+        if apierrors.IsNotFound(err) {
+            // Request object not found, could have been deleted after reconcile request.
+            // Owned objects are automatically garbage collected.
+            // Return and don't requeue
+            return reconcile.Result{}, nil
+        }
+        // Error reading the object - requeue the request.
+        return reconcile.Result{}, err
+    }
+
+    // Rest of your reconcile code goes here.
+    ...
+}
+----
+
+.. Change the return values in your reconcile code:
+
+... Replace `return err` with `return reconcile.Result{}, err`.
+
+... Replace `return nil` with `return reconcile.Result{}, nil`.
+
+.. To periodically reconcile a CR in your controller, you can set the
+link:https://godoc.org/github.com/kubernetes-sigs/controller-runtime/pkg/reconcile#Result[RequeueAfter]
+field for `reconcile.Result`. This will cause the controller to requeue the
+`Request` and trigger the reconcile after the desired duration. Note that the
+default value of `0` means no requeue.
++
+[source,golang]
+----
+reconcilePeriod := 30 * time.Second
+reconcileResult := reconcile.Result{RequeueAfter: reconcilePeriod}
+...
+
+// Update the status
+err := r.client.Update(context.TODO(), memcached)
+if err != nil {
+    log.Printf("failed to update memcached status: %v", err)
+    return reconcileResult, err
+}
+return reconcileResult, nil
+----
+
+.. Replace the calls to the SDK client (Create, Update, Delete, Get, List) with the
+reconciler's client.
++
+See the examples below and the `controller-runtime`
+link:https://sdk.operatorframework.io/docs/building-operators/golang/references/client/[client API documentation]
+in the `operator-sdk` project for more details:
++
+[source,golang]
+----
+// Create
+dep := &appsv1.Deployment{...}
+err := sdk.Create(dep)
+// v0.0.1
+err := r.client.Create(context.TODO(), dep)
+
+// Update
+err := sdk.Update(dep)
+// v0.0.1
+err := r.client.Update(context.TODO(), dep)
+
+// Delete
+err := sdk.Delete(dep)
+// v0.0.1
+err := r.client.Delete(context.TODO(), dep)
+
+// List
+podList := &corev1.PodList{}
+labelSelector := labels.SelectorFromSet(labelsForMemcached(memcached.Name))
+listOps := &metav1.ListOptions{LabelSelector: labelSelector}
+err := sdk.List(memcached.Namespace, podList, sdk.WithListOptions(listOps))
+// v0.1.0
+listOps := &client.ListOptions{Namespace: memcached.Namespace, LabelSelector: labelSelector}
+err := r.client.List(context.TODO(), listOps, podList)
+
+// Get
+dep := &appsv1.Deployment{APIVersion: "apps/v1", Kind: "Deployment", Name: name, Namespace: namespace}
+err := sdk.Get(dep)
+// v0.1.0
+dep := &appsv1.Deployment{}
+err = r.client.Get(context.TODO(), types.NamespacedName{Name: name, Namespace: namespace}, dep)
+----
+
+.. Copy and initialize any other fields from your `Handler` struct into the `Reconcile<Kind>` struct:
++
+[source,golang]
+----
+// newReconciler returns a new reconcile.Reconciler
+func newReconciler(mgr manager.Manager) reconcile.Reconciler {
+	return &ReconcileMemcached{client: mgr.GetClient(), scheme: mgr.GetScheme(), foo: "bar"}
+}
+
+// ReconcileMemcached reconciles a Memcached object
+type ReconcileMemcached struct {
+    client client.Client
+    scheme *runtime.Scheme
+    // Other fields
+    foo string
+}
+----
+
+. *Copy changes from `main.go`.*
++
+The main function for a v0.1.0 Operator in `cmd/manager/main.go` sets up the
+link:https://godoc.org/github.com/kubernetes-sigs/controller-runtime/pkg/manager[Manager],
+which registers the custom resources and starts all of the controllers.
++
+There is no requirement to migrate the SDK functions `sdk.Watch()`,`sdk.Handle()`, and `sdk.Run()` from the old `main.go` since that logic is now defined in a
+controller.
++
+However, if there are any Operator-specific flags or settings defined in the old
+`main.go` file, copy them over.
++
+If you have any third party resource types registered with the SDK's scheme, see
+link:https://sdk.operatorframework.io/docs/building-operators/golang/advanced-topics/#adding-3rd-party-resources-to-your-operator[Advanced Topics]
+in the `operator-sdk` project for how to register them with the Manager's
+scheme in the new project.
+
+. *Copy user-defined files.*
++
+If there are any user-defined `pkgs`, scripts, or documentation in the older
+project, copy those files into the new project.
+
+. *Copy changes to deployment manifests.*
++
+For any updates made to the following manifests in the old project, copy the changes to their corresponding files in the new project. Be careful not to
+directly overwrite the files, but inspect and make any changes necessary:
++
+--
+* `tmp/build/Dockerfile` to `build/Dockerfile`
+** There is no tmp directory in the new project layout
+* RBAC rules updates from `deploy/rbac.yaml` to `deploy/role.yaml` and
+`deploy/role_binding.yaml`
+* `deploy/cr.yaml` to `deploy/crds/<group>_<version>_<kind>_cr.yaml`
+* `deploy/crd.yaml` to `deploy/crds/<group>_<version>_<kind>_crd.yaml`
+--
+
+. *Copy user-defined dependencies.*
++
+For any user-defined dependencies added to the old project's `Gopkg.toml`, copy
+and append them to the new project's `Gopkg.toml`. Run `dep ensure` to update
+the vendor in the new project.
+
+. *Confirm your changes.*
++
+Build and run your Operator to verify that it works.

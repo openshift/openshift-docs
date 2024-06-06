@@ -1,0 +1,26 @@
+:_mod-docs-content-type: ASSEMBLY
+[id="planning-your-environment-according-to-object-maximums"]
+= Planning your environment according to object maximums
+include::_attributes/common-attributes.adoc[]
+:context: object-limits
+
+toc::[]
+
+Consider the following tested object maximums when you plan your {product-title} cluster.
+
+These guidelines are based on the largest possible cluster. For smaller clusters, the maximums are lower. There are many factors that influence the stated thresholds, including the etcd version or storage data format.
+
+In most cases, exceeding these numbers results in lower overall performance. It does not necessarily mean that the cluster will fail.
+
+[WARNING]
+====
+Clusters that experience rapid change, such as those with many starting and stopping pods, can have a lower practical maximum size than documented.
+====
+
+include::modules/openshift-cluster-maximums-major-releases.adoc[leveloffset=+1]
+
+include::modules/openshift-cluster-maximums-environment.adoc[leveloffset=+1]
+
+include::modules/how-to-plan-your-environment-according-to-cluster-maximums.adoc[leveloffset=+1]
+
+include::modules/how-to-plan-your-environment-according-to-application-requirements.adoc[leveloffset=+1]

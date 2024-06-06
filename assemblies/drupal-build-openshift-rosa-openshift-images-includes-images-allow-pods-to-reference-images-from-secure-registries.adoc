@@ -1,0 +1,88 @@
+// Module included in the following assemblies:
+// * openshift_images/using-image-pull-secrets
+// * openshift_images/managing-image-streams.adoc
+
+:_mod-docs-content-type: PROCEDURE
+[id="images-allow-pods-to-reference-images-from-secure-registries_{context}"]
+= Allowing pods to reference images from other secured registries
+
+The `.dockercfg` `$HOME/.docker/config.json` file for Docker clients is a Docker credentials file that stores your authentication information if you have previously logged into a secured or insecure registry.
+
+To pull a secured container image that is not from {product-registry}, you must create a pull secret from your Docker credentials and add it to your service account.
+
+The Docker credentials file and the associated pull secret can contain multiple references to the same registry, each with its own set of credentials.
+
+.Example `config.json` file
+[source,json]
+----
+{
+   "auths":{
+      "cloud.openshift.com":{
+         "auth":"b3Blb=",
+         "email":"you@example.com"
+      },
+      "quay.io":{
+         "auth":"b3Blb=",
+         "email":"you@example.com"
+      },
+      "quay.io/repository-main":{
+         "auth":"b3Blb=",
+         "email":"you@example.com"
+      }
+   }
+}
+----
+
+.Example pull secret
+[source,yaml]
+----
+apiVersion: v1
+data:
+  .dockerconfigjson: ewogICAiYXV0aHMiOnsKICAgICAgIm0iOnsKICAgICAgIsKICAgICAgICAgImF1dGgiOiJiM0JsYj0iLAogICAgICAgICAiZW1haWwiOiJ5b3VAZXhhbXBsZS5jb20iCiAgICAgIH0KICAgfQp9Cg==
+kind: Secret
+metadata:
+  creationTimestamp: "2021-09-09T19:10:11Z"
+  name: pull-secret
+  namespace: default
+  resourceVersion: "37676"
+  uid: e2851531-01bc-48ba-878c-de96cfe31020
+type: Opaque
+----
+
+.Procedure
+
+* If you already have a `.dockercfg` file for the secured registry, you can create a secret from that file by running:
++
+[source,terminal]
+----
+$ oc create secret generic <pull_secret_name> \
+    --from-file=.dockercfg=<path/to/.dockercfg> \
+    --type=kubernetes.io/dockercfg
+----
+
+* Or if you have a `$HOME/.docker/config.json` file:
++
+[source,terminal]
+----
+$ oc create secret generic <pull_secret_name> \
+    --from-file=.dockerconfigjson=<path/to/.docker/config.json> \
+    --type=kubernetes.io/dockerconfigjson
+----
+
+* If you do not already have a Docker credentials file for the secured registry, you can create a secret by running:
++
+[source,terminal]
+----
+$ oc create secret docker-registry <pull_secret_name> \
+    --docker-server=<registry_server> \
+    --docker-username=<user_name> \
+    --docker-password=<password> \
+    --docker-email=<email>
+----
+
+* To use a secret for pulling images for pods, you must add the secret to your service account. The name of the service account in this example should match the name of the service account the pod uses. The default service account is `default`:
++
+[source,terminal]
+----
+$ oc secrets link default <pull_secret_name> --for=pull
+----

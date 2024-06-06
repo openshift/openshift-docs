@@ -1,0 +1,170 @@
+// Module included in the following assemblies:
+//
+// * storage/container_storage_interface/osd-persistent-storage-aws-efs-csi.adoc
+
+// The OCP version of this procedure is persistent-storage-csi-efs-sts.
+
+:_mod-docs-content-type: PROCEDURE
+[id="efs-sts_{context}"]
+= Configuring AWS EFS CSI Driver Operator with Secure Token Service
+
+This procedure explains how to configure the link:https://github.com/openshift/aws-efs-csi-driver-operator[AWS EFS CSI Driver Operator] (a Red Hat operator) with {product-title} on AWS Secure Token Service (STS).
+
+Perform this procedure before you have installed the AWS EFS CSI Operator, but not yet installed the link:https://github.com/openshift/aws-efs-csi-driver[AWS EFS CSI driver] as part of the _Installing the AWS EFS CSI Driver Operator_ procedure.
+
+[IMPORTANT]
+====
+If you perform this procedure after installing the driver and creating volumes, your volumes will fail to mount into pods.
+====
+
+.Prerequisites
+
+* You have access to the cluster as a user with the cluster-admin role.
+* AWS account credentials
+* You have installed the AWS EFS CSI Operator.
+
+
+.Procedure
+
+. Prepare the AWS account:
+.. Create an IAM policy JSON file with the following content:
++
+[source,json]
+----
+{
+  "Version": "2012-10-17",
+  "Statement": [
+    {
+      "Effect": "Allow",
+      "Action": [
+        "elasticfilesystem:DescribeAccessPoints",
+        "elasticfilesystem:DescribeFileSystems",
+        "elasticfilesystem:DescribeMountTargets",
+        "ec2:DescribeAvailabilityZones",
+        "elasticfilesystem:TagResource"
+      ],
+      "Resource": "*"
+    },
+    {
+      "Effect": "Allow",
+      "Action": [
+        "elasticfilesystem:CreateAccessPoint"
+      ],
+      "Resource": "*",
+      "Condition": {
+        "StringLike": {
+          "aws:RequestTag/efs.csi.aws.com/cluster": "true"
+        }
+      }
+    },
+    {
+      "Effect": "Allow",
+      "Action": "elasticfilesystem:DeleteAccessPoint",
+      "Resource": "*",
+      "Condition": {
+        "StringEquals": {
+          "aws:ResourceTag/efs.csi.aws.com/cluster": "true"
+        }
+      }
+    }
+  ]
+}
+----
+
+.. Create an IAM trust JSON file with the following content:
++
+--
+[source,json]
+----
+{
+  "Version": "2012-10-17",
+  "Statement": [
+    {
+      "Effect": "Allow",
+      "Principal": {
+        "Federated": "arn:aws:iam::<your_aws_account_ID>:oidc-provider/<openshift_oidc_provider>"  <1>
+      },
+      "Action": "sts:AssumeRoleWithWebIdentity",
+      "Condition": {
+        "StringEquals": {
+          "<openshift_oidc_provider>:sub": [  <2>
+            "system:serviceaccount:openshift-cluster-csi-drivers:aws-efs-csi-driver-operator",
+            "system:serviceaccount:openshift-cluster-csi-drivers:aws-efs-csi-driver-controller-sa"
+          ]
+        }
+      }
+    }
+  ]
+}
+----
+<1> Specify your AWS account ID and the OpenShift OIDC provider endpoint. Obtain the endpoint by running the following command:
++
+[source,terminal]
+----
+$ rosa describe cluster \
+  -c $(oc get clusterversion -o jsonpath='{.items[].spec.clusterID}{"\n"}') \
+  -o yaml | awk '/oidc_endpoint_url/ {print $2}' | cut -d '/' -f 3,4
+----
++
+<2> Specify the OpenShift OIDC endpoint again.
+--
+
+.. Create the IAM role:
++
+[source,terminal]
+----
+ROLE_ARN=$(aws iam create-role \
+  --role-name "<your_cluster_name>-aws-efs-csi-operator" \
+  --assume-role-policy-document file://<your_trust_file_name>.json \
+  --query "Role.Arn" --output text); echo $ROLE_ARN
+----
++
+Save the output. You will use it in the next steps.
+
+.. Create the IAM policy:
++
+[source,terminal]
+----
+POLICY_ARN=$(aws iam create-policy \
+  --policy-name "<your_rosa_cluster_name>-rosa-efs-csi" \
+  --policy-document file://<your_policy_file_name>.json \
+  --query 'Policy.Arn' --output text); echo $POLICY_ARN
+----
++
+
+.. Attach the IAM policy to the IAM role:
++
+[source,terminal]
+----
+$ aws iam attach-role-policy \
+  --role-name "<your_rosa_cluster_name>-aws-efs-csi-operator" \
+  --policy-arn $POLICY_ARN
+----
++
+
+. Create a `Secret` YAML file for the driver operator:
++
+[source,yaml]
+----
+apiVersion: v1
+kind: Secret
+metadata:
+ name: aws-efs-cloud-credentials
+ namespace: openshift-cluster-csi-drivers
+stringData:
+  credentials: |-
+    [default]
+    sts_regional_endpoints = regional
+    role_arn = <role_ARN> <1>
+    web_identity_token_file = /var/run/secrets/openshift/serviceaccount/token
+----
+<1> Replace `role_ARN` with the output you saved while creating the role.
+
+. Create the secret:
++
+[source,terminal]
+----
+$ oc apply -f aws-efs-cloud-credentials.yaml
+----
++
+You are now ready to install the AWS EFS CSI driver.

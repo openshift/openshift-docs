@@ -1,0 +1,56 @@
+// Module included in the following assemblies:
+//
+// * nodes/nodes-pods-priority.adoc
+
+:_mod-docs-content-type: CONCEPT
+[id="nodes-pods-priority-about_{context}"]
+= Understanding pod priority
+
+When you use the Pod Priority and Preemption feature, the scheduler orders pending pods by their priority, and a pending pod is placed ahead of other pending pods with lower priority in the scheduling queue. As a result, the higher priority pod might be scheduled sooner than pods with lower priority if its scheduling requirements are met. If a pod cannot be scheduled, scheduler continues to schedule other lower priority pods.
+
+[id="admin-guide-priority-preemption-priority-class_{context}"]
+== Pod priority classes
+
+You can assign pods a priority class, which is a non-namespaced object that defines a mapping from a name to the integer value of the priority. The higher the value, the higher the priority.
+
+A priority class object can take any 32-bit integer value smaller than or equal to 1000000000 (one billion). Reserve numbers larger than or equal to one billion for critical pods that must not be preempted or evicted. By default, {product-title} has two reserved priority classes for critical system pods to have guaranteed scheduling.
+
+[source,terminal]
+----
+$ oc get priorityclasses
+----
+
+.Example output
+[source,terminal]
+----
+NAME                      VALUE        GLOBAL-DEFAULT   AGE
+system-node-critical      2000001000   false            72m
+system-cluster-critical   2000000000   false            72m
+openshift-user-critical   1000000000   false            3d13h
+cluster-logging           1000000      false            29s
+----
+
+* *system-node-critical* - This priority class has a value of 2000001000 and is used for all pods that should never be evicted from a node. Examples of pods that have this priority class are `sdn-ovs`, `sdn`, and so forth. A number of critical components include the `system-node-critical` priority class by default, for example:
++
+** master-api
+** master-controller
+** master-etcd
+** sdn
+** sdn-ovs
+** sync
+
+* *system-cluster-critical* - This priority class has a value of 2000000000 (two billion) and is used with pods that are important for the cluster. Pods with this priority class can be evicted from a node in certain circumstances. For example, pods configured with the `system-node-critical` priority class can take priority. However, this priority class does ensure guaranteed scheduling. Examples of pods that can have this priority class are fluentd, add-on components like descheduler, and so forth.
+A number of critical components include the `system-cluster-critical` priority class by default, for example:
++
+** fluentd
+** metrics-server
+** descheduler
+
+* *openshift-user-critical* - You can use the `priorityClassName` field with important pods that cannot bind their resource consumption and do not have predictable resource consumption behavior. Prometheus pods under the `openshift-monitoring` and `openshift-user-workload-monitoring` namespaces use the `openshift-user-critical` `priorityClassName`. Monitoring workloads use `system-critical` as their first `priorityClass`, but this causes problems when monitoring uses excessive memory and the nodes cannot evict them. As a result, monitoring drops priority to give the scheduler flexibility, moving heavy workloads around to keep critical nodes operating.
+
+* *cluster-logging* - This priority is used by Fluentd to make sure Fluentd pods are scheduled to nodes over other apps.
+
+[id="admin-guide-priority-preemption-names_{context}"]
+== Pod priority names
+
+After you have one or more priority classes, you can create pods that specify a priority class name in a `Pod` spec. The priority admission controller uses the priority class name field to populate the integer value of the priority. If the named priority class is not found, the pod is rejected.

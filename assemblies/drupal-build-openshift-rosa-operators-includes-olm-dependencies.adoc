@@ -1,0 +1,40 @@
+// Module included in the following assemblies:
+//
+// * operators/understanding/olm-packaging-format.adoc
+// * operators/understanding/olm/olm-understanding-dependency-resolution.adoc
+
+:_mod-docs-content-type: CONCEPT
+[id="olm-dependencies_{context}"]
+ifeval::["{context}" == "olm-packaging-format"]
+= Dependencies
+endif::[]
+ifeval::["{context}" != "olm-packaging-format"]
+= Operator dependencies
+endif::[]
+
+The dependencies of an Operator are listed in a `dependencies.yaml` file in the `metadata/` folder of a bundle. This file is optional and currently only used to specify explicit Operator-version dependencies.
+
+The dependency list contains a `type` field for each item to specify what kind of dependency this is. The following types of Operator dependencies are supported:
+
+`olm.package`:: This type indicates a dependency for a specific Operator version. The dependency information must include the package name and the version of the package in semver format. For example, you can specify an exact version such as `0.5.2` or a range of versions such as `>0.5.1`.
+
+`olm.gvk`:: With this type, the author can specify a dependency with group/version/kind (GVK) information, similar to existing CRD and API-based usage in a CSV. This is a path to enable Operator authors to consolidate all dependencies, API or explicit versions, to be in the same place.
+
+`olm.constraint`:: This type declares generic constraints on arbitrary Operator properties.
+
+In the following example, dependencies are specified for a Prometheus Operator and etcd CRDs:
+
+.Example `dependencies.yaml` file
+[source,yaml]
+----
+dependencies:
+  - type: olm.package
+    value:
+      packageName: prometheus
+      version: ">0.27.0"
+  - type: olm.gvk
+    value:
+      group: etcd.database.coreos.com
+      kind: EtcdCluster
+      version: v1beta2
+----

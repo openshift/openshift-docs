@@ -1,0 +1,151 @@
+// Module included in the following assemblies:
+//
+// * operators/admin/olm-restricted-networks.adoc
+// * operators/admin/olm-managing-custom-catalogs.adoc
+
+ifdef::openshift-origin[]
+:catalog-name: catalog
+:index-image-pullspec: quay.io/operatorhubio/catalog:latest
+:index-image: catalog:latest
+:registry-image: quay.io/openshift/origin-operator-registry:4.9.0
+:package1: couchdb-operator
+:package2: eclipse-che
+:package3: etcd
+endif::[]
+ifndef::openshift-origin[]
+:catalog-name: redhat-operators
+:index-image-pullspec: registry.redhat.io/redhat/redhat-operator-index:v{product-version}
+:index-image: redhat-operator-index:v{product-version}
+:registry-image: registry.redhat.io/openshift4/ose-operator-registry:v4.9
+:package1: advanced-cluster-management
+:package2: jaeger-product
+:package3: quay-operator
+endif::[]
+
+:_mod-docs-content-type: PROCEDURE
+[id="olm-pruning-index-image_{context}"]
+= Filtering a SQLite-based index image
+
+An index image, based on the Operator bundle format, is a containerized snapshot of an Operator catalog. You can filter, or _prune_, an index of all but a specified list of packages, which creates a copy of the source index containing only the Operators that you want.
+
+ifeval::["{context}" != "olm-managing-custom-catalogs"]
+When configuring Operator Lifecycle Manager (OLM) to use mirrored content on restricted network {product-title} clusters, use this pruning method if you want to only mirror a subset of Operators from the default catalogs.
+
+For the steps in this procedure, the target registry is an existing mirror registry that is accessible by your workstation with unrestricted network access. This example also shows pruning the index image for the default `{catalog-name}` catalog, but the process is the same for any index image.
+endif::[]
+
+.Prerequisites
+
+ifeval::["{context}" != "olm-managing-custom-catalogs"]
+* A workstation with unrestricted network access.
+endif::[]
+* You have `podman` version 1.9.3+.
+* You have link:https://github.com/fullstorydev/grpcurl[`grpcurl`] (third-party command-line tool).
+* You have installed the `opm` CLI.
+* You have access to a registry that supports
+link:https://docs.docker.com/registry/spec/manifest-v2-2/[Docker v2-2].
+
+.Procedure
+
+ifndef::openshift-origin[]
+ifeval::["{context}" != "olm-managing-custom-catalogs"]
+. Authenticate with `registry.redhat.io`:
++
+[source,terminal]
+----
+$ podman login registry.redhat.io
+----
+endif::[]
+endif::[]
+
+. Authenticate with your target registry:
++
+[source,terminal]
+----
+$ podman login <target_registry>
+----
+
+. Determine the list of packages you want to include in your pruned index.
+
+.. Run the source index image that you want to prune in a container. For example:
++
+[source,terminal,subs="attributes+"]
+----
+$ podman run -p50051:50051 \
+    -it {index-image-pullspec}
+----
++
+.Example output
+[source,terminal,subs="attributes+"]
+----
+Trying to pull {index-image-pullspec}...
+Getting image source signatures
+Copying blob ae8a0c23f5b1 done
+...
+INFO[0000] serving registry                              database=/database/index.db port=50051
+----
+
+.. In a separate terminal session, use the `grpcurl` command to get a list of the packages provided by the index:
++
+[source,terminal]
+----
+$ grpcurl -plaintext localhost:50051 api.Registry/ListPackages > packages.out
+----
+
+.. Inspect the `packages.out` file and identify which package names from this list you want to keep in your pruned index. For example:
++
+.Example snippets of packages list
+[source,text,subs="attributes+"]
+----
+...
+{
+  "name": "{package1}"
+}
+...
+{
+  "name": "{package2}"
+}
+...
+{
+{
+  "name": "{package3}"
+}
+...
+----
+
+.. In the terminal session where you executed the `podman run` command, press kbd:[Ctrl] and kbd:[C] to stop the container process.
+
+. Run the following command to prune the source index of all but the specified packages:
++
+[source,text,subs="attributes+"]
+----
+$ opm index prune \
+    -f {index-image-pullspec} \// <1>
+    -p {package1},{package2},{package3} \// <2>
+    [-i {registry-image}] \// <3>
+    -t <target_registry>:<port>/<namespace>/{index-image} <4>
+----
+<1> Index to prune.
+<2> Comma-separated list of packages to keep.
+<3> Required only for {ibm-power-name} and {ibm-z-name} images: Operator Registry base image with the tag that matches the target {product-title} cluster major and minor version.
+<4> Custom tag for new index image being built.
+
+. Run the following command to push the new index image to your target registry:
++
+[source,text,subs="attributes+"]
+----
+$ podman push <target_registry>:<port>/<namespace>/{index-image}
+----
++
+where `<namespace>` is any existing namespace on the registry.
+ifeval::["{context}" != "olm-managing-custom-catalogs"]
+For example, you might create an `olm-mirror` namespace to push all mirrored content to.
+endif::[]
+
+:!catalog-name:
+:!index-image-pullspec:
+:!index-image:
+:!registry-image:
+:!package1:
+:!package2:
+:!package3:

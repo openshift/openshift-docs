@@ -1,0 +1,22 @@
+:_mod-docs-content-type: ASSEMBLY
+[id=creating-instances-of-services-managed-by-operators]
+= Creating instances of services managed by Operators
+include::_attributes/common-attributes.adoc[]
+:context: creating-instances-of-services-managed-by-operators
+
+toc::[]
+
+Operators are a method of packaging, deploying, and managing Kubernetes services. With `{odo-title}`, you can create instances of services from the custom resource definitions (CRDs) provided by the Operators. You can then use these instances in your projects and link them to your components.
+
+To create services from an Operator, you must ensure that the Operator has valid values defined in its `metadata` to start the requested service. `{odo-title}` uses the `metadata.annotations.alm-examples` YAML file of an Operator to start
+the service. If this YAML has placeholder values or sample values, a service cannot start. You can modify the YAML file and start the service with the modified values. To learn how to modify YAML files and start services from it, see xref:../../cli_reference/developer_cli_odo/creating-instances-of-services-managed-by-operators.adoc#creating-services-from-yaml-files_creating-instances-of-services-managed-by-operators[Creating services from YAML files].
+
+== Prerequisites
+* Install the `oc` CLI and log in to the cluster.
+** Note that the configuration of the cluster determines the services available to you. To access the Operator services, a cluster administrator must install the respective Operator on the cluster first. To learn more, see xref:../../operators/admin/olm-adding-operators-to-cluster.adoc#olm-installing-operators-from-operatorhub_olm-adding-operators-to-a-cluster[Adding Operators to the cluster].
+* Install the `{odo-title}` CLI.
+
+include::modules/developer-cli-odo-creating-a-project.adoc[leveloffset=+1]
+include::modules/developer-cli-odo-listing-available-services-from-the-operators-installed-on-the-cluster.adoc[leveloffset=+1]
+include::modules/developer-cli-odo-creating-a-service-from-an-operator.adoc[leveloffset=+1]
+include::modules/developer-cli-odo-creating-services-from-yaml-files.adoc[leveloffset=+1]

@@ -1,0 +1,28 @@
+// Module included in the following assemblies:
+//
+// * virt/virtual_machines/advanced_vm_management/virt-schedule-vms.adoc
+
+:_mod-docs-content-type: PROCEDURE
+[id="virt-schedule-supported-cpu-model-vms_{context}"]
+= Scheduling virtual machines with the supported CPU model
+
+You can configure a CPU model for a virtual machine (VM) to schedule it on a node where its CPU model is supported.
+
+.Procedure
+
+* Edit the `domain` spec of your virtual machine configuration file. The following example shows a specific CPU model defined for a VM:
++
+[source,yaml]
+----
+apiVersion: kubevirt.io/v1
+kind: VirtualMachine
+metadata:
+  name: myvm
+spec:
+  template:
+    spec:
+      domain:
+        cpu:
+          model: Conroe <1>
+----
+<1> CPU model for the VM.

@@ -1,0 +1,21 @@
+// Module included in the following assemblies:
+//
+// * rosa_cluster_admin/cloud_infrastructure_access/dedicated-aws-peering.adoc
+
+[id="dedicated-aws-vpc-peering-terms"]
+= VPC peering terms
+
+When setting up a VPC peering connection between two VPCs on two separate AWS
+accounts, the following terms are used:
+
+[horizontal]
+{product-title} AWS Account:: The AWS account that contains the {product-title} cluster.
+{product-title} Cluster VPC:: The VPC that contains the {product-title} cluster.
+Customer AWS Account:: Your non-{product-title} AWS Account that you would like to peer with.
+Customer VPC:: The VPC in your AWS Account that you would like to peer with.
+Customer VPC Region:: The region where the customer's VPC resides.
+
+[NOTE]
+====
+As of July 2018, AWS supports inter-region VPC peering between all commercial regions link:https://aws.amazon.com/vpc/faqs/#Peering_Connections[excluding China].
+====

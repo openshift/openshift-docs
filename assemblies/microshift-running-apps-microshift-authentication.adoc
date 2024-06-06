@@ -1,0 +1,15 @@
+:_mod-docs-content-type: ASSEMBLY
+[id="authentication-with-microshift"]
+= Pod security authentication and authorization
+include::_attributes/attributes-microshift.adoc[]
+:context: authentication-microshift
+
+== Understanding and managing pod security admission
+
+Pod security admission is an implementation of the link:https://kubernetes.io/docs/concepts/security/pod-security-standards/[Kubernetes pod security standards]. Use pod security admission to restrict the behavior of pods.
+
+include::modules/microshift-security-context-constraints.adoc[leveloffset=+1]
+
+include::modules/microshift-viewing-security-context.adoc[leveloffset=+2]
+
+include::modules/microshift-security-context-constraints-opting.adoc[leveloffset=+1]

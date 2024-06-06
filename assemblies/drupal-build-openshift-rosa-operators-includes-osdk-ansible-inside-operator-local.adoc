@@ -1,0 +1,124 @@
+// Module included in the following assemblies:
+//
+// * operators/operator_sdk/ansible/osdk-ansible-inside-operator.adoc
+
+:_mod-docs-content-type: PROCEDURE
+[id="osdk-ansible-inside-operator-local_{context}"]
+= Testing an Ansible-based Operator locally
+
+You can test the logic inside of an Ansible-based Operator running locally by using the `make run` command from the top-level directory of your Operator project. The `make run` Makefile target runs the `ansible-operator` binary locally, which reads from the `watches.yaml` file and uses your `~/.kube/config` file to communicate with a Kubernetes cluster just as the `k8s` modules do.
+
+[NOTE]
+====
+You can customize the roles path by setting the environment variable `ANSIBLE_ROLES_PATH` or by using the `ansible-roles-path` flag. If the role is not found in the `ANSIBLE_ROLES_PATH` value, the Operator looks for it in `{{current directory}}/roles`.
+====
+
+.Prerequisites
+
+- link:https://ansible-runner.readthedocs.io/en/latest/install.html[Ansible Runner] v2.3.3+
+- link:https://github.com/ansible/ansible-runner-http[Ansible Runner HTTP Event Emitter plugin] v1.0.0+
+- Performed the previous steps for testing the Kubernetes Collection locally
+
+.Procedure
+
+. Install your custom resource definition (CRD) and proper role-based access control (RBAC) definitions for your custom resource (CR):
++
+[source,terminal]
+----
+$ make install
+----
++
+.Example output
+[source,terminal]
+----
+/usr/bin/kustomize build config/crd | kubectl apply -f -
+customresourcedefinition.apiextensions.k8s.io/memcacheds.cache.example.com created
+----
+
+. Run the `make run` command:
++
+[source,terminal]
+----
+$ make run
+----
++
+.Example output
+[source,terminal]
+----
+/home/user/memcached-operator/bin/ansible-operator run
+{"level":"info","ts":1612739145.2871568,"logger":"cmd","msg":"Version","Go Version":"go1.15.5","GOOS":"linux","GOARCH":"amd64","ansible-operator":"v1.10.1","commit":"1abf57985b43bf6a59dcd18147b3c574fa57d3f6"}
+...
+{"level":"info","ts":1612739148.347306,"logger":"controller-runtime.metrics","msg":"metrics server is starting to listen","addr":":8080"}
+{"level":"info","ts":1612739148.3488882,"logger":"watches","msg":"Environment variable not set; using default value","envVar":"ANSIBLE_VERBOSITY_MEMCACHED_CACHE_EXAMPLE_COM","default":2}
+{"level":"info","ts":1612739148.3490262,"logger":"cmd","msg":"Environment variable not set; using default value","Namespace":"","envVar":"ANSIBLE_DEBUG_LOGS","ANSIBLE_DEBUG_LOGS":false}
+{"level":"info","ts":1612739148.3490646,"logger":"ansible-controller","msg":"Watching resource","Options.Group":"cache.example.com","Options.Version":"v1","Options.Kind":"Memcached"}
+{"level":"info","ts":1612739148.350217,"logger":"proxy","msg":"Starting to serve","Address":"127.0.0.1:8888"}
+{"level":"info","ts":1612739148.3506632,"logger":"controller-runtime.manager","msg":"starting metrics server","path":"/metrics"}
+{"level":"info","ts":1612739148.350784,"logger":"controller-runtime.manager.controller.memcached-controller","msg":"Starting EventSource","source":"kind source: cache.example.com/v1, Kind=Memcached"}
+{"level":"info","ts":1612739148.5511978,"logger":"controller-runtime.manager.controller.memcached-controller","msg":"Starting Controller"}
+{"level":"info","ts":1612739148.5512562,"logger":"controller-runtime.manager.controller.memcached-controller","msg":"Starting workers","worker count":8}
+----
++
+With the Operator now watching your CR for events, the creation of a CR will trigger your Ansible role to run.
++
+[NOTE]
+====
+Consider an example `config/samples/<gvk>.yaml` CR manifest:
+
+[source,yaml]
+----
+apiVersion: <group>.example.com/v1alpha1
+kind: <kind>
+metadata:
+  name: "<kind>-sample"
+----
+
+Because the `spec` field is not set, Ansible is invoked with no extra variables. Passing extra variables from a CR to Ansible is covered in another section. It is important to set reasonable defaults for the Operator.
+====
+
+. Create an instance of your CR with the default variable `state` set to `present`:
++
+[source,terminal]
+----
+$ oc apply -f config/samples/<gvk>.yaml
+----
+
+. Check that the `example-config` config map was created:
++
+[source,terminal]
+----
+$ oc get configmaps
+----
++
+.Example output
+[source,terminal]
+----
+NAME                    STATUS    AGE
+example-config          Active    3s
+----
+
+. Modify your `config/samples/<gvk>.yaml` file to set the `state` field to `absent`. For example:
++
+[source,yaml]
+----
+apiVersion: cache.example.com/v1
+kind: Memcached
+metadata:
+  name: memcached-sample
+spec:
+  state: absent
+----
+
+. Apply the changes:
++
+[source,terminal]
+----
+$ oc apply -f config/samples/<gvk>.yaml
+----
+
+. Confirm that the config map is deleted:
++
+[source,terminal]
+----
+$ oc get configmap
+----

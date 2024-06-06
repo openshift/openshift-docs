@@ -1,0 +1,25 @@
+:_mod-docs-content-type: ASSEMBLY
+[id="microshift-greenboot-workload-scripts"]
+= Greenboot workload health check scripts
+include::_attributes/attributes-microshift.adoc[]
+:context: microshift-greenboot-workload-scripts
+
+toc::[]
+
+Greenboot health check scripts are helpful on edge devices where direct serviceability is either limited or non-existent. You can create health check scripts to assess the health of your workloads and applications. These additional health check scripts are useful components of software problem checks and automatic system rollbacks.
+
+A {microshift-short} health check script is included in the `microshift-greenboot` RPM. You can also create your own health check scripts based on the workloads you are running. For example, you can write one that verifies that a service has started.
+
+include::modules/microshift-greenboot-how-workload-health-check-scripts-work.adoc[leveloffset=+1]
+
+include::modules/microshift-greenboot-included-health-checks.adoc[leveloffset=+1]
+
+include::modules/microshift-greenboot-create-health-check-script.adoc[leveloffset=+1]
+
+include::modules/microshift-greenboot-testing-workload-script.adoc[leveloffset=+1]
+
+[id="additional-resources_microshift-greenboot-workload-scripts_{context}"]
+[role="_additional-resources"]
+== Additional resources
+* xref:../microshift_install/microshift-greenboot.adoc#microshift-greenboot[The Greenboot health check]
+* xref:../microshift_running_apps/microshift-applications.adoc#microshift-applying-manifests-example_applications-microshift[Auto applying manifests]

@@ -1,0 +1,62 @@
+:_mod-docs-content-type: ASSEMBLY
+[id="osdk-about"]
+= About the Operator SDK
+include::_attributes/common-attributes.adoc[]
+:context: osdk-about
+
+toc::[]
+
+The link:https://operatorframework.io/[Operator Framework] is an open source toolkit to manage Kubernetes native applications, called _Operators_, in an effective, automated, and scalable way. Operators take advantage of Kubernetes extensibility to deliver the automation advantages of cloud services, like provisioning, scaling, and backup and restore, while being able to run anywhere that Kubernetes can run.
+
+Operators make it easy to manage complex, stateful applications on top of Kubernetes. However, writing an Operator today can be difficult because of challenges such as using low-level APIs, writing boilerplate, and a lack of modularity, which leads to duplication.
+
+The Operator SDK, a component of the Operator Framework, provides a command-line interface (CLI) tool that Operator developers can use to build, test, and deploy an Operator.
+
+**Why use the Operator SDK?**
+
+The Operator SDK simplifies this process of building Kubernetes-native applications, which can require deep, application-specific operational knowledge. The Operator SDK not only lowers that barrier, but it also helps reduce the amount of boilerplate code required for many common management capabilities, such as metering or monitoring.
+
+The Operator SDK is a framework that uses the link:https://github.com/kubernetes-sigs/controller-runtime[controller-runtime] library to make writing Operators easier by providing the following features:
+
+- High-level APIs and abstractions to write the operational logic more intuitively
+- Tools for scaffolding and code generation to quickly bootstrap a new project
+- Integration with Operator Lifecycle Manager (OLM) to streamline packaging, installing, and running Operators on a cluster
+- Extensions to cover common Operator use cases
+- Metrics set up automatically in any generated Go-based Operator for use on clusters where the Prometheus Operator is deployed
+
+ifndef::openshift-dedicated,openshift-rosa[]
+Operator authors with cluster administrator access to a Kubernetes-based cluster (such as {product-title})
+endif::openshift-dedicated,openshift-rosa[]
+ifdef::openshift-dedicated,openshift-rosa[]
+Operator authors with dedicated-admin access to {product-title}
+endif::openshift-dedicated,openshift-rosa[]
+can use the Operator SDK CLI to develop their own Operators based on Go, Ansible, Java, or Helm. link:https://kubebuilder.io/[Kubebuilder] is embedded into the Operator SDK as the scaffolding solution for Go-based Operators, which means existing Kubebuilder projects can be used as is with the Operator SDK and continue to work.
+
+[NOTE]
+====
+{product-title} {product-version} supports Operator SDK {osdk_ver}.
+====
+
+[id="osdk-about-what-are-operators"]
+== What are Operators?
+
+For an overview about basic Operator concepts and terminology, see xref:../../operators/understanding/olm-what-operators-are.adoc#olm-what-operators-are[Understanding Operators].
+
+include::modules/osdk-workflow.adoc[leveloffset=+1]
+
+[id="osdk-about-addtl-resources"]
+[role="_additional-resources"]
+== Additional resources
+
+- link:https://redhat-connect.gitbook.io/certified-operator-guide/[Certified Operator Build Guide]
+
+ifdef::openshift-origin[]
+[id="osdk-about-getting-involved"]
+== Getting involved
+
+This guide provides an effective demonstration of the value of the Operator Framework for building and managing Operators, but it is limited in scope. The Operator Framework and its components are open source, so visit each project individually and learn what else you can do:
+
+link:https://github.com/operator-framework[*github.com/operator-framework*]
+
+If you want to discuss your experience, have questions, or want to get involved, join the link:https://groups.google.com/forum/#!forum/operator-framework[Operator Framework mailing list].
+endif::[]

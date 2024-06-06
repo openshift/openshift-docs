@@ -1,0 +1,91 @@
+// Module included in the following assemblies:
+//
+// * rosa_getting_started/rosa-getting-started.adoc
+// * rosa_getting_started/rosa-quickstart-guide-ui.adoc
+
+:_mod-docs-content-type: PROCEDURE
+[id="rosa-getting-started-grant-admin-privileges_{context}"]
+= Granting administrator privileges to a user
+
+ifeval::["{context}" == "rosa-getting-started"]
+:getting-started:
+endif::[]
+ifeval::["{context}" == "rosa-quickstart"]
+:quickstart:
+endif::[]
+
+After you have added a user to your configured identity provider, you can grant the user `cluster-admin` or `dedicated-admin` privileges for your {product-title} (ROSA) cluster.
+
+ifdef::getting-started[]
+.Prerequisites
+
+* You have an AWS account.
+* You installed and configured the latest {product-title} (ROSA) CLI, `rosa`, on your workstation.
+* You logged in to your Red Hat account using the ROSA CLI (`rosa`).
+* You created a ROSA cluster.
+* You have configured a GitHub identity provider for your cluster and added identity provider users.
+endif::[]
+
+.Procedure
+
+* To configure `cluster-admin` privileges for an identity provider user:
+.. Grant the user `cluster-admin` privileges:
++
+[source,terminal]
+----
+$ rosa grant user cluster-admin --user=<idp_user_name> --cluster=<cluster_name> <1>
+----
+<1> Replace `<idp_user_name>` and `<cluster_name>` with the name of the identity provider user and your cluster name.
++
+.Example output
+[source,terminal]
+----
+I: Granted role 'cluster-admins' to user '<idp_user_name>' on cluster '<cluster_name>'
+----
+.. Verify if the user is listed as a member of the `cluster-admins` group:
++
+[source,terminal]
+----
+$ rosa list users --cluster=<cluster_name>
+----
++
+.Example output
+[source,terminal]
+----
+ID                 GROUPS
+<idp_user_name>    cluster-admins
+----
+
+* To configure `dedicated-admin` privileges for an identity provider user:
+.. Grant the user `dedicated-admin` privileges:
++
+[source,terminal]
+----
+$ rosa grant user dedicated-admin --user=<idp_user_name> --cluster=<cluster_name>
+----
++
+.Example output
+[source,terminal]
+----
+I: Granted role 'dedicated-admins' to user '<idp_user_name>' on cluster '<cluster_name>'
+----
+.. Verify if the user is listed as a member of the `dedicated-admins` group:
++
+[source,terminal]
+----
+$ rosa list users --cluster=<cluster_name>
+----
++
+.Example output
+[source,terminal]
+----
+ID                 GROUPS
+<idp_user_name>    dedicated-admins
+----
+
+ifeval::["{context}" == "rosa-getting-started"]
+:getting-started:
+endif::[]
+ifeval::["{context}" == "rosa-quickstart"]
+:quickstart:
+endif::[]

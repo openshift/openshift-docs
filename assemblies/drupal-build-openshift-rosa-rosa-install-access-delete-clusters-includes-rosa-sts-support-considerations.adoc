@@ -1,0 +1,16 @@
+// Module included in the following assemblies:
+//
+// * rosa_install_access_delete_clusters/rosa-sts-creating-a-cluster-with-customizations.adoc
+
+:_mod-docs-content-type: CONCEPT
+[id="rosa-sts-support-considerations_{context}"]
+= Support considerations for ROSA clusters with STS
+
+The supported way of creating a {product-title} (ROSA) cluster that uses the AWS Security Token Service (STS) is by using the steps described in this product documentation.
+
+[IMPORTANT]
+====
+You can use `manual` mode with the ROSA CLI (`rosa`) to generate the AWS Identity and Access Management (IAM) policy files and `aws` commands that are required to install the STS resources.
+
+The files and `aws` commands are generated for review purposes only and must not be modified in any way. Red Hat cannot provide support for ROSA clusters that have been deployed by using modified versions of the policy files or `aws` commands.
+====
