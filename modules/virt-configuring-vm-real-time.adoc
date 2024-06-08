@@ -1,0 +1,187 @@
+// Module included in the following assemblies:
+//
+// * virt/virtual_machines/advanced_vm_management/virt-configuring-cluster-realtime-workloads.adoc
+
+:_mod-docs-content-type: PROCEDURE
+[id="virt-configuring-vm-real-time_{context}"]
+= Configuring a virtual machine for real-time workloads
+
+You can configure a virtual machine (VM) to run real-time workloads.
+
+.Prerequisites
+* Your cluster is configured to run real-time workloads.
+* You have installed the `virtctl` tool.
+
+.Procedure
+. Create a `VirtualMachine` manifest to include information about CPU topology, CRI-O annotations, and huge pages:
++
+.Example `VirtualMachine` manifest
+[source,yaml]
+----
+apiVersion: kubevirt.io/v1
+kind: VirtualMachine
+metadata:
+  name: realtime-vm
+spec:
+  running: true
+  template:
+    metadata:
+      annotations:
+        cpu-load-balancing.crio.io: disable # <1>
+        cpu-quota.crio.io: disable # <2>
+        irq-load-balancing.crio.io: disable # <3>
+    spec:
+      domain:
+        cpu:
+          dedicatedCpuPlacement: true
+          isolateEmulatorThread: true
+          model: host-passthrough
+          numa:
+            guestMappingPassthrough: {}
+          realtime: {}
+          sockets: 1 # <4>
+          cores: 4 # <5>
+          threads: 1
+        devices:
+          autoattachGraphicsDevice: false
+          autoattachMemBalloon: false
+          autoattachSerialConsole: true
+        ioThreadsPolicy: auto
+        memory:
+          guest: 4Gi
+          hugepages:
+            pageSize: 1Gi # <6>
+        terminationGracePeriodSeconds: 0
+# ...
+----
+<1> This annotation specifies that load balancing is disabled for CPUs that are used by the container.
+<2> This annotation specifies that the CPU quota is disabled for CPUs that are used by the container.
+<3> This annotation specifies that interrupt request (IRQ) load balancing is disabled for CPUs that are used by the container.
+<4> The number of sockets inside the VM.
+<5> The number of cores inside the VM. This must be a value greater than or equal to `1`.
+<6> The size of the huge pages. The possible values for x86-64 architectures are `1Gi` and `2Mi`. In this example, the request is for 4 huge pages of size 1 Gi.
+. Apply the `VirtualMachine` manifest:
++
+[source,terminal]
+----
+$ oc apply -f <file_name>.yaml
+----
+. Configure the guest operating system. The following example shows the configuration steps for a {op-system-base} 9 operating system:
+.. Run the following command to connect to the VM console:
++
+[source,terminal]
+----
+$ virtctl console <vm_name>
+----
+.. If you are not already logged in as a root user, switch to the root user account to execute the remaining configuration steps.
+.. Disable the `irqbalance` service by using the following command:
++
+[source,terminal]
+----
+# systemctl disable irqbalance && systemctl stop irqbalance
+----
+.. Enable the real-time and network function virtualization (NFV) repositories:
++
+[source,terminal]
+----
+# subscription-manager repos --enable rhel-9-for-x86_64-rt-rpms --enable rhel-9-for-x86_64-nfv-rpms
+----
+.. Install the necessary packages by running the following command:
++
+[source,terminal]
+----
+# dnf install tuned cloud-init
+----
+.. To achieve low-latency tuning by using the `realtime-virtual-guest` profile in the TuneD application, run the following commands:
++
+[source,terminal]
+----
+# dnf install kernel-rt realtime-tests tuned-profiles-realtime
+----
++
+[source,terminal]
+----
+# dnf install tuned-profiles-nfv-guest
+----
+.. Edit the `/etc/tuned/realtime-virtual-guest-variables.conf` file:
++
+[source,conf]
+----
+#
+# Variable settings below override the definitions from the
+# /etc/tuned/realtime-variables.conf file.
+
+#
+# Core isolation
+#
+# The 'isolated_cores=' variable below controls which cores should be
+# isolated. By default we reserve 1 core per socket for housekeeping
+# and isolate the rest. But you can isolate any range as shown in the
+# examples below. Just remember to keep only one isolated_cores= line.
+#
+# Examples:
+# isolated_cores=2,4-7
+# isolated_cores=2-23
+#
+# Reserve 1 core per socket for housekeeping, isolate the rest.
+# Change this for a core list or range as shown above.
+isolated_cores=2-3 <1>
+
+#
+# Uncomment the 'isolate_managed_irq=Y' bellow if you want to move kernel
+# managed IRQs out of isolated cores. Note that this requires kernel
+# support. Please only specify this parameter if you are sure that the
+# kernel supports it.
+#
+isolate_managed_irq=Y <2>
+
+#
+# Set the desired combined queue count value using the parameter provided
+# below. Ideally this should be set to the number of housekeeping CPUs i.e.,
+# in the example given below it is assumed that the system has 4 housekeeping
+# (non-isolated) CPUs.
+#
+# netdev_queue_count=4
+----
+<1> The first two CPUs (0 and 1) are set aside for house keeping tasks and the rest are isolated for the real-time application.
+<2> Set the `isolate_managed_irq` parameter to `Y` to move kernel-managed interrupt requests out of isolated cores.
+.. Activate the TuneD profile:
++
+[source,terminal]
+----
+# tuned-adm profile realtime-virtual-guest
+----
+.. Set the real-time kernel as the default by using the GRUB boot loader command-line interface:
++
+[source,terminal]
+----
+# grubby --set-default=/boot/vmlinuz-<installed_rt_kernel_version>
+----
+.. Set the kernel arguments by using the GRUB boot loader command-line interface:
++
+[source,terminal]
+----
+# grubby --args="iommu=pt intel_iommu=on default_hugepagesz=1G idle=poll" --update-kernel=$(grubby --default-kernel)
+----
+. Restart the VM to apply the changes.
+
+.Verification
+* Use the `cyclictest` tool to verify that the real-time guest is configured properly:
++
+[source,terminal]
+----
+# cyclictest --priority 1 --policy fifo -h 50 -a 2-3 --mainaffinity 0,1 -t 2 -m -q -i 200 -D 12h
+----
+where:
+`-a`:: Specifies the CPU set on which the test runs. This is the same as the isolated CPUs that you configured in the `realtime-variables.conf` file.
+`-D`:: Specifies the test duration. Append `m`, `h`, or `d` to specify minutes, hours or days.
+
++
+.Example output
+[source,terminal]
+----
+# Min Latencies: 00004 00004
+# Avg Latencies: 00004 00004
+# Max Latencies: 00014 00013 <1>
+----
+<1> The `Max Latencies` value in the output must be less than 40 micro seconds.
