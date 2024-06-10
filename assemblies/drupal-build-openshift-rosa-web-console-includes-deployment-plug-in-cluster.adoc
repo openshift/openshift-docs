@@ -1,0 +1,95 @@
+// Module included in the following assemblies:
+//
+// * web_console/dynamic-plugin/deploy-plugin-cluster.adoc
+
+:_mod-docs-content-type: PROCEDURE
+[id="deploy-on-cluster_{context}"]
+= Deploy your plugin on a cluster
+
+After pushing an image with your changes to a registry, you can deploy the plugin to a cluster.
+
+.Procedure
+
+. To deploy your plugin to a cluster, install a Helm chart with the name of the plugin as the Helm release name into a new namespace or an existing namespace as specified by the `-n` command-line option. Provide the location of the image within the `plugin.image` parameter by using the following command:
+
++
+[source,terminal]
+----
+$ helm upgrade -i  my-plugin charts/openshift-console-plugin -n my-plugin-namespace --create-namespace --set plugin.image=my-plugin-image-location
+----
++
+Where:
++
+--
+`n <my-plugin-namespace>`:: Specifies an existing namespace to deploy your plugin into.
+`--create-namespace`:: Optional: If deploying to a new namespace, use this parameter.
+`--set plugin.image=my-plugin-image-location`:: Specifies the location of the image within the `plugin.image` parameter.
+--
+
+. Optional: You can specify any additional parameters by using the set of supported parameters in the `charts/openshift-console-plugin/values.yaml` file.
++
+[source,yaml]
+----
+plugin:
+  name: ""
+  description: ""
+  image: ""
+  imagePullPolicy: IfNotPresent
+  replicas: 2
+  port: 9443
+  securityContext:
+    enabled: true
+  podSecurityContext:
+    enabled: true
+    runAsNonRoot: true
+    seccompProfile:
+      type: RuntimeDefault
+  containerSecurityContext:
+    enabled: true
+    allowPrivilegeEscalation: false
+    capabilities:
+      drop:
+        - ALL
+  resources:
+    requests:
+      cpu: 10m
+      memory: 50Mi
+  basePath: /
+  certificateSecretName: ""
+  serviceAccount:
+    create: true
+    annotations: {}
+    name: ""
+  patcherServiceAccount:
+    create: true
+    annotations: {}
+    name: ""
+  jobs:
+    patchConsoles:
+      enabled: true
+      image: "registry.redhat.io/openshift4/ose-tools-rhel8@sha256:e44074f21e0cca6464e50cb6ff934747e0bd11162ea01d522433a1a1ae116103"
+      podSecurityContext:
+        enabled: true
+        runAsNonRoot: true
+        seccompProfile:
+          type: RuntimeDefault
+      containerSecurityContext:
+        enabled: true
+        allowPrivilegeEscalation: false
+        capabilities:
+          drop:
+            - ALL
+      resources:
+        requests:
+          cpu: 10m
+          memory: 50Mi
+----
+
+.Verification
+* View the list of enabled plugins by navigating from *Administration* -> *Cluster Settings* -> *Configuration* -> *Console* `operator.openshift.io` -> *Console plugins* or by visiting the *Overview* page.
+
+
+[NOTE]
+====
+It can take a few minutes for the new plugin configuration to appear. If you do not see your plugin, you might need to refresh your browser if the plugin was recently enabled. If you receive any errors at runtime, check the JS console in browser developer tools to look for any errors in your plugin code.
+====

@@ -1,0 +1,91 @@
+// Module included in the following assemblies:
+//
+// * rosa_getting_started/rosa-getting-started.adoc
+// * rosa_getting_started/rosa-quickstart-guide-ui.adoc
+
+:_mod-docs-content-type: PROCEDURE
+[id="rosa-getting-started-revoke-admin-privileges_{context}"]
+= Revoking administrator privileges from a user
+
+ifeval::["{context}" == "rosa-getting-started"]
+:getting-started:
+endif::[]
+ifeval::["{context}" == "rosa-quickstart"]
+:quickstart:
+endif::[]
+
+Follow the steps in this section to revoke `cluster-admin` or `dedicated-admin` privileges from a user.
+
+ifdef::getting-started[]
+.Prerequisites
+
+* You installed and configured the latest {product-title} (ROSA) CLI, `rosa`, on your workstation.
+* You logged in to your Red Hat account using the ROSA CLI (`rosa`).
+* You created a ROSA cluster.
+* You have configured a GitHub identity provider for your cluster and added an identity provider user.
+* You granted `cluster-admin` or `dedicated-admin` privileges to a user.
+endif::[]
+
+.Procedure
+
+* To revoke `cluster-admin` privileges from an identity provider user:
+.. Revoke the `cluster-admin` privilege:
++
+[source,terminal]
+----
+$ rosa revoke user cluster-admin --user=<idp_user_name> --cluster=<cluster_name> <1>
+----
+<1> Replace `<idp_user_name>` and `<cluster_name>` with the name of the identity provider user and your cluster name.
++
+.Example output
+[source,terminal]
+----
+? Are you sure you want to revoke role cluster-admins from user <idp_user_name> in cluster <cluster_name>? Yes
+I: Revoked role 'cluster-admins' from user '<idp_user_name>' on cluster '<cluster_name>'
+----
+.. Verify that the user is not listed as a member of the `cluster-admins` group:
++
+[source,terminal]
+----
+$ rosa list users --cluster=<cluster_name>
+----
++
+.Example output
+[source,terminal]
+----
+W: There are no users configured for cluster '<cluster_name>'
+----
+
+* To revoke `dedicated-admin` privileges from an identity provider user:
+.. Revoke the `dedicated-admin` privilege:
++
+[source,terminal]
+----
+$ rosa revoke user dedicated-admin --user=<idp_user_name> --cluster=<cluster_name>
+----
++
+.Example output
+[source,terminal]
+----
+? Are you sure you want to revoke role dedicated-admins from user <idp_user_name> in cluster <cluster_name>? Yes
+I: Revoked role 'dedicated-admins' from user '<idp_user_name>' on cluster '<cluster_name>'
+----
+.. Verify that the user is not listed as a member of the `dedicated-admins` group:
++
+[source,terminal]
+----
+$ rosa list users --cluster=<cluster_name>
+----
++
+.Example output
+[source,terminal]
+----
+W: There are no users configured for cluster '<cluster_name>'
+----
+
+ifeval::["{context}" == "rosa-getting-started"]
+:getting-started:
+endif::[]
+ifeval::["{context}" == "rosa-quickstart"]
+:quickstart:
+endif::[]

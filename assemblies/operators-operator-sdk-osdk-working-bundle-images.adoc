@@ -1,0 +1,50 @@
+:_mod-docs-content-type: ASSEMBLY
+[id="osdk-working-bundle-images"]
+= Working with bundle images
+include::_attributes/common-attributes.adoc[]
+:context: osdk-working-bundle-images
+
+toc::[]
+
+You can use the Operator SDK to package, deploy, and upgrade Operators in the bundle format for use on Operator Lifecycle Manager (OLM).
+
+include::modules/osdk-bundle-operator.adoc[leveloffset=+1]
+include::modules/osdk-deploy-olm.adoc[leveloffset=+1]
+
+[role="_additional-resources"]
+.Additional resources
+
+* xref:../../operators/understanding/olm-packaging-format.adoc#olm-file-based-catalogs_olm-packaging-format[File-based catalogs] in Operator Framework packaging format
+* xref:../../operators/admin/olm-managing-custom-catalogs.adoc#olm-managing-custom-catalogs-fb[File-based catalogs] in Managing custom catalogs
+* xref:../../operators/understanding/olm-packaging-format.adoc#olm-bundle-format_olm-packaging-format[Bundle format]
+
+include::modules/osdk-publish-catalog.adoc[leveloffset=+1]
+
+[role="_additional-resources"]
+.Additional resources
+
+* See xref:../../operators/admin/olm-managing-custom-catalogs.adoc#olm-managing-custom-catalogs[Managing custom catalogs] for details on direct usage of the `opm` CLI for more advanced use cases.
+
+include::modules/osdk-bundle-upgrade-olm.adoc[leveloffset=+1]
+
+[role="_additional-resources"]
+.Additional resources
+
+* xref:../../operators/admin/olm-adding-operators-to-cluster.adoc#olm-adding-operators-to-a-cluster[Traditional Operator installation with OLM]
+
+include::modules/osdk-control-compat.adoc[leveloffset=+1]
+
+[role="_additional-resources"]
+.Additional resources
+
+* link:https://redhat-connect.gitbook.io/certified-operator-guide/ocp-deployment/operator-metadata/bundle-directory/managing-openshift-versions[Managing OpenShift Versions] in the _Certified Operator Build Guide_
+* xref:../../operators/admin/olm-upgrading-operators.adoc#olm-upgrading-operators[Updating installed Operators]
+* xref:../../operators/understanding/olm-rh-catalogs.adoc#olm-rh-catalogs[Red Hat-provided Operator catalogs]
+
+[id="osdk-working-bundle-images-additional-resources"]
+[role="_additional-resources"]
+== Additional resources
+
+* See xref:../../operators/understanding/olm-packaging-format.adoc#olm-bundle-format_olm-packaging-format[Operator Framework packaging format] for details on the bundle format.
+* See xref:../../operators/admin/olm-managing-custom-catalogs.adoc#olm-managing-custom-catalogs[Managing custom catalogs] for details on adding bundle images to index images by using the `opm` command.
+* See xref:../../operators/understanding/olm/olm-workflow.adoc#olm-workflow[Operator Lifecycle Manager workflow] for details on how upgrades work for installed Operators.

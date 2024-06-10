@@ -1,0 +1,114 @@
+// Module included in the following assemblies:
+//
+// * rosa_planning/rosa-understanding-terraform.adoc
+ifeval::["{context}" == "rosa-understanding-terraform"]
+:tf-full:
+endif::[]
+
+:_mod-docs-content-type: CONCEPT
+[id="rosa-sts-terraform-prerequisites_{context}"]
+ifdef::tf-full[]
+= Prerequisites for Terraform
+endif::tf-full[]
+ifndef::tf-full[]
+.Prerequisites
+endif::tf-full[]
+
+To use link:https://registry.terraform.io/providers/terraform-redhat/rhcs/latest/docs[the Red Hat Cloud Services provider] inside your Terraform configuration, you must meet the following prerequisites:
+
+* You have installed the {product-title} (ROSA) command-line interface (CLI) tool.
+ifdef::tf-full[]
++
+See the Additional resources for further installation instructions.
+endif::tf-full[]
+* You have your offline link:https://console.redhat.com/openshift/token/rosa[{cluster-manager-first} token].
+ifdef::tf-full[]
++
+This token is generated through the Red Hat Hybrid Cloud Console. It is unique to your account and should not be shared. The token is generated based off your account access and permissions.
+endif::tf-full[]
+* You have installed link:https://developer.hashicorp.com/terraform/downloads[Terraform version 1.4.6] or newer.
+ifdef::tf-full[]
++
+You must have Terraform configured for your local system. The Terraform website contains installation options for MacOS, Windows, and Linux.
+endif::tf-full[]
+ifndef::tf-full[]
+* You have created your AWS account-wide IAM roles.
++
+The specific account-wide IAM roles and policies provide the STS permissions required for ROSA support, installation, control plane, and compute functionality. This includes account-wide Operator policies. See the Additional resources for more information on the AWS account roles.
+endif::tf-full[]
+* You have an link:https://aws.amazon.com/free/?all-free-tier[AWS account] and link:https://docs.aws.amazon.com/IAM/latest/UserGuide/security-creds.html[associated credentials] that allow you to create resources. The credentials are configured for the AWS provider. See the link:https://registry.terraform.io/providers/hashicorp/aws/latest/docs#authentication-and-configuration[Authentication and Configuration] section in AWS Terraform provider documentation.
+* You have, at minimum, the following permissions in your AWS IAM role policy that is operating Terraform. Check for these permissions in the AWS console.
++
+.Minimum AWS permissions for Terraform
+[%collapsible]
+====
+[source,json]
+----
+{
+  "Version": "2012-10-17",
+  "Statement": [
+    {
+      "Sid": "VisualEditor0",
+      "Effect": "Allow",
+      "Action": [
+        "iam:GetPolicyVersion",
+        "iam:DeletePolicyVersion",
+        "iam:CreatePolicyVersion",
+        "iam:UpdateAssumeRolePolicy",
+        "secretsmanager:DescribeSecret",
+        "iam:ListRoleTags",
+        "secretsmanager:PutSecretValue",
+        "secretsmanager:CreateSecret",
+        "iam:TagRole",
+        "secretsmanager:DeleteSecret",
+        "iam:UpdateOpenIDConnectProviderThumbprint",
+        "iam:DeletePolicy",
+        "iam:CreateRole",
+        "iam:AttachRolePolicy",
+        "iam:ListInstanceProfilesForRole",
+        "secretsmanager:GetSecretValue",
+        "iam:DetachRolePolicy",
+        "iam:ListAttachedRolePolicies",
+        "iam:ListPolicyTags",
+        "iam:ListRolePolicies",
+        "iam:DeleteOpenIDConnectProvider",
+        "iam:DeleteInstanceProfile",
+        "iam:GetRole",
+        "iam:GetPolicy",
+        "iam:ListEntitiesForPolicy",
+        "iam:DeleteRole",
+        "iam:TagPolicy",
+        "iam:CreateOpenIDConnectProvider",
+        "iam:CreatePolicy",
+        "secretsmanager:GetResourcePolicy",
+        "iam:ListPolicyVersions",
+        "iam:UpdateRole",
+        "iam:GetOpenIDConnectProvider",
+        "iam:TagOpenIDConnectProvider",
+        "secretsmanager:TagResource",
+        "sts:AssumeRoleWithWebIdentity",
+        "iam:ListRoles"
+      ],
+      "Resource": [
+        "arn:aws:secretsmanager:*:<ACCOUNT_ID>:secret:*",
+        "arn:aws:iam::<ACCOUNT_ID>:instance-profile/*",
+        "arn:aws:iam::<ACCOUNT_ID>:role/*",
+        "arn:aws:iam::<ACCOUNT_ID>:oidc-provider/*",
+        "arn:aws:iam::<ACCOUNT_ID>:policy/*"
+      ]
+    },
+    {
+      "Sid": "VisualEditor1",
+      "Effect": "Allow",
+      "Action": [
+        "s3:*"
+        ],
+      "Resource": "*"
+    }
+  ]
+}
+----
+====
+ifeval::["{context}" == "rosa-understanding-terraform"]
+:!tf-full:
+endif::[]

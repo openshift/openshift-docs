@@ -1,0 +1,28 @@
+// Module included in the following assemblies:
+//
+// * virt/virtual_machines/advanced_vm_management/virt-schedule-vms.adoc
+
+:_mod-docs-content-type: PROCEDURE
+[id="virt-schedule-cpu-host-model-vms_{context}"]
+= Scheduling virtual machines with the host model
+
+When the CPU model for a virtual machine (VM) is set to `host-model`, the VM inherits the CPU model of the node where it is scheduled.
+
+.Procedure
+
+* Edit the `domain` spec of your VM configuration file. The following example shows `host-model` being specified for the virtual machine:
++
+[source,yaml]
+----
+apiVersion: kubevirt/v1alpha3
+kind: VirtualMachine
+metadata:
+  name: myvm
+spec:
+  template:
+    spec:
+      domain:
+        cpu:
+          model: host-model <1>
+----
+<1> The VM that inherits the CPU model of the node where it is scheduled.

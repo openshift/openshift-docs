@@ -1,0 +1,86 @@
+// Module included in the following assemblies:
+//
+// * operators/admin/olm-configuring-proxy-support.adoc
+
+:_mod-docs-content-type: PROCEDURE
+[id="olm-inject-custom-ca_{context}"]
+= Injecting a custom CA certificate
+
+ifndef::openshift-dedicated,openshift-rosa[]
+When a cluster administrator
+endif::openshift-dedicated,openshift-rosa[]
+ifdef::openshift-dedicated,openshift-rosa[]
+When an administrator with the `dedicated-admin` role
+endif::openshift-dedicated,openshift-rosa[]
+adds a custom CA certificate to a cluster using a config map, the Cluster Network Operator merges the user-provided certificates and system CA certificates into a single bundle. You can inject this merged bundle into your Operator running on Operator Lifecycle Manager (OLM), which is useful if you have a man-in-the-middle HTTPS proxy.
+
+.Prerequisites
+
+ifndef::openshift-dedicated,openshift-rosa[]
+* Access to an {product-title} cluster using an account with
+ifdef::openshift-enterprise,openshift-webscale,openshift-origin[]
+`cluster-admin` permissions.
+endif::[]
+endif::openshift-dedicated,openshift-rosa[]
+ifdef::openshift-dedicated,openshift-rosa[]
+* Access to a {product-title} cluster as a user with the `dedicated-admin` role.
+endif::openshift-dedicated,openshift-rosa[]
+* Custom CA certificate added to the cluster using a config map.
+* Desired Operator installed and running on OLM.
+
+.Procedure
+
+. Create an empty config map in the namespace where the subscription for your Operator exists and include the following label:
++
+[source,yaml]
+----
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: trusted-ca <1>
+  labels:
+    config.openshift.io/inject-trusted-cabundle: "true" <2>
+----
+<1> Name of the config map.
+<2> Requests the Cluster Network Operator to inject the merged bundle.
++
+After creating this config map, it is immediately populated with the certificate contents of the merged bundle.
+
+. Update the `Subscription` object to include a `spec.config` section that mounts the `trusted-ca` config map as a volume to each container within a pod that requires a custom CA:
++
+[source,yaml]
+----
+apiVersion: operators.coreos.com/v1alpha1
+kind: Subscription
+metadata:
+  name: my-operator
+spec:
+  package: etcd
+  channel: alpha
+  config: <1>
+    selector:
+      matchLabels:
+        <labels_for_pods> <2>
+    volumes: <3>
+    - name: trusted-ca
+      configMap:
+        name: trusted-ca
+        items:
+          - key: ca-bundle.crt <4>
+            path: tls-ca-bundle.pem <5>
+    volumeMounts: <6>
+    - name: trusted-ca
+      mountPath: /etc/pki/ca-trust/extracted/pem
+      readOnly: true
+----
+<1> Add a `config` section if it does not exist.
+<2> Specify labels to match pods that are owned by the Operator.
+<3> Create a `trusted-ca` volume.
+<4> `ca-bundle.crt` is required as the config map key.
+<5> `tls-ca-bundle.pem` is required as the config map path.
+<6> Create a `trusted-ca` volume mount.
++
+[NOTE]
+====
+Deployments of an Operator can fail to validate the authority and display a `x509 certificate signed by unknown authority` error. This error can occur even after injecting a custom CA when using the subscription of an Operator. In this case, you can set the `mountPath` as `/etc/ssl/certs` for trusted-ca by using the subscription of an Operator.
+====

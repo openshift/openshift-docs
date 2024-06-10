@@ -1,0 +1,44 @@
+// Module included in the following assemblies:
+// * openshift_images/image-streams-managing.adoc
+
+[id="images-imagestream-configure_{context}"]
+= Configuring image streams
+
+An `ImageStream` object file contains the following elements.
+
+[id="image-stream-object-definition_{context}"]
+.Imagestream object definition
+
+[source,yaml]
+----
+apiVersion: image.openshift.io/v1
+kind: ImageStream
+metadata:
+  annotations:
+    openshift.io/generated-by: OpenShiftNewApp
+  labels:
+    app: ruby-sample-build
+    template: application-template-stibuild
+  name: origin-ruby-sample <1>
+  namespace: test
+spec: {}
+status:
+  dockerImageRepository: 172.30.56.218:5000/test/origin-ruby-sample <2>
+  tags:
+  - items:
+    - created: 2017-09-02T10:15:09Z
+      dockerImageReference: 172.30.56.218:5000/test/origin-ruby-sample@sha256:47463d94eb5c049b2d23b03a9530bf944f8f967a0fe79147dd6b9135bf7dd13d <3>
+      generation: 2
+      image: sha256:909de62d1f609a717ec433cc25ca5cf00941545c83a01fb31527771e1fab3fc5 <4>
+    - created: 2017-09-01T13:40:11Z
+      dockerImageReference: 172.30.56.218:5000/test/origin-ruby-sample@sha256:909de62d1f609a717ec433cc25ca5cf00941545c83a01fb31527771e1fab3fc5
+      generation: 1
+      image: sha256:47463d94eb5c049b2d23b03a9530bf944f8f967a0fe79147dd6b9135bf7dd13d
+    tag: latest <5>
+----
+
+<1> The name of the image stream.
+<2> Docker repository path where new images can be pushed to add or update them in this image stream.
+<3> The SHA identifier that this image stream tag currently references. Resources that reference this image stream tag use this identifier.
+<4> The SHA identifier that this image stream tag previously referenced. Can be used to rollback to an older image.
+<5> The image stream tag name.

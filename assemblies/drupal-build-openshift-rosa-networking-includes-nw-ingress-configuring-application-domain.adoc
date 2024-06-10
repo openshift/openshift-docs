@@ -1,0 +1,79 @@
+// Module included in the following assemblies:
+//
+// * ingress/configure-ingress-operator.adoc
+//
+
+:_mod-docs-content-type: PROCEDURE
+[id="nw-ingress-configuring-application-domain_{context}"]
+= Specifying an alternative cluster domain using the appsDomain option
+
+//OpenShift Dedicated or Amazon RH OpenShift cluster administrator
+
+As a cluster administrator, you can specify an alternative to the default cluster domain for user-created routes by configuring the `appsDomain` field. The `appsDomain` field is an optional domain for {product-title} to use instead of the default, which is specified in the `domain` field. If you specify an alternative domain, it overrides the default cluster domain for the purpose of determining the default host for a new route.
+
+For example, you can use the DNS domain for your company as the default domain for routes and ingresses for applications running on your cluster.
+
+.Prerequisites
+
+//* You deployed an {OSD} cluster.
+* You deployed an {product-title} cluster.
+* You installed the `oc` command line interface.
+
+.Procedure
+
+. Configure the `appsDomain` field by specifying an alternative default domain for user-created routes.
++
+.. Edit the ingress `cluster` resource:
++
+[source,terminal]
+----
+$ oc edit ingresses.config/cluster -o yaml
+----
++
+.. Edit the YAML file:
++
+.Sample `appsDomain` configuration to `test.example.com`
+[source,yaml]
+----
+apiVersion: config.openshift.io/v1
+kind: Ingress
+metadata:
+  name: cluster
+spec:
+  domain: apps.example.com            <1>
+  appsDomain: <test.example.com>      <2>
+----
+<1> Specifies the default domain. You cannot modify the default domain after installation.
+<2> Optional: Domain for {product-title} infrastructure to use for application routes. Instead of the default prefix, `apps`, you can use an alternative prefix like `test`.
++
+. Verify that an existing route contains the domain name specified in the `appsDomain` field by exposing the route and verifying the route domain change:
+//+
+//.. Access the Ingress Controller Operator YAML file:
+//+
+//[source,terminal]
+//----
+//$ oc get ingresses.config/cluster -o yaml
+//----
++
+[NOTE]
+====
+Wait for the `openshift-apiserver` finish rolling updates before exposing the route.
+====
++
+.. Expose the route:
++
+[source,terminal]
+----
+$ oc expose service hello-openshift
+route.route.openshift.io/hello-openshift exposed
+----
++
+.Example output:
++
+[source,terminal]
+----
+$ oc get routes
+NAME              HOST/PORT                                   PATH   SERVICES          PORT       TERMINATION   WILDCARD
+hello-openshift   hello_openshift-<my_project>.test.example.com
+hello-openshift   8080-tcp                 None
+----

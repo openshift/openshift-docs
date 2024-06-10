@@ -1,0 +1,185 @@
+// Module included in the following assemblies:
+//
+// * observability/logging/log_collection_forwarding/log-forwarding.adoc
+
+:_mod-docs-content-type: PROCEDURE
+
+[id="rosa-cluster-logging-collector-log-forward-sts-cloudwatch_{context}"]
+= Forwarding logs to Amazon CloudWatch from STS enabled clusters
+
+For clusters with AWS Security Token Service (STS) enabled, you must create the AWS IAM roles and policies that enable log forwarding, and a `ClusterLogForwarder` custom resource (CR) with an output for CloudWatch.
+
+.Prerequisites
+
+* {logging-title-uc}: 5.5 and later
+
+.Procedure
+. Prepare the AWS account:
+.. Create an IAM policy JSON file with the following content:
++
+[source,json]
+----
+{
+"Version": "2012-10-17",
+"Statement": [
+    {
+    "Effect": "Allow",
+    "Action": [
+      "logs:CreateLogGroup",
+      "logs:CreateLogStream",
+      "logs:DescribeLogGroups",
+      "logs:DescribeLogStreams",
+      "logs:PutLogEvents",
+      "logs:PutRetentionPolicy"
+    ],
+    "Resource": "arn:aws:logs:*:*:*"
+    }
+  ]
+}
+----
++
+.. Create an IAM trust JSON file with the following content:
++
+[source,json]
+----
+{
+  "Version": "2012-10-17",
+  "Statement": [
+    {
+      "Effect": "Allow",
+      "Principal": {
+        "Federated": "arn:aws:iam::<your_aws_account_id>:oidc-provider/<openshift_oidc_provider>" <1>
+      },
+      "Action": "sts:AssumeRoleWithWebIdentity",
+      "Condition": {
+        "StringEquals": {
+          "<openshift_oidc_provider>:sub": "system:serviceaccount:openshift-logging:logcollector" <2>
+        }
+      }
+    }
+  ]
+}
+----
++
+--
+<1> Specify your AWS account ID and the OpenShift OIDC provider endpoint. Obtain the endpoint by running the following command:
++
+[source,terminal]
+----
+$ rosa describe cluster \
+  -c $(oc get clusterversion -o jsonpath='{.items[].spec.clusterID}{"\n"}') \
+  -o yaml | awk '/oidc_endpoint_url/ {print $2}' | cut -d '/' -f 3,4
+----
++
+<2> Specify the OpenShift OIDC endpoint again.
+--
+
+.. Create the IAM role:
++
+[source,terminal]
+----
+$ aws iam create-role
+  --role-name “<your_rosa_cluster_name>-RosaCloudWatch” \
+  --assume-role-policy-document file://<your_trust_file_name>.json \
+  --query Role.Arn \
+  --output text
+----
++
+Save the output. You will use it in the next steps.
++
+.. Create the IAM policy:
++
+[source,terminal]
+----
+$ aws iam create-policy \
+--policy-name "RosaCloudWatch" \
+--policy-document file:///<your_policy_file_name>.json \
+--query Policy.Arn \
+--output text
+----
++
+Save the output. You will use it in the next steps.
+
+.. Attach the IAM policy to the IAM role:
++
+[source,terminal]
+----
+$ aws iam attach-role-policy \
+ --role-name “<your_rosa_cluster_name>-RosaCloudWatch” \
+ --policy-arn <policy_ARN> <1>
+----
++
+<1> Replace `policy_ARN` with the output you saved while creating the policy.
+
+. Create a `Secret` YAML file for the {clo}:
++
+--
+[source,yaml]
+----
+apiVersion: v1
+kind: Secret
+metadata:
+  name: cloudwatch-credentials
+  namespace: openshift-logging
+stringData:
+  credentials: |-
+    [default]
+    sts_regional_endpoints = regional
+    role_arn: <role_ARN>  <1>
+    web_identity_token_file = /var/run/secrets/openshift/serviceaccount/token
+----
+<1> Replace `role_ARN` with the output you saved while creating the role.
+--
+
+. Create the secret:
++
+[source,terminal]
+----
+$ oc apply -f cloudwatch-credentials.yaml
+----
+
+. Create or edit a `ClusterLogForwarder` custom resource:
++
+[source,yaml]
+----
+apiVersion: logging.openshift.io/v1
+kind: ClusterLogForwarder
+metadata:
+  name: <log_forwarder_name> <1>
+  namespace: <log_forwarder_namespace> <2>
+spec:
+  serviceAccountName: <service_account_name> <3>
+  outputs:
+   - name: cw <4>
+     type: cloudwatch <5>
+     cloudwatch:
+       groupBy: logType <6>
+       groupPrefix: <group prefix> <7>
+       region: us-east-2 <8>
+     secret:
+        name: <your_secret_name> <9>
+  pipelines:
+    - name: to-cloudwatch <10>
+      inputRefs: <11>
+        - infrastructure
+        - audit
+        - application
+      outputRefs:
+        - cw <12>
+----
+<1> In legacy implementations, the CR name must be `instance`. In multi log forwarder implementations, you can use any name.
+<2> In legacy implementations, the CR namespace must be `openshift-logging`. In multi log forwarder implementations, you can use any namespace.
+<3> The name of your service account. The service account is only required in multi log forwarder implementations if the log forwarder is not deployed in the `openshift-logging` namespace.
+<4> Specify a name for the output.
+<5> Specify the `cloudwatch` type.
+<6> Optional: Specify how to group the logs:
++
+* `logType` creates log groups for each log type
+* `namespaceName` creates a log group for each application name space. Infrastructure and audit logs are unaffected, remaining grouped by `logType`.
+* `namespaceUUID` creates a new log groups for each application namespace UUID. It also creates separate log groups for infrastructure and audit logs.
+<7> Optional: Specify a string to replace the default `infrastructureName` prefix in the names of the log groups.
+<8> Specify the AWS region.
+<9> Specify the name of the secret you created previously.
+<10> Optional: Specify a name for the pipeline.
+<11> Specify which log types to forward by using the pipeline: `application,` `infrastructure`, or `audit`.
+<12> Specify the name of the output to use when forwarding logs with this pipeline.

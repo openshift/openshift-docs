@@ -1,0 +1,35 @@
+:_mod-docs-content-type: ASSEMBLY
+[id="installing-gcp-account"]
+= Configuring a GCP project
+include::_attributes/common-attributes.adoc[]
+:context: installing-gcp-account
+
+toc::[]
+
+Before you can install {product-title}, you must configure a
+Google Cloud Platform (GCP) project to host it.
+
+include::modules/installation-gcp-project.adoc[leveloffset=+1]
+
+include::modules/installation-gcp-enabling-api-services.adoc[leveloffset=+1]
+
+include::modules/installation-gcp-dns.adoc[leveloffset=+1]
+
+include::modules/installation-gcp-limits.adoc[leveloffset=+1]
+
+include::modules/installation-gcp-service-account.adoc[leveloffset=+1]
+
+include::modules/installation-gcp-permissions.adoc[leveloffset=+2]
+
+include::modules/minimum-required-permissions-ipi-gcp.adoc[leveloffset=+2]
+
+include::modules/minimum-required-permissions-ipi-gcp-xpn.adoc[leveloffset=+2]
+
+include::modules/installation-gcp-regions.adoc[leveloffset=+1]
+
+== Next steps
+
+* Install an {product-title} cluster on GCP. You can
+xref:../../installing/installing_gcp/installing-gcp-customizations.adoc#installing-gcp-customizations[install a customized cluster]
+or xref:../../installing/installing_gcp/installing-gcp-default.adoc#installing-gcp-default[quickly install a cluster]
+with default options.

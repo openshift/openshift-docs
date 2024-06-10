@@ -1,0 +1,75 @@
+// Module included in the following assemblies:
+//
+// * nodes/nodes-cluster-overcommit.adoc
+// * post_installation_configuration/node-tasks.adoc
+
+:_mod-docs-content-type: CONCEPT
+[id="nodes-cluster-overcommit-qos-about_{context}"]
+= Understanding overcomitment and quality of service classes
+
+A node is _overcommitted_ when it has a pod scheduled that makes no request, or
+when the sum of limits across all pods on that node exceeds available machine
+capacity.
+
+In an overcommitted environment, it is possible that the pods on the node will
+attempt to use more compute resource than is available at any given point in
+time. When this occurs, the node must give priority to one pod over another. The
+facility used to make this decision is referred to as a Quality of Service (QoS)
+Class.
+
+A pod is designated as one of three QoS classes with decreasing order of priority:
+
+.Quality of Service Classes
+[options="header",cols="1,1,5"]
+|===
+|Priority |Class Name |Description
+
+|1 (highest)
+|*Guaranteed*
+|If limits and optionally requests are set (not equal to 0) for all resources
+and they are equal, then the pod is classified as *Guaranteed*.
+
+|2
+|*Burstable*
+|If requests and optionally limits are set (not equal to 0) for all resources,
+and they are not equal, then the pod is classified as *Burstable*.
+
+|3 (lowest)
+|*BestEffort*
+|If requests and limits are not set for any of the resources, then the pod
+is classified as *BestEffort*.
+|===
+
+Memory is an incompressible resource, so in low memory situations, containers
+that have the lowest priority are terminated first:
+
+- *Guaranteed* containers are considered top priority, and are guaranteed to
+only be terminated if they exceed their limits, or if the system is under memory
+pressure and there are no lower priority containers that can be evicted.
+- *Burstable* containers under system memory pressure are more likely to be
+terminated once they exceed their requests and no other *BestEffort* containers
+exist.
+- *BestEffort* containers are treated with the lowest priority. Processes in
+these containers are first to be terminated if the system runs out of memory.
+
+[id="qos-about-reserve_{context}"]
+== Understanding how to reserve memory across quality of service tiers
+
+You can use the `qos-reserved` parameter to specify a percentage of memory to be reserved
+by a pod in a particular QoS level. This feature attempts to reserve requested resources to exclude pods
+from lower OoS classes from using resources requested by pods in higher QoS classes.
+
+{product-title} uses the `qos-reserved` parameter as follows:
+
+- A value of `qos-reserved=memory=100%` will prevent the `Burstable` and `BestEffort` QoS classes from consuming memory
+that was requested by a higher QoS class. This increases the risk of inducing OOM
+on `BestEffort` and `Burstable` workloads in favor of increasing memory resource guarantees
+for `Guaranteed` and `Burstable` workloads.
+
+- A value of `qos-reserved=memory=50%` will allow the `Burstable` and `BestEffort` QoS classes
+to consume half of the memory requested by a higher QoS class.
+
+- A value of `qos-reserved=memory=0%`
+will allow a `Burstable` and `BestEffort` QoS classes to consume up to the full node
+allocatable amount if available, but increases the risk that a `Guaranteed` workload
+will not have access to requested memory. This condition effectively disables this feature.

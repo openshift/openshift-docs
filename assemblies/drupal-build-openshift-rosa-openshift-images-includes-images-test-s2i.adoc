@@ -1,0 +1,167 @@
+// Module included in the following assemblies:
+// * openshift_images/create-images.adoc
+
+:_mod-docs-content-type: CONCEPT
+[id="images-test-s2i_{context}"]
+= About testing source-to-image images
+
+As an Source-to-Image (S2I) builder image author, you can test your S2I image
+locally and use the {product-title} build system for automated testing and
+continuous integration.
+
+S2I requires the
+`assemble` and `run` scripts to be present to successfully run
+the S2I build. Providing the `save-artifacts` script reuses the build
+artifacts, and providing the `usage` script ensures that usage information is
+printed to console when someone runs the container image outside of the S2I.
+
+The goal of testing an S2I image is to make sure that all of these described
+commands work properly, even if the base container image has changed or the tooling
+used by the commands was updated.
+
+[id="images-test-s2i-testing-requirements_{context}"]
+== Understanding testing requirements
+
+The standard location for the `test` script is `test/run`. This script is
+invoked by the {product-title} S2I image builder and it could be a simple Bash
+script or a static Go binary.
+
+The `test/run` script performs the S2I build, so you must have the S2I binary
+available in your `$PATH`. If required, follow the installation instructions
+in the
+https://github.com/openshift/source-to-image/blob/master/README.md#installation[S2I
+README].
+
+S2I combines the application source code and builder image, so to test
+it you need a sample application source to verify that the source successfully
+transforms into a runnable container image. The sample application should be simple,
+but it should exercise the crucial steps of `assemble` and `run` scripts.
+
+[id="images-test-s2i-generating-scripts-and-tools_{context}"]
+== Generating scripts and tools
+
+The S2I tooling comes with powerful generation tools to speed up the process of
+creating a new S2I image. The `s2i create` command produces all the necessary S2I
+scripts and testing tools along with the `Makefile`:
+
+[source,termnal]
+----
+$ s2i create _<image name>_ _<destination directory>_
+----
+
+The generated `test/run` script must be adjusted to be
+useful, but it provides a good starting point to begin developing.
+
+[NOTE]
+====
+The `test/run` script produced by the `s2i create` command requires that the sample application sources are inside the `test/test-app` directory.
+====
+ifndef::openshift-online[]
+[id="images-test-s21-testing-locally_{context}"]
+== Testing locally
+The easiest way to run the S2I image tests locally is to use the generated
+`Makefile`.
+
+If you did not use the `s2i create` command, you can copy the
+following `Makefile` template and replace the `IMAGE_NAME` parameter with
+your image name.
+
+.Sample `Makefile`
+----
+IMAGE_NAME = openshift/ruby-20-centos7
+CONTAINER_ENGINE := $(shell command -v podman 2> /dev/null | echo docker)
+
+build:
+	${CONTAINER_ENGINE} build -t $(IMAGE_NAME) .
+
+.PHONY: test
+test:
+	${CONTAINER_ENGINE} build -t $(IMAGE_NAME)-candidate .
+	IMAGE_NAME=$(IMAGE_NAME)-candidate test/run
+----
+
+[id="images-test-s21-basic-testing-workflow_{context}"]
+== Basic testing workflow
+
+The `test` script assumes you have already built the image you want to
+test. If required, first build the S2I image. Run one of the following commands:
+
+* If you use Podman, run the following command:
++
+[source,terminal]
+----
+$ podman build -t <builder_image_name>
+----
+
+* If you use Docker, run the following command:
++
+[source,terminal]
+----
+$ docker build -t <builder_image_name>
+----
+
+The following steps describe the default workflow to test S2I image builders:
+
+. Verify the `usage` script is working:
++
+* If you use Podman, run the following command:
++
+[source,terminal]
+----
+$ podman run <builder_image_name> .
+----
+
+* If you use Docker, run the following command:
++
+[source,terminal]
+----
+$ docker run <builder_image_name> .
+----
+
+. Build the image:
++
+[source,terminal]
+[options="nowrap"]
+----
+$ s2i build file:///path-to-sample-app _<BUILDER_IMAGE_NAME>_ _<OUTPUT_APPLICATION_IMAGE_NAME>_
+----
+
+. Optional: if you support `save-artifacts`, run step 2 once again to
+verify that saving and restoring artifacts works properly.
+
+. Run the container:
++
+* If you use Podman, run the following command:
++
+[source,terminal]
+----
+$ podman run <output_application_image_name>
+----
+
+* If you use Docker, run the following command:
++
+[source,terminal]
+----
+$ docker run <output_application_image_name>
+----
+
+. Verify the container is running and the application is responding.
+
+Running these steps is generally enough to tell if the builder image is
+working as expected.
+
+
+[id="images-test-s21-using-openshift-for-building-the-image_{context}"]
+== Using {product-title} for building the image
+
+Once you have a `Dockerfile` and the other artifacts that make up your new
+S2I builder image, you can put them in a git repository and use {product-title}
+to build and push the image. Define a Docker build that points
+to your repository.
+
+If your {product-title} instance is hosted on a public IP address, the build can
+be triggered each time you push into your S2I builder image GitHub repository.
+
+You can also use the `ImageChangeTrigger` to trigger a rebuild of your applications that are
+based on the S2I builder image you updated.
+endif::openshift-online[]

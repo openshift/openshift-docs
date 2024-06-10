@@ -1,0 +1,20 @@
+// Module included in the following assemblies:
+//
+// * web_console/dynamic-plugin/deploy-plugin-cluster.adoc
+
+:_mod-docs-content-type: PROCEDURE
+[id="disabling-your-plugin-browser_{context}"]
+= Disabling your plugin in the browser
+
+Console users can use the `disable-plugins` query parameter to disable specific or all dynamic plugins that would normally get loaded at run-time.
+
+.Procedure
+
+* To disable a specific plugin(s), remove the plugin you want to disable from the comma-separated list of plugin names.
+
+* To disable all plugins, leave an empty string in the `disable-plugins` query parameter.
+
+[NOTE]
+====
+Cluster administrators can disable plugins in the *Cluster Settings* page of the web console
+====

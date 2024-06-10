@@ -1,0 +1,95 @@
+:_mod-docs-content-type: ASSEMBLY
+:context: nodes-scheduler-about
+[id="nodes-scheduler-about"]
+= Controlling pod placement using the scheduler
+include::_attributes/common-attributes.adoc[]
+
+toc::[]
+
+Pod scheduling is an internal process that determines placement of new
+pods onto nodes within the cluster.
+
+The scheduler code has a clean separation that watches new pods
+as they get created and identifies the most suitable node to host them. It then
+creates bindings (pod to node bindings) for the pods using the master API.
+
+Default pod scheduling::
+{product-title} comes with a default scheduler that serves the needs of most users. The default scheduler uses both inherent and customization tools to determine the best fit for a pod.
+
+Advanced pod scheduling::
+In situations where you might want more control over where new pods are placed, the {product-title} advanced scheduling features allow you to configure a pod so that the pod is required or has a preference to run on a particular node or alongside a specific pod.
++
+You can control pod placement by using the following scheduling features:
+
+ifndef::openshift-rosa,openshift-dedicated[]
+* xref:../../nodes/scheduling/nodes-scheduler-profiles.adoc#nodes-scheduler-profiles[Scheduler profiles]
+endif::openshift-rosa,openshift-dedicated[]
+* xref:../../nodes/scheduling/nodes-scheduler-pod-affinity.adoc#nodes-scheduler-pod-affinity[Pod affinity and anti-affinity rules]
+* xref:../../nodes/scheduling/nodes-scheduler-node-affinity.adoc#nodes-scheduler-node-affinity-about_nodes-scheduler-node-affinity[Node affinity]
+* xref:../../nodes/scheduling/nodes-scheduler-node-selectors.adoc#nodes-scheduler-node-selectors[Node selectors]
+* xref:../../nodes/scheduling/nodes-scheduler-taints-tolerations.adoc#nodes-scheduler-taints-tolerations[Taints and tolerations]
+* xref:../../nodes/scheduling/nodes-scheduler-overcommit.adoc#nodes-scheduler-overcommit[Node overcommitment]
+
+[id="about-default-scheduler"]
+== About the default scheduler
+
+The default {product-title} pod scheduler is responsible for determining the placement of new pods onto nodes within the cluster. It reads data from the pod and finds a node that is a good fit based on configured profiles. It is completely independent and exists as a standalone solution. It does not modify the pod; it creates a binding for the pod that ties the pod to the particular node.
+
+// Understanding default scheduling
+include::modules/nodes-scheduler-default-about.adoc[leveloffset=+2]
+
+[id="nodes-scheduler-about-use-cases_{context}"]
+== Scheduler use cases
+
+One of the important use cases for scheduling within {product-title} is to
+support flexible affinity and anti-affinity policies.
+ifdef::openshift-enterprise,openshift-webscale,openshift-origin[]
+
+[id="infrastructure-topological-levels_{context}"]
+=== Infrastructure topological levels
+
+Administrators can define multiple topological levels for their infrastructure
+(nodes) by specifying labels on nodes. For example: `region=r1`, `zone=z1`, `rack=s1`.
+
+These label names have no particular meaning and
+administrators are free to name their infrastructure levels anything, such as
+city/building/room. Also, administrators can define any number of levels
+for their infrastructure topology, with three levels usually being adequate
+(such as: `regions` -> `zones` -> `racks`).  Administrators can specify affinity
+and anti-affinity rules at each of these levels in any combination.
+endif::openshift-enterprise,openshift-webscale,openshift-origin[]
+
+[id="affinity_{context}"]
+=== Affinity
+
+Administrators should be able to configure the scheduler to specify affinity at
+any topological level, or even at multiple levels. Affinity at a particular
+level indicates that all pods that belong to the same service are scheduled
+onto nodes that belong to the same level. This handles any latency requirements
+of applications by allowing administrators to ensure that peer pods do not end
+up being too geographically separated. If no node is available within the same
+affinity group to host the pod, then the pod is not scheduled.
+
+If you need greater control over where the pods are scheduled, see xref:../../nodes/scheduling/nodes-scheduler-node-affinity.adoc#nodes-scheduler-node-affinity[Controlling pod placement on nodes using node affinity rules] and
+xref:../../nodes/scheduling/nodes-scheduler-pod-affinity.adoc#nodes-scheduler-pod-affinity[Placing pods relative to other pods using affinity and anti-affinity rules].
+
+These advanced scheduling features allow administrators
+to specify which node a pod can be scheduled on and to force or reject scheduling relative to other pods.
+
+
+[id="anti-affinity_{context}"]
+=== Anti-affinity
+
+Administrators should be able to configure the scheduler to specify
+anti-affinity at any topological level, or even at multiple levels.
+Anti-affinity (or 'spread') at a particular level indicates that all pods that
+belong to the same service are spread across nodes that belong to that
+level. This ensures that the application is well spread for high availability
+purposes. The scheduler tries to balance the service pods across all
+applicable nodes as evenly as possible.
+
+If you need greater control over where the pods are scheduled, see xref:../../nodes/scheduling/nodes-scheduler-node-affinity.adoc#nodes-scheduler-node-affinity[Controlling pod placement on nodes using node affinity rules] and
+xref:../../nodes/scheduling/nodes-scheduler-pod-affinity.adoc#nodes-scheduler-pod-affinity[Placing pods relative to other pods using affinity and anti-affinity rules].
+
+These advanced scheduling features allow administrators
+to specify which node a pod can be scheduled on and to force or reject scheduling relative to other pods.

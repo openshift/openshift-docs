@@ -1,0 +1,45 @@
+// Module included in the following assemblies:
+//
+// * rosa_cluster_admin/cloud_infrastructure_access/dedicated-aws-peering.adoc
+
+:_mod-docs-content-type: PROCEDURE
+[id="dedicated-aws-vpc-initiating-peering"]
+= Initiating the VPC peer request
+
+You can send a VPC peering connection request from the {product-title} AWS Account to the
+Customer AWS Account.
+
+.Prerequisites
+
+* Gather the following information about the Customer VPC required to initiate the
+peering request:
+** Customer AWS account number
+** Customer VPC ID
+** Customer VPC Region
+** Customer VPC CIDR
+* Check the CIDR block used by the {product-title} Cluster VPC. If it overlaps or
+matches the CIDR block for the Customer VPC, then peering between these two VPCs
+is not possible; see the Amazon VPC
+link:https://docs.aws.amazon.com/vpc/latest/peering/invalid-peering-configurations.html[Unsupported VPC Peering Configurations]
+documentation for details. If the CIDR blocks do not overlap, you can continue
+with the procedure.
+
+.Procedure
+
+. Log in to the Web Console for the {product-title} AWS Account and navigate to the
+*VPC Dashboard* in the region where the cluster is being hosted.
+. Go to the *Peering Connections* page and click the *Create Peering Connection*
+button.
+. Verify the details of the account you are logged in to and the details of the
+account and VPC you are connecting to:
+.. *Peering connection name tag*: Set a descriptive name for the VPC Peering Connection.
+.. *VPC (Requester)*: Select the {product-title} Cluster VPC ID from the dropdown
+*list.
+.. *Account*: Select *Another account* and provide the Customer AWS Account number
+*(without dashes).
+.. *Region*: If the Customer VPC Region differs from the current region, select
+*Another Region* and select the customer VPC Region from the dropdown list.
+.. *VPC (Accepter)*: Set the Customer VPC ID.
+. Click *Create Peering Connection*.
+. Confirm that the request enters a *Pending* state. If it enters a *Failed*
+state, confirm the details and repeat the process.

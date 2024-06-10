@@ -1,0 +1,55 @@
+// Module included in the following assemblies:
+//
+// * rosa_getting_started/rosa-getting-started.adoc
+// * rosa_getting_started/rosa-quickstart-guide-ui.adoc
+
+:_mod-docs-content-type: PROCEDURE
+[id="rosa-getting-started-access-cluster-web-console_{context}"]
+= Accessing a cluster through the web console
+
+ifeval::["{context}" == "rosa-getting-started"]
+:getting-started:
+endif::[]
+ifeval::["{context}" == "rosa-quickstart"]
+:quickstart:
+endif::[]
+
+After you have created a cluster administrator user or added a user to your configured identity provider, you can log into your {product-title} (ROSA) cluster through the web console.
+
+ifdef::getting-started[]
+.Prerequisites
+
+* You have an AWS account.
+* You installed and configured the latest {product-title} (ROSA) CLI, `rosa`, on your workstation.
+* You logged in to your Red Hat account using the ROSA CLI (`rosa`).
+* You created a ROSA cluster.
+* You have created a cluster administrator user or added your user account to the configured identity provider.
+endif::[]
+
+.Procedure
+
+. Obtain the console URL for your cluster:
++
+[source,terminal]
+----
+$ rosa describe cluster -c <cluster_name> | grep Console <1>
+----
+<1> Replace `<cluster_name>` with the name of your cluster.
++
+.Example output
+[source,terminal]
+----
+Console URL:                https://console-openshift-console.apps.example-cluster.wxyz.p1.openshiftapps.com
+----
+
+. Go to the console URL in the output of the preceding step and log in.
++
+* If you created a `cluster-admin` user, log in by using the provided credentials.
+* If you configured an identity provider for your cluster, select the identity provider name in the *Log in with...* dialog and complete any authorization requests that are presented by your provider.
+
+ifeval::["{context}" == "rosa-getting-started"]
+:getting-started:
+endif::[]
+ifeval::["{context}" == "rosa-quickstart"]
+:quickstart:
+endif::[]

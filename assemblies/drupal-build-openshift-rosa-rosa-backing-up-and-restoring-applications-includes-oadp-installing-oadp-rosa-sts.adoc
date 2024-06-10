@@ -1,0 +1,165 @@
+// Module included in the following assemblies:
+//
+// * rosa_backing_up_and_restoring_applications/backing-up-applications.adoc
+
+:_mod-docs-content-type: PROCEDURE
+[id="oadp-installing-oadp-rosa-sts_{context}"]
+= Installing the OADP Operator and providing the IAM role
+
+AWS Security Token Service (AWS STS) is a global web service that provides short-term credentials for IAM or federated users. {product-title} (ROSA) with STS is the recommended credential mode for ROSA clusters. This document describes how to install OpenShift API for Data Protection (OADP) on (ROSA) with AWS STS.
+
+
+[IMPORTANT]
+====
+Restic and Kopia are not supported in the OADP on ROSA with AWS STS environment. Make sure that the Restic/Kopia node agent is disabled.
+For backing up volumes, OADP on ROSA with AWS STS supports only native snapshots and CSI snapshots. See _Known Issues_ for more information.
+====
+
+[IMPORTANT]
+====
+In an Amazon ROSA cluster using STS authentication, restoring backed-up data in a different AWS region is not supported.
+
+The Data Mover feature is not currently supported in ROSA clusters. You can use native AWS S3 tools for moving data.
+====
+
+.Prerequisites
+
+* A {openshift-rosa} cluster with the required access and tokens. For instructions, see the procedure in "Preparing AWS credentials". If you plan to use two different clusters for backing up and restoring, you need to prepare AWS credentials, including `ROLE_ARN`, for each cluster.
+
+
+.Procedure
+
+. Create an OpenShift secret from your AWS token file by entering the following commands.
+
+.. Create the credentials file:
++
+[source,terminal]
+----
+$ cat <<EOF > ${SCRATCH}/credentials
+[default]
+role_arn = ${ROLE_ARN}
+web_identity_token_file = /var/run/secrets/openshift/serviceaccount/token
+EOF
+----
+
+.. Create a namespace for OADP:
++
+[source,terminal]
+----
+$ oc create namespace openshift-adp
+----
+
+.. Create the OpenShift secret:
++
+[source,terminal]
+----
+$ oc -n openshift-adp create secret generic cloud-credentials \
+  --from-file=${SCRATCH}/credentials
+----
++
+[NOTE]
+====
+In {product-title} versions 4.15 and later, the OADP Operator supports a new standardized STS workflow through the Operator Lifecycle Manager (OLM)
+and Cloud Credentials Operator (CCO). In this workflow, you do not need to create the above
+secret, you only need to supply the role ARN during link:https://access.redhat.com/documentation/en-us/openshift_container_platform/4.13/html/operators/user-tasks#olm-installing-from-operatorhub-using-web-console_olm-installing-operators-in-namespace[the installation of OLM-managed operators via the {product-title} web console].
+The above secret is created automatically via CCO.
+====
+
+. Install the OADP Operator.
+.. In the {product-title} web console, navigate to Operators *->* OperatorHub.
+.. Search for the OADP Operator, then click *Install*.
+
+. Create AWS cloud storage using your AWS credentials:
++
+[source,terminal]
+----
+$ cat << EOF | oc create -f -
+apiVersion: oadp.openshift.io/v1alpha1
+kind: CloudStorage
+metadata:
+  name: ${CLUSTER_NAME}-oadp
+  namespace: openshift-adp
+spec:
+  creationSecret:
+    key: credentials
+    name: cloud-credentials
+  enableSharedConfig: true
+  name: ${CLUSTER_NAME}-oadp
+  provider: aws
+  region: $REGION
+EOF
+----
+
+. Create the `DataProtectionApplication` resource, which is used to configure the connection to the storage where the backups and volume snapshots are stored:
++
+[source,terminal]
+----
+$ cat << EOF | oc create -f -
+apiVersion: oadp.openshift.io/v1alpha1
+kind: DataProtectionApplication
+metadata:
+  name: ${CLUSTER_NAME}-dpa
+  namespace: openshift-adp
+spec:
+  backupLocations:
+  - bucket:
+      cloudStorageRef:
+        name: ${CLUSTER_NAME}-oadp
+      credential:
+        key: credentials
+        name: cloud-credentials
+      prefix: velero
+      default: true
+      config:
+        region: ${REGION}
+  configuration:
+    velero:
+      defaultPlugins:
+      - openshift
+      - aws
+    nodeAgent: <1>
+      enable: false
+      uploaderType: restic
+  snapshotLocations:
+    - velero:
+        config:
+          credentialsFile: /tmp/credentials/openshift-adp/cloud-credentials-credentials <2>
+          enableSharedConfig: "true" <3>
+          profile: default <4>
+          region: ${REGION} <5>
+        provider: aws
+EOF
+----
+<1> See the first note below.
+<2> The `credentialsFile` field is the mounted location of the bucket credential on the pod.
+<3> The `enableSharedConfig` field allows the `snapshotLocations` to share or reuse the credential defined for the bucket.
+<4> Use the profile name set in the AWS credentials file.
+<5> Specify `region` as your AWS region. This must be the same as the cluster region.
++
+You are now ready to backup and restore OpenShift applications, as described in the link:https://docs.openshift.com/container-platform/4.11/backup_and_restore/application_backup_and_restore/backing_up_and_restoring/backing-up-applications.html[OADP documentation].
+
+[NOTE]
+====
+The `enable` parameter of `restic` is set to `false` in this configuration because OADP does not support Restic in ROSA environments.
+
+If you are using OADP 1.2, replace this configuration:
+[source,terminal]
+
+----
+nodeAgent:
+  enable: false
+  uploaderType: restic
+----
+with the following:
+
+[source,terminal]
+----
+restic:
+  enable: false
+----
+====
+
+[NOTE]
+====
+If you want to use two different clusters for backing up and restoring, the two clusters must have identical AWS S3 storage names in both the cloudstorage CR and the OADP `DataProtectionApplication` configuration.
+====

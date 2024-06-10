@@ -1,0 +1,90 @@
+// Module included in the following assemblies:
+//
+// * operators/operator_sdk/osdk-working-bundle-images.adoc
+
+:_mod-docs-content-type: PROCEDURE
+[id="osdk-control-compat_{context}"]
+= Controlling Operator compatibility with {product-title} versions
+
+[IMPORTANT]
+====
+Kubernetes periodically deprecates certain APIs that are removed in subsequent releases. If your Operator is using a deprecated API, it might no longer work after the {product-title} cluster is upgraded to the Kubernetes version where the API has been removed.
+
+As an Operator author, it is strongly recommended that you review the link:https://kubernetes.io/docs/reference/using-api/deprecation-guide/[Deprecated API Migration Guide] in Kubernetes documentation and keep your Operator projects up to date to avoid using deprecated and removed APIs. Ideally, you should update your Operator before the release of a future version of {product-title} that would make the Operator incompatible.
+====
+
+When an API is removed from an {product-title} version, Operators running on that cluster version that are still using removed APIs will no longer work properly. As an Operator author, you should plan to update your Operator projects to accommodate API deprecation and removal to avoid interruptions for users of your Operator.
+
+[TIP]
+====
+You can check the event alerts of your Operators to find whether there are any warnings about APIs currently in use. The following alerts fire when they detect an API in use that will be removed in the next release:
+
+`APIRemovedInNextReleaseInUse`::
+APIs that will be removed in the next {product-title} release.
+
+`APIRemovedInNextEUSReleaseInUse`::
+APIs that will be removed in the next {product-title} link:https://access.redhat.com/support/policy/updates/openshift#ocp4_phases[Extended Update Support (EUS)] release.
+====
+
+If a cluster administrator has installed your Operator, before they upgrade to the next version of {product-title}, they must ensure a version of your Operator is installed that is compatible with that next cluster version. While it is recommended that you update your Operator projects to no longer use deprecated or removed APIs, if you still need to publish your Operator bundles with removed APIs for continued use on earlier versions of {product-title}, ensure that the bundle is configured accordingly.
+
+The following procedure helps prevent administrators from installing versions of your Operator on an incompatible version of {product-title}. These steps also prevent administrators from upgrading to a newer version of {product-title} that is incompatible with the version of your Operator that is currently installed on their cluster.
+
+This procedure is also useful when you know that the current version of your Operator will not work well, for any reason, on a specific {product-title} version. By defining the cluster versions where the Operator should be distributed, you ensure that the Operator does not appear in a catalog of a cluster version which is outside of the allowed range.
+
+[IMPORTANT]
+====
+Operators that use deprecated APIs can adversely impact critical workloads when cluster administrators upgrade to a future version of {product-title} where the API is no longer supported. If your Operator is using deprecated APIs, you should configure the following settings in your Operator project as soon as possible.
+====
+
+.Prerequisites
+
+- An existing Operator project
+
+.Procedure
+
+. If you know that a specific bundle of your Operator is not supported and will not work correctly on {product-title} later than a certain cluster version, configure the maximum version of {product-title} that your Operator is compatible with. In your Operator project's cluster service version (CSV), set the `olm.maxOpenShiftVersion` annotation to prevent administrators from upgrading their cluster before upgrading the installed Operator to a compatible version:
++
+[IMPORTANT]
+====
+You must use `olm.maxOpenShiftVersion` annotation only if your Operator bundle version cannot work in later versions. Be aware that cluster admins cannot upgrade their clusters with your solution installed. If you do not provide later version and a valid upgrade path, administrators may uninstall your Operator and can upgrade the cluster version.
+====
++
+.Example CSV with `olm.maxOpenShiftVersion` annotation
+[source,yaml]
+----
+apiVersion: operators.coreos.com/v1alpha1
+kind: ClusterServiceVersion
+metadata:
+  annotations:
+    "olm.properties": '[{"type": "olm.maxOpenShiftVersion", "value": "<cluster_version>"}]' <1>
+----
+<1> Specify the maximum cluster version of {product-title} that your Operator is compatible with. For example, setting `value` to `4.9` prevents cluster upgrades to {product-title} versions later than 4.9 when this bundle is installed on a cluster.
+
+. If your bundle is intended for distribution in a Red Hat-provided Operator catalog, configure the compatible versions of {product-title} for your Operator by setting the following properties. This configuration ensures your Operator is only included in catalogs that target compatible versions of {product-title}:
++
+[NOTE]
+====
+This step is only valid when publishing Operators in Red Hat-provided catalogs. If your bundle is only intended for distribution in a custom catalog, you can skip this step. For more details, see "Red Hat-provided Operator catalogs".
+====
+
+.. Set the `com.redhat.openshift.versions` annotation in your project's `bundle/metadata/annotations.yaml` file:
++
+.Example `bundle/metadata/annotations.yaml` file with compatible versions
+[source,yaml]
+----
+com.redhat.openshift.versions: "v4.7-v4.9" <1>
+----
+<1> Set to a range or single version.
+
+.. To prevent your bundle from being carried on to an incompatible version of {product-title}, ensure that the index image is generated with the proper `com.redhat.openshift.versions` label in your Operator's bundle image. For example, if your project was generated using the Operator SDK, update the `bundle.Dockerfile` file:
++
+.Example `bundle.Dockerfile` with compatible versions
++
+[source,yaml]
+----
+LABEL com.redhat.openshift.versions="<versions>" <1>
+----
+<1> Set to a range or single version, for example, `v4.7-v4.9`. This setting defines the cluster versions where the Operator should be distributed, and the Operator does not appear in a catalog of a cluster version which is outside of the range.
+
+You can now bundle a new version of your Operator and publish the updated version to a catalog for distribution.

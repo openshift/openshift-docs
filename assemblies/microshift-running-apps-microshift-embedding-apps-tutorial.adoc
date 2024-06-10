@@ -1,0 +1,44 @@
+:_mod-docs-content-type: ASSEMBLY
+[id="microshift-embedding-apps-tutorial"]
+= Embedding {product-title} applications tutorial
+include::_attributes/attributes-microshift.adoc[]
+:context: microshift-embedding-apps-tutorial
+
+toc::[]
+
+The following tutorial gives a detailed example of how to embed applications in a {op-system-ostree} image for use in a {microshift-short} cluster in various environments.
+
+include::modules/microshift-embed-app-rpms-tutorial.adoc[leveloffset=+1]
+
+include::modules/microshift-preparing-to-make-app-rpms.adoc[leveloffset=+2]
+
+include::modules/microshift-building-apps-rpms.adoc[leveloffset=+2]
+
+include::modules/microshift-adding-app-rpms-to-blueprint.adoc[leveloffset=+2]
+
+//additional resources for adding app rpms to blueprint
+[role="_additional-resources"]
+.Additional resources
+* link:https://access.redhat.com/documentation/en-us/red_hat_enterprise_linux/9/html/composing_installing_and_managing_rhel_for_edge_images/composing-a-rhel-for-edge-image-using-image-builder-command-line_composing-installing-managing-rhel-for-edge-images#doc-wrapper[Composing a {op-system-ostree} image using the Image Builder CLI]
+
+* link:https://access.redhat.com/documentation/en-us/red_hat_enterprise_linux/9/html/composing_installing_and_managing_rhel_for_edge_images/composing-a-rhel-for-edge-image-using-image-builder-command-line_composing-installing-managing-rhel-for-edge-images#network_based_deployments_workflow[Network-based deployments workflow]
+
+//additional resources for assembly
+[id="additional-resources_microshift-embedding-apps-tutorial_{context}"]
+[role="_additional-resources"]
+== Additional resources
+* xref:../microshift_running_apps/microshift-embed-apps-offline-use.adoc#microshift-embed-apps-offline-use[Embedding applications for offline use]
+
+* xref:../microshift_install/microshift-embed-in-rpm-ostree.adoc#microshift-embed-in-rpm-ostree[Embedding {product-title} in an RPM-OSTree image]
+
+* link:https://access.redhat.com/documentation/en-us/red_hat_enterprise_linux/{op-system-version-major}/html/composing_installing_and_managing_rhel_for_edge_images/index[Composing, installing, and managing {op-system-ostree} images]
+
+* xref:../microshift_install/microshift-embed-in-rpm-ostree.adoc#preparing-for-image-building_microshift-embed-in-rpm-ostree[Preparing for image building]
+
+* link:https://cloud.redhat.com/blog/meet-red-hat-device-edge-with-microshift[Meet Red Hat Device Edge with {product-title}]
+
+* link:https://www.redhat.com/sysadmin/create-rpm-package[How to create a Linux RPM package]
+
+* link:https://access.redhat.com/documentation/en-us/red_hat_enterprise_linux/{op-system-version-major}/html-single/composing_installing_and_managing_rhel_for_edge_images/index#composing-a-rhel-for-edge-image-using-image-builder-command-line_composing-installing-managing-rhel-for-edge-images[Composing a {op-system-ostree} image using image builder command-line]
+
+* link:https://access.redhat.com/documentation/en-us/red_hat_enterprise_linux/{op-system-version-major}/html-single/composing_installing_and_managing_rhel_for_edge_images/index#edge-image-builder-system-requirements_setting-up-image-builder[Image Builder system requirements]

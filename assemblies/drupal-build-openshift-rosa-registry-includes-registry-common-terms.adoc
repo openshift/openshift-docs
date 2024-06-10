@@ -1,0 +1,54 @@
+// Module included in the following assemblies:
+//
+// * registry/index.adoc
+
+:_mod-docs-content-type: REFERENCE
+[id="openshift-registry-common-terms_{context}"]
+= Glossary of common terms for {product-registry}
+
+This glossary defines the common terms that are used in the registry content.
+
+container::
+Lightweight and executable images that consist software and all its dependencies. Because containers virtualize the operating system, you can run containers in data center, a public or private cloud, or your local host.
+
+Image Registry Operator::
+The Image Registry Operator runs in the `openshift-image-registry` namespace, and manages the registry instance in that location.
+
+image repository::
+An image repository is a collection of related container images and tags identifying images.
+
+mirror registry::
+The mirror registry is a registry that holds the mirror of {product-title} images.
+
+namespace::
+A namespace isolates groups of resources within a single cluster.
+
+pod::
+The pod is the smallest logical unit in Kubernetes. A pod is comprised of one or more containers to run in a worker node.
+
+private registry::
+A registry is a server that implements the container image registry API. A private registry is a registry that requires authentication to allow users access its contents.
+
+public registry::
+A registry is a server that implements the container image registry API. A public registry is a registry that serves its contently publicly.
+
+Quay.io::
+A public Red Hat Quay Container Registry instance provided and maintained by Red Hat, that serves most of the container images and Operators to {product-title} clusters.
+
+{product-registry}::
+{product-registry} is the registry provided by {product-title} to manage images.
+
+registry authentication::
+To push and pull images to and from private image repositories, the registry needs to authenticate its users with credentials.
+
+route::
+Exposes a service to allow for network access to pods from users and applications outside the {product-title} instance.
+
+scale down::
+To decrease the number of replicas.
+
+scale up::
+To increase the number of replicas.
+
+service::
+A service exposes a running application on a set of pods.

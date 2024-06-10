@@ -1,0 +1,27 @@
+:_mod-docs-content-type: ASSEMBLY
+[id="recommended-infrastructure-practices"]
+= Recommended infrastructure practices
+include::_attributes/common-attributes.adoc[]
+:context: recommended-infrastructure-practices
+
+toc::[]
+
+This topic provides recommended performance and scalability practices for infrastructure in {product-title}.
+
+include::modules/infrastructure-node-sizing.adoc[leveloffset=+1]
+
+[id="scaling-cluster-monitoring-operator_{context}"]
+== Scaling the Cluster Monitoring Operator
+
+{product-title} exposes metrics that the Cluster Monitoring Operator collects and stores in the Prometheus-based monitoring stack. As an administrator, you can view dashboards for system resources, containers, and components metrics in the {product-title} web console by navigating to *Observe* -> *Dashboards*.
+
+include::modules/prometheus-database-storage-requirements.adoc[leveloffset=+1]
+
+include::modules/configuring-cluster-monitoring.adoc[leveloffset=+1]
+
+[role="_additional-resources"]
+== Additional resources
+
+* link:https://access.redhat.com/solutions/5034771[Infrastructure Nodes in OpenShift 4]
+* xref:../../scalability_and_performance/planning-your-environment-according-to-object-maximums.adoc#planning-your-environment-according-to-object-maximums[{product-title} cluster maximums]
+* xref:../../machine_management/creating-infrastructure-machinesets.adoc#creating-infrastructure-machinesets[Creating infrastructure machine sets]

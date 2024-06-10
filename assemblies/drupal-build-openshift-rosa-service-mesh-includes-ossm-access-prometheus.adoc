@@ -1,0 +1,21 @@
+// Module included in the following assemblies:
+//
+// * service_mesh/v2x/ossm-observability.adoc
+
+:_mod-docs-content-type: PROCEDURE
+[id="ossm-access-prometheus_{context}"]
+= Accessing the Prometheus console
+
+Prometheus is a monitoring and alerting tool that you can use to collect multi-dimensional data about your microservices. In this example, `istio-system` is the {SMProductShortName} control plane namespace.
+
+.Procedure
+
+. Log in to the {product-title} web console.
+
+. Click the *Project* menu and select the project where you installed the {SMProductShortName} control plane, for example *istio-system*.
+
+. Click *Routes*.
+
+. Click the link in the *Location* column for the *Prometheus* row.
+
+. Log in to the Prometheus console with your {product-title} credentials.

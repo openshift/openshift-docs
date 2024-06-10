@@ -1,0 +1,120 @@
+:_mod-docs-content-type: ASSEMBLY
+[id="installing-restricted-networks-gcp-installer-provisioned"]
+= Installing a cluster on GCP in a restricted network
+include::_attributes/common-attributes.adoc[]
+:context: installing-restricted-networks-gcp-installer-provisioned
+
+toc::[]
+
+In {product-title} {product-version}, you can install a cluster on Google Cloud Platform (GCP) in a restricted network by creating an internal mirror of the installation release content on an existing Google Virtual Private Cloud (VPC).
+
+[IMPORTANT]
+====
+You can install an {product-title} cluster by using mirrored installation release content, but your cluster will require internet access to use the GCP APIs.
+====
+
+[id="prerequisites_installing-restricted-networks-gcp-installer-provisioned"]
+== Prerequisites
+
+* You reviewed details about the xref:../../architecture/architecture-installation.adoc#architecture-installation[{product-title} installation and update] processes.
+* You read the documentation on xref:../../installing/installing-preparing.adoc#installing-preparing[selecting a cluster installation method and preparing it for users].
+* You xref:../../installing/installing_gcp/installing-gcp-account.adoc#installing-gcp-account[configured a GCP project] to host the cluster.
+* You xref:../../installing/disconnected_install/installing-mirroring-installation-images.adoc#installation-about-mirror-registry_installing-mirroring-installation-images[mirrored the images for a disconnected installation] to your registry and obtained the `imageContentSources` data for your version of {product-title}.
++
+[IMPORTANT]
+====
+Because the installation media is on the mirror host, you can use that computer to complete all installation steps.
+====
+* You have an existing VPC in GCP. While installing a cluster in a restricted network that uses installer-provisioned infrastructure, you cannot use the installer-provisioned VPC. You must use a user-provisioned VPC that satisfies one of the following requirements:
+** Contains the mirror registry
+** Has firewall rules or a peering connection to access the mirror registry hosted elsewhere
+* If you use a firewall, you xref:../../installing/install_config/configuring-firewall.adoc#configuring-firewall[configured it to allow the sites] that your cluster requires access to. While you might need to grant access to more sites, you must grant access to `*.googleapis.com` and `accounts.google.com`.
+
+include::modules/installation-about-restricted-network.adoc[leveloffset=+1]
+
+include::modules/cluster-entitlements.adoc[leveloffset=+1]
+
+include::modules/ssh-agent-using.adoc[leveloffset=+1]
+
+include::modules/installation-initializing.adoc[leveloffset=+1]
+
+[role="_additional-resources"]
+.Additional resources
+* xref:../../installing/installing_gcp/installation-config-parameters-gcp.adoc#installation-config-parameters-gcp[Installation configuration parameters for GCP]
+
+include::modules/installation-minimum-resource-requirements.adoc[leveloffset=+2]
+
+[role="_additional-resources"]
+.Additional resources
+
+* xref:../../scalability_and_performance/optimization/optimizing-storage.adoc#optimizing-storage[Optimizing storage]
+
+include::modules/installation-gcp-tested-machine-types.adoc[leveloffset=+2]
+
+include::modules/installation-gcp-tested-machine-types-arm.adoc[leveloffset=+2]
+
+include::modules/installation-using-gcp-custom-machine-types.adoc[leveloffset=+2]
+
+include::modules/installation-gcp-enabling-shielded-vms.adoc[leveloffset=+2]
+
+include::modules/installation-gcp-enabling-confidential-vms.adoc[leveloffset=+2]
+
+include::modules/installation-gcp-config-yaml.adoc[leveloffset=+2]
+
+include::modules/nw-gcp-installing-global-access-configuration.adoc[leveloffset=+2]
+
+include::modules/installation-configure-proxy.adoc[leveloffset=+2]
+
+//Installing the OpenShift CLI by downloading the binary: Moved up to precede `ccoctl` steps, which require the use of `oc`
+include::modules/cli-installing-cli.adoc[leveloffset=+1]
+
+[id="installing-gcp-manual-modes_{context}"]
+== Alternatives to storing administrator-level secrets in the kube-system project
+
+By default, administrator secrets are stored in the `kube-system` project. If you configured the `credentialsMode` parameter in the `install-config.yaml` file to `Manual`, you must use one of the following alternatives:
+
+* To manage long-term cloud credentials manually, follow the procedure in xref:../../installing/installing_gcp/installing-restricted-networks-gcp-installer-provisioned.adoc#manually-create-iam_installing-restricted-networks-gcp-installer-provisioned[Manually creating long-term credentials].
+
+* To implement short-term credentials that are managed outside the cluster for individual components, follow the procedures in xref:../../installing/installing_gcp/installing-restricted-networks-gcp-installer-provisioned.adoc#installing-gcp-with-short-term-creds_installing-restricted-networks-gcp-installer-provisioned[Configuring a GCP cluster to use short-term credentials].
+
+//Manually creating long-term credentials
+include::modules/manually-create-identity-access-management.adoc[leveloffset=+2]
+
+//Supertask: Configuring a GCP cluster to use short-term credentials
+[id="installing-gcp-with-short-term-creds_{context}"]
+=== Configuring a GCP cluster to use short-term credentials
+
+To install a cluster that is configured to use GCP Workload Identity, you must configure the CCO utility and create the required GCP resources for your cluster.
+
+//Task part 1: Configuring the Cloud Credential Operator utility
+include::modules/cco-ccoctl-configuring.adoc[leveloffset=+3]
+
+//Task part 2: Creating the required GCP resources
+include::modules/cco-ccoctl-creating-at-once.adoc[leveloffset=+3]
+
+//Task part 3: Incorporating the Cloud Credential Operator utility manifests
+include::modules/cco-ccoctl-install-creating-manifests.adoc[leveloffset=+3]
+
+include::modules/installation-launching-installer.adoc[leveloffset=+1]
+
+include::modules/cli-logging-in-kubeadmin.adoc[leveloffset=+1]
+
+include::modules/olm-restricted-networks-configuring-operatorhub.adoc[leveloffset=+1]
+
+include::modules/cluster-telemetry.adoc[leveloffset=+1]
+
+[role="_additional-resources"]
+.Additional resources
+
+* See xref:../../support/remote_health_monitoring/about-remote-health-monitoring.adoc#about-remote-health-monitoring[About remote health monitoring] for more information about the Telemetry service
+
+[id="next-steps_installing-restricted-networks-gcp-installer-provisioned"]
+== Next steps
+
+* xref:../../installing/validating-an-installation.adoc#validating-an-installation[Validate an installation].
+* xref:../../post_installation_configuration/cluster-tasks.adoc#available_cluster_customizations[Customize your cluster].
+* xref:../../post_installation_configuration/cluster-tasks.adoc#post-install-must-gather-disconnected[Configure image streams] for the Cluster Samples Operator and the `must-gather` tool.
+* Learn how to xref:../../operators/admin/olm-restricted-networks.adoc#olm-restricted-networks[use Operator Lifecycle Manager (OLM) on restricted networks].
+* If the mirror registry that you used to install your cluster has a trusted CA, add it to the cluster by xref:../../openshift_images/image-configuration.adoc#images-configuration-cas_image-configuration[configuring additional trust stores].
+* If necessary, you can xref:../../support/remote_health_monitoring/opting-out-of-remote-health-reporting.adoc#opting-out-remote-health-reporting_opting-out-remote-health-reporting[opt out of remote health reporting].
+* If necessary, see xref:../../support/remote_health_monitoring/opting-out-of-remote-health-reporting.adoc#insights-operator-register-disconnected-cluster_opting-out-remote-health-reporting[Registering your disconnected cluster]

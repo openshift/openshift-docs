@@ -1,0 +1,41 @@
+:_mod-docs-content-type: ASSEMBLY
+[id="olm-installing-operators-in-namespace"]
+= Installing Operators in your namespace
+include::_attributes/common-attributes.adoc[]
+:context: olm-installing-operators-in-namespace
+
+toc::[]
+
+If a cluster administrator has delegated Operator installation permissions to your account, you can install and subscribe an Operator to your namespace in a self-service manner.
+
+[id="olm-installing-operators-in-namespace-prereqs"]
+== Prerequisites
+
+* A cluster administrator must add certain permissions to your {product-title} user account to allow self-service Operator installation to a namespace. See xref:../../operators/admin/olm-creating-policy.adoc#olm-creating-policy[Allowing non-cluster administrators to install Operators] for details.
+
+ifdef::openshift-origin[]
+* Ensure that you have downloaded the {cluster-manager-url-pull} as shown in _Obtaining the installation program_ in the installation documentation for your platform.
++
+If you have the pull secret, add the `redhat-operators` catalog to the `OperatorHub` custom resource (CR) as shown in _Configuring {product-title} to use Red Hat Operators_.
+endif::[]
+
+include::modules/olm-installing-operators-from-operatorhub.adoc[leveloffset=+1]
+* xref:../../operators/understanding/olm-understanding-operatorhub.adoc#olm-understanding-operatorhub[Understanding OperatorHub]
+
+include::modules/olm-installing-from-operatorhub-using-web-console.adoc[leveloffset=+1]
+ifdef::openshift-enterprise,openshift-webscale,openshift-origin[]
+include::modules/olm-installing-from-operatorhub-using-cli.adoc[leveloffset=+1]
+
+[role="_additional-resources"]
+.Additional resources
+
+* xref:../../operators/understanding/olm/olm-understanding-olm.adoc#olm-operatorgroups-about_olm-understanding-olm[Operator groups]
+* xref:../../operators/understanding/olm/olm-understanding-olm.adoc#olm-subscription_olm-understanding-olm[Channel names]
+
+include::modules/olm-installing-specific-version-cli.adoc[leveloffset=+1]
+
+[role="_additional-resources"]
+.Additional resources
+
+* xref:../../operators/admin/olm-upgrading-operators.adoc#olm-approving-pending-upgrade_olm-upgrading-operators[Manually approving a pending Operator update]
+endif::[]

@@ -1,0 +1,27 @@
+:_mod-docs-content-type: ASSEMBLY
+[id="ossm-config-v1x"]
+= Configuring Service Mesh
+include::_attributes/common-attributes.adoc[]
+:context: ossm-config-v1x
+
+toc::[]
+
+include::snippets/ossm-out-of-support.adoc[]
+
+After you create a `ServiceMeshControlPlane` resource, configure the resource to suit your environment and requirements.
+
+This guide references the Bookinfo sample application to provide examples of security in an example application. Install the xref:../../service_mesh/v2x/prepare-to-deploy-applications-ossm.adoc#ossm-tutorial-bookinfo-overview_deploying-applications-ossm[Bookinfo application] to learn how these routing examples work.
+
+include::modules/ossm-config-security.adoc[leveloffset=+1]
+
+include::modules/ossm-security-mtls-1x.adoc[leveloffset=+2]
+
+include::modules/ossm-security-cipher.adoc[leveloffset=+2]
+
+include::modules/ossm-security-cert-manage.adoc[leveloffset=+2]
+
+include::modules/ossm-config-dist-trac.adoc[leveloffset=+1]
+
+include::modules/ossm-config-sampling.adoc[leveloffset=+2]
+
+include::modules/ossm-config-external-jaeger.adoc[leveloffset=+2]

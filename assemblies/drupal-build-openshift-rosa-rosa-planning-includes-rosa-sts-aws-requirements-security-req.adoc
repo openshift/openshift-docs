@@ -1,0 +1,9 @@
+// Module included in the following assemblies:
+//
+// * rosa_planning/rosa-sts-aws-prereqs.adoc
+
+:_mod-docs-content-type: CONCEPT
+[id="rosa-security-requirements_{context}"]
+= Security requirements
+* Red Hat must have ingress access to EC2 hosts and the API server from allow-listed IP addresses.
+* Red Hat must have egress allowed to the documented domains. See the "AWS firewall prerequisites" section for the designated domains.

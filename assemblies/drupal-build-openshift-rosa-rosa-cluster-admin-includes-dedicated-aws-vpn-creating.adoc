@@ -1,0 +1,99 @@
+// Module included in the following assemblies:
+//
+// * rosa_cluster_admin/cloud_infrastructure_access/dedicated-aws-vpn.adoc
+
+:_mod-docs-content-type: PROCEDURE
+[id="dedicated-aws-vpn-creating"]
+= Creating a VPN connection
+
+You can configure an Amazon Web Services (AWS) {product-title} cluster to use a
+customer's on-site hardware VPN device using the following procedures.
+
+.Prerequisites
+
+* Hardware VPN gateway device model and software version, for example Cisco ASA
+running version 8.3. See the Amazon VPC
+link:https://docs.aws.amazon.com/vpc/latest/adminguide/Introduction.html#DevicesTested[Network Administrator Guide]
+to confirm whether your gateway device is supported by AWS.
+* Public, static IP address for the VPN gateway device.
+* BGP or static routing: if BGP, the ASN is required. If static routing, you must
+configure at least one static route.
+* Optional: IP and Port/Protocol of a reachable service to test the VPN connection.
+
+[id="dedicated-aws-vpn-creating-configuring"]
+== Configuring the VPN connection
+
+.Procedure
+
+. Log in to the {product-title} AWS Account Dashboard, and navigate to the VPC Dashboard.
+. Click on *Your VPCs* and identify the name and VPC ID for the VPC containing the {product-title} cluster.
+. From the VPC Dashboard, click *Customer Gateway*.
+. Click *Create Customer Gateway* and give it a meaningful name.
+. Select the routing method: *Dynamic* or *Static*.
+. If Dynamic, enter the BGP ASN in the field that appears.
+. Paste in the VPN gateway endpoint IP address.
+. Click *Create*.
+. If you do not already have a Virtual Private Gateway attached to the intended VPC:
+.. From the VPC Dashboard, click on *Virtual Private Gateway*.
+.. Click *Create Virtual Private Gateway*, give it a meaningful name, and click *Create*.
+.. Leave the default Amazon default ASN.
+.. Select the newly created gateway, click *Attach to VPC*, and attach it to the cluster VPC you identified earlier.
+
+[id="dedicated-aws-vpn-creating-establishing"]
+== Establishing the VPN Connection
+
+.Procedure
+
+. From the VPC dashboard, click on *Site-to-Site VPN Connections*.
+. Click *Create VPN Connection*.
+.. Give it a meaningful name tag.
+.. Select the virtual private gateway created previously.
+.. For Customer Gateway, select *Existing*.
+.. Select the customer gateway device by name.
+.. If the VPN will use BGP, select *Dynamic*, otherwise select *Static*. Enter
+Static IP CIDRs. If there are multiple CIDRs, add each CIDR as *Another Rule*.
+.. Click *Create*.
+.. Wait for VPN status to change to *Available*, approximately 5 to 10 minutes.
+. Select the VPN you just created and click *Download Configuration*.
+.. From the dropdown list, select the vendor, platform, and version of the customer
+gateway device, then click *Download*.
+.. The *Generic* vendor configuration is also available for retrieving information
+in a plain text format.
+
+[NOTE]
+====
+After the VPN connection has been established, be sure to set up Route
+Propagation or the VPN may not function as expected.
+====
+
+[NOTE]
+====
+Note the VPC subnet information, which you must add to your configuration as the
+remote network.
+====
+
+[id="dedicated-aws-vpn-creating-propagation"]
+== Enabling VPN route propagation
+
+After you have set up the VPN connection, you must ensure that route propagation
+is enabled so that the necessary routes are added to the VPC's route table.
+
+.Procedure
+
+. From the VPC Dashboard, click on *Route Tables*.
+. Select the private Route table associated with the VPC that contains your
+{product-title} cluster.
++
+[NOTE]
+====
+On some clusters, there may be more than one route table for a particular VPC.
+Select the private one that has a number of explicitly associated subnets.
+====
+. Click on the *Route Propagation* tab.
+. In the table that appears, you should see the virtual private gateway you
+created previously. Check the value in the *Propagate column*.
+.. If Propagate is set to *No*, click *Edit route propagation*, check the Propagate
+checkbox next to the virtual private gateway's name and click *Save*.
+
+After you configure your VPN tunnel and AWS detects it as *Up*, your static or
+BGP routes are automatically added to the route table.

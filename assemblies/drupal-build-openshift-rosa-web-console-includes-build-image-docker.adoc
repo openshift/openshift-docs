@@ -1,0 +1,32 @@
+// Module included in the following assemblies:
+//
+// * web_console/dynamic-plugin/deploy-plugin-cluster.adoc
+
+:_mod-docs-content-type: PROCEDURE
+[id="build-image-with-docker_{context}"]
+= Build an image with Docker
+
+To deploy your plugin on a cluster, you need to build an image and push it to an image registry.
+
+.Procedure
+
+. Build the image with the following command:
++
+[source,terminal]
+----
+$ docker build -t quay.io/my-repositroy/my-plugin:latest .
+----
+
+. Optional: If you want to test your image, run the following command:
++
+[source,terminal]
+----
+$ docker run -it --rm -d -p 9001:80 quay.io/my-repository/my-plugin:latest
+----
+
+. Push the image by running the following command:
++
+[source,terminal]
+----
+$ docker push quay.io/my-repository/my-plugin:latest
+----

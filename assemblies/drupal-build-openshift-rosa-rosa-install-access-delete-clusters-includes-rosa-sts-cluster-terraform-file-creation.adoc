@@ -1,0 +1,542 @@
+// Module included in the following assemblies:
+//
+// * rosa_install_access_delete_clusters/rosa-sts-creating-a-cluster-quickly-terraform.adoc
+//
+ifeval::["{context}" == "rosa-sts-creating-a-cluster-quickly-terraform"]
+:tf-defaults:
+endif::[]
+:_content-type: PROCEDURE
+
+[id="rosa-sts-cluster-terraform-file-creation_{context}"]
+= Creating your Terraform files locally
+
+After you set up your link:https://console.redhat.com/openshift/token[offline {cluster-manager-first} token], you need to create the Terraform files locally to build your cluster. You can create these files by using the following code templates.
+
+.Procedure
+
+. Create the `account-roles.tf` file by running the following command:
++
+[source,terminal]
+----
+$ cat<<-EOF>account-roles.tf
+data "rhcs_policies" "all_policies" {}
+
+data "rhcs_versions" "all" {}
+
+module "create_account_roles" {
+  source  = "terraform-redhat/rosa-sts/aws"
+  version = ">=0.0.15"
+
+  create_account_roles  = true
+  create_operator_roles = false
+
+  account_role_prefix    = local.cluster_name
+  path                   = var.path
+  rosa_openshift_version = regex("^[0-9]+\\\\.[0-9]+", var.rosa_openshift_version)
+  account_role_policies  = data.rhcs_policies.all_policies.account_role_policies
+  all_versions           = data.rhcs_versions.all
+  operator_role_policies = data.rhcs_policies.all_policies.operator_role_policies
+  tags                   = var.additional_tags
+}
+
+resource "time_sleep" "wait_10_seconds" {
+  depends_on = [module.create_account_roles]
+
+  create_duration = "10s"
+}
+EOF
+----
+
+. Create the `main.tf` file by running the following command:
+ifdef::tf-defaults[]
++
+[source,terminal]
+----
+$ cat<<-EOF>main.tf
+#
+# Copyright (c) 2023 Red Hat, Inc.
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#   http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+#
+
+terraform {
+  required_providers {
+    aws = {
+      source  = "hashicorp/aws"
+      version = ">= 4.20.0"
+    }
+    rhcs = {
+      version = ">= 1.5.0"
+      source  = "terraform-redhat/rhcs"
+    }
+  }
+}
+
+# Export token using the RHCS_TOKEN environment variable
+provider "rhcs" {}
+
+provider "aws" {
+  region = var.aws_region
+  ignore_tags {
+    key_prefixes = ["kubernetes.io/"]
+  }
+}
+
+data "aws_availability_zones" "available" {}
+
+locals {
+  # Extract availability zone names for the specified region, limit it to 1
+  region_azs = slice([for zone in data.aws_availability_zones.available.names : format("%s", zone)], 0, 1)
+}
+
+resource "random_string" "random_name" {
+  length           = 6
+  special          = false
+  upper            = false
+}
+
+locals {
+  path = coalesce(var.path, "/")
+  sts_roles = {
+    role_arn         = "arn:aws:iam::\${data.aws_caller_identity.current.account_id}:role\${local.path}\${local.cluster_name}-Installer-Role",
+    support_role_arn = "arn:aws:iam::\${data.aws_caller_identity.current.account_id}:role\${local.path}\${local.cluster_name}-Support-Role",
+    instance_iam_roles = {
+      master_role_arn = "arn:aws:iam::\${data.aws_caller_identity.current.account_id}:role\${local.path}\${local.cluster_name}-ControlPlane-Role",
+      worker_role_arn = "arn:aws:iam::\${data.aws_caller_identity.current.account_id}:role\${local.path}\${local.cluster_name}-Worker-Role"
+    },
+    operator_role_prefix = local.cluster_name,
+    oidc_config_id       = rhcs_rosa_oidc_config.oidc_config.id
+  }
+  worker_node_replicas = coalesce(var.worker_node_replicas, 2)
+  # If cluster_name is not null, use that, otherwise generate a random cluster name
+  cluster_name = coalesce(var.cluster_name, "rosa-\${random_string.random_name.result}")
+}
+
+data "aws_caller_identity" "current" {
+}
+
+resource "rhcs_cluster_rosa_classic" "rosa_sts_cluster" {
+  name                 = local.cluster_name
+  cloud_region         = var.aws_region
+  multi_az             = false
+  aws_account_id       = data.aws_caller_identity.current.account_id
+  availability_zones   = ["us-east-1a"]
+  tags                 = var.additional_tags
+  version              = var.rosa_openshift_version
+  compute_machine_type = var.machine_type
+  replicas             = local.worker_node_replicas
+  autoscaling_enabled  = false
+  sts                  = local.sts_roles
+  properties = {
+    rosa_creator_arn = data.aws_caller_identity.current.arn
+  }
+  machine_cidr     = var.vpc_cidr_block
+
+  lifecycle {
+    precondition {
+      condition     = can(regex("^[a-z][-a-z0-9]{0,13}[a-z0-9]\$", local.cluster_name))
+      error_message = "ROSA cluster name must be less than 16 characters, be lower case alphanumeric, with only hyphens."
+    }
+  }
+
+  depends_on = [time_sleep.wait_10_seconds]
+}
+
+resource "rhcs_cluster_wait" "wait_for_cluster_build" {
+  cluster = rhcs_cluster_rosa_classic.rosa_sts_cluster.id
+  # timeout in minutes
+  timeout = 60
+}
+EOF
+----
+endif::tf-defaults[]
+ifndef::tf-defaults[]
++
+[NOTE]
+====
+Copy and edit this file _before_ running the command to build your cluster.
+====
++
+[source,terminal]
+----
+$ cat<<-EOF>main.tf
+#
+# Copyright (c) 2023 Red Hat, Inc.
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#   http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+#
+
+terraform {
+  required_providers {
+    aws = {
+      source  = "hashicorp/aws"
+      version = ">= 4.20.0"
+    }
+    rhcs = {
+      version = ">= 1.5.0"
+      source  = "terraform-redhat/rhcs"
+    }
+  }
+}
+
+# Export token using the RHCS_TOKEN environment variable
+provider "rhcs" {}
+
+provider "aws" {
+  region = var.aws_region
+  ignore_tags {
+    key_prefixes = ["kubernetes.io/"]
+  }
+}
+
+data "aws_availability_zones" "available" {
+  state = "available"
+
+  # New configuration to exclude Local Zones
+  filter {
+    name   = "opt-in-status"
+    values = ["opt-in-not-required"]
+  }
+}
+
+locals {
+  # These lines will determine how many availability zones to extract based on if you are creating a single or multi AZ cluster.
+  az_count = var.multi_az ? 3 : 1
+  region_azs = slice([for zone in data.aws_availability_zones.available.names : format("%s", zone)], 0, local.az_count)
+}
+
+resource "random_string" "random_name" {
+  length           = 6
+  special          = false
+  upper            = false
+}
+
+locals {
+  path = coalesce(var.path, "/")
+  sts_roles = {
+    role_arn         = "arn:aws:iam::\${data.aws_caller_identity.current.account_id}:role\${local.path}\${local.cluster_name}-Installer-Role",
+    support_role_arn = "arn:aws:iam::\${data.aws_caller_identity.current.account_id}:role\${local.path}\${local.cluster_name}-Support-Role",
+    instance_iam_roles = {
+      master_role_arn = "arn:aws:iam::\${data.aws_caller_identity.current.account_id}:role\${local.path}\${local.cluster_name}-ControlPlane-Role",
+      worker_role_arn = "arn:aws:iam::\${data.aws_caller_identity.current.account_id}:role\${local.path}\${local.cluster_name}-Worker-Role"
+    },
+    operator_role_prefix = local.cluster_name,
+    oidc_config_id       = rhcs_rosa_oidc_config.oidc_config.id
+  }
+  worker_node_replicas = var.worker_node_replicas == null ? 3 : var.worker_node_replicas
+  # If cluster_name is not null, use that, otherwise generate a random cluster name
+  cluster_name = coalesce(var.cluster_name, "rosa-${random_string.random_name.result}")
+}
+
+data "aws_caller_identity" "current" {
+}
+
+resource "rhcs_cluster_rosa_classic" "rosa_sts_cluster" {
+  name                 = local.cluster_name
+  cloud_region         = var.aws_region
+  multi_az             = var.multi_az
+  aws_account_id       = data.aws_caller_identity.current.account_id
+  availability_zones   = local.region_azs
+  tags                 = var.additional_tags
+  version              = var.rosa_openshift_version
+  proxy                = var.proxy
+  compute_machine_type = var.machine_type
+  autoscaling_enabled  = var.autoscaling_enabled
+  replicas             = local.worker_node_replicas
+  min_replicas         = var.min_replicas
+  max_replicas         = var.max_replicas
+
+  sts                  = local.sts_roles
+  properties = {
+    rosa_creator_arn = data.aws_caller_identity.current.arn
+  }
+
+    admin_credentials      = {
+    username = var.admin_username
+    password = var.admin_password
+  }
+
+#
+#Private link settings
+#
+
+  private          = var.private_cluster
+  aws_private_link = var.private_cluster
+  aws_subnet_ids   = var.create_vpc ? concat(module.vpc[0].private_subnets, module.vpc[0].public_subnets) : var.private_subnet_ids
+  machine_cidr     = var.private_cluster ? var.vpc_cidr_block : null
+
+  lifecycle {
+    precondition {
+      condition     = can(regex("^[a-z][-a-z0-9]{0,13}[a-z0-9]\$", local.cluster_name))
+      error_message = "ROSA cluster name must be less than 16 characters, be lower case alphanumeric, with only hyphens."
+    }
+  }
+
+  depends_on = [time_sleep.wait_10_seconds]
+}
+
+resource "rhcs_cluster_wait" "wait_for_cluster_build" {
+  cluster = rhcs_cluster_rosa_classic.rosa_sts_cluster.id
+  # timeout in minutes
+  timeout = 60
+}
+EOF
+----
+endif::tf-defaults[]
+
+. Create the `oidc-provider.tf` file by running the following command:
++
+[source,terminal]
+----
+$ cat<<-EOF>oidc-provider.tf
+resource "rhcs_rosa_oidc_config" "oidc_config" {
+  managed = true
+}
+
+data "rhcs_rosa_operator_roles" "operator_roles" {
+  operator_role_prefix = local.cluster_name
+  account_role_prefix  = local.cluster_name
+}
+
+module "oidc_provider" {
+  source  = "terraform-redhat/rosa-sts/aws"
+  version = "0.0.15"
+
+  create_operator_roles = false
+  create_oidc_provider  = true
+
+  cluster_id                  = ""
+  rh_oidc_provider_thumbprint = rhcs_rosa_oidc_config.oidc_config.thumbprint
+  rh_oidc_provider_url        = rhcs_rosa_oidc_config.oidc_config.oidc_endpoint_url
+  tags                        = var.additional_tags
+  path                        = var.path
+}
+EOF
+----
+
+. Create the `operator-roles.tf` file by running the following command:
++
+[source,terminal]
+----
+$ cat<<-EOF>operator-roles.tf
+module "operator_roles" {
+  source  = "terraform-redhat/rosa-sts/aws"
+  version = "0.0.15"
+
+  create_operator_roles = true
+  create_oidc_provider  = false
+
+  rh_oidc_provider_thumbprint = rhcs_rosa_oidc_config.oidc_config.thumbprint
+  rh_oidc_provider_url        = rhcs_rosa_oidc_config.oidc_config.oidc_endpoint_url
+  operator_roles_properties   = data.rhcs_rosa_operator_roles.operator_roles.operator_iam_roles
+  tags                        = var.additional_tags
+  path                        = var.path
+}
+EOF
+----
+
+. Create the `variables.tf` file by running the following command:
+ifndef::tf-defaults[]
++
+[NOTE]
+====
+Copy and edit this file _before_ running the command to build your cluster.
+====
+endif::tf-defaults[]
++
+[source,terminal]
+----
+$ cat<<-EOF>variables.tf
+variable "rosa_openshift_version" {
+  type        = string
+  default     = "4.15.0"
+  description = "Desired version of OpenShift for the cluster, for example '4.15.0'. If version is greater than the currently running version, an upgrade will be scheduled."
+}
+
+variable "account_role_policies" {
+  description = "account role policies details for account roles creation"
+  type = object({
+    sts_installer_permission_policy             = string
+    sts_support_permission_policy               = string
+    sts_instance_worker_permission_policy       = string
+    sts_instance_controlplane_permission_policy = string
+  })
+  default = null
+}
+
+variable "operator_role_policies" {
+  description = "operator role policies details for operator roles creation"
+  type = object({
+    openshift_cloud_credential_operator_cloud_credential_operator_iam_ro_creds_policy = string
+    openshift_cloud_network_config_controller_cloud_credentials_policy                = string
+    openshift_cluster_csi_drivers_ebs_cloud_credentials_policy                        = string
+    openshift_image_registry_installer_cloud_credentials_policy                       = string
+    openshift_ingress_operator_cloud_credentials_policy                               = string
+    openshift_machine_api_aws_cloud_credentials_policy                                = string
+  })
+  default = null
+}
+
+# ROSA Cluster info
+variable "cluster_name" {
+  default     = null
+  type        = string
+  description = "Provide the name of your ROSA cluster."
+}
+
+variable "additional_tags" {
+  default = {
+    Terraform   = "true"
+  }
+  description = "Additional AWS resource tags"
+  type        = map(string)
+}
+
+variable "path" {
+  description = "(Optional) The arn path for the account/operator roles as well as their policies."
+  type        = string
+  default     = null
+}
+
+variable "machine_type" {
+  description = "The AWS instance type used for your default worker pool."
+  type        = string
+  default     = "m5.xlarge"
+}
+
+variable "worker_node_replicas" {
+  default     = 2
+  description = "Number of worker nodes to provision. Single zone clusters need at least 2 nodes, multizone clusters need at least 3 nodes"
+  type        = number
+}
+
+variable "autoscaling_enabled" {
+  description = "Enables autoscaling. This variable requires you to set a maximum and minimum replicas range using the 'max_replicas' and 'min_replicas' variables. If the autoscaling_enabled is 'true', you cannot configure the worker_node_replicas."
+  type        = string
+  default     = "false"
+}
+
+#VPC Info
+variable "vpc_cidr_block" {
+  type        = string
+  description = "The value of the IP address block for machines or cluster nodes for the VPC."
+  default     = "10.0.0.0/16"
+}
+
+#AWS Info
+variable "aws_region" {
+  type    = string
+  default = "us-east-1"
+}
+EOF
+----
+ifndef::tf-defaults[]
+
+. Create the `vpc.tf` file by running the following command:
++
+[source,terminal]
+----
+$ cat<<-EOF>vpc.tf
+module "vpc" {
+  source  = "terraform-aws-modules/vpc/aws"
+  version = "5.1.2"
+
+  count = var.create_vpc ? 1 : 0
+  name  = var.vpc_name
+  cidr  = var.vpc_cidr_block
+
+  azs             = var.availability_zones
+  private_subnets = var.private_subnet_cidrs
+  public_subnets  = var.public_subnet_cidrs
+
+  enable_nat_gateway   = true
+  single_nat_gateway   = var.single_nat_gateway
+  enable_dns_hostnames = true
+  enable_dns_support   = true
+
+  tags = var.additional_tags
+}
+EOF
+----
+
+. Create the `terraform.tfvars` file by running the following command:
++
+[NOTE]
+====
+Use the `terraform.tfvars` file to change variables in one place without modifying the rest of your Terraform files when customizing your cluster. If you do not create a `terraform.tfvars` file, you are prompted for the required variables during cluster creation.
+
+Copy and edit this file _before_ running the command to build your cluster.
+====
++
+[source,terminal]
+----
+$ cat<<-EOF>terraform.tfvars
+
+###############################
+# General Cluster Information #
+###############################
+
+# You can choose any OpenShift version that is currently supported. Make sure to use X.Y.Z when setting your version.
+rosa_openshift_version = "4.14.0"
+
+# See the docs for options - https://docs.openshift.com/rosa/rosa_architecture/rosa_policy_service_definition/rosa-service-definition.html#rosa-sdpolicy-aws-instance-types_rosa-service-definition
+machine_type = "m5.xlarge"
+aws_region = "us-east-1"
+
+# If you want to create a single AZ cluster, set this variable to false, and then set the worker_node_replicas to 2. If you want to use a multi-AZ cluster, set this to true, then change the replica count to a multiple of 3. Autoscaling should also be in multiples of 3.
+multi_az = "true"
+
+#################
+# Machine pools #
+#################
+
+# Setting this as true, requires you to set a maximum and minimum replicas range using the 'max_replicas' and 'min_replicas' variables. If the autoscaling_enabled is 'true', you cannot configure the worker_node_replicas."
+
+# autoscaling_enabled = "true"
+# worker_node_replicas = null
+# min_replicas = "6"
+# max_replicas = "15"
+
+###################
+# VPC Information #
+###################
+
+vpc_cidr_block = "10.0.0.0/16"
+create_vpc = "false"
+private_cluster = "false"
+# vpc_name = "rosa-vpc-tf"
+# private_subnet_cidrs = ["10.0.1.0/24", "10.0.2.0/24", "10.0.3.0/24"]
+# public_subnet_cidrs  = ["10.0.101.0/24", "10.0.102.0/24", "10.0.103.0/24"]
+# single_nat_gateway = "false"
+
+EOF
+----
+endif::tf-defaults[]
+
+ifdef::tf-defaults[]
+You are ready to initiate Terraform.
+endif::tf-defaults[]
+
+ifeval::["{context}" == "rosa-sts-creating-a-cluster-quickly-terraform"]
+:!tf-defaults:
+endif::[]

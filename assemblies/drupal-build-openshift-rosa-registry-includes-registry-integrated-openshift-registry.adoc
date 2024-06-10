@@ -1,0 +1,28 @@
+// Module included in the following assemblies:
+//
+//* registry/registry-options
+//* registry/index.adoc
+
+[id="registry-integrated-openshift-registry_{context}"]
+= Integrated {product-registry}
+
+{product-title} provides a built-in container image registry that runs as a
+standard workload on the cluster. The registry is configured and managed by an
+infrastructure Operator. It provides an out-of-the-box solution for users to
+manage the images that run their workloads, and runs on top of the existing
+cluster infrastructure. This registry can be scaled up or down like any other
+cluster workload and does not require specific infrastructure provisioning. In
+addition, it is integrated into the cluster user authentication and
+authorization system, which means that access to create and retrieve images is
+controlled by defining user permissions on the image resources.
+
+The registry is typically used as a publication target for images built on the
+cluster, as well as being a source of images for workloads running on the cluster.
+When a new image is pushed to the registry, the cluster is notified of the
+new image and other components can react to and consume the updated image.
+
+Image data is stored in two locations. The actual image data is stored in a
+configurable storage location, such as cloud storage or a filesystem volume. The
+image metadata, which is exposed by the standard cluster APIs and is used to
+perform access control, is stored as standard API resources, specifically images
+and imagestreams.

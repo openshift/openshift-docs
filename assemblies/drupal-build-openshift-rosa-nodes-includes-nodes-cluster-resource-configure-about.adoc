@@ -1,0 +1,97 @@
+// Module included in the following assemblies:
+//
+// * nodes/nodes-cluster-resource-configure.adoc
+
+:_mod-docs-content-type: CONCEPT
+[id="nodes-cluster-resource-configure-about_{context}"]
+= Understanding managing application memory
+
+It is recommended to fully read the overview of how {product-title} manages
+Compute Resources before proceeding.
+
+For each kind of resource (memory, CPU, storage), {product-title} allows
+optional *request* and *limit* values to be placed on each container in a
+pod.
+
+Note the following about memory requests and memory limits:
+
+* *Memory request*
+
+  - The memory request value, if specified, influences the {product-title}
+    scheduler. The scheduler considers the memory request when scheduling a
+    container to a node, then fences off the requested memory on the chosen node
+    for the use of the container.
+
+  - If a node's memory is exhausted, {product-title} prioritizes evicting its
+    containers whose memory usage most exceeds their memory request. In serious
+    cases of memory exhaustion, the node OOM killer may select and kill a
+    process in a container based on a similar metric.
+
+  - The cluster administrator can assign quota or assign default values for the memory request value.
+
+  - The cluster administrator can override the memory request values that a developer specifies, to manage cluster overcommit.
+
+* *Memory limit*
+
+  - The memory limit value, if specified, provides a hard limit on the memory
+    that can be allocated across all the processes in a container.
+
+  - If the memory allocated by all of the processes in a container exceeds the
+    memory limit, the node Out of Memory (OOM) killer will immediately select and kill a
+    process in the container.
+
+  - If both memory request and limit are specified, the memory limit value must
+    be greater than or equal to the memory request.
+
+  - The cluster administrator can assign quota or assign default values for the memory limit value.
+
+  - The minimum memory limit is 12 MB. If a container fails to start due to a `Cannot allocate memory` pod event, the memory limit is too low.
+Either increase or remove the memory limit. Removing the limit allows pods to consume unbounded node resources.
+
+[id="nodes-cluster-resource-configure-about-memory_{context}"]
+== Managing application memory strategy
+
+The steps for sizing application memory on {product-title} are as follows:
+
+. *Determine expected container memory usage*
++
+Determine expected mean and peak container memory usage, empirically if
+necessary (for example, by separate load testing). Remember to consider all the
+processes that may potentially run in parallel in the container: for example,
+does the main application spawn any ancillary scripts?
+
+. *Determine risk appetite*
++
+Determine risk appetite for eviction. If the risk appetite is low, the
+container should request memory according to the expected peak usage plus a
+percentage safety margin. If the risk appetite is higher, it may be more
+appropriate to request memory according to the expected mean usage.
+
+. *Set container memory request*
++
+Set container memory request based on the above. The more accurately the
+request represents the application memory usage, the better. If the request is
+too high, cluster and quota usage will be inefficient. If the request is too
+low, the chances of application eviction increase.
+
+. *Set container memory limit, if required*
++
+Set container memory limit, if required. Setting a limit has the effect of
+immediately killing a container process if the combined memory usage of all
+processes in the container exceeds the limit, and is therefore a mixed blessing.
+On the one hand, it may make unanticipated excess memory usage obvious early
+("fail fast"); on the other hand it also terminates processes abruptly.
++
+Note that some {product-title} clusters may require a limit value to be set;
+some may override the request based on the limit; and some application images
+rely on a limit value being set as this is easier to detect than a request
+value.
++
+If the memory limit is set, it should not be set to less than the expected peak
+container memory usage plus a percentage safety margin.
+
+. *Ensure application is tuned*
++
+Ensure application is tuned with respect to configured request and limit values,
+if appropriate. This step is particularly relevant to applications which pool
+memory, such as the JVM. The rest of this page discusses this.

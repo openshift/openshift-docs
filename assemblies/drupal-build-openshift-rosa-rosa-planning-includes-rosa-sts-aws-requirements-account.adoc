@@ -1,0 +1,23 @@
+// Module included in the following assemblies:
+//
+// * rosa_planning/rosa-sts-aws-prereqs.adocx
+:_mod-docs-content-type: CONCEPT
+[id="rosa-account_{context}"]
+= Account
+* You must ensure that the AWS limits are sufficient to support {product-title} provisioned within your AWS account. Running the `rosa verify quota` command in the CLI validates that you have the required quota to run a cluster.
++
+[NOTE]
+====
+Quota verification checks your AWS quota, but it does not compare your consumption to your AWS quota. See the "Limits and scalability" link in Additional resources for more information.
+====
++
+* If SCP policies are applied and enforced, these policies must not be more restrictive than the roles and policies required by the cluster.
+* Your AWS account should not be transferable to Red Hat.
+* You should not impose additional AWS usage restrictions beyond the defined roles and policies on Red Hat activities. Imposing restrictions will severely hinder Red Hat's ability to respond to incidents.
+* You may deploy native AWS services within the same AWS account.
+* Your account must have a service-linked role set up as it is required for Elastic Load Balancing (ELB) to be configured. See the "Creating the Elastic Load Balancing (ELB) service-linked role" link in the Additional resources for information about creating a service-linked role for your ELB if you have not created a load balancer in your AWS account previously.
++
+[NOTE]
+====
+You are encouraged, but not required, to deploy resources in a Virtual Private Cloud (VPC) separate from the VPC hosting {product-title} and other Red Hat supported services.
+====

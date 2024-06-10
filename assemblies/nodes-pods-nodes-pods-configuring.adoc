@@ -1,0 +1,45 @@
+:_mod-docs-content-type: ASSEMBLY
+:context: nodes-pods-configuring
+[id="nodes-pods-configuring"]
+= Configuring an {product-title} cluster for pods
+include::_attributes/common-attributes.adoc[]
+
+toc::[]
+
+As an administrator, you can create and maintain an efficient cluster for pods.
+
+By keeping your cluster efficient, you can provide a better environment for your developers using
+such tools as what a pod does when it exits, ensuring that the required number of pods is always running,
+when to restart pods designed to run only once, limit the bandwidth available to pods, and how to keep
+pods running during disruptions.
+
+// The following include statements pull in the module files that comprise
+// the assembly. Include any combination of concept, procedure, or reference
+// modules required to cover the user story. You can also include other
+// assemblies.
+
+include::modules/nodes-pods-configuring-restart.adoc[leveloffset=+1]
+
+include::modules/nodes-pods-configuring-bandwidth.adoc[leveloffset=+1]
+
+include::modules/nodes-pods-pod-disruption-about.adoc[leveloffset=+1]
+
+include::modules/nodes-pods-pod-disruption-configuring.adoc[leveloffset=+2]
+
+//tech preview feature
+ifndef::openshift-rosa,openshift-dedicated[]
+include::modules/pod-disruption-eviction-policy.adoc[leveloffset=+2]
+endif::openshift-rosa,openshift-dedicated[]
+
+//Unsupported
+
+[role="_additional-resources"]
+.Additional resources
+ifndef::openshift-rosa,openshift-dedicated[]
+* xref:../../nodes/clusters/nodes-cluster-enabling-features.adoc#nodes-cluster-enabling[Enabling features using feature gates]
+* link:https://kubernetes.io/docs/tasks/run-application/configure-pdb/#unhealthy-pod-eviction-policy[Unhealthy Pod Eviction Policy] in the Kubernetes documentation
+
+include::modules/nodes-pods-configuring-pod-critical.adoc[leveloffset=+1]
+
+include::modules/nodes-pods-configuring-reducing.adoc[leveloffset=+1]
+endif::openshift-rosa,openshift-dedicated[]

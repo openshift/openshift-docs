@@ -1,0 +1,39 @@
+// Module included in the following assemblies:
+//
+// * operators/admin/olm-deleting-operators-from-a-cluster.adoc
+// * backup_and_restore/application_backup_and_restore/installing/uninstalling-oadp.adoc
+// * serverless/install/removing-openshift-serverless.adoc
+// * virt/install/uninstalling-virt.adoc
+
+:_mod-docs-content-type: PROCEDURE
+[id="olm-deleting-operators-from-a-cluster-using-web-console_{context}"]
+= Deleting Operators from a cluster using the web console
+
+Cluster administrators can delete installed Operators from a selected namespace by using the web console.
+
+.Prerequisites
+
+- You have access to an {product-title} cluster web console using an account with
+ifdef::openshift-enterprise,openshift-webscale,openshift-origin[]
+`cluster-admin` permissions.
+endif::[]
+ifdef::openshift-dedicated,openshift-rosa[]
+`dedicated-admin` permissions.
+endif::openshift-dedicated,openshift-rosa[]
+
+.Procedure
+
+. Navigate to the *Operators* → *Installed Operators* page.
+
+. Scroll or enter a keyword into the *Filter by name* field to find the Operator that you want to remove. Then, click on it.
+
+. On the right side of the *Operator Details* page, select *Uninstall Operator* from the *Actions* list.
++
+An *Uninstall Operator?* dialog box is displayed.
+
+. Select *Uninstall* to remove the Operator, Operator deployments, and pods. Following this action, the Operator stops running and no longer receives updates.
++
+[NOTE]
+====
+This action does not remove resources managed by the Operator, including custom resource definitions (CRDs) and custom resources (CRs). Dashboards and navigation items enabled by the web console and off-cluster resources that continue to run might need manual clean up. To remove these after uninstalling the Operator, you might need to manually delete the Operator CRDs.
+====

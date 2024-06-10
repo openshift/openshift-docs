@@ -1,0 +1,50 @@
+:_mod-docs-content-type: ASSEMBLY
+[id="security-registries"]
+= Using container registries securely
+include::_attributes/common-attributes.adoc[]
+:context: security-registries
+
+toc::[]
+
+Container registries store container images to:
+
+* Make images accessible to others
+* Organize images into repositories that can include multiple versions of an image
+* Optionally limit access to images, based on different authentication methods, or
+make them publicly available
+
+There are public container registries, such as Quay.io and Docker Hub
+where many people and organizations share their images.
+The Red Hat Registry offers supported Red Hat and partner images,
+while the Red Hat Ecosystem Catalog offers detailed descriptions
+and health checks for those images.
+To manage your own registry, you could purchase a container
+registry such as
+link:https://access.redhat.com/products/red-hat-quay[Red Hat Quay].
+
+From a security standpoint, some registries provide special features to
+check and improve the health of your containers.
+For example, Red Hat Quay offers container vulnerability scanning
+with Clair security scanner, build triggers to automatically rebuild
+images when source code changes in GitHub and other locations, and
+the ability to use role-based access control (RBAC) to
+secure access to images.
+
+// Where do your containers come from?
+include::modules/security-registries-where.adoc[leveloffset=+1]
+
+// Immutable and certified containers
+include::modules/security-registries-immutable.adoc[leveloffset=+1]
+
+// Red Hat Registry and Red Hat Ecosystem (Container) Catalog
+include::modules/security-registries-ecosystem.adoc[leveloffset=+1]
+
+// OpenShift Container Registry
+include::modules/security-registries-openshift.adoc[leveloffset=+1]
+
+[role="_additional-resources"]
+.Additional resources
+* xref:../../registry/index.adoc#registry-overview[Integrated {product-registry}]
+
+// Quay Container Registry
+include::modules/security-registries-quay.adoc[leveloffset=+1]

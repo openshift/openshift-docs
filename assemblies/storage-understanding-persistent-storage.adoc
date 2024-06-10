@@ -1,0 +1,36 @@
+:_mod-docs-content-type: ASSEMBLY
+[id="understanding-persistent-storage"]
+= Understanding persistent storage
+include::_attributes/common-attributes.adoc[]
+:context: understanding-persistent-storage
+
+toc::[]
+
+include::modules/storage-persistent-storage-overview.adoc[leveloffset=+1]
+
+include::modules/storage-persistent-storage-lifecycle.adoc[leveloffset=+1]
+
+include::modules/storage-persistent-storage-reclaim-manual.adoc[leveloffset=+2]
+
+include::modules/storage-persistent-storage-reclaim.adoc[leveloffset=+2]
+
+include::modules/storage-persistent-storage-pv.adoc[leveloffset=+1]
+
+ifndef::openshift-dedicated,openshift-rosa[]
+[role="_additional-resources"]
+.Additional resources
+* xref:../storage/container_storage_interface/persistent-storage-csi-vsphere.adoc#persistent-storage-csi-vsphere-rwx_persistent-storage-csi-vsphere[ReadWriteMany vSphere volume support]
+endif::openshift-dedicated,openshift-rosa[]
+
+include::modules/storage-persistent-storage-pvc.adoc[leveloffset=+1]
+
+include::modules/storage-persistent-storage-block-volume.adoc[leveloffset=+1]
+
+// As these volumes have transitioned to being tech preview per plugin,
+// this notice has been included in the previous module.
+// :FeatureName: Support for raw block volumes in the volume plugins listed above
+// include::snippets/technology-preview.adoc[leveloffset=+1]
+
+include::modules/storage-persistent-storage-block-volume-examples.adoc[leveloffset=+2]
+
+include::modules/storage-persistent-storage-fsGroup.adoc[leveloffset=+1]

@@ -1,0 +1,97 @@
+// Module included in the following assemblies:
+//
+// * applications/quotas/quotas-setting-across-multiple-projects.adoc
+
+:_mod-docs-content-type: PROCEDURE
+[id="quotas-setting-projects_{context}"]
+= Selecting multiple projects during quota creation
+
+When creating quotas, you can select multiple projects based on annotation selection, label selection, or both.
+
+.Procedure
+
+. To select projects based on annotations, run the following command:
++
+[source,terminal]
+----
+$ oc create clusterquota for-user \
+     --project-annotation-selector openshift.io/requester=<user_name> \
+     --hard pods=10 \
+     --hard secrets=20
+----
++
+This creates the following `ClusterResourceQuota` object:
++
+[source,yaml]
+----
+apiVersion: quota.openshift.io/v1
+kind: ClusterResourceQuota
+metadata:
+  name: for-user
+spec:
+  quota: <1>
+    hard:
+      pods: "10"
+      secrets: "20"
+  selector:
+    annotations: <2>
+      openshift.io/requester: <user_name>
+    labels: null <3>
+status:
+  namespaces: <4>
+  - namespace: ns-one
+    status:
+      hard:
+        pods: "10"
+        secrets: "20"
+      used:
+        pods: "1"
+        secrets: "9"
+  total: <5>
+    hard:
+      pods: "10"
+      secrets: "20"
+    used:
+      pods: "1"
+      secrets: "9"
+----
+<1> The `ResourceQuotaSpec` object that will be enforced over the selected projects.
+<2> A simple key-value selector for annotations.
+<3> A label selector that can be used to select projects.
+<4> A per-namespace map that describes current quota usage in each selected project.
+<5> The aggregate usage across all selected projects.
++
+This multi-project quota document controls all projects requested by `<user_name>` using the default project request endpoint. You are limited to 10 pods and 20 secrets.
+
+. Similarly, to select projects based on labels, run this command:
++
+[source,terminal]
+----
+$  oc create clusterresourcequota for-name \//<1>
+    --project-label-selector=name=frontend \//<2>
+    --hard=pods=10 --hard=secrets=20
+----
++
+<1> Both `clusterresourcequota` and `clusterquota` are aliases of the same command. `for-name` is the name of the `ClusterResourceQuota` object.
+<2> To select projects by label, provide a key-value pair by using the format `--project-label-selector=key=value`.
++
+This creates the following `ClusterResourceQuota` object definition:
++
+[source,yaml]
+----
+apiVersion: quota.openshift.io/v1
+kind: ClusterResourceQuota
+metadata:
+  creationTimestamp: null
+  name: for-name
+spec:
+  quota:
+    hard:
+      pods: "10"
+      secrets: "20"
+  selector:
+    annotations: null
+    labels:
+      matchLabels:
+        name: frontend
+----

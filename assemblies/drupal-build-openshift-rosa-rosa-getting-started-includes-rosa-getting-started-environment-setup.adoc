@@ -1,0 +1,15 @@
+// Module included in the following assemblies:
+//
+// * rosa_getting_started/rosa-getting-started.adoc
+// * rosa_getting_started/rosa-quickstart-guide-ui.adoc
+
+[id="rosa-getting-started-environment-setup_{context}"]
+= Setting up the environment
+
+Before you create a {product-title} (ROSA) cluster, you must set up your environment by completing the following tasks:
+
+* Verify ROSA prerequisites against your AWS and Red Hat accounts.
+* Install and configure the required command line interface (CLI) tools.
+* Verify the configuration of the CLI tools.
+
+You can follow the procedures in this section to complete these setup requirements.

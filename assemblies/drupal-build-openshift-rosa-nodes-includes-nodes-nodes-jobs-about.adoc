@@ -1,0 +1,128 @@
+// Module included in the following assemblies:
+//
+// * nodes/nodes-nodes-jobs.adoc
+
+:_mod-docs-content-type: CONCEPT
+[id="nodes-nodes-jobs-about_{context}"]
+= Understanding jobs and cron jobs
+
+A job tracks the overall progress of a task and updates its status with information
+about active, succeeded, and failed pods. Deleting a job cleans up any pods it created.
+Jobs are part of the Kubernetes API, which can be managed
+with `oc` commands like other object types.
+
+There are two possible resource types that allow creating run-once objects in {product-title}:
+
+Job::
+A regular job is a run-once object that creates a task and ensures the job finishes.
++
+There are three main types of task suitable to run as a job:
++
+* Non-parallel jobs:
+** A job that starts only one pod, unless the pod fails.
+** The job is complete as soon as its pod terminates successfully.
++
+* Parallel jobs with a fixed completion count:
+** a job that starts multiple pods.
+** The job represents the overall task and is complete when there is one successful pod for each value in the range `1` to the `completions` value.
++
+* Parallel jobs with a work queue:
+** A job with multiple parallel worker processes in a given pod.
+** {product-title} coordinates pods to determine what each should work on or use an external queue service.
+** Each pod is independently capable of determining whether or not all peer pods are complete and that the entire job is done.
+** When any pod from the job terminates with success, no new pods are created.
+** When at least one pod has terminated with success and all pods are terminated, the job is successfully completed.
+** When any pod has exited with success, no other pod should be doing any work for this task or writing any output. Pods should all be in the process of exiting.
++
+For more information about how to make use of the different types of job, see link:https://kubernetes.io/docs/concepts/workloads/controllers/jobs-run-to-completion/#job-patterns[Job Patterns] in the Kubernetes documentation.
+
+Cron job::
+
+A job can be scheduled to run multiple times, using a cron job.
++
+A _cron job_ builds on a regular job by allowing you to specify
+how the job should be run. Cron jobs are part of the
+link:http://kubernetes.io/docs/user-guide/cron-jobs[Kubernetes] API, which
+can be managed with `oc` commands like other object types.
++
+Cron jobs are useful for creating periodic and recurring tasks, like running backups or sending emails.
+Cron jobs can also schedule individual tasks for a specific time, such as if you want to schedule a job for a low activity period. A cron job creates a `Job` object based on the timezone configured on the control plane node that runs the cronjob controller.
++
+[WARNING]
+====
+A cron job creates a `Job` object approximately once per execution time of its
+schedule, but there are circumstances in which it fails to create a job or
+two jobs might be created. Therefore, jobs must be idempotent and you must
+configure history limits.
+====
+
+[id="jobs-create_{context}"]
+== Understanding how to create jobs
+
+Both resource types require a job configuration that consists of the following key parts:
+
+- A pod template, which describes the pod that {product-title} creates.
+- The `parallelism` parameter, which specifies how many pods running in parallel at any point in time should execute a job.
+** For non-parallel jobs, leave unset. When unset, defaults to `1`.
+- The `completions` parameter, specifying how many successful pod completions are needed to finish a job.
+** For non-parallel jobs, leave unset. When unset, defaults to `1`.
+** For parallel jobs with a fixed completion count, specify a value.
+** For parallel jobs with a work queue, leave unset. When unset defaults to the `parallelism` value.
+
+[id="jobs-set-max_{context}"]
+== Understanding how to set a maximum duration for jobs
+
+When defining a job, you can define its maximum duration by setting
+the `activeDeadlineSeconds` field. It is specified in seconds and is not
+set by default. When not set, there is no maximum duration enforced.
+
+The maximum duration is counted from the time when a first pod gets scheduled in
+the system, and defines how long a job can be active. It tracks overall time of
+an execution. After reaching the specified timeout, the job is terminated by {product-title}.
+
+[id="jobs-set-backoff_{context}"]
+== Understanding how to set a job back off policy for pod failure
+
+A job can be considered failed, after a set amount of retries due to a
+logical error in configuration or other similar reasons. Failed pods associated with the job are recreated by the controller with
+an exponential back off delay (`10s`, `20s`, `40s` …) capped at six minutes. The
+limit is reset if no new failed pods appear between controller checks.
+
+Use the `spec.backoffLimit` parameter to set the number of retries for a job.
+
+[id="jobs-artifacts_{context}"]
+== Understanding how to configure a cron job to remove artifacts
+
+Cron jobs can leave behind artifact resources such as jobs or pods.  As a user it is important
+to configure history limits so that old jobs and their pods are properly cleaned.  There are two fields within cron job's spec responsible for that:
+
+* `.spec.successfulJobsHistoryLimit`. The number of successful finished jobs to retain (defaults to 3).
+
+* `.spec.failedJobsHistoryLimit`. The number of failed finished jobs to retain (defaults to 1).
+
+ifndef::openshift-rosa,openshift-dedicated[]
+[TIP]
+====
+* Delete cron jobs that you no longer need:
++
+[source,terminal]
+----
+$ oc delete cronjob/<cron_job_name>
+----
++
+Doing this prevents them from generating unnecessary artifacts.
+
+* You can suspend further executions by setting the `spec.suspend` to true.  All subsequent executions are suspended until you reset to `false`.
+====
+endif::openshift-rosa,openshift-dedicated[]
+
+[id="jobs-limits_{context}"]
+== Known limitations
+
+The job specification restart policy only applies to the _pods_, and not the _job controller_. However, the job controller is hard-coded to keep retrying jobs to completion.
+
+As such, `restartPolicy: Never` or `--restart=Never` results in the same behavior as `restartPolicy: OnFailure` or `--restart=OnFailure`. That is, when a job fails it is restarted automatically until it succeeds (or is manually discarded). The policy only sets which subsystem performs the restart.
+
+With the `Never` policy, the _job controller_ performs the restart. With each attempt, the job controller increments the number of failures in the job status and create new pods. This means that with each failed attempt, the number of pods increases.
+
+With the `OnFailure` policy, _kubelet_ performs the restart. Each attempt does not increment the number of failures in the job status. In addition, kubelet will retry failed jobs starting pods on the same nodes.
