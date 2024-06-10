@@ -1,0 +1,139 @@
+// Module included in the following assemblies:
+//
+// * rosa_architecture/rosa_policy_service_definition/rosa-service-definition.adoc
+// * rosa_architecture/rosa_policy_service_definition/rosa-hcp-service-definition.adoc
+
+ifeval::["{context}" == "rosa-hcp-service-definition"]
+:rosa-with-hcp:
+endif::[]
+
+[id="rosa-sdpolicy-security_{context}"]
+= Security
+
+This section provides information about the service definition for
+ifdef::rosa-with-hcp[]
+{hcp-title-first}
+endif::rosa-with-hcp[]
+ifndef::rosa-with-hcp[]
+{product-title}
+endif::rosa-with-hcp[]
+security.
+
+[id="rosa-sdpolicy-auth-provider_{context}"]
+== Authentication provider
+Authentication for the cluster can be configured using either {cluster-manager-url} or cluster creation process or using the ROSA CLI, `rosa`. ROSA is not an identity provider, and all access to the cluster must be managed by the customer as part of their integrated solution. The use of multiple identity providers provisioned at the same time is supported. The following identity providers are supported:
+
+- GitHub or GitHub Enterprise
+- GitLab
+- Google
+- LDAP
+- OpenID Connect
+- htpasswd
+
+[id="rosa-sdpolicy-privileged-containers_{context}"]
+== Privileged containers
+Privileged containers are available for users with the `cluster-admin` role. Usage of privileged containers as `cluster-admin` is subject to the responsibilities and exclusion notes in the link:https://www.redhat.com/en/about/agreements[Red Hat Enterprise Agreement Appendix 4] (Online Subscription Services).
+
+[id="rosa-sdpolicy-customer-admin-user_{context}"]
+== Customer administrator user
+In addition to normal users,
+ifdef::rosa-with-hcp[]
+{hcp-title-first}
+endif::rosa-with-hcp[]
+ifndef::rosa-with-hcp[]
+{product-title}
+endif::rosa-with-hcp[]
+provides access to an
+ifdef::rosa-with-hcp[]
+{hcp-title}-specific
+endif::rosa-with-hcp[]
+ifndef::rosa-with-hcp[]
+ROSA-specific
+endif::rosa-with-hcp[]
+group called `dedicated-admin`. Any users on the cluster that are members of the `dedicated-admin` group:
+
+- Have administrator access to all customer-created projects on the cluster.
+- Can manage resource quotas and limits on the cluster.
+- Can add and manage `NetworkPolicy` objects.
+- Are able to view information about specific nodes and PVs in the cluster, including scheduler information.
+- Can access the reserved `dedicated-admin` project on the cluster, which allows for the creation of service accounts with elevated privileges and also gives the ability to update default limits and quotas for projects on the cluster.
+- Can install Operators from OperatorHub and perform all verbs in all `*.operators.coreos.com` API groups.
+
+[id="rosa-sdpolicy-cluster-admin-role_{context}"]
+== Cluster administration role
+The administrator of
+ifdef::rosa-with-hcp[]
+{hcp-title-first}
+endif::rosa-with-hcp[]
+ifndef::rosa-with-hcp[]
+{product-title}
+endif::rosa-with-hcp[]
+has default access to the `cluster-admin` role for your organization's cluster. While logged into an account with the `cluster-admin` role, users have increased permissions to run privileged security contexts.
+
+[id="rosa-sdpolicy-project-self-service_{context}"]
+== Project self-service
+By default, all users have the ability to create, update, and delete their projects. This can be restricted if a member of the `dedicated-admin` group removes the `self-provisioner` role from authenticated users:
+[source,terminal]
+----
+$ oc adm policy remove-cluster-role-from-group self-provisioner system:authenticated:oauth
+----
+
+Restrictions can be reverted by applying:
+[source,terminal]
+----
+$ oc adm policy add-cluster-role-to-group self-provisioner system:authenticated:oauth
+----
+
+[id="rosa-sdpolicy-regulatory-compliance_{context}"]
+== Regulatory compliance
+
+ifdef::rosa-with-hcp[]
+{hcp-title} is currently in the process of obtaining compliance certifications.
+endif::rosa-with-hcp[]
+ifndef::rosa-with-hcp[]
+See Understanding process and security for ROSA for the latest compliance information.
+endif::rosa-with-hcp[]
+
+[id="rosa-sdpolicy-network-security_{context}"]
+== Network security
+With {product-title}, AWS provides a standard DDoS protection on all load balancers, called AWS Shield. This provides 95% protection against most commonly used level 3 and 4 attacks on all the public facing load balancers used for {product-title}. A 10-second timeout is added for HTTP requests coming to the `haproxy` router to receive a response or the connection is closed to provide additional protection.
+
+[id="rosa-sdpolicy-etcd-encryption_{context}"]
+== etcd encryption
+
+In
+ifdef::rosa-with-hcp[]
+{hcp-title-first},
+endif::rosa-with-hcp[]
+ifndef::rosa-with-hcp[]
+{product-title},
+endif::rosa-with-hcp[]
+the control plane storage is encrypted at rest by default and this includes encryption of the etcd volumes. This storage-level encryption is provided through the storage layer of the cloud provider.
+
+ifdef::rosa-with-hcp[]
+The etcd database is always encrypted by default. Customers might opt to provide their own custom AWS KMS keys for the purpose of encrypting the etcd database.
+
+Etcd encryption will encrypt the following Kubernetes API server and OpenShift API server resources:
+endif::rosa-with-hcp[]
+ifndef::rosa-with-hcp[]
+You can also enable etcd encryption, which encrypts the key values in etcd, but not the keys. If you enable etcd encryption, the following Kubernetes API server and OpenShift API server resources are encrypted:
+endif::rosa-with-hcp[]
+
+* Secrets
+* Config maps
+* Routes
+* OAuth access tokens
+* OAuth authorize tokens
+
+ifndef::rosa-with-hcp[]
+The etcd encryption feature is not enabled by default and it can be enabled only at cluster installation time. Even with etcd encryption enabled, the etcd key values are accessible to anyone with access to the control plane nodes or `cluster-admin` privileges.
+
+[IMPORTANT]
+====
+By enabling etcd encryption for the key values in etcd, you will incur a performance overhead of approximately 20%. The overhead is a result of introducing this second layer of encryption, in addition to the default control plane storage encryption that encrypts the etcd volumes. Red Hat recommends that you enable etcd encryption only if you specifically require it for your use case.
+====
+endif::rosa-with-hcp[]
+
+ifeval::["{context}" == "rosa-hcp-service-definition"]
+:!rosa-with-hcp:
+endif::[]

@@ -1,0 +1,22 @@
+:_mod-docs-content-type: ASSEMBLY
+[id="understanding-compliance-operator"]
+= Understanding the Compliance Operator
+include::_attributes/common-attributes.adoc[]
+:context: understanding-compliance
+
+toc::[]
+
+The Compliance Operator lets {product-title} administrators describe the required compliance state of a cluster and provides them with an overview of gaps and ways to remediate them. The Compliance Operator assesses compliance of both the Kubernetes API resources of {product-title}, as well as the nodes running the cluster. The Compliance Operator uses OpenSCAP, a NIST-certified tool, to scan and enforce security policies provided by the content.
+
+[IMPORTANT]
+====
+The Compliance Operator is available for {op-system-first} deployments only.
+====
+
+include::modules/compliance-profiles.adoc[leveloffset=+1]
+
+[id="additional-resources_compliance-operator-understanding"]
+[role="_additional-resources"]
+== Additional resources
+
+* xref:../../../security/compliance_operator/co-scans/compliance-operator-supported-profiles.adoc#compliance-operator-supported-profiles[Supported compliance profiles]

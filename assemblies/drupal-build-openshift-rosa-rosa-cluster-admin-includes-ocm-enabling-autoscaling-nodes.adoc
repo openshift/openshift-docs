@@ -1,0 +1,23 @@
+// Module included in the following assemblies:
+//
+// * rosa_cluster_admin/rosa_nodes/rosa-nodes-about-autoscaling-nodes.adoc
+// * nodes/nodes-about-autoscaling-nodes.adoc
+// * osd_cluster_admin/osd_nodes/osd-nodes-about-autoscaling-nodes.adoc
+
+:_mod-docs-content-type: PROCEDURE
+[id="ocm-enabling-autoscaling_{context}"]
+= Enabling autoscaling nodes in an existing cluster using {cluster-manager-first}
+
+Enable autoscaling for worker nodes in the machine pool definition from {cluster-manager} console.
+
+.Procedure
+
+. From {cluster-manager-url}, navigate to the *Clusters* page and select the cluster that you want to enable autoscaling for.
+
+. On the selected cluster, select the *Machine pools* tab.
+
+. Click the Options menu {kebab} at the end of the machine pool that you want to enable autoscaling for and select *Scale*.
+
+. On the *Edit node count* dialog, select the *Enable autoscaling* checkbox.
+
+. Select *Apply* to save these changes and enable autoscaling for the cluster.

@@ -1,0 +1,19 @@
+// Module included in the following assemblies:
+//
+// * support/remote_health_monitoring/about-remote-health-monitoring.adoc
+
+:_mod-docs-content-type: CONCEPT
+[id="insights-operator-about_{context}"]
+= About the Insights Operator
+
+The Insights Operator periodically gathers configuration and component failure status and, by default, reports that data every two hours to Red Hat. This information enables Red Hat to assess configuration and deeper failure data than is reported through Telemetry.
+
+Users of {product-title} can display the report of each cluster in the {insights-advisor-url} service on {hybrid-console}. If any issues have been identified, Insights provides further details and, if available, steps on how to solve a problem.
+
+The Insights Operator does not collect identifying information, such as user names, passwords, or certificates. See link:https://console.redhat.com/security/insights[Red Hat Insights Data & Application Security] for information about Red Hat Insights data collection and controls.
+
+Red Hat uses all connected cluster information to:
+
+* Identify potential cluster issues and provide a solution and preventive actions in the {insights-advisor-url} service on {hybrid-console}
+* Improve {product-title} by providing aggregated and critical information to product and support teams
+* Make {product-title} more intuitive

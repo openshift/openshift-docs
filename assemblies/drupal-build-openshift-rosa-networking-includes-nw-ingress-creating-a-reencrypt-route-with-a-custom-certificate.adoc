@@ -1,0 +1,90 @@
+// Module included in the following assemblies:
+//
+// * ingress/routes.adoc
+
+:_mod-docs-content-type: PROCEDURE
+[id="nw-ingress-creating-a-reencrypt-route-with-a-custom-certificate_{context}"]
+= Creating a re-encrypt route with a custom certificate
+
+You can configure a secure route using reencrypt TLS termination with a custom
+certificate by using the `oc create route` command.
+
+.Prerequisites
+
+* You must have a certificate/key pair in PEM-encoded files, where the certificate
+is valid for the route host.
+
+* You may have a separate CA certificate in a PEM-encoded file that completes
+the certificate chain.
+
+* You must have a separate destination CA certificate in a PEM-encoded file.
+
+* You must have a service that you want to expose.
+
+[NOTE]
+====
+Password protected key files are not supported. To remove a passphrase from a
+key file, use the following command:
+
+[source,terminal]
+----
+$ openssl rsa -in password_protected_tls.key -out tls.key
+----
+====
+
+.Procedure
+
+This procedure creates a `Route` resource with a custom certificate and
+reencrypt TLS termination. The following assumes that the certificate/key pair
+are in the `tls.crt` and `tls.key` files in the current working directory. You
+must also specify a destination CA certificate to enable the Ingress Controller
+to trust the service's certificate. You may also specify a CA certificate if
+needed to complete the certificate chain. Substitute the actual path names for
+`tls.crt`, `tls.key`, `cacert.crt`, and (optionally) `ca.crt`. Substitute the
+name of the `Service` resource that you want to expose for `frontend`.
+Substitute the appropriate hostname for `www.example.com`.
+
+* Create a secure `Route` resource using reencrypt TLS termination and a custom
+certificate:
++
+[source,terminal]
+----
+$ oc create route reencrypt --service=frontend --cert=tls.crt --key=tls.key --dest-ca-cert=destca.crt --ca-cert=ca.crt --hostname=www.example.com
+----
++
+If you examine the resulting `Route` resource, it should look similar to the
+following:
++
+.YAML Definition of the Secure Route
+[source,yaml]
+----
+apiVersion: route.openshift.io/v1
+kind: Route
+metadata:
+  name: frontend
+spec:
+  host: www.example.com
+  to:
+    kind: Service
+    name: frontend
+  tls:
+    termination: reencrypt
+    key: |-
+      -----BEGIN PRIVATE KEY-----
+      [...]
+      -----END PRIVATE KEY-----
+    certificate: |-
+      -----BEGIN CERTIFICATE-----
+      [...]
+      -----END CERTIFICATE-----
+    caCertificate: |-
+      -----BEGIN CERTIFICATE-----
+      [...]
+      -----END CERTIFICATE-----
+    destinationCACertificate: |-
+      -----BEGIN CERTIFICATE-----
+      [...]
+      -----END CERTIFICATE-----
+----
++
+See `oc create route reencrypt --help` for more options.

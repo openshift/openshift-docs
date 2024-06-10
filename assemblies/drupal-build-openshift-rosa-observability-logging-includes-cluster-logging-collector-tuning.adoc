@@ -1,0 +1,176 @@
+// Module included in the following assemblies:
+//
+// * observability/logging/log_collection_forwarding/cluster-logging-collector.adoc
+
+:_mod-docs-content-type: PROCEDURE
+[id="cluster-logging-collector-tuning_{context}"]
+= Advanced configuration for the Fluentd log forwarder
+
+include::./logging-fluentd-dep-snip.adoc[]
+
+{logging-uc} includes multiple Fluentd parameters that you can use for tuning the performance of the Fluentd log forwarder. With these parameters, you can change the following Fluentd behaviors:
+
+* Chunk and chunk buffer sizes
+* Chunk flushing behavior
+* Chunk forwarding retry behavior
+
+Fluentd collects log data in a single blob called a _chunk_. When Fluentd creates a chunk, the chunk is considered to be in the _stage_, where the chunk gets filled with data. When the chunk is full, Fluentd moves the chunk to the _queue_, where chunks are held before being flushed, or written out to their destination. Fluentd can fail to flush a chunk for a number of reasons, such as network issues or capacity issues at the destination. If a chunk cannot be flushed, Fluentd retries flushing as configured.
+
+By default in {product-title}, Fluentd uses the _exponential backoff_ method to retry flushing, where Fluentd doubles the time it waits between attempts to retry flushing again, which helps reduce connection requests to the destination. You can disable exponential backoff and use the _periodic_ retry method instead, which retries flushing the chunks at a specified interval.
+
+These parameters can help you determine the trade-offs between latency and throughput.
+
+* To optimize Fluentd for throughput, you could use these parameters to reduce network packet count by configuring larger buffers and queues, delaying flushes, and setting longer times between retries. Be aware that larger buffers require more space on the node file system.
+
+* To optimize for low latency, you could use the parameters to send data as soon as possible, avoid the build-up of batches, have shorter queues and buffers, and use more frequent flush and retries.
+
+You can configure the chunking and flushing behavior using the following parameters in the `ClusterLogging` custom resource (CR). The parameters are then automatically added to the Fluentd config map for use by Fluentd.
+
+[NOTE]
+====
+These parameters are:
+
+* Not relevant to most users. The default settings should give good general performance.
+* Only for advanced users with detailed knowledge of Fluentd configuration and performance.
+* Only for performance tuning. They have no effect on functional aspects of logging.
+====
+
+.Advanced Fluentd Configuration Parameters
+[options="header"]
+|===
+
+|Parameter |Description |Default
+
+|`chunkLimitSize`
+|The maximum size of each chunk. Fluentd stops writing data to a chunk when it reaches this size. Then, Fluentd sends the chunk to the queue and opens a new chunk.
+|`8m`
+
+|`totalLimitSize`
+|The maximum size of the buffer, which is the total size of the stage and the queue. If the buffer size exceeds this value, Fluentd stops adding data to chunks and fails with an error. All data not in chunks is lost.
+|Approximately 15% of the node disk distributed across all outputs.
+
+|`flushInterval`
+|The interval between chunk flushes. You can use `s` (seconds), `m` (minutes), `h` (hours), or `d` (days).
+|`1s`
+
+|`flushMode`
+a| The method to perform flushes:
+
+* `lazy`: Flush chunks based on the `timekey` parameter. You cannot modify the `timekey` parameter.
+* `interval`: Flush chunks based on the `flushInterval` parameter.
+* `immediate`: Flush chunks immediately after data is added to a chunk.
+|`interval`
+
+|`flushThreadCount`
+|The number of threads that perform chunk flushing. Increasing the number of threads improves the flush throughput, which hides network latency.
+|`2`
+
+|`overflowAction`
+a|The chunking behavior when the queue is full:
+
+* `throw_exception`: Raise an exception to show in the log.
+* `block`: Stop data chunking until the full buffer issue is resolved.
+* `drop_oldest_chunk`: Drop the oldest chunk to accept new incoming chunks. Older chunks have less value than newer chunks.
+|`block`
+
+|`retryMaxInterval`
+|The maximum time in seconds for the `exponential_backoff` retry method.
+|`300s`
+
+|`retryType`
+a|The retry method when flushing fails:
+
+* `exponential_backoff`: Increase the time between flush retries. Fluentd doubles the time it waits until the next retry until the `retry_max_interval` parameter is reached.
+* `periodic`: Retries flushes periodically, based on the `retryWait` parameter.
+|`exponential_backoff`
+
+|`retryTimeOut`
+|The maximum time interval to attempt retries before the record is discarded.
+|`60m`
+
+|`retryWait`
+|The time in seconds before the next chunk flush.
+|`1s`
+
+|===
+
+For more information on the Fluentd chunk lifecycle, see link:https://docs.fluentd.org/buffer[Buffer Plugins] in the Fluentd documentation.
+
+.Procedure
+
+. Edit the `ClusterLogging` custom resource (CR) in the `openshift-logging` project:
++
+[source,terminal]
++
+----
+$ oc edit ClusterLogging instance
+----
+
+. Add or modify any of the following parameters:
++
+[source,yaml]
+----
+apiVersion: logging.openshift.io/v1
+kind: ClusterLogging
+metadata:
+  name: instance
+  namespace: openshift-logging
+spec:
+  collection:
+    fluentd:
+      buffer:
+        chunkLimitSize: 8m <1>
+        flushInterval: 5s <2>
+        flushMode: interval <3>
+        flushThreadCount: 3 <4>
+        overflowAction: throw_exception <5>
+        retryMaxInterval: "300s" <6>
+        retryType: periodic <7>
+        retryWait: 1s <8>
+        totalLimitSize: 32m <9>
+# ...
+----
+<1> Specify the maximum size of each chunk before it is queued for flushing.
+<2> Specify the interval between chunk flushes.
+<3> Specify the method to perform chunk flushes: `lazy`, `interval`, or `immediate`.
+<4> Specify the number of threads to use for chunk flushes.
+<5> Specify the chunking behavior when the queue is full: `throw_exception`, `block`, or `drop_oldest_chunk`.
+<6> Specify the maximum interval in seconds for the `exponential_backoff` chunk flushing method.
+<7> Specify the retry type when chunk flushing fails: `exponential_backoff` or `periodic`.
+<8> Specify the time in seconds before the next chunk flush.
+<9> Specify the maximum size of the chunk buffer.
+
+. Verify that the Fluentd pods are redeployed:
++
+[source,terminal]
+----
+$ oc get pods -l component=collector -n openshift-logging
+----
+
+. Check that the new values are in the `fluentd` config map:
++
+[source,terminal]
+----
+$ oc extract configmap/collector-config --confirm
+----
++
+.Example fluentd.conf
+[source,terminal]
+----
+<buffer>
+  @type file
+  path '/var/lib/fluentd/default'
+  flush_mode interval
+  flush_interval 5s
+  flush_thread_count 3
+  retry_type periodic
+  retry_wait 1s
+  retry_max_interval 300s
+  retry_timeout 60m
+  queued_chunks_limit_size "#{ENV['BUFFER_QUEUE_LIMIT'] || '32'}"
+  total_limit_size "#{ENV['TOTAL_LIMIT_SIZE_PER_BUFFER'] || '8589934592'}"
+  chunk_limit_size 8m
+  overflow_action throw_exception
+  disable_chunk_backup true
+</buffer>
+----

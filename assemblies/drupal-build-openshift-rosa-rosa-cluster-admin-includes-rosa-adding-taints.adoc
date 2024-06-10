@@ -1,0 +1,42 @@
+// Module included in the following assemblies:
+//
+// * rosa_cluster_admin/rosa_nodes/rosa-managing-worker-nodes.adoc
+// * nodes/rosa-managing-worker-nodes.adoc
+// * osd_cluster_admin/osd_nodes/osd-managing-worker-nodes.adoc
+
+:_mod-docs-content-type: PROCEDURE
+[id="rosa-adding-taints_{context}"]
+= Adding taints to a machine pool
+
+You can add taints for compute (also known as worker) nodes in a machine pool to control which pods are scheduled to them. When you apply a taint to a machine pool, the scheduler cannot place a pod on the nodes in the pool unless the pod specification includes a toleration for the taint.
+ifdef::openshift-rosa[]
+Taints can be added to a machine pool using the OpenShift Cluster Manager or the {product-title} (ROSA) CLI, `rosa`.
+endif::openshift-rosa[]
+[NOTE]
+====
+A cluster must have at least one machine pool that does not contain any taints.
+====
+ifndef::openshift-rosa[]
+.Prerequisites
+// ifdef::openshift-rosa[]
+//   * You created a Red Hat OpenShift Service on AWS (ROSA) cluster.
+// endif::openshift-rosa[]
+ * You created an {product-title} cluster.
+ * You have an existing machine pool that does not contain any taints and contains at least two instances.
+endif::openshift-rosa[]
+
+ifdef::openshift-dedicated[]
+.Procedure
+. Navigate to {cluster-manager-url} and select your cluster.
+. Under the *Machine pools* tab, click the options menu {kebab} for the machine pool that you want to add a taint to.
+. Select *Edit taints*.
+. Add *Key* and *Value* entries for your taint.
+. Select an *Effect* for your taint from the drop-down menu. Available options include `NoSchedule`, `PreferNoSchedule`, and `NoExecute`.
+. Select *Add taint* if you want to add more taints to the machine pool.
+. Click *Save* to apply the taints to the machine pool.
+
+.Verification
+
+. Under the *Machine pools* tab, select *>* next to your machine pool to expand the view.
+. Verify that your taints are listed under *Taints* in the expanded view.
+endif::openshift-dedicated[]

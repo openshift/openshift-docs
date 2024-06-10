@@ -1,0 +1,43 @@
+// Module included in the following assemblies:
+//
+// * operators/operator_sdk/ansible/osdk-ansible-inside-operator.adoc
+
+:_mod-docs-content-type: PROCEDURE
+[id="osdk-ansible-inside-operator-logs-view_{context}"]
+= Viewing Ansible logs
+
+.Prerequisites
+
+* Ansible-based Operator running as a deployment on a cluster
+
+.Procedure
+
+* To view logs from an Ansible-based Operator, run the following command:
++
+[source,terminal]
+----
+$ oc logs deployment/<project_name>-controller-manager \
+    -c manager \//<1>
+    -n <namespace> <2>
+----
+<1> View logs from the `manager` container.
+<2> If you used the `make deploy` command to run the Operator as a deployment, use the `<project_name>-system` namespace.
++
+.Example output
+[source,terminal]
+----
+{"level":"info","ts":1612732105.0579333,"logger":"cmd","msg":"Version","Go Version":"go1.15.5","GOOS":"linux","GOARCH":"amd64","ansible-operator":"v1.10.1","commit":"1abf57985b43bf6a59dcd18147b3c574fa57d3f6"}
+{"level":"info","ts":1612732105.0587437,"logger":"cmd","msg":"WATCH_NAMESPACE environment variable not set. Watching all namespaces.","Namespace":""}
+I0207 21:08:26.110949       7 request.go:645] Throttling request took 1.035521578s, request: GET:https://172.30.0.1:443/apis/flowcontrol.apiserver.k8s.io/v1alpha1?timeout=32s
+{"level":"info","ts":1612732107.768025,"logger":"controller-runtime.metrics","msg":"metrics server is starting to listen","addr":"127.0.0.1:8080"}
+{"level":"info","ts":1612732107.768796,"logger":"watches","msg":"Environment variable not set; using default value","envVar":"ANSIBLE_VERBOSITY_MEMCACHED_CACHE_EXAMPLE_COM","default":2}
+{"level":"info","ts":1612732107.7688773,"logger":"cmd","msg":"Environment variable not set; using default value","Namespace":"","envVar":"ANSIBLE_DEBUG_LOGS","ANSIBLE_DEBUG_LOGS":false}
+{"level":"info","ts":1612732107.7688901,"logger":"ansible-controller","msg":"Watching resource","Options.Group":"cache.example.com","Options.Version":"v1","Options.Kind":"Memcached"}
+{"level":"info","ts":1612732107.770032,"logger":"proxy","msg":"Starting to serve","Address":"127.0.0.1:8888"}
+I0207 21:08:27.770185       7 leaderelection.go:243] attempting to acquire leader lease  memcached-operator-system/memcached-operator...
+{"level":"info","ts":1612732107.770202,"logger":"controller-runtime.manager","msg":"starting metrics server","path":"/metrics"}
+I0207 21:08:27.784854       7 leaderelection.go:253] successfully acquired lease memcached-operator-system/memcached-operator
+{"level":"info","ts":1612732107.7850506,"logger":"controller-runtime.manager.controller.memcached-controller","msg":"Starting EventSource","source":"kind source: cache.example.com/v1, Kind=Memcached"}
+{"level":"info","ts":1612732107.8853772,"logger":"controller-runtime.manager.controller.memcached-controller","msg":"Starting Controller"}
+{"level":"info","ts":1612732107.8854098,"logger":"controller-runtime.manager.controller.memcached-controller","msg":"Starting workers","worker count":4}
+----

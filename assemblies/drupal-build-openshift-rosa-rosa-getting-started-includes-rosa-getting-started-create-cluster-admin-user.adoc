@@ -1,0 +1,100 @@
+// Module included in the following assemblies:
+//
+// * rosa_getting_started/rosa-getting-started.adoc
+// * rosa_getting_started/rosa-quickstart-guide-ui.adoc
+
+:_mod-docs-content-type: PROCEDURE
+[id="rosa-getting-started-create-cluster-admin-user_{context}"]
+= Creating a cluster administrator user for quick cluster access
+
+ifeval::["{context}" == "rosa-getting-started"]
+:getting-started:
+endif::[]
+ifeval::["{context}" == "rosa-quickstart"]
+:quickstart:
+endif::[]
+
+Before configuring an identity provider, you can create a user with `cluster-admin` privileges for immediate access to your {product-title} (ROSA) cluster.
+
+[NOTE]
+====
+The cluster administrator user is useful when you need quick access to a newly deployed cluster. However, consider configuring an identity provider and granting cluster administrator privileges to the identity provider users as required. For more information about setting up an identity provider for your ROSA cluster, see _Configuring an identity provider and granting cluster access_.
+====
+
+ifdef::getting-started[]
+.Prerequisites
+
+* You have an AWS account.
+* You installed and configured the latest {product-title} (ROSA) CLI, `rosa`, on your workstation.
+* You logged in to your Red Hat account using the ROSA CLI (`rosa`).
+* You created a ROSA cluster.
+endif::[]
+
+.Procedure
+
+. Create a cluster administrator user:
++
+[source,terminal]
+----
+$ rosa create admin --cluster=<cluster_name> <1>
+----
+<1> Replace `<cluster_name>` with the name of your cluster.
++
+.Example output
+[source,terminal]
+----
+W: It is recommended to add an identity provider to login to this cluster. See 'rosa create idp --help' for more information.
+I: Admin account has been added to cluster '<cluster_name>'.
+I: Please securely store this generated password. If you lose this password you can delete and recreate the cluster admin user.
+I: To login, run the following command:
+
+   oc login https://api.example-cluster.wxyz.p1.openshiftapps.com:6443 --username cluster-admin --password d7Rca-Ba4jy-YeXhs-WU42J
+
+I: It may take up to a minute for the account to become active.
+----
++
+[NOTE]
+====
+It might take approximately one minute for the `cluster-admin` user to become active.
+====
+
+ifdef::getting-started[]
+. Log in to the cluster through the CLI:
+.. Run the command provided in the output of the preceding step to log in:
++
+[source,terminal]
+----
+$ oc login <api_url> --username cluster-admin --password <cluster_admin_password> <1>
+----
+<1> Replace `<api_url>` and `<cluster_admin_password>` with the API URL and cluster administrator password for your environment.
+.. Verify if you are logged in to the ROSA cluster as the `cluster-admin` user:
++
+[source,terminal]
+----
+$ oc whoami
+----
++
+.Example output
+[source,terminal]
+----
+cluster-admin
+----
+endif::[]
+
+
+ifdef::quickstart[]
+
+. Log in to the cluster through the {cluster-manager} {hybrid-console-second}:
+.. Navigate to {cluster-manager-url} and select your cluster.
+.. In your cluster, click *Open console*.
+.. Under the _Log in with..._ prompt, click *Cluster-Admin*.
+.. Enter your credentials.
+.. Click *Log in*.
+endif::[]
+
+ifeval::["{context}" == "rosa-getting-started"]
+:getting-started:
+endif::[]
+ifeval::["{context}" == "rosa-quickstart"]
+:quickstart:
+endif::[]

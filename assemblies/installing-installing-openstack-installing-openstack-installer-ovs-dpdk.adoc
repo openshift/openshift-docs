@@ -1,0 +1,88 @@
+:_mod-docs-content-type: ASSEMBLY
+[id="installing-openstack-installer-ovs-dpdk"]
+= Installing a cluster on OpenStack that supports OVS-DPDK-connected compute machines
+include::_attributes/common-attributes.adoc[]
+:context: installing-openstack-installer-ovs-dpdk
+
+toc::[]
+
+If your {rh-openstack-first} deployment has Open vSwitch with the Data Plane Development Kit (OVS-DPDK) enabled, you can install an {product-title} cluster on it. Clusters that run on such {rh-openstack} deployments use OVS-DPDK features by providing access to link:https://doc.dpdk.org/guides/prog_guide/poll_mode_drv.html[poll mode drivers].
+
+== Prerequisites
+
+* Review details about the
+xref:../../architecture/architecture-installation.adoc#architecture-installation[{product-title} installation and update]
+processes.
+** Verify that {product-title} {product-version} is compatible with your {rh-openstack} version by using the "Supported platforms for OpenShift clusters" section. You can also compare platform support across different versions by viewing the link:https://access.redhat.com/articles/4679401[{product-title} on {rh-openstack} support matrix].
+
+* Have a storage service installed in {rh-openstack}, like block storage (Cinder) or object storage (Swift). Object storage is the recommended storage technology for {product-registry} cluster deployment. For more information, see xref:../../scalability_and_performance/optimization/optimizing-storage.adoc#optimizing-storage[Optimizing storage].
+
+* Have the metadata service enabled in {rh-openstack}.
+
+* Plan your {rh-openstack} OVS-DPDK deployment by referring to link:https://access.redhat.com/documentation/en-us/red_hat_openstack_platform/16.2/html/network_functions_virtualization_planning_and_configuration_guide/assembly_ovsdpdk_parameters[Planning your OVS-DPDK deployment] in the Network Functions Virtualization Planning and Configuration Guide.
+
+* Configure your {rh-openstack} OVS-DPDK deployment according to link:https://access.redhat.com/documentation/en-us/red_hat_openstack_platform/16.2/html/network_functions_virtualization_planning_and_configuration_guide/part-dpdk-configure[Configuring an OVS-DPDK deployment] in the Network Functions Virtualization Planning and Configuration Guide.
+
+** You must complete link:https://access.redhat.com/documentation/en-us/red_hat_openstack_platform/16.2/html/network_functions_virtualization_planning_and_configuration_guide/part-dpdk-configure#p-ovs-dpdk-flavor-deploy-instance[Creating a flavor and deploying an instance for OVS-DPDK] before you install a cluster on {rh-openstack}.
+
+include::modules/installation-osp-default-deployment.adoc[leveloffset=+1]
+include::modules/installation-osp-control-compute-machines.adoc[leveloffset=+2]
+include::modules/installation-osp-bootstrap-machine.adoc[leveloffset=+2]
+include::modules/cluster-entitlements.adoc[leveloffset=+1]
+include::modules/installation-osp-enabling-swift.adoc[leveloffset=+1]
+include::modules/installation-osp-verifying-external-network.adoc[leveloffset=+1]
+include::modules/installation-osp-describing-cloud-parameters.adoc[leveloffset=+1]
+include::modules/installation-obtaining-installer.adoc[leveloffset=+1]
+include::modules/installation-initializing.adoc[leveloffset=+1]
+
+[role="_additional-resources"]
+.Additional resources
+* xref:../../installing/installing_openstack/installation-config-parameters-openstack.adoc#installation-config-parameters-openstack[Installation configuration parameters for OpenStack]
+
+include::modules/installation-configure-proxy.adoc[leveloffset=+2]
+include::modules/installation-osp-custom-subnet.adoc[leveloffset=+2]
+include::modules/installation-osp-deploying-bare-metal-machines.adoc[leveloffset=+2]
+include::modules/installation-osp-config-yaml.adoc[leveloffset=+2]
+include::modules/ssh-agent-using.adoc[leveloffset=+1]
+include::modules/installation-osp-accessing-api.adoc[leveloffset=+1]
+include::modules/installation-osp-accessing-api-floating.adoc[leveloffset=+2]
+include::modules/installation-osp-accessing-api-no-floating.adoc[leveloffset=+2]
+include::modules/installation-osp-configuring-sr-iov.adoc[leveloffset=+1]
+include::modules/installation-launching-installer.adoc[leveloffset=+1]
+include::modules/installation-osp-verifying-cluster-status.adoc[leveloffset=+1]
+include::modules/cli-logging-in-kubeadmin.adoc[leveloffset=+1]
+
+The cluster is operational. Before you can add OVS-DPDK compute machines though, you must perform additional tasks.
+
+include::modules/networking-osp-enabling-metadata.adoc[leveloffset=+1]
+include::modules/networking-osp-enabling-vfio-noiommu.adoc[leveloffset=+1]
+include::modules/installation-osp-dpdk-binding-vfio-pci.adoc[leveloffset=+1]
+include::modules/installation-osp-dpdk-exposing-host-interface.adoc[leveloffset=+1]
+
+.Additional resources
+
+* xref:../../networking/multiple_networks/configuring-additional-network.adoc#nw-multus-host-device-object_configuring-additional-network[Creating an additional network attachment with the Cluster Network Operator]
+
+The cluster is installed and prepared for configuration. You must now perform the OVS-DPDK configuration tasks in <<next-steps_installing-openstack-installer-ovs-dpdk, Next steps>>.
+
+include::modules/cluster-telemetry.adoc[leveloffset=+1]
+
+[role="_additional-resources"]
+.Additional resources
+
+* See xref:../../support/remote_health_monitoring/about-remote-health-monitoring.adoc#about-remote-health-monitoring[About remote health monitoring] for more information about the Telemetry service
+
+[role="_additional-resources"]
+[id="additional-resources_installing-openstack-installer-ovs-dpdk"]
+== Additional resources
+* xref:../../scalability_and_performance/cnf-low-latency-tuning.adoc#cnf-understanding-low-latency_cnf-master[Low latency tuning of OpenShift Container Platform nodes]
+
+[id="next-steps_installing-openstack-installer-ovs-dpdk"]
+== Next steps
+
+* To complete OVS-DPDK configuration for your cluster, xref:../../scalability_and_performance/what-huge-pages-do-and-how-they-are-consumed-by-apps.adoc#what-huge-pages-do_huge-pages[Configure huge pages support].
+* xref:../../post_installation_configuration/cluster-tasks.adoc#available_cluster_customizations[Customize your cluster].
+* If necessary, you can
+xref:../../support/remote_health_monitoring/opting-out-of-remote-health-reporting.adoc#opting-out-remote-health-reporting_opting-out-remote-health-reporting[opt out of remote health reporting].
+* If you need to enable external access to node ports, xref:../../networking/configuring_ingress_cluster_traffic/configuring-ingress-cluster-traffic-nodeport.adoc#nw-using-nodeport_configuring-ingress-cluster-traffic-nodeport[configure ingress cluster traffic by using a node port].
+* If you did not configure {rh-openstack} to accept application traffic over floating IP addresses, xref:../../post_installation_configuration/network-configuration.adoc#installation-osp-configuring-api-floating-ip_post-install-network-configuration[configure {rh-openstack} access with floating IP addresses].

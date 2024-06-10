@@ -1,0 +1,36 @@
+// Module included in the following assemblies:
+//
+// * rosa_cluster_admin/rosa_nodes/rosa-managing-worker-nodes.adoc
+
+:_mod-docs-content-type: PROCEDURE
+[id="deleting-machine-pools{context}"]
+= Deleting a machine pool
+
+You can delete a machine pool in the event that your workload requirements have changed and your current machine pools no longer meet your needs.
+
+
+You can delete machine pools using the
+ifdef::openshift-rosa[]
+OpenShift Cluster Manager or the ROSA CLI (`rosa`).
+endif::openshift-rosa[]
+ifndef::openshift-rosa[]
+OpenShift Cluster Manager.
+endif::[]
+ifndef::openshift-rosa[]
+
+.Prerequisites
+
+* You have created an {product-title} cluster.
+* The cluster is in the ready state.
+* You have an existing machine pool without any taints and with at least two replicas for a Single-AZ cluster or three replicas for a Multi-AZ cluster.
+
+.Procedure
+. From {cluster-manager-url}, navigate to the *Clusters* page and select the cluster that contains the machine pool that you want to delete.
+
+. On the selected cluster, select the *Machine pools* tab.
+
+. Under the *Machine pools* tab, click the options menu {kebab} for the machine pool that you want to delete.
+. Click *Delete*.
+
+The selected machine pool is deleted.
+endif::openshift-rosa[]

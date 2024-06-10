@@ -1,0 +1,151 @@
+// Module included in the following assemblies:
+//
+// * nodes/nodes-pods-daemonsets.adoc
+
+:_mod-docs-content-type: PROCEDURE
+[id="nodes-pods-daemonsets-creating_{context}"]
+= Creating daemonsets
+
+When creating daemon sets, the `nodeSelector` field is used to indicate the
+nodes on which the daemon set should deploy replicas.
+
+.Prerequisites
+
+* Before you start using daemon sets, disable the default project-wide node selector
+in your namespace, by setting the namespace annotation `openshift.io/node-selector` to an empty string:
++
+[source,terminal]
+----
+$ oc patch namespace myproject -p \
+    '{"metadata": {"annotations": {"openshift.io/node-selector": ""}}}'
+----
++
+[TIP]
+====
+You can alternatively apply the following YAML to disable the default project-wide node selector for a namespace:
+
+[source,yaml]
+----
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: <namespace>
+  annotations:
+    openshift.io/node-selector: ''
+#...
+----
+====
+
+ifndef::openshift-rosa,openshift-dedicated[]
+* If you are creating a new project, overwrite the default node selector:
++
+[source,terminal]
+----
+$ oc adm new-project <name> --node-selector=""
+----
+endif::openshift-rosa,openshift-dedicated[]
+
+.Procedure
+
+To create a daemon set:
+
+. Define the daemon set yaml file:
++
+[source,yaml]
+----
+apiVersion: apps/v1
+kind: DaemonSet
+metadata:
+  name: hello-daemonset
+spec:
+  selector:
+      matchLabels:
+        name: hello-daemonset <1>
+  template:
+    metadata:
+      labels:
+        name: hello-daemonset <2>
+    spec:
+      nodeSelector: <3>
+        role: worker
+      containers:
+      - image: openshift/hello-openshift
+        imagePullPolicy: Always
+        name: registry
+        ports:
+        - containerPort: 80
+          protocol: TCP
+        resources: {}
+        terminationMessagePath: /dev/termination-log
+      serviceAccount: default
+      terminationGracePeriodSeconds: 10
+#...
+----
+<1> The label selector that determines which pods belong to the daemon set.
+<2> The pod template's label selector. Must match the label selector above.
+<3> The node selector that determines on which nodes pod replicas should be deployed.
+A matching label must be present on the node.
+
+. Create the daemon set object:
++
+[source,terminal]
+----
+$ oc create -f daemonset.yaml
+----
+
+. To verify that the pods were created, and that each node has a pod replica:
++
+.. Find the daemonset pods:
++
+[source,terminal]
+----
+$ oc get pods
+----
++
+.Example output
+[source,terminal]
+----
+hello-daemonset-cx6md   1/1       Running   0          2m
+hello-daemonset-e3md9   1/1       Running   0          2m
+----
++
+.. View the pods to verify the pod has been placed onto the node:
++
+[source,terminal]
+----
+$ oc describe pod/hello-daemonset-cx6md|grep Node
+----
++
+.Example output
+[source,terminal]
+----
+Node:        openshift-node01.hostname.com/10.14.20.134
+----
++
+[source,terminal]
+----
+$ oc describe pod/hello-daemonset-e3md9|grep Node
+----
++
+.Example output
+[source,terminal]
+----
+Node:        openshift-node02.hostname.com/10.14.20.137
+----
+
+[IMPORTANT]
+====
+* If you update a daemon set pod template, the existing pod
+replicas are not affected.
+
+* If you delete a daemon set and then create a new daemon set
+with a different template but the same label selector, it recognizes any
+existing pod replicas as having matching labels and thus does not update them or
+create new replicas despite a mismatch in the pod template.
+
+* If you change node labels, the daemon set adds pods to nodes that match the new labels and deletes pods
+from nodes that do not match the new labels.
+
+To update a daemon set, force new pod replicas to be created by deleting the old
+replicas or nodes.
+====

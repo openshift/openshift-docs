@@ -1,0 +1,11 @@
+// Module included in the following assemblies:
+//
+// * rosa_install_access_delete_clusters/rosa-sts-creating-a-cluster-quickly.adoc
+
+:_mod-docs-content-type: CONCEPT
+[id="rosa-sts-creating-a-cluster-quickly-ocm_{context}"]
+= Creating a cluster quickly using {cluster-manager}
+
+When using {cluster-manager-first} to create a {product-title} (ROSA) cluster that uses the AWS Security Token Service (STS), you can select the default options to create the cluster quickly.
+
+Before you can use {cluster-manager} to deploy ROSA with STS clusters, you must associate your AWS account with your Red Hat organization and create the required account-wide STS roles and policies.

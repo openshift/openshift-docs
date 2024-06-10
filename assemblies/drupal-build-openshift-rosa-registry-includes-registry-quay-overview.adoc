@@ -1,0 +1,27 @@
+// Module included in the following assemblies:
+//
+// * registry/index.adoc
+
+[id="registry-quay-overview_{context}"]
+= Red Hat Quay registries
+
+If you need an enterprise-quality container image registry, Red Hat Quay is
+available both as a hosted service and as software you can install in your own
+data center or cloud environment. Advanced features in Red Hat Quay
+include geo-replication, image scanning, and the ability to roll back images.
+
+Visit the link:https://quay.io[Quay.io] site to set up your own hosted Quay registry account. After
+that, follow the Quay Tutorial to log in to the Quay registry and start managing
+your images.
+
+You can access your Red Hat Quay registry from {product-title} like any remote
+container image registry.
+
+//[role="_additional-resources"]
+//.Additional resources
+//* link:https://quay.io[Quay.io]
+//* link:https://quay.io/tutorial/[Quay Tutorial]
+//* See link:https://access.redhat.com/documentation/en-us/red_hat_quay/2.9/html-single/getting_started_with_red_hat_quay/[Getting Started with Red Hat Quay]
+//for information about setting up your own Red Hat Quay registry.
+//* To learn how to set up credentials to access
+//Red Hat Quay as a secured registry, refer to Allowing Pods to Reference Images from Other Secured Registries.

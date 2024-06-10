@@ -1,0 +1,49 @@
+// Module included in the following assemblies:
+//
+// * ingress/routes.adoc
+
+:_mod-docs-content-type: PROCEDURE
+[id="nw-ingress-creating-a-passthrough-route_{context}"]
+= Creating a passthrough route
+
+You can configure a secure route using passthrough termination by using the `oc create route` command. With passthrough termination, encrypted traffic is sent straight to the destination without the router providing TLS termination. Therefore no key or certificate is required on the route.
+
+.Prerequisites
+
+* You must have a service that you want to expose.
+
+.Procedure
+
+* Create a `Route` resource:
++
+[source,terminal]
+----
+$ oc create route passthrough route-passthrough-secured --service=frontend --port=8080
+----
++
+If you examine the resulting `Route` resource, it should look similar to the following:
++
+.A Secured Route Using Passthrough Termination
+[source,yaml]
+----
+apiVersion: route.openshift.io/v1
+kind: Route
+metadata:
+  name: route-passthrough-secured <1>
+spec:
+  host: www.example.com
+  port:
+    targetPort: 8080
+  tls:
+    termination: passthrough <2>
+    insecureEdgeTerminationPolicy: None <3>
+  to:
+    kind: Service
+    name: frontend
+----
+<1> The name of the object, which is limited to 63 characters.
+<2> The `*termination*` field is set to `passthrough`. This is the only required `tls` field.
+<3> Optional `insecureEdgeTerminationPolicy`. The only valid values are `None`, `Redirect`, or empty for disabled.
++
+The destination pod is responsible for serving certificates for the
+traffic at the endpoint. This is currently the only method that can support requiring client certificates, also known as two-way authentication.

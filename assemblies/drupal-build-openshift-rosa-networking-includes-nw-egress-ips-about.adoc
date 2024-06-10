@@ -1,0 +1,401 @@
+// Module included in the following assemblies:
+//
+// * networking/openshift_sdn/assigning-egress-ips.adoc
+// * networking/ovn_kubernetes_network_provider/configuring-egress-ips-ovn.adoc
+
+ifeval::["{context}" == "egress-ips"]
+:openshift-sdn:
+endif::[]
+ifeval::["{context}" == "configuring-egress-ips-ovn"]
+:ovn:
+endif::[]
+
+[id="nw-egress-ips-about_{context}"]
+= Egress IP address architectural design and implementation
+
+The {product-title} egress IP address functionality allows you to ensure that the traffic from one or more pods in one or more namespaces has a consistent source IP address for services outside the cluster network.
+
+For example, you might have a pod that periodically queries a database that is hosted on a server outside of your cluster. To enforce access requirements for the server, a packet filtering device is configured to allow traffic only from specific IP addresses.
+To ensure that you can reliably allow access to the server from only that specific pod, you can configure a specific egress IP address for the pod that makes the requests to the server.
+
+
+An egress IP address assigned to a namespace is different from an egress router, which is used to send traffic to specific destinations.
+
+ifndef::openshift-rosa[]
+In some cluster configurations,
+endif::openshift-rosa[]
+ifdef::openshift-rosa[]
+In {hcp-title} clusters,
+endif::openshift-rosa[]
+application pods and ingress router pods run on the same node. If you configure an egress IP address for an application project in this scenario, the IP address is not used when you send a request to a route from the application project.
+
+ifdef::openshift-sdn[]
+An egress IP address is implemented as an additional IP address on the primary network interface of a node and must be in the same subnet as the primary IP address of the node. The additional IP address must not be assigned to any other node in the cluster.
+endif::openshift-sdn[]
+
+ifndef::openshift-rosa[]
+[IMPORTANT]
+====
+Egress IP addresses must not be configured in any Linux network configuration files, such as `ifcfg-eth0`.
+====
+endif::openshift-rosa[]
+
+ifndef::openshift-rosa[]
+[id="nw-egress-ips-platform-support_{context}"]
+== Platform support
+
+Support for the egress IP address functionality on various platforms is summarized in the following table:
+
+[cols="1,1",options="header"]
+|===
+
+| Platform | Supported
+
+| Bare metal | Yes
+| VMware vSphere | Yes
+| {rh-openstack-first} | Yes
+| Amazon Web Services (AWS) | Yes
+| Google Cloud Platform (GCP) | Yes
+| Microsoft Azure | Yes
+| {ibm-z-name} and {ibm-linuxone-name} | Yes
+| {ibm-z-name} and {ibm-linuxone-name} for {op-system-base-full} KVM | Yes
+| {ibm-power-name} | Yes
+| Nutanix | Yes
+
+|===
+endif::openshift-rosa[]
+
+[IMPORTANT]
+====
+The assignment of egress IP addresses to control plane nodes with the EgressIP feature is
+ifdef::openshift-rosa[]
+not supported.
+endif::openshift-rosa[]
+ifndef::openshift-rosa[]
+not supported on a cluster provisioned on Amazon Web Services (AWS). (link:https://bugzilla.redhat.com/show_bug.cgi?id=2039656[*BZ#2039656*]).
+endif::openshift-rosa[]
+====
+
+ifndef::openshift-rosa[]
+[id="nw-egress-ips-public-cloud-platform-considerations_{context}"]
+== Public cloud platform considerations
+
+For clusters provisioned on public cloud infrastructure, there is a constraint on the absolute number of assignable IP addresses per node. The maximum number of assignable IP addresses per node, or the _IP capacity_, can be described in the following formula:
+
+[source,text]
+----
+IP capacity = public cloud default capacity - sum(current IP assignments)
+----
+
+While the Egress IPs capability manages the IP address capacity per node, it is important to plan for this constraint in your deployments. For example, for a cluster installed on bare-metal infrastructure with 8 nodes you can configure 150 egress IP addresses. However, if a public cloud provider limits IP address capacity to 10 IP addresses per node, the total number of assignable IP addresses is only 80. To achieve the same IP address capacity in this example cloud provider, you would need to allocate 7 additional nodes.
+
+To confirm the IP capacity and subnets for any node in your public cloud environment, you can enter the `oc get node <node_name> -o yaml` command. The `cloud.network.openshift.io/egress-ipconfig` annotation includes capacity and subnet information for the node.
+
+The annotation value is an array with a single object with fields that provide the following information for the primary network interface:
+
+* `interface`: Specifies the interface ID on AWS and Azure and the interface name on GCP.
+* `ifaddr`: Specifies the subnet mask for one or both IP address families.
+* `capacity`: Specifies the IP address capacity for the node. On AWS, the IP address capacity is provided per IP address family. On Azure and GCP, the IP address capacity includes both IPv4 and IPv6 addresses.
+
+Automatic attachment and detachment of egress IP addresses for traffic between nodes are available. This allows for traffic from many pods in namespaces to have a consistent source IP address to locations outside of the cluster. This also supports OpenShift SDN and OVN-Kubernetes, which is the default networking plugin in Red Hat OpenShift Networking in {product-title} {product-version}.
+
+ifdef::openshift-sdn[]
+[NOTE]
+====
+The {rh-openstack} egress IP address feature creates a Neutron reservation port called `egressip-<IP address>`. Using the same {rh-openstack} user as the one used for the {product-title} cluster installation, you can assign a floating IP address to this reservation port to have a predictable SNAT address for egress traffic. When an egress IP address on an {rh-openstack} network is moved from one node to another, because of a node failover, for example, the Neutron reservation port is removed and recreated. This means that the floating IP association is lost and you need to manually reassign the floating IP address to the new reservation port.
+====
+endif::openshift-sdn[]
+
+[NOTE]
+====
+When an {rh-openstack} cluster administrator assigns a floating IP to the reservation port, {product-title} cannot delete the reservation port. The `CloudPrivateIPConfig` object cannot perform delete and move operations until an {rh-openstack} cluster administrator unassigns the floating IP from the reservation port.
+====
+endif::openshift-rosa[]
+
+The following examples illustrate the annotation from nodes on several public cloud providers. The annotations are indented for readability.
+
+.Example `cloud.network.openshift.io/egress-ipconfig` annotation on AWS
+[source,yaml]
+----
+cloud.network.openshift.io/egress-ipconfig: [
+  {
+    "interface":"eni-078d267045138e436",
+    "ifaddr":{"ipv4":"10.0.128.0/18"},
+    "capacity":{"ipv4":14,"ipv6":15}
+  }
+]
+----
+
+ifndef::openshift-rosa[]
+.Example `cloud.network.openshift.io/egress-ipconfig` annotation on GCP
+[source,yaml]
+----
+cloud.network.openshift.io/egress-ipconfig: [
+  {
+    "interface":"nic0",
+    "ifaddr":{"ipv4":"10.0.128.0/18"},
+    "capacity":{"ip":14}
+  }
+]
+----
+endif::openshift-rosa[]
+
+The following sections describe the IP address capacity for supported public cloud environments for use in your capacity calculation.
+
+[id="nw-egress-ips-capacity-aws_{context}"]
+=== Amazon Web Services (AWS) IP address capacity limits
+
+On AWS, constraints on IP address assignments depend on the instance type configured. For more information, see link:https://docs.aws.amazon.com/AWSEC2/latest/UserGuide/using-eni.html#AvailableIpPerENI[IP addresses per network interface per instance type]
+
+ifndef::openshift-rosa[]
+[id="nw-egress-ips-capacity-gcp_{context}"]
+=== Google Cloud Platform (GCP) IP address capacity limits
+
+On GCP, the networking model implements additional node IP addresses through IP address aliasing, rather than IP address assignments. However, IP address capacity maps directly to IP aliasing capacity.
+
+The following capacity limits exist for IP aliasing assignment:
+
+- Per node, the maximum number of IP aliases, both IPv4 and IPv6, is 100.
+- Per VPC, the maximum number of IP aliases is unspecified, but {product-title} scalability testing reveals the maximum to be approximately 15,000.
+
+For more information, see link:https://cloud.google.com/vpc/docs/quota#per_instance[Per instance] quotas and link:https://cloud.google.com/vpc/docs/alias-ip[Alias IP ranges overview].
+
+[id="nw-egress-ips-capacity-azure_{context}"]
+=== Microsoft Azure IP address capacity limits
+
+On Azure, the following capacity limits exist for IP address assignment:
+
+- Per NIC, the maximum number of assignable IP addresses, for both IPv4 and IPv6, is 256.
+- Per virtual network, the maximum number of assigned IP addresses cannot exceed 65,536.
+
+For more information, see link:https://docs.microsoft.com/en-us/azure/azure-resource-manager/management/azure-subscription-service-limits?toc=/azure/virtual-network/toc.json#networking-limits[Networking limits].
+
+[id="nw-egress-ips-multi-nic-considerations_{context}"]
+== Considerations for using an egress IP on additional network interfaces
+
+In {product-title}, egress IPs provide administrators a way to control network traffic. Egress IPs can be used with the `br-ex`, or primary, network interface, which is a Linux bridge interface associated with Open vSwitch, or they can be used with additional network interfaces.
+
+You can inspect your network interface type by running the following command:
+
+[source,terminal]
+----
+$ ip -details link show
+----
+
+The primary network interface is assigned a node IP address which also contains a subnet mask. Information for this node IP address can be retrieved from the Kubernetes node object for each node within your cluster by inspecting the `k8s.ovn.org/node-primary-ifaddr` annotation. In an IPv4 cluster, this annotation is similar to the following example: `"k8s.ovn.org/node-primary-ifaddr: {"ipv4":"192.168.111.23/24"}"`.
+
+If the egress IP is not within the subnet of the primary network interface subnet, you can use an egress IP on another Linux network interface that is not of the primary network interface type. By doing so, {product-title} administrators are provided with a greater level of control over networking aspects such as routing, addressing, segmentation, and security policies. This feature provides users with the option to route workload traffic over specific network interfaces for purposes such as traffic segmentation or meeting specialized requirements.
+
+If the egress IP is not within the subnet of the primary network interface, then the selection of another network interface for egress traffic might occur if they are present on a node.
+
+You can determine which other network interfaces might support egress IPs by inspecting the `k8s.ovn.org/host-cidrs` Kubernetes node annotation. This annotation contains the addresses and subnet mask found for the primary network interface. It also contains additional network interface addresses and subnet mask information. These addresses and subnet masks are assigned to network interfaces that use the link:https://networklessons.com/cisco/ccna-200-301/longest-prefix-match-routing[longest prefix match routing] mechanism to determine which network interface supports the egress IP.
+
+[NOTE]
+====
+OVN-Kubernetes provides a mechanism to control and direct outbound network traffic from specific namespaces and pods. This ensures that it exits the cluster through a particular network interface and with a specific egress IP address.
+====
+
+[discrete]
+[id="nw-egress-ips-multi-nic-requirements_{context}"]
+=== Requirements for assigning an egress IP to a network interface that is not the primary network interface
+
+For users who want an egress IP and traffic to be routed over a particular interface that is not the primary network interface, the following conditions must be met:
+
+* {product-title} is installed on a bare metal cluster. This feature is disabled within cloud or hypervisor environments.
+
+* Your {product-title} pods are not configured as host-networked.
+
+* If a network interface is removed or if the IP address and subnet mask which allows the egress IP to be hosted on the interface is removed, then the egress IP is reconfigured. Consequently, it could be assigned to another node and interface.
+
+* The Egress IP must be IPv4. IPv6 is currently unsupported.
+
+* IP forwarding must be enabled for the network interface. To enable IP forwarding, you can use the `oc edit network.operator` command and edit the object like the following example:
++
+[source,yaml]
+----
+# ...
+spec:
+  clusterNetwork:
+  - cidr: 10.128.0.0/14
+    hostPrefix: 23
+  defaultNetwork:
+    ovnKubernetesConfig:
+      gatewayConfig:
+        ipForwarding: Global
+# ...
+----
+endif::openshift-rosa[]
+ifdef::openshift-sdn[]
+[id="nw-egress-ips-limitations_{context}"]
+== Limitations
+
+The following limitations apply when using egress IP addresses with the OpenShift SDN network plugin:
+
+- You cannot use manually assigned and automatically assigned egress IP addresses on the same nodes.
+- If you manually assign egress IP addresses from an IP address range, you must not make that range available for automatic IP assignment.
+- You cannot share egress IP addresses across multiple namespaces using the OpenShift SDN egress IP address implementation.
+
+If you need to share IP addresses across namespaces, the OVN-Kubernetes network plugin egress IP address implementation allows you to span IP addresses across multiple namespaces.
+
+[NOTE]
+====
+If you use OpenShift SDN in multitenant mode, you cannot use egress IP addresses with any namespace that is joined to another namespace by the projects that are associated with them.
+For example, if `project1` and `project2` are joined by running the `oc adm pod-network join-projects --to=project1 project2` command, neither project can use an egress IP address. For more information, see link:https://bugzilla.redhat.com/show_bug.cgi?id=1645577[BZ#1645577].
+====
+endif::openshift-sdn[]
+
+ifdef::ovn[]
+[id="nw-egress-ips-considerations_{context}"]
+== Assignment of egress IPs to pods
+
+To assign one or more egress IPs to a namespace or specific pods in a namespace, the following conditions must be satisfied:
+
+- At least one node in your cluster must have the `k8s.ovn.org/egress-assignable: ""` label.
+- An `EgressIP` object exists that defines one or more egress IP addresses to use as the source IP address for traffic leaving the cluster from pods in a namespace.
+
+[IMPORTANT]
+====
+If you create `EgressIP` objects prior to labeling any nodes in your cluster for egress IP assignment, {product-title} might assign every egress IP address to the first node with the `k8s.ovn.org/egress-assignable: ""` label.
+
+To ensure that egress IP addresses are widely distributed across nodes in the cluster, always apply the label to the nodes you intent to host the egress IP addresses before creating any `EgressIP` objects.
+====
+
+[id="nw-egress-ips-node-assignment_{context}"]
+== Assignment of egress IPs to nodes
+
+When creating an `EgressIP` object, the following conditions apply to nodes that are labeled with the `k8s.ovn.org/egress-assignable: ""` label:
+
+- An egress IP address is never assigned to more than one node at a time.
+- An egress IP address is equally balanced between available nodes that can host the egress IP address.
+- If the `spec.EgressIPs` array in an `EgressIP` object specifies more than one IP address, the following conditions apply:
+* No node will ever host more than one of the specified IP addresses.
+* Traffic is balanced roughly equally between the specified IP addresses for a given namespace.
+- If a node becomes unavailable, any egress IP addresses assigned to it are automatically reassigned, subject to the previously described conditions.
+
+When a pod matches the selector for multiple `EgressIP` objects, there is no guarantee which of the egress IP addresses that are specified in the `EgressIP` objects is assigned as the egress IP address for the pod.
+
+Additionally, if an `EgressIP` object specifies multiple egress IP addresses, there is no guarantee which of the egress IP addresses might be used. For example, if a pod matches a selector for an `EgressIP` object with two egress IP addresses, `10.10.20.1` and `10.10.20.2`, either might be used for each TCP connection or UDP conversation.
+
+[id="nw-egress-ips-node-architecture_{context}"]
+== Architectural diagram of an egress IP address configuration
+
+The following diagram depicts an egress IP address configuration. The diagram describes four pods in two different namespaces running on three nodes in a cluster. The nodes are assigned IP addresses from the `192.168.126.0/18` CIDR block on the host network.
+
+// Source: https://github.com/redhataccess/documentation-svg-assets/blob/master/for-web/121_OpenShift/121_OpenShift_engress_IP_Topology_1020.svg
+image::nw-egress-ips-diagram.svg[Architectural diagram for the egress IP feature.]
+
+Both Node 1 and Node 3 are labeled with `k8s.ovn.org/egress-assignable: ""` and thus available for the assignment of egress IP addresses.
+
+The dashed lines in the diagram depict the traffic flow from pod1, pod2, and pod3 traveling through the pod network to egress the cluster from Node 1 and Node 3. When an external service receives traffic from any of the pods selected by the example `EgressIP` object, the source IP address is either `192.168.126.10` or `192.168.126.102`. The traffic is balanced roughly equally between these two nodes.
+
+The following resources from the diagram are illustrated in detail:
+
+`Namespace` objects::
++
+--
+The namespaces are defined in the following manifest:
+
+.Namespace objects
+[source,yaml]
+----
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: namespace1
+  labels:
+    env: prod
+---
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: namespace2
+  labels:
+    env: prod
+----
+--
+
+`EgressIP` object::
++
+--
+The following `EgressIP` object describes a configuration that selects all pods in any namespace with the `env` label set to `prod`. The egress IP addresses for the selected pods are `192.168.126.10` and `192.168.126.102`.
+
+.`EgressIP` object
+[source,yaml]
+----
+apiVersion: k8s.ovn.org/v1
+kind: EgressIP
+metadata:
+  name: egressips-prod
+spec:
+  egressIPs:
+  - 192.168.126.10
+  - 192.168.126.102
+  namespaceSelector:
+    matchLabels:
+      env: prod
+status:
+  items:
+  - node: node1
+    egressIP: 192.168.126.10
+  - node: node3
+    egressIP: 192.168.126.102
+----
+
+For the configuration in the previous example, {product-title} assigns both egress IP addresses to the available nodes. The `status` field reflects whether and where the egress IP addresses are assigned.
+--
+endif::ovn[]
+
+ifdef::openshift-sdn[]
+[id="automatic-manual-assignment-approaches"]
+== IP address assignment approaches
+
+You can assign egress IP addresses to namespaces by setting the `egressIPs` parameter of the `NetNamespace` object. After an egress IP address is associated with a project, OpenShift SDN allows you to assign egress IP addresses to hosts in two ways:
+
+* In the _automatically assigned_ approach, an egress IP address range is assigned to a node.
+* In the _manually assigned_ approach, a list of one or more egress IP address is assigned to a node.
+
+Namespaces that request an egress IP address are matched with nodes that can host those egress IP addresses, and then the egress IP addresses are assigned to those nodes.
+If the `egressIPs` parameter is set on a `NetNamespace` object, but no node hosts that egress IP address, then egress traffic from the namespace will be dropped.
+
+High availability of nodes is automatic.
+If a node that hosts an egress IP address is unreachable and there are nodes that are able to host that egress IP address, then the egress IP address will move to a new node.
+When the unreachable node comes back online, the egress IP address automatically moves to balance egress IP addresses across nodes.
+
+[id="considerations-automatic-egress-ips"]
+=== Considerations when using automatically assigned egress IP addresses
+
+When using the automatic assignment approach for egress IP addresses the following considerations apply:
+
+- You set the `egressCIDRs` parameter of each node's `HostSubnet` resource to indicate the range of egress IP addresses that can be hosted by a node.
+{product-title} sets the `egressIPs` parameter of the `HostSubnet` resource based on the IP address range you specify.
+
+If the node hosting the namespace's egress IP address is unreachable, {product-title} will reassign the egress IP address to another node with a compatible egress IP address range.
+The automatic assignment approach works best for clusters installed in environments with flexibility in associating additional IP addresses with nodes.
+
+[id="considerations-manual-egress-ips"]
+=== Considerations when using manually assigned egress IP addresses
+
+This approach allows you to control which nodes can host an egress IP address.
+
+[NOTE]
+====
+If your cluster is installed on public cloud infrastructure, you must ensure that each node that you assign egress IP addresses to has sufficient spare capacity to host the IP addresses. For more information, see "Platform considerations" in a previous section.
+====
+
+When using the manual assignment approach for egress IP addresses the following considerations apply:
+
+- You set the `egressIPs` parameter of each node's `HostSubnet` resource to indicate the IP addresses that can be hosted by a node.
+- Multiple egress IP addresses per namespace are supported.
+
+If a namespace has multiple egress IP addresses and those addresses are hosted on multiple nodes, the following additional considerations apply:
+
+- If a pod is on a node that is hosting an egress IP address, that pod always uses the egress IP address on the node.
+- If a pod is not on a node that is hosting an egress IP address, that pod uses an egress IP address at random.
+endif::openshift-sdn[]
+
+ifdef::openshift-sdn[]
+:!openshift-sdn:
+endif::openshift-sdn[]
+ifdef::ovn[]
+:!ovn:
+endif::ovn[]

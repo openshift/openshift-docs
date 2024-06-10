@@ -1,0 +1,95 @@
+// Module included in the following assemblies:
+//
+// * rosa_cluster_admin/rosa_nodes/rosa-managing-worker-nodes.adoc
+// * nodes/rosa-managing-worker-nodes.adoc
+// * osd_cluster_admin/osd_nodes/osd-managing-worker-nodes.adoc
+
+:_mod-docs-content-type: PROCEDURE
+[id="rosa-scaling-worker-nodes_{context}"]
+= Scaling compute nodes manually
+
+If you have not enabled autoscaling for your machine pool, you can manually scale the number of compute (also known as worker) nodes in the pool to meet your deployment needs.
+
+You must scale each machine pool separately.
+
+.Prerequisites
+
+ifdef::openshift-rosa[]
+* You installed and configured the latest {product-title} (ROSA) CLI, `rosa`, on your workstation.
+* You logged in to your Red Hat account using the ROSA CLI (`rosa`).
+* You created a {product-title} (ROSA) cluster.
+endif::openshift-rosa[]
+ifndef::openshift-rosa[]
+* You created an {product-title} cluster.
+endif::[]
+* You have an existing machine pool.
+
+.Procedure
+
+ifdef::openshift-rosa[]
+
+. List the machine pools in the cluster:
++
+[source,terminal]
+----
+$ rosa list machinepools --cluster=<cluster_name>
+----
++
+.Example output
++
+[source,terminal]
+----
+ID        AUTOSCALING   REPLICAS    INSTANCE TYPE  LABELS    TAINTS   AVAILABILITY ZONES    DISK SIZE   SG IDs
+default   No            2           m5.xlarge                         us-east-1a            300GiB      sg-0e375ff0ec4a6cfa2
+mp1       No            2           m5.xlarge                         us-east-1a            300GiB      sg-0e375ff0ec4a6cfa2
+----
+
+. Increase or decrease the number of compute node replicas in a machine pool:
++
+[source,terminal]
+----
+$ rosa edit machinepool --cluster=<cluster_name> \
+                        --replicas=<replica_count> \ <1>
+                        <machine_pool_id> <2>
+----
+<1> If you deployed {product-title} (ROSA) using a single availability zone, the replica count defines the number of compute nodes to provision to the machine pool for the zone. If you deployed your cluster using multiple availability zones, the count defines the total number of compute nodes in the machine pool across all zones and must be a multiple of 3.
+<2> Replace `<machine_pool_id>` with the ID of your machine pool, as listed in the output of the preceding command.
+
+.Verification
+
+. List the available machine pools in your cluster:
++
+[source,terminal]
+----
+$ rosa list machinepools --cluster=<cluster_name>
+----
++
+.Example output
+[source,terminal]
+----
+ID        AUTOSCALING   REPLICAS    INSTANCE TYPE  LABELS    TAINTS   AVAILABILITY ZONES    DISK SIZE   SG IDs
+default   No            2           m5.xlarge                         us-east-1a            300GiB      sg-0e375ff0ec4a6cfa2
+mp1       No            3           m5.xlarge                         us-east-1a            300GiB      sg-0e375ff0ec4a6cfa2
+----
+
+. In the output of the preceding command, verify that the compute node replica count is as expected for your machine pool. In the example output, the compute node replica count for the `mp1` machine pool is scaled to 3.
+endif::[]
+
+ifdef::openshift-dedicated[]
+. Navigate to {cluster-manager-url} and select your cluster.
+. Under the *Machine pools* tab, click the options menu {kebab} for the machine pool that you want to scale.
+. Select *Scale*.
+. Specify the node count:
+* If you deployed your cluster using a single availability zone, specify the *Node count* in the drop-down menu.
+* If you deployed your cluster using multiple availability zones, specify the *Node count per zone* in the drop-down menu.
++
+[NOTE]
+====
+Your subscription determines the number of nodes that you can select.
+====
+. Click *Apply* to scale the machine pool.
+
+.Verification
+
+* Under the *Machine pools* tab, verify that the *Node count* for your machine pool is as expected.
+endif::[]

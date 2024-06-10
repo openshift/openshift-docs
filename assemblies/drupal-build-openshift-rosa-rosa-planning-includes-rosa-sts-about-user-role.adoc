@@ -1,0 +1,21 @@
+// Module included in the following assemblies:
+//
+// * rosa_planning/rosa-sts-ocm-role.adoc
+:_mod-docs-content-type: CONCEPT
+[id="rosa-sts-about-user-role_{context}"]
+= About the user-role IAM role
+
+You need to create a `user-role` IAM role per web UI user to enable those users to create ROSA clusters.
+
+Some considerations for your `user-role` IAM role are:
+
+* You only need one `user-role` IAM role per Red Hat user account, but your Red Hat organization can have many of these IAM resources.
+* Any user in a Red Hat organization may create and link an `user-role` IAM role.
+* There can be numerous `user-role` IAM roles per AWS account per Red Hat organization.
+* Red Hat uses the `user-role` IAM role to identify the user. This IAM resource has no AWS account permissions.
+* Your AWS account can have multiple `user-role` IAM roles, but you must link each IAM role to each user in your Red Hat organization. No user can have more than one linked `user-role` IAM role.
+
+[NOTE]
+====
+"Linking" or "associating" your IAM resources with your AWS account means creating a trust-policy with your `user-role` IAM role and the Red Hat {cluster-manager} AWS role. After creating and linking this IAM resource, you see a trust relationship from your `user-role` IAM role in AWS with the `arn:aws:iam::710019948333:role/RH-Managed-OpenShift-Installer` resource.
+====

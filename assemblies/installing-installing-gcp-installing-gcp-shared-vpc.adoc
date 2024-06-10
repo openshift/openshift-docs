@@ -1,0 +1,97 @@
+:_mod-docs-content-type: ASSEMBLY
+[id="installing-gcp-shared-vpc"]
+= Installing a cluster on GCP into a shared VPC
+include::_attributes/common-attributes.adoc[]
+:context: installing-gcp-shared-vpc
+:FeatureName: Installing a cluster on GCP into a shared VPC
+
+toc::[]
+
+In {product-title} version {product-version}, you can install a cluster into a shared Virtual Private Cloud (VPC) on Google Cloud Platform (GCP). In this installation method, the cluster is configured to use a VPC from a different GCP project. A shared VPC enables an organization to connect resources from multiple projects to a common VPC network. You can communicate within the organization securely and efficiently by using internal IP addresses from that network. For more information about shared VPC, see link:https://cloud.google.com/vpc/docs/shared-vpc[Shared VPC overview in the GCP documentation].
+
+The installation program provisions the rest of the required infrastructure, which you can further customize. To customize the installation, you modify parameters in the `install-config.yaml` file before you install the cluster.
+
+[id="installation-gcp-shared-vpc-prerequisites_{context}"]
+== Prerequisites
+
+* You reviewed details about the xref:../../architecture/architecture-installation.adoc#architecture-installation[{product-title} installation and update] processes.
+* You read the documentation on xref:../../installing/installing-preparing.adoc#installing-preparing[selecting a cluster installation method and preparing it for users].
+* If you use a firewall, you xref:../../installing/install_config/configuring-firewall.adoc#configuring-firewall[configured it to allow the sites] that your cluster requires access to.
+* You have a GCP host project which contains a shared VPC network.
+* You xref:../../installing/installing_gcp/installing-gcp-account.adoc#installing-gcp-account[configured a GCP project] to host the cluster. This project, known as the service project, must be attached to the host project. For more information, see link:https://cloud.google.com/vpc/docs/provisioning-shared-vpc#create-shared[Attaching service projects in the GCP documentation].
+* You have a GCP service account that has the xref:../../installing/installing_gcp/installing-gcp-account.adoc#minimum-required-permissions-ipi-gcp-xpn[required GCP permissions] in both the host and service projects.
+
+include::modules/cluster-entitlements.adoc[leveloffset=+1]
+
+include::modules/ssh-agent-using.adoc[leveloffset=+1]
+
+include::modules/installation-obtaining-installer.adoc[leveloffset=+1]
+
+include::modules/installation-user-infra-generate.adoc[leveloffset=+1]
+
+include::modules/installation-initializing-manual.adoc[leveloffset=+2]
+
+[role="_additional-resources"]
+.Additional resources
+* xref:../../installing/installing_gcp/installation-config-parameters-gcp.adoc#installation-config-parameters-gcp[Installation configuration parameters for GCP]
+
+include::modules/installation-gcp-enabling-shielded-vms.adoc[leveloffset=+2]
+
+include::modules/installation-gcp-enabling-confidential-vms.adoc[leveloffset=+2]
+
+include::modules/installation-gcp-shared-vpc-config.adoc[leveloffset=+2]
+
+include::modules/installation-configure-proxy.adoc[leveloffset=+2]
+
+//Installing the OpenShift CLI by downloading the binary: Moved up to precede `ccoctl` steps, which require the use of `oc`
+include::modules/cli-installing-cli.adoc[leveloffset=+1]
+
+[id="installing-gcp-manual-modes_{context}"]
+== Alternatives to storing administrator-level secrets in the kube-system project
+
+By default, administrator secrets are stored in the `kube-system` project. If you configured the `credentialsMode` parameter in the `install-config.yaml` file to `Manual`, you must use one of the following alternatives:
+
+* To manage long-term cloud credentials manually, follow the procedure in xref:../../installing/installing_gcp/installing-gcp-shared-vpc.adoc#manually-create-iam_installing-gcp-shared-vpc[Manually creating long-term credentials].
+
+* To implement short-term credentials that are managed outside the cluster for individual components, follow the procedures in xref:../../installing/installing_gcp/installing-gcp-shared-vpc.adoc#installing-gcp-with-short-term-creds_installing-gcp-shared-vpc[Configuring a GCP cluster to use short-term credentials].
+
+//Manually creating long-term credentials
+include::modules/manually-create-identity-access-management.adoc[leveloffset=+2]
+
+//Supertask: Configuring a GCP cluster to use short-term credentials
+[id="installing-gcp-with-short-term-creds_{context}"]
+=== Configuring a GCP cluster to use short-term credentials
+
+To install a cluster that is configured to use GCP Workload Identity, you must configure the CCO utility and create the required GCP resources for your cluster.
+
+//Task part 1: Configuring the Cloud Credential Operator utility
+include::modules/cco-ccoctl-configuring.adoc[leveloffset=+3]
+
+//Task part 2: Creating the required GCP resources
+include::modules/cco-ccoctl-creating-at-once.adoc[leveloffset=+3]
+
+//Task part 3: Incorporating the Cloud Credential Operator utility manifests
+include::modules/cco-ccoctl-install-creating-manifests.adoc[leveloffset=+3]
+
+include::modules/installation-launching-installer.adoc[leveloffset=+1]
+
+include::modules/cli-logging-in-kubeadmin.adoc[leveloffset=+1]
+
+[role="_additional-resources"]
+.Additional resources
+
+* See xref:../../web_console/web-console.adoc#web-console[Accessing the web console] for more details about accessing and understanding the {product-title} web console.
+
+include::modules/cluster-telemetry.adoc[leveloffset=+1]
+
+[role="_additional-resources"]
+.Additional resources
+
+* See xref:../../support/remote_health_monitoring/about-remote-health-monitoring.adoc#about-remote-health-monitoring[About remote health monitoring] for more information about the Telemetry service
+
+[id="installation-gcp-shared-vpc-next-steps_{context}"]
+== Next steps
+
+* xref:../../post_installation_configuration/cluster-tasks.adoc#available_cluster_customizations[Customize your cluster].
+* If necessary, you can
+xref:../../support/remote_health_monitoring/opting-out-of-remote-health-reporting.adoc#opting-out-remote-health-reporting_opting-out-remote-health-reporting[opt out of remote health reporting].

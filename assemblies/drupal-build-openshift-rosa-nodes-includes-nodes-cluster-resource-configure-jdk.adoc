@@ -1,0 +1,116 @@
+// Module included in the following assemblies:
+//
+// * nodes/nodes-cluster-resource-configure.adoc
+
+:_mod-docs-content-type: CONCEPT
+[id="nodes-cluster-resource-configure-jdk_{context}"]
+= Understanding OpenJDK settings for {product-title}
+
+The default OpenJDK settings do not work well with containerized
+environments. As a result, some additional Java memory
+settings must always be provided whenever running the OpenJDK in a container.
+
+The JVM memory layout is complex, version dependent, and describing it in detail
+is beyond the scope of this documentation. However, as a starting point for
+running OpenJDK in a container, at least the following three memory-related
+tasks are key:
+
+. Overriding the JVM maximum heap size.
+
+. Encouraging the JVM to release unused memory to the operating system, if
+   appropriate.
+
+. Ensuring all JVM processes within a container are appropriately configured.
+
+Optimally tuning JVM workloads for running in a container is beyond the scope of
+this documentation, and may involve setting multiple additional JVM options.
+
+[id="nodes-cluster-resource-configure-jdk-heap_{context}"]
+== Understanding how to override the JVM maximum heap size
+
+For many Java workloads, the JVM heap is the largest single consumer of memory.
+Currently, the OpenJDK defaults to allowing up to 1/4 (1/`-XX:MaxRAMFraction`)
+of the compute node's memory to be used for the heap, regardless of whether the
+OpenJDK is running in a container or not. It is therefore *essential* to
+override this behavior, especially if a container memory limit is also set.
+
+There are at least two ways the above can be achieved:
+
+* If the container memory limit is set and the experimental options are
+   supported by the JVM, set `-XX:+UnlockExperimentalVMOptions
+   -XX:+UseCGroupMemoryLimitForHeap`.
++
+[NOTE]
+====
+The `UseCGroupMemoryLimitForHeap` option has been removed in JDK 11. Use `-XX:+UseContainerSupport` instead.
+====
++
+This sets `-XX:MaxRAM` to the container memory limit, and the maximum heap size
+(`-XX:MaxHeapSize` / `-Xmx`) to 1/`-XX:MaxRAMFraction` (1/4 by default).
+
+* Directly override one of `-XX:MaxRAM`, `-XX:MaxHeapSize` or `-Xmx`.
++
+This option involves hard-coding a value, but has the advantage of allowing a
+safety margin to be calculated.
+
+[id="nodes-cluster-resource-configure-jdk-unused_{context}"]
+== Understanding how to encourage the JVM to release unused memory to the operating system
+
+By default, the OpenJDK does not aggressively return unused memory to the
+operating system. This may be appropriate for many containerized Java
+workloads, but notable exceptions include workloads where additional active
+processes co-exist with a JVM within a container, whether those additional
+processes are native, additional JVMs, or a combination of the two.
+
+Java-based agents can use the following JVM arguments to encourage the JVM
+to release unused memory to the operating system:
+
+[source,terminal]
+----
+-XX:+UseParallelGC
+-XX:MinHeapFreeRatio=5 -XX:MaxHeapFreeRatio=10 -XX:GCTimeRatio=4
+-XX:AdaptiveSizePolicyWeight=90.
+----
+
+These arguments are intended to return heap
+memory to the operating system whenever allocated memory exceeds 110% of in-use
+memory (`-XX:MaxHeapFreeRatio`), spending up to 20% of CPU time in the garbage
+collector (`-XX:GCTimeRatio`). At no time will the application heap allocation
+be less than the initial heap allocation (overridden by `-XX:InitialHeapSize` /
+`-Xms`). Detailed additional information is available
+link:https://developers.redhat.com/blog/2014/07/15/dude-wheres-my-paas-memory-tuning-javas-footprint-in-openshift-part-1/[Tuning Java's footprint in OpenShift (Part 1)],
+link:https://developers.redhat.com/blog/2014/07/22/dude-wheres-my-paas-memory-tuning-javas-footprint-in-openshift-part-2/[Tuning Java's footprint in OpenShift (Part 2)],
+and at
+link:https://developers.redhat.com/blog/2017/04/04/openjdk-and-containers/[OpenJDK
+and Containers].
+
+[id="nodes-cluster-resource-configure-jdk-proc_{context}"]
+== Understanding how to ensure all JVM processes within a container are appropriately configured
+
+In the case that multiple JVMs run in the same container, it is essential to
+ensure that they are all configured appropriately. For many workloads it will
+be necessary to grant each JVM a percentage memory budget, leaving a perhaps
+substantial additional safety margin.
+
+Many Java tools use different environment variables (`JAVA_OPTS`, `GRADLE_OPTS`, and so on) to configure their JVMs and it can be challenging to ensure
+that the right settings are being passed to the right JVM.
+
+The `JAVA_TOOL_OPTIONS` environment variable is always respected by the OpenJDK,
+and values specified in `JAVA_TOOL_OPTIONS` will be overridden by other options
+specified on the JVM command line. By default, to ensure that these options are
+used by default for all JVM workloads run in the Java-based agent image, the {product-title} Jenkins
+Maven agent image sets:
+
+[source,terminal]
+----
+JAVA_TOOL_OPTIONS="-XX:+UnlockExperimentalVMOptions
+-XX:+UseCGroupMemoryLimitForHeap -Dsun.zip.disableMemoryMapping=true"
+----
+
+[NOTE]
+====
+The `UseCGroupMemoryLimitForHeap` option has been removed in JDK 11. Use `-XX:+UseContainerSupport` instead.
+====
+
+This does not guarantee that additional options are not required, but is
+intended to be a helpful starting point.

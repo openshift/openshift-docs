@@ -1,0 +1,46 @@
+// Module included in the following assemblies:
+//
+// * operators/operator_sdk/osdk-scorecard.adoc
+
+:_mod-docs-content-type: PROCEDURE
+[id="osdk-scorecard-parallel_{context}"]
+= Enabling parallel testing
+
+As an Operator author, you can define separate stages for your tests using the scorecard configuration file. Stages run sequentially in the order they are defined in the configuration file. A stage contains a list of tests and a configurable `parallel` setting.
+
+By default, or when a stage explicitly sets `parallel` to `false`, tests in a stage are run sequentially in the order they are defined in the configuration file. Running tests one at a time is helpful to guarantee that no two tests interact and conflict with each other.
+
+However, if tests are designed to be fully isolated, they can be parallelized.
+
+.Procedure
+
+* To run a set of isolated tests in parallel, include them in the same stage and set `parallel` to `true`:
++
+[source,terminal,subs="attributes+"]
+----
+apiVersion: scorecard.operatorframework.io/v1alpha3
+kind: Configuration
+metadata:
+  name: config
+stages:
+- parallel: true <1>
+  tests:
+  - entrypoint:
+    - scorecard-test
+    - basic-check-spec
+    image: quay.io/operator-framework/scorecard-test:v{osdk_ver}
+    labels:
+      suite: basic
+      test: basic-check-spec-test
+  - entrypoint:
+    - scorecard-test
+    - olm-bundle-validation
+    image: quay.io/operator-framework/scorecard-test:v{osdk_ver}
+    labels:
+      suite: olm
+      test: olm-bundle-validation-test
+----
+<1> Enables parallel testing
++
+All tests in a parallel stage are executed simultaneously, and scorecard waits for all of them to finish before proceding to the next stage. This can make your tests run much faster.
+

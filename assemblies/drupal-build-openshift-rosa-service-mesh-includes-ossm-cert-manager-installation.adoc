@@ -1,0 +1,261 @@
+// Module included in the following assemblies:
+//
+// * service_mesh/v2x/ossm-security.adoc
+
+:_mod-docs-content-type: PROCEDURE
+[id="ossm-cert-manager-installation_{context}"]
+= Installing cert-manager
+
+You can install the `cert-manager` tool to manage the lifecycle of TLS certificates and ensure that they are valid and up-to-date. If you are running Istio in your environment, you can also install the `istio-csr` certificate authority (CA) server, which handles certificate signing requests (CSR) from Istio proxies. The `istio-csr` CA delegates signing to the `cert-manager` tool, which delegates to the configured CA.
+
+.Procedure
+
+. Create the root cluster issuer:
++
+.. Create the `cluster-issuer` object as in the following example:
++
+.Example `cluster-issuer.yaml`
+[source, yaml]
+----
+apiVersion: cert-manager.io/v1
+kind: Issuer
+metadata:
+  name: selfsigned-root-issuer
+  namespace: cert-manager
+spec:
+  selfSigned: {}
+---
+apiVersion: cert-manager.io/v1
+kind: Certificate
+metadata:
+  name: root-ca
+  namespace: cert-manager
+spec:
+  isCA: true
+  duration: 21600h # 900d
+  secretName: root-ca
+  commonName: root-ca.my-company.net
+  subject:
+    organizations:
+    - my-company.net
+  issuerRef:
+    name: selfsigned-root-issuer
+    kind: Issuer
+    group: cert-manager.io
+---
+apiVersion: cert-manager.io/v1
+kind: ClusterIssuer
+metadata:
+  name: root-ca
+spec:
+  ca:
+    secretName: root-ca
+----
++
+====
+[NOTE]
+The namespace of the `selfsigned-root-issuer` issuer and `root-ca` certificate is `cert-manager` because `root-ca` is a cluster issuer, so the cert-manager looks for a referenced secret in its own namespace. The namespace is called `cert-manager` in the case of the {cert-manager-operator}.
+====
+
+.. Create the object by using the following command:
++
+[source,terminal]
+----
+$ oc apply -f cluster-issuer.yaml
+----
+
+.. Create the `istio-ca` object as in the following example:
++
+.Example `istio-ca.yaml`
+[source, yaml]
+----
+apiVersion: cert-manager.io/v1
+kind: Certificate
+metadata:
+  name: istio-ca
+  namespace: istio-system
+spec:
+  isCA: true
+  duration: 21600h
+  secretName: istio-ca
+  commonName: istio-ca.my-company.net
+  subject:
+    organizations:
+    - my-company.net
+  issuerRef:
+    name: root-ca
+    kind: ClusterIssuer
+    group: cert-manager.io
+---
+apiVersion: cert-manager.io/v1
+kind: Issuer
+metadata:
+  name: istio-ca
+  namespace: istio-system
+spec:
+  ca:
+    secretName: istio-ca
+----
+
+.. Use the following command to create the object:
++
+[source,terminal]
+----
+$ oc apply -n istio-system -f istio-ca.yaml
+----
+
+. Install `istio-csr`:
++
+[source,terminal]
+----
+$ helm install istio-csr jetstack/cert-manager-istio-csr \
+    -n istio-system \
+    -f deploy/examples/cert-manager/istio-csr/istio-csr.yaml
+----
++
+.Example `istio-csr.yaml`
+[source, yaml]
+----
+replicaCount: 2
+
+image:
+  repository: quay.io/jetstack/cert-manager-istio-csr
+  tag: v0.6.0
+  pullSecretName: ""
+
+app:
+  certmanager:
+    namespace: istio-system
+    issuer:
+      group: cert-manager.io
+      kind: Issuer
+      name: istio-ca
+
+  controller:
+    configmapNamespaceSelector: "maistra.io/member-of=istio-system"
+    leaderElectionNamespace: istio-system
+
+  istio:
+    namespace: istio-system
+    revisions: ["basic"]
+
+  server:
+    maxCertificateDuration: 5m
+
+  tls:
+    certificateDNSNames:
+    # This DNS name must be set in the SMCP spec.security.certificateAuthority.cert-manager.address
+    - cert-manager-istio-csr.istio-system.svc
+----
+
+. Deploy SMCP:
++
+[source,terminal]
+----
+$ oc apply -f mesh.yaml -n istio-system
+----
++
+.Example `mesh.yaml`
+[source, yaml]
+----
+apiVersion: maistra.io/v2
+kind: ServiceMeshControlPlane
+metadata:
+  name: basic
+spec:
+  addons:
+    grafana:
+      enabled: false
+    kiali:
+      enabled: false
+    prometheus:
+      enabled: false
+  proxy:
+    accessLogging:
+      file:
+        name: /dev/stdout
+  security:
+    certificateAuthority:
+      cert-manager:
+        address: cert-manager-istio-csr.istio-system.svc:443
+      type: cert-manager
+    dataPlane:
+      mtls: true
+    identity:
+      type: ThirdParty
+  tracing:
+    type: None
+---
+apiVersion: maistra.io/v1
+kind: ServiceMeshMemberRoll
+metadata:
+  name: default
+spec:
+  members:
+  - httpbin
+  - sleep
+----
+
+====
+[NOTE]
+`security.identity.type: ThirdParty` must be set when `security.certificateAuthority.type: cert-manager` is configured.
+====
+
+.Verification
+
+Use the sample `httpbin` service and `sleep` app to check mTLS traffic from ingress gateways and verify that the `cert-manager` tool is installed.
+
+. Deploy the HTTP and `sleep` apps:
++
+[source,terminal]
+----
+$ oc new-project <namespace>
+----
++
+[source,terminal]
+----
+$ oc apply -f https://raw.githubusercontent.com/maistra/istio/maistra-2.4/samples/httpbin/httpbin.yaml
+----
++
+[source,terminal]
+----
+$ oc apply -f https://raw.githubusercontent.com/maistra/istio/maistra-2.4/samples/sleep/sleep.yaml
+----
+
+. Verify that `sleep` can access the `httpbin` service:
++
+[source,terminal]
+----
+$ oc exec "$(oc get pod -l app=sleep -n <namespace> \
+   -o jsonpath={.items..metadata.name})" -c sleep -n <namespace> -- \
+   curl http://httpbin.<namespace>:8000/ip -s -o /dev/null \
+   -w "%{http_code}\n"
+----
++
+.Example output:
+[source,terminal]
+----
+200
+----
+
+. Check mTLS traffic from the ingress gateway to the `httpbin` service:
++
+[source,terminal]
+----
+$ oc apply -n <namespace> -f https://raw.githubusercontent.com/maistra/istio/maistra-2.4/samples/httpbin/httpbin-gateway.yaml
+----
+
+. Get the `istio-ingressgateway` route:
++
+[source,terminal]
+----
+INGRESS_HOST=$(oc -n istio-system get routes istio-ingressgateway -o jsonpath='{.spec.host}')
+----
+
+. Verify mTLS traffic from the ingress gateway to the `httpbin` service:
++
+[source,terminal]
+----
+$ curl -s -I http://$INGRESS_HOST/headers -o /dev/null -w "%{http_code}" -s
+----
+

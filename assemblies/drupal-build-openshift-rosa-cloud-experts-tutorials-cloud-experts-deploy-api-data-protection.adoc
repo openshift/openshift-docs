@@ -1,0 +1,608 @@
+:_mod-docs-content-type: ASSEMBLY
+[id="cloud-experts-deploy-api-data-protection"]
+= Tutorial: Deploying OpenShift API for Data Protection on a ROSA cluster
+include::includes/attributes-openshift-dedicated.adoc[]
+:context: cloud-experts-deploy-api-data-protection
+
+
+//Mobb content metadata
+//Brought into ROSA product docs 2023-09-12
+//---
+//date: '2022-09-14'
+//title: Deploying OpenShift API for Data Protection on a ROSA cluster
+//tags: ["ROSA", "AWS", "STS", "OADP", "Velero", "Backup", "Restore", "Storage"]
+//authors:
+//  - Paul Czarkowski
+//  - Dustin Scott
+//---
+
+include::includes/mobb-support-statement.adoc[leveloffset=+1]
+
+.Prerequisites
+
+* A link:https://access.redhat.com/documentation/en-us/openshift_container_platform/4.16/html-single/install_rosa_classic_clusters/#rosa-sts-creating-a-cluster-quickly[ROSA classic cluster]
+
+.Environment
+
+* Prepare the environment variables:
++
+[NOTE]
+====
+Change the cluster name to match your ROSA cluster and ensure you are logged into the cluster as an Administrator.
+Ensure all fields are outputted correctly before moving on.
+====
++
+[source,terminal]
+----
+$ export CLUSTER_NAME=$(oc get infrastructure cluster -o=jsonpath="{.status.infrastructureName}"  | sed 's/-[a-z0-9]\{5\}$//')
+$ export ROSA_CLUSTER_ID=$(rosa describe cluster -c ${CLUSTER_NAME} --output json | jq -r .id)
+$ export REGION=$(rosa describe cluster -c ${CLUSTER_NAME} --output json | jq -r .region.id)
+$ export OIDC_ENDPOINT=$(oc get authentication.config.openshift.io cluster -o jsonpath='{.spec.serviceAccountIssuer}' | sed  's|^https://||')
+$ export AWS_ACCOUNT_ID=`aws sts get-caller-identity --query Account --output text`
+$ export CLUSTER_VERSION=`rosa describe cluster -c ${CLUSTER_NAME} -o json | jq -r .version.raw_id | cut -f -2 -d '.'`
+$ export ROLE_NAME="${CLUSTER_NAME}-openshift-oadp-aws-cloud-credentials"
+$ export AWS_PAGER=""
+$ export SCRATCH="/tmp/${CLUSTER_NAME}/oadp"
+$ mkdir -p ${SCRATCH}
+$ echo "Cluster ID: ${ROSA_CLUSTER_ID}, Region: ${REGION}, OIDC Endpoint: ${OIDC_ENDPOINT}, AWS Account ID: ${AWS_ACCOUNT_ID}"
+----
+
+[id="prepare-aws-account_{context}"]
+== Prepare AWS Account
+
+. Create an IAM Policy to allow for S3 Access:
++
+[source,terminal]
+----
+$ POLICY_ARN=$(aws iam list-policies --query "Policies[?PolicyName=='RosaOadpVer1'].{ARN:Arn}" --output text)
+if [[ -z "${POLICY_ARN}" ]]; then
+$ cat << EOF > ${SCRATCH}/policy.json
+{
+"Version": "2012-10-17",
+"Statement": [
+ {
+   "Effect": "Allow",
+   "Action": [
+     "s3:CreateBucket",
+     "s3:DeleteBucket",
+     "s3:PutBucketTagging",
+     "s3:GetBucketTagging",
+     "s3:PutEncryptionConfiguration",
+     "s3:GetEncryptionConfiguration",
+     "s3:PutLifecycleConfiguration",
+     "s3:GetLifecycleConfiguration",
+     "s3:GetBucketLocation",
+     "s3:ListBucket",
+     "s3:GetObject",
+     "s3:PutObject",
+     "s3:DeleteObject",
+     "s3:ListBucketMultipartUploads",
+     "s3:AbortMultipartUpload",
+     "s3:ListMultipartUploadParts",
+     "ec2:DescribeSnapshots",
+     "ec2:DescribeVolumes",
+     "ec2:DescribeVolumeAttribute",
+     "ec2:DescribeVolumesModifications",
+     "ec2:DescribeVolumeStatus",
+     "ec2:CreateTags",
+     "ec2:CreateVolume",
+     "ec2:CreateSnapshot",
+     "ec2:DeleteSnapshot"
+   ],
+   "Resource": "*"
+ }
+]}
+EOF
+$ POLICY_ARN=$(aws iam create-policy --policy-name "RosaOadpVer1" \
+--policy-document file:///${SCRATCH}/policy.json --query Policy.Arn \
+--tags Key=rosa_openshift_version,Value=${CLUSTER_VERSION} Key=rosa_role_prefix,Value=ManagedOpenShift Key=operator_namespace,Value=openshift-oadp Key=operator_name,Value=openshift-oadp \
+--output text)
+fi
+$ echo ${POLICY_ARN}
+----
+
+. Create an IAM Role trust policy for the cluster:
++
+[source,terminal]
+----
+$ cat <<EOF > ${SCRATCH}/trust-policy.json
+{
+  "Version": "2012-10-17",
+  "Statement": [{
+    "Effect": "Allow",
+    "Principal": {
+      "Federated": "arn:aws:iam::${AWS_ACCOUNT_ID}:oidc-provider/${OIDC_ENDPOINT}"
+    },
+    "Action": "sts:AssumeRoleWithWebIdentity",
+    "Condition": {
+      "StringEquals": {
+         "${OIDC_ENDPOINT}:sub": [
+           "system:serviceaccount:openshift-adp:openshift-adp-controller-manager",
+           "system:serviceaccount:openshift-adp:velero"]
+      }
+    }
+  }]
+}
+EOF
+$ ROLE_ARN=$(aws iam create-role --role-name \
+ "${ROLE_NAME}" \
+  --assume-role-policy-document file://${SCRATCH}/trust-policy.json \
+  --tags Key=rosa_cluster_id,Value=${ROSA_CLUSTER_ID} Key=rosa_openshift_version,Value=${CLUSTER_VERSION} Key=rosa_role_prefix,Value=ManagedOpenShift Key=operator_namespace,Value=openshift-adp Key=operator_name,Value=openshift-oadp \
+  --query Role.Arn --output text)
+
+$ echo ${ROLE_ARN}
+----
+
+. Attach the IAM Policy to the IAM Role:
++
+[source,terminal]
+----
+$ aws iam attach-role-policy --role-name "${ROLE_NAME}" \
+ --policy-arn ${POLICY_ARN}
+----
+
+[id="deploy-oadp-on-cluster_{context}"]
+== Deploy OADP on the cluster
+
+. Create a namespace for OADP:
++
+[source,terminal]
+----
+$ oc create namespace openshift-adp
+----
+
+. Create a credentials secret:
++
+[source,terminal]
+----
+$ cat <<EOF > ${SCRATCH}/credentials
+[default]
+role_arn = ${ROLE_ARN}
+web_identity_token_file = /var/run/secrets/openshift/serviceaccount/token
+EOF
+$ oc -n openshift-adp create secret generic cloud-credentials \
+ --from-file=${SCRATCH}/credentials
+----
+
+. Deploy the OADP Operator:
++
+[NOTE]
+====
+There is currently an issue with version 1.1 of the Operator with backups that have a `PartiallyFailed` status. This does not seem to affect the backup and restore process, but it should be noted as there are issues with it.
+====
++
+[source,terminal]
+----
+$ cat << EOF | oc create -f -
+apiVersion: operators.coreos.com/v1
+kind: OperatorGroup
+metadata:
+ generateName: openshift-adp-
+ namespace: openshift-adp
+ name: oadp
+spec:
+ targetNamespaces:
+ - openshift-adp
+---
+apiVersion: operators.coreos.com/v1alpha1
+kind: Subscription
+metadata:
+ name: redhat-oadp-operator
+ namespace: openshift-adp
+spec:
+ channel: stable-1.2
+ installPlanApproval: Automatic
+ name: redhat-oadp-operator
+ source: redhat-operators
+ sourceNamespace: openshift-marketplace
+EOF
+----
+
+. Wait for the Operator to be ready:
++
+[source,terminal]
+----
+$ watch oc -n openshift-adp get pods
+----
++
+.Example output
+[source,terminal]
+----
+NAME                                                READY   STATUS    RESTARTS   AGE
+openshift-adp-controller-manager-546684844f-qqjhn   1/1     Running   0          22s
+----
+
+. Create Cloud Storage:
++
+[source,terminal]
+----
+$ cat << EOF | oc create -f -
+apiVersion: oadp.openshift.io/v1alpha1
+kind: CloudStorage
+metadata:
+ name: ${CLUSTER_NAME}-oadp
+ namespace: openshift-adp
+spec:
+ creationSecret:
+   key: credentials
+   name: cloud-credentials
+ enableSharedConfig: true
+ name: ${CLUSTER_NAME}-oadp
+ provider: aws
+ region: $REGION
+EOF
+----
+
+. Check your application's storage default storage class:
++
+[source,terminal]
+----
+$ oc get pvc -n <namespace> <1>
+----
+<1> Enter your application's namespace.
++
+.Example output
+[source,terminal]
+----
+NAME     STATUS   VOLUME                                     CAPACITY   ACCESS MODES   STORAGECLASS   AGE
+applog   Bound    pvc-351791ae-b6ab-4e8b-88a4-30f73caf5ef8   1Gi        RWO            gp3-csi        4d19h
+mysql    Bound    pvc-16b8e009-a20a-4379-accc-bc81fedd0621   1Gi        RWO            gp3-csi        4d19h
+----
++
+[source,terminal]
+----
+$ oc get storageclass
+----
++
+.Example output
+[source,terminal]
+----
+NAME                PROVISIONER             RECLAIMPOLICY   VOLUMEBINDINGMODE      ALLOWVOLUMEEXPANSION   AGE
+gp2                 kubernetes.io/aws-ebs   Delete          WaitForFirstConsumer   true                   4d21h
+gp2-csi             ebs.csi.aws.com         Delete          WaitForFirstConsumer   true                   4d21h
+gp3                 ebs.csi.aws.com         Delete          WaitForFirstConsumer   true                   4d21h
+gp3-csi (default)   ebs.csi.aws.com         Delete          WaitForFirstConsumer   true                   4d21h
+----
++
+Using either gp3-csi, gp2-csi, gp3 or gp2 will work.
+If the application(s) that are being backed up are all using PV's with CSI, include the CSI plugin in the OADP DPA configuration.
+
+. CSI only: Deploy a Data Protection Application:
++
+[source,terminal]
+----
+$ cat << EOF | oc create -f -
+apiVersion: oadp.openshift.io/v1alpha1
+kind: DataProtectionApplication
+metadata:
+ name: ${CLUSTER_NAME}-dpa
+ namespace: openshift-adp
+spec:
+ backupImages: true
+ features:
+   dataMover:
+     enable: false
+ backupLocations:
+ - bucket:
+     cloudStorageRef:
+       name: ${CLUSTER_NAME}-oadp
+     credential:
+       key: credentials
+       name: cloud-credentials
+     prefix: velero
+     default: true
+     config:
+       region: ${REGION}
+ configuration:
+   velero:
+     defaultPlugins:
+     - openshift
+     - aws
+     - csi
+   restic:
+     enable: false
+EOF
+----
++
+[NOTE]
+====
+If you run this command for CSI volumes, you can skip the next step.
+====
+
+. Non-CSI volumes: Deploy a Data Protection Application:
++
+[source,terminal]
+----
+$ cat << EOF | oc create -f -
+apiVersion: oadp.openshift.io/v1alpha1
+kind: DataProtectionApplication
+metadata:
+ name: ${CLUSTER_NAME}-dpa
+ namespace: openshift-adp
+spec:
+ backupImages: true
+ features:
+   dataMover:
+     enable: false
+ backupLocations:
+ - bucket:
+     cloudStorageRef:
+       name: ${CLUSTER_NAME}-oadp
+     credential:
+       key: credentials
+       name: cloud-credentials
+     prefix: velero
+     default: true
+     config:
+       region: ${REGION}
+ configuration:
+   velero:
+     defaultPlugins:
+     - openshift
+     - aws
+   restic:
+     enable: false
+ snapshotLocations:
+   - velero:
+       config:
+         credentialsFile: /tmp/credentials/openshift-adp/cloud-credentials-credentials
+         enableSharedConfig: 'true'
+         profile: default
+         region: ${REGION}
+       provider: aws
+EOF
+----
+
+[NOTE]
+====
+* In OADP 1.1.x ROSA STS environments, the container image backup and restore (`spec.backupImages`) value must be set to `false` as it is not supported.
+* The Restic feature (`restic.enable=false`) is disabled and not supported in ROSA STS environments.
+* The DataMover feature (`dataMover.enable=false`) is disabled and not supported in ROSA STS environments.
+====
+
+[id="perform-a-backup_{context}"]
+== Perform a backup
+
+[NOTE]
+====
+The following sample hello-world application has no attached persistent volumes.
+Either DPA configuration will work.
+====
+
+. Create a workload to back up:
++
+[source,terminal]
+----
+$ oc create namespace hello-world
+$ oc new-app -n hello-world --image=docker.io/openshift/hello-openshift
+----
+
+. Expose the route:
++
+[source,terminal]
+----
+$ oc expose service/hello-openshift -n hello-world
+----
+
+. Check that the application is working:
++
+[source,terminal]
+----
+$ curl `oc get route/hello-openshift -n hello-world -o jsonpath='{.spec.host}'`
+----
++
+.Example output
++
+[source,terminal]
+----
+Hello OpenShift!
+----
+
+. Back up the workload:
++
+[source,terminal]
+----
+$ cat << EOF | oc create -f -
+apiVersion: velero.io/v1
+kind: Backup
+metadata:
+ name: hello-world
+ namespace: openshift-adp
+spec:
+ includedNamespaces:
+ - hello-world
+ storageLocation: ${CLUSTER_NAME}-dpa-1
+ ttl: 720h0m0s
+EOF
+----
+
+. Wait until the backup is done:
++
+[source,terminal]
+----
+$ watch "oc -n openshift-adp get backup hello-world -o json | jq .status"
+----
++
+.Example output
+[source,JSON]
+----
+{
+ "completionTimestamp": "2022-09-07T22:20:44Z",
+ "expiration": "2022-10-07T22:20:22Z",
+ "formatVersion": "1.1.0",
+ "phase": "Completed",
+ "progress": {
+   "itemsBackedUp": 58,
+   "totalItems": 58
+ },
+ "startTimestamp": "2022-09-07T22:20:22Z",
+ "version": 1
+}
+----
+
+. Delete the demo workload:
++
+[source,terminal]
+----
+$ oc delete ns hello-world
+----
+
+. Restore from the backup:
++
+[source,terminal]
+----
+$ cat << EOF | oc create -f -
+apiVersion: velero.io/v1
+kind: Restore
+metadata:
+ name: hello-world
+ namespace: openshift-adp
+spec:
+ backupName: hello-world
+EOF
+----
+
+. Wait for the Restore to finish:
++
+[source,terminal]
+----
+$ watch "oc -n openshift-adp get restore hello-world -o json | jq .status"
+----
++
+.Example output
+[source,JSON]
+----
+{
+ "completionTimestamp": "2022-09-07T22:25:47Z",
+ "phase": "Completed",
+ "progress": {
+   "itemsRestored": 38,
+   "totalItems": 38
+ },
+ "startTimestamp": "2022-09-07T22:25:28Z",
+ "warnings": 9
+}
+----
+
+. Check that the workload is restored:
++
+[source,terminal]
+----
+$ oc -n hello-world get pods
+----
++
+.Example output
+[source,terminal]
+----
+NAME                              READY   STATUS    RESTARTS   AGE
+hello-openshift-9f885f7c6-kdjpj   1/1     Running   0          90s
+----
++
+[source,terminal]
+----
+$ curl `oc get route/hello-openshift -n hello-world -o jsonpath='{.spec.host}'`
+----
++
+.Example output
+[source,terminal]
+----
+Hello OpenShift!
+----
+
+. For troubleshooting tips please refer to the OADP team's link:https://github.com/openshift/oadp-operator/blob/master/docs/TROUBLESHOOTING.md[troubleshooting documentation]
+
+. Additional sample applications can be found in the OADP team's link:https://github.com/openshift/oadp-operator/tree/master/tests/e2e/sample-applications[sample applications directory]
+
+[id="cleanup_{context}"]
+== Cleanup
+
+. Delete the workload:
++
+[source,terminal]
+----
+$ oc delete ns hello-world
+----
+
+. Remove the backup and restore resources from the cluster if they are no longer required:
++
+[source,terminal]
+----
+$ oc delete backup hello-world
+$ oc delete restore hello-world
+----
+
+. To delete the backup/restore and remote objects in s3:
++
+[source,terminal]
+----
+$ velero backup delete hello-world
+$ velero restore delete hello-world
+----
+
+. Delete the Data Protection Application:
++
+[source,terminal]
+----
+$ oc -n openshift-adp delete dpa ${CLUSTER_NAME}-dpa
+----
+
+. Delete the Cloud Storage:
++
+[source,terminal]
+----
+$ oc -n openshift-adp delete cloudstorage ${CLUSTER_NAME}-oadp
+----
++
+[WARNING]
+====
+If this command hangs, you might need to delete the finalizer:
+[source,terminal]
+----
+$ oc -n openshift-adp patch cloudstorage ${CLUSTER_NAME}-oadp -p '{"metadata":{"finalizers":null}}' --type=merge
+----
+====
+
+. Remove the Operator if it is no longer required:
++
+[source,terminal]
+----
+$ oc -n openshift-adp delete subscription oadp-operator
+----
+
+. Remove the namespace for the Operator:
++
+[source,terminal]
+----
+$ oc delete ns redhat-openshift-adp
+----
+
+. Remove the Custom Resource Definitions from the cluster if you no longer wish to have them:
++
+[source,terminal]
+----
+$ for CRD in `oc get crds | grep velero | awk '{print $1}'`; do oc delete crd $CRD; done
+$ for CRD in `oc get crds | grep -i oadp | awk '{print $1}'`; do oc delete crd $CRD; done
+----
+
+. Delete the AWS S3 Bucket:
++
+[source,terminal]
+----
+$ aws s3 rm s3://${CLUSTER_NAME}-oadp --recursive
+$ aws s3api delete-bucket --bucket ${CLUSTER_NAME}-oadp
+----
+
+. Detach the Policy from the role:
++
+[source,terminal]
+----
+$ aws iam detach-role-policy --role-name "${ROLE_NAME}" \
+ --policy-arn "${POLICY_ARN}"
+----
+
+. Delete the role:
++
+[source,terminal]
+----
+$ aws iam delete-role --role-name "${ROLE_NAME}"
+----

@@ -1,0 +1,65 @@
+// Module included in the following assemblies:
+//
+// * nodes/nodes-cluster-overcommit.adoc
+// * post_installation_configuration/node-tasks.adoc
+
+:_mod-docs-content-type: CONCEPT
+[id="nodes-cluster-overcommit-configure-nodes_{context}"]
+= Understanding nodes overcommitment
+
+In an overcommitted environment, it is important to properly configure your node to provide best system behavior.
+
+When the node starts, it ensures that the kernel tunable flags for memory
+management are set properly. The kernel should never fail memory allocations
+unless it runs out of physical memory.
+
+To ensure this behavior, {product-title} configures the kernel to always overcommit
+memory by setting the `vm.overcommit_memory` parameter to `1`, overriding the
+default operating system setting.
+
+{product-title} also configures the kernel not to panic when it runs out of memory
+by setting the `vm.panic_on_oom` parameter to `0`. A setting of 0 instructs the
+kernel to call oom_killer in an Out of Memory (OOM) condition, which kills
+processes based on priority
+
+You can view the current setting by running the following commands on your nodes:
+
+[source,terminal]
+----
+$ sysctl -a |grep commit
+----
+
+.Example output
+[source,terminal]
+----
+#...
+vm.overcommit_memory = 0
+#...
+----
+
+[source,terminal]
+----
+$ sysctl -a |grep panic
+----
+
+.Example output
+[source,terminal]
+----
+#...
+vm.panic_on_oom = 0
+#...
+----
+
+[NOTE]
+====
+The above flags should already be set on nodes, and no further action is
+required.
+====
+
+You can also perform the following configurations for each node:
+
+* Disable or enforce CPU limits using CPU CFS quotas
+
+* Reserve resources for system processes
+
+* Reserve memory across quality of service tiers

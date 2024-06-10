@@ -1,0 +1,151 @@
+// Module included in the following assemblies:
+//
+// * nodes/nodes-cluster-resource-configure.adoc
+
+:_mod-docs-content-type: CONCEPT
+[id="nodes-cluster-resource-configure-oom_{context}"]
+= Understanding OOM kill policy
+
+{product-title} can kill a process in a container if the total memory usage of
+all the processes in the container exceeds the memory limit, or in serious cases
+of node memory exhaustion.
+
+When a process is Out of Memory (OOM) killed, this might result in the container
+exiting immediately. If the container PID 1 process receives the *SIGKILL*, the
+container will exit immediately. Otherwise, the container behavior is
+dependent on the behavior of the other processes.
+
+For example, a container process exited with code 137, indicating it received a SIGKILL signal.
+
+If the container does not exit immediately, an OOM kill is detectable as
+follows:
+
+. Access the pod using a remote shell:
++
+[source,terminal]
+----
+# oc rsh test
+----
+
+. Run the following command to see the current OOM kill count in `/sys/fs/cgroup/memory/memory.oom_control`:
++
+[source,terminal]
+----
+$ grep '^oom_kill ' /sys/fs/cgroup/memory/memory.oom_control
+----
++
+.Example output
+[source,terminal]
+----
+oom_kill 0
+----
+
+. Run the following command to provoke an OOM kill:
++
+[source,terminal]
+----
+$ sed -e '' </dev/zero
+----
++
+.Example output
+[source,terminal]
+----
+Killed
+----
+
+. Run the following command to view the exit status of the `sed` command:
++
+[source,terminal]
+----
+$ echo $?
+----
++
+.Example output
+[source,terminal]
+----
+137
+----
++
+The `137` code indicates the container process exited with code 137, indicating it received a SIGKILL signal.
+
+. Run the following command to see that the OOM kill counter in `/sys/fs/cgroup/memory/memory.oom_control` incremented:
++
+[source,terminal]
+----
+$ grep '^oom_kill ' /sys/fs/cgroup/memory/memory.oom_control
+----
++
+.Example output
+[source,terminal]
+----
+oom_kill 1
+----
++
+If one or more processes in a pod are OOM killed, when the pod subsequently
+exits, whether immediately or not, it will have phase *Failed* and reason
+*OOMKilled*. An OOM-killed pod might be restarted depending on the value of
+`restartPolicy`. If not restarted, controllers such as the
+replication controller will notice the pod's failed status and create a new pod
+to replace the old one.
++
+Use the follwing command to get the pod status:
++
+[source,terminal]
+----
+$ oc get pod test
+----
++
+.Example output
+[source,terminal]
+----
+NAME      READY     STATUS      RESTARTS   AGE
+test      0/1       OOMKilled   0          1m
+----
+
+* If the pod has not restarted, run the following command to view the pod:
++
+[source,terminal]
+----
+$ oc get pod test -o yaml
+----
++
+.Example output
+[source,terminal]
+----
+...
+status:
+  containerStatuses:
+  - name: test
+    ready: false
+    restartCount: 0
+    state:
+      terminated:
+        exitCode: 137
+        reason: OOMKilled
+  phase: Failed
+----
+
+* If restarted, run the following command to view the pod:
++
+[source,terminal]
+----
+$ oc get pod test -o yaml
+----
++
+.Example output
+[source,terminal]
+----
+...
+status:
+  containerStatuses:
+  - name: test
+    ready: true
+    restartCount: 1
+    lastState:
+      terminated:
+        exitCode: 137
+        reason: OOMKilled
+    state:
+      running:
+  phase: Running
+----

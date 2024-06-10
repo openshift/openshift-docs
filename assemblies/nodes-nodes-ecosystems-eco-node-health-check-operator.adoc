@@ -1,0 +1,33 @@
+:_mod-docs-content-type: ASSEMBLY
+[id="node-health-check-operator"]
+= Remediating nodes with Node Health Checks
+include::_attributes/common-attributes.adoc[]
+:context: node-health-check-operator
+
+toc::[]
+
+You can use the Node Health Check Operator to identify unhealthy nodes. The Operator uses the Self Node Remediation Operator to remediate the unhealthy nodes.
+
+[role="_additional-resources"]
+.Additional resources
+
+xref:../../../nodes/nodes/ecosystems/eco-self-node-remediation-operator.adoc#self-node-remediation-operator-remediate-nodes[Remediating nodes with the Self Node Remediation Operator]
+
+include::modules/eco-node-health-check-operator-about.adoc[leveloffset=+1]
+
+include::modules/eco-node-health-check-operator-control-plane-fencing.adoc[leveloffset=+1]
+
+include::modules/eco-node-health-check-operator-installation-web-console.adoc[leveloffset=+1]
+
+include::modules/eco-node-health-check-operator-installation-cli.adoc[leveloffset=+1]
+
+include::modules/eco-node-health-check-operator-creating-node-health-check.adoc[leveloffset=+1]
+
+[id="gather-data-nhc"]
+== Gathering data about the Node Health Check Operator
+To collect debugging information about the Node Health Check Operator, use the `must-gather` tool. For information about the `must-gather` image for the Node Health Check Operator, see xref:../../../support/gathering-cluster-data.adoc#gathering-data-specific-features_gathering-cluster-data[Gathering data about specific features].
+
+[id="additional-resources-nhc-operator-installation"]
+== Additional resources
+* xref:../../../operators/admin/olm-upgrading-operators.adoc#olm-changing-update-channel_olm-upgrading-operators[Changing the update channel for an Operator]
+* xref:../../../operators/admin/olm-restricted-networks.adoc#olm-restricted-networks[Using Operator Lifecycle Manager on restricted networks].

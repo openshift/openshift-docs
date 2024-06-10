@@ -1,0 +1,60 @@
+// Module included in the following assemblies:
+//
+// * operators/user/olm-installing-operators-in-namespace.adoc
+// * operators/admin/olm-adding-operators-to-cluster.adoc
+// * post_installation_configuration/preparing-for-users.adoc
+//
+// Module watched for changes by Ecosystem Catalog team:
+// https://projects.engineering.redhat.com/projects/RHEC/summary
+
+ifeval::["{context}" == "olm-installing-operators-in-namespace"]
+:olm-user:
+endif::[]
+
+:_mod-docs-content-type: CONCEPT
+[id="olm-installing-operators-from-operatorhub_{context}"]
+= About Operator installation with OperatorHub
+
+OperatorHub is a user interface for discovering Operators; it works in conjunction with Operator Lifecycle Manager (OLM), which installs and manages Operators on a cluster.
+
+ifndef::olm-user,openshift-dedicated,openshift-rosa[]
+As a cluster administrator, you can install an Operator from OperatorHub by using the {product-title}
+ifdef::openshift-enterprise,openshift-webscale,openshift-origin[]
+web console or CLI. Subscribing an Operator to one or more namespaces makes the Operator available to developers on your cluster.
+endif::[]
+endif::[]
+
+ifdef::openshift-dedicated,openshift-rosa[]
+As a `dedicated-admin`, you can install an Operator from OperatorHub by using the {product-title} web console or CLI. Subscribing an Operator to one or more namespaces makes the Operator available to developers on your cluster.
+endif::openshift-dedicated,openshift-rosa[]
+
+ifdef::olm-user[]
+As a user with the proper permissions, you can install an Operator from OperatorHub by using the {product-title} web console or CLI.
+endif::[]
+
+During installation, you must determine the following initial settings for the Operator:
+
+ifndef::olm-user[]
+ifdef::openshift-enterprise,openshift-webscale,openshift-origin,openshift-rosa,openshift-dedicated[]
+Installation Mode:: Choose *All namespaces on the cluster (default)* to have the Operator installed on all namespaces or choose individual namespaces, if available, to only install the Operator on selected namespaces. This example chooses *All namespaces...* to make the Operator available to all users and projects.
+endif::[]
+endif::[]
+
+ifdef::olm-user[]
+Installation Mode:: Choose a specific namespace in which to install the Operator.
+endif::[]
+
+Update Channel:: If an Operator is available through multiple channels, you can choose which channel you want to subscribe to. For example, to deploy from the *stable* channel, if available, select it from the list.
+
+Approval Strategy:: You can choose automatic or manual updates.
++
+If you choose automatic updates for an installed Operator, when a new version of that Operator is available in the selected channel, Operator Lifecycle Manager (OLM) automatically upgrades the running instance of your Operator without human intervention.
++
+If you select manual updates, when a newer version of an Operator is available, OLM creates an update request. As a
+ifndef::openshift-dedicated,openshift-rosa[]
+cluster administrator,
+endif::openshift-dedicated,openshift-rosa[]
+ifdef::openshift-dedicated,openshift-rosa[]
+`dedicated-admin`,
+endif::openshift-dedicated,openshift-rosa[]
+you must then manually approve that update request to have the Operator updated to the new version.

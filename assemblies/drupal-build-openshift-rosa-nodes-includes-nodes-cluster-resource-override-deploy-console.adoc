@@ -1,0 +1,130 @@
+// Module included in the following assemblies:
+//
+// * nodes/clusters/nodes-cluster-overcommit.adoc
+
+:_mod-docs-content-type: PROCEDURE
+[id="nodes-cluster-resource-override-deploy-console_{context}"]
+= Installing the Cluster Resource Override Operator using the web console
+
+You can use the {product-title} web console to install the Cluster Resource Override Operator to help control overcommit in your cluster.
+
+.Prerequisites
+
+* The Cluster Resource Override Operator has no effect if limits have not
+been set on containers. You must specify default limits for a project using a `LimitRange` object or configure limits in `Pod` specs for the overrides to apply.
+
+.Procedure
+
+To install the Cluster Resource Override Operator using the {product-title} web console:
+
+. In the {product-title} web console, navigate to *Home* -> *Projects*
+
+.. Click *Create Project*.
+
+.. Specify `clusterresourceoverride-operator` as the name of the project.
+
+.. Click *Create*.
+
+. Navigate to *Operators* -> *OperatorHub*.
+
+.. Choose  *ClusterResourceOverride Operator* from the list of available Operators and click *Install*.
+
+.. On the *Install Operator* page, make sure *A specific Namespace on the cluster* is selected for *Installation Mode*.
+
+.. Make sure *clusterresourceoverride-operator* is selected for *Installed Namespace*.
+
+.. Select an *Update Channel* and *Approval Strategy*.
+
+.. Click *Install*.
+
+. On the *Installed Operators* page, click *ClusterResourceOverride*.
+
+.. On the *ClusterResourceOverride Operator* details page, click *Create ClusterResourceOverride*.
+
+.. On the *Create ClusterResourceOverride* page, click *YAML view* and edit the YAML template to set the overcommit values as needed:
++
+[source,yaml]
+----
+apiVersion: operator.autoscaling.openshift.io/v1
+kind: ClusterResourceOverride
+metadata:
+  name: cluster <1>
+spec:
+  podResourceOverride:
+    spec:
+      memoryRequestToLimitPercent: 50 <2>
+      cpuRequestToLimitPercent: 25 <3>
+      limitCPUToMemoryPercent: 200 <4>
+# ...
+----
+<1> The name must be `cluster`.
+<2> Optional. Specify the percentage to override the container memory limit, if used, between 1-100. The default is 50.
+<3> Optional. Specify the percentage to override the container CPU limit, if used, between 1-100. The default is 25.
+<4> Optional. Specify the percentage to override the container memory limit, if used. Scaling 1Gi of RAM at 100 percent is equal to 1 CPU core. This is processed prior to overriding the CPU request, if configured. The default is 200.
+
+.. Click *Create*.
+
+. Check the current state of the admission webhook by checking the status of the cluster custom resource:
+
+.. On the *ClusterResourceOverride Operator* page, click *cluster*.
+
+.. On the *ClusterResourceOverride Details* page, click *YAML*. The `mutatingWebhookConfigurationRef` section appears when the webhook is called.
++
+[source,yaml]
+----
+apiVersion: operator.autoscaling.openshift.io/v1
+kind: ClusterResourceOverride
+metadata:
+  annotations:
+    kubectl.kubernetes.io/last-applied-configuration: |
+      {"apiVersion":"operator.autoscaling.openshift.io/v1","kind":"ClusterResourceOverride","metadata":{"annotations":{},"name":"cluster"},"spec":{"podResourceOverride":{"spec":{"cpuRequestToLimitPercent":25,"limitCPUToMemoryPercent":200,"memoryRequestToLimitPercent":50}}}}
+  creationTimestamp: "2019-12-18T22:35:02Z"
+  generation: 1
+  name: cluster
+  resourceVersion: "127622"
+  selfLink: /apis/operator.autoscaling.openshift.io/v1/clusterresourceoverrides/cluster
+  uid: 978fc959-1717-4bd1-97d0-ae00ee111e8d
+spec:
+  podResourceOverride:
+    spec:
+      cpuRequestToLimitPercent: 25
+      limitCPUToMemoryPercent: 200
+      memoryRequestToLimitPercent: 50
+status:
+
+# ...
+
+    mutatingWebhookConfigurationRef: <1>
+      apiVersion: admissionregistration.k8s.io/v1
+      kind: MutatingWebhookConfiguration
+      name: clusterresourceoverrides.admission.autoscaling.openshift.io
+      resourceVersion: "127621"
+      uid: 98b3b8ae-d5ce-462b-8ab5-a729ea8f38f3
+
+# ...
+
+----
+<1> Reference to the `ClusterResourceOverride` admission webhook.
+
+////
+. When the webhook is called, you can add a label to any Namespaces where you want overrides enabled:
+
+.. Click `Administration` -> `Namespaces`.
+
+.. Click the Namespace to edit then click *YAML*.
+
+.. Add the label under `metadata`:
++
+----
+apiVersion: v1
+kind: Namespace
+metadata:
+
+# ...
+
+  labels:
+    clusterresourceoverrides.admission.autoscaling.openshift.io: enabled <1>
+# ...
+----
+<1> Add the `clusterresourceoverrides.admission.autoscaling.openshift.io: enabled` label to the Namespace.
+////
