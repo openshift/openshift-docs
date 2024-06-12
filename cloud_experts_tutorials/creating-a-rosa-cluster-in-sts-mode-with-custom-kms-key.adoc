@@ -1,0 +1,325 @@
+:_content-type: ASSEMBLY
+[id="creating-a-rosa-cluster-in-sts-mode-with-custom-kms-key"]
+= Tutorial: Creating a ROSA cluster with STS using custom KMS key
+include::_attributes/attributes-openshift-dedicated.adoc[]
+:context: creating-a-rosa-cluster-in-sts-mode-with-custom-kms-key
+
+toc::[]
+
+//Mobb content metadata
+//Brought into ROSA product docs 2023-09-20
+//---
+//date: '2023-05-25'
+//title: Creating a ROSA cluster with STS using custom KMS key
+//weight: 1
+//tags: ["AWS", "ROSA", "Quickstarts"]
+//authors:
+//  - Byron Miller
+//  - Dustin Scott
+//---
+
+
+[TIP] 
+====
+Official Documentation link:https://docs.openshift.com/rosa/rosa_getting_started/rosa-sts-creating-a-cluster-with-customizations.html#rosa-sts-creating-cluster-customizations_rosa-sts-creating-a-cluster-with-customizations[ROSA STS with custom KMS key]
+
+This guide will walk you through installing ROSA (Red Hat OpenShift Service on AWS) with a customer-provided KMS key that will be used to encrypt both the root volumes of nodes as well as persistent volumes for mounted EBS claims.
+====
+== Prerequisites
+
+* link:https://docs.aws.amazon.com/cli/latest/userguide/install-cliv2.html[AWS CLI]
+* link:https://github.com/openshift/rosa/releases/[ROSA CLI] v1.1.11 or higher
+* OpenShift CLI - `rosa download openshift-client`
+
+== Prepare AWS account for ROSA
+
+. Configure the AWS CLI by running the following command:
++
+[source,terminal]
+----
+$ aws configure
+----
++
+. You will be required to enter an `AWS Access Key ID` and an `AWS Secret Access Key` along with a default region name and output format:
++
+.Sample output
+[source,terminal]
+----
+AWS Access Key ID []:
+AWS Secret Access Key []:
+Default region name [us-east-2]:
+Default output format [json]:
+----
++
+The `AWS Access Key ID` and `AWS Secret Access Key` values can be obtained by logging in to the AWS console and creating an *Access Key* in the *Security Credentials* section of the IAM dashboard for your user.
++
+. Validate your credentials:
++
+[source,terminal]
+----
+$ aws sts get-caller-identity
+----
++
+You should receive output similar to the following:
++
+.Sample output
+[source,terminal]
+----
+{
+    "UserId": <your ID>,
+    "Account": <your account>,
+    "Arn": <your arn>
+}
+----
++
+You will need to save the account ID for adding it to your KMS key to define installer role, so take note.
++
+
+. If this is a brand new AWS account that has never had a AWS Load Balancer (ALB) installed in it, run the following:
++
+[source,terminal]
+----
+$ aws iam create-service-linked-role --aws-service-name \
+    "elasticloadbalancing.amazonaws.com"
+----
++
+. Set the AWS region you plan to deploy your cluster into. For this example, we will deploy into `us-east-2`:
++
+[source,terminal]
+----
+$ export AWS_REGION="us-east-2"
+----
+
+== Create ROSA Cluster
+
+. Verify your ROSA CLI version is at minimum v1.1.11 or higher:
++
+[source,terminal]
+----
+$ rosa version
+----
+
+. Create the ROSA STS Account Roles.
++
+[NOTE]
+====
+If you have already installed account-roles into your aws account, you can skip this step.
+====
+
++
+[source,terminal]
+----
+$ rosa create account-roles --mode auto -y
+----
+
+. Set Environment Variables: 
++
+[source,terminal]
+----
+$ ROSA_CLUSTER_NAME=poc-kmskey
+----
+. Using the ROSA CLI, create your cluster:
++
+[NOTE]
+====
+While this is an example, feel free to customize this command to best suit your needs.
+====
++
+[source,terminal]
+----
+$ rosa create cluster --cluster-name $ROSA_CLUSTER_NAME --sts \
+--region $AWS_REGION --compute-nodes 2 --machine-cidr 10.0.0.0/16 \
+--service-cidr 172.30.0.0/16 --pod-cidr 10.128.0.0/14 --host-prefix 23 \
+--kms-key-arn $KMS_ARN
+----
+. Take note of the role `<cluster-name-hash>-openshift-cluster-csi-drivers-ebs-cloud-credential`, which is provided at the end of the previous command.
++
+[NOTE]
+====
+The full name of the role gets truncated depending on the length of the cluster name. Do not copy and paste from the example above.
+====
++
+`arn:aws:iam::<aws-account>:role/poc-mskey-x6h0-openshift-cluster-csi-drivers-ebs-cloud-credenti`
+
+
+== Create KMS Key
+For this example, we will create a custom KMS key using the AWS CLI. If you would prefer, you could use an existing key instead.
+
+. Create a customer-managed KMS key:
++
+[source,terminal]
+----
+$ KMS_ARN=$(aws kms create-key --region $AWS_REGION --description 'Custom ROSA Encryption Key' --query KeyMetadata.Arn --output text)
+----
++
+This command will save the ARN output of this custom key for further steps.
+
+. Generate the necessary key policy to allow the ROSA STS roles to access the key. Use the below command to populate a sample policy, or create your own.
++
+[NOTE]
+====
+Important note 1, if you specify a custom STS role prefix, you will need to update that in the command below.
+====
++
+[NOTE]
+====
+Important note 2, adapt the name of the role `openshift-cluster-csi-drivers-ebs-cloud-credentials` as captured in previous steps.
+====
++
+[source,terminal]
+----
+$ AWS_ACCOUNT=$(aws sts get-caller-identity --query Account --output text); cat << EOF > rosa-key-policy.json
+{
+    "Version": "2012-10-17",
+    "Id": "key-rosa-policy-1",
+    "Statement": [
+        {
+            "Sid": "Enable IAM User Permissions",
+            "Effect": "Allow",
+            "Principal": {
+                "AWS": "arn:aws:iam::${AWS_ACCOUNT}:root"
+            },
+            "Action": "kms:*",
+            "Resource": "*"
+        },
+        {
+            "Sid": "Allow ROSA use of the key",
+            "Effect": "Allow",
+            "Principal": {
+                "AWS": [
+                    "arn:aws:iam::${AWS_ACCOUNT}:role/ManagedOpenShift-Support-Role",
+                    "arn:aws:iam::${AWS_ACCOUNT}:role/ManagedOpenShift-Installer-Role",
+                    "arn:aws:iam::${AWS_ACCOUNT}:role/ManagedOpenShift-Worker-Role",
+                    "arn:aws:iam::${AWS_ACCOUNT}:role/ManagedOpenShift-ControlPlane-Role",
+                    "arn:aws:iam::${AWS_ACCOUNT}:role/${ROSA_CLUSTER_NAME}-openshift-cluster-csi-drivers-ebs-cloud-credenti"
+                ]
+            },
+            "Action": [
+                "kms:Encrypt",
+                "kms:Decrypt",
+                "kms:ReEncrypt*",
+                "kms:GenerateDataKey*",
+                "kms:DescribeKey"
+            ],
+            "Resource": "*"
+        },
+        {
+            "Sid": "Allow attachment of persistent resources",
+            "Effect": "Allow",
+            "Principal": {
+                "AWS": [
+                    "arn:aws:iam::${AWS_ACCOUNT}:role/ManagedOpenShift-Support-Role",
+                    "arn:aws:iam::${AWS_ACCOUNT}:role/ManagedOpenShift-Installer-Role",
+                    "arn:aws:iam::${AWS_ACCOUNT}:role/ManagedOpenShift-Worker-Role",
+                    "arn:aws:iam::${AWS_ACCOUNT}:role/ManagedOpenShift-ControlPlane-Role",
+                    "arn:aws:iam::${AWS_ACCOUNT}:role/${ROSA_CLUSTER_NAME}-openshift-cluster-csi-drivers-ebs-cloud-credenti"
+                ]
+            },
+            "Action": [
+                "kms:CreateGrant",
+                "kms:ListGrants",
+                "kms:RevokeGrant"
+            ],
+            "Resource": "*",
+            "Condition": {
+                "Bool": {
+                    "kms:GrantIsForAWSResource": "true"
+                }
+            }
+        }
+    ]
+}
+EOF
+----
+
+. Apply the newly generated key policy to the custom KMS key:
++
+[source,terminal]
+----
+$ aws kms put-key-policy --key-id $KMS_ARN \
+--policy file://rosa-key-policy.json \
+--policy-name default
+----
+
+. Create the operator roles necessary for the cluster to function:
++
+[source,terminal]
+----
+$ rosa create operator-roles -c $ROSA_CLUSTER_NAME --mode auto --yes
+----
+
+. Create the OIDC provider necessary for the cluster to authenticate:
++
+[source,terminal]
+----
+$ rosa create oidc-provider -c $ROSA_CLUSTER_NAME --mode auto --yes
+----
+
+. Validate that the cluster is now installing. Within 5 minutes, the cluster state should move beyond `pending` and show `installing`:
++
+[source,terminal]
+----
+$ watch "rosa describe cluster -c $ROSA_CLUSTER_NAME"
+----
+
+. Watch the install logs as the cluster installs:
++
+[source,terminal]
+----
+$ rosa logs install -c $ROSA_CLUSTER_NAME --watch --tail 10
+----
+
+== Validate the cluster
+
+Once the cluster has finished installing we can validate our access to the cluster.
+
+. Create an Admin user:
++
+[source,terminal]
+----
+$ rosa create admin -c $ROSA_CLUSTER_NAME
+----
++
+Run the resulting login statement from output. It can take 2-3 minutes before authentication is fully synced.
+
+. Verify the default persistent volumes in the cluster:
++
+[source,terminal]
+----
+$ oc get pv
+----
++
+.Output
+[source,terminal]
+----
+NAME                                       CAPACITY   ACCESS MODES   RECLAIM POLICY   STATUS   CLAIM
+                                    STORAGECLASS       REASON   AGE
+pvc-00dac374-a45e-43fa-a313-ae0491e8edf1   10Gi       RWO            Delete           Bound    openshift-monitoring/alertmanager-data-alertmanager-main-1   gp3-customer-kms            26m
+pvc-7d211496-4ddf-4200-921c-1404b754afa5   10Gi       RWO            Delete           Bound    openshift-monitoring/alertmanager-data-alertmanager-main-0   gp3-customer-kms            26m
+pvc-b5243cef-ec30-4e5c-a348-aeb8136a908c   100Gi      RWO            Delete           Bound    openshift-monitoring/prometheus-data-prometheus-k8s-0        gp3-customer-kms            26m
+pvc-ec60c1cf-72cf-4ac6-ab12-8e9e5afdc15f   100Gi      RWO            Delete           Bound    openshift-monitoring/prometheus-data-prometheus-k8s-1        gp3-customer-kms            26m
+----
++
+You should see the StorageClass set to `gp3-customer-kms`. This is the default StorageClass which is encrypted using the customer-provided key.
+
+== Cleanup
+
+. Delete the ROSA cluster:
++
+[source,terminal]
+----
+$ rosa delete cluster -c $ROSA_CLUSTER_NAME
+----
+
+. Once the cluster is deleted, delete the cluster’s STS roles and OIDC provider:
++
+[source,terminal]
+----
+$ rosa delete operator-roles -c $ROSA_CLUSTER_NAME --yes --mode auto
+----
+. Delete the OIDC provider:
++
+[source,terminal]
+----
+$ rosa delete oidc-provider -c $ROSA_CLUSTER_NAME  --yes --mode auto
+----
