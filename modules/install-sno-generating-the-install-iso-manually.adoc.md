@@ -1,10 +1,10 @@
 # Generating the installation ISO with coreos-installer
 
-Installing {product-title} on a single node requires an installation ISO, which you can generate with the following procedure.
+Installing OpenShift Container Platform on a single node requires an installation ISO, which you can generate with the following procedure.
 
 * Install `podman`.
 
-1. Set the {product-title} version:
+1. Set the OpenShift Container Platform version:
 
    ```terminal
    $ OCP_VERSION=<ocp_version> ①
@@ -17,7 +17,7 @@ Installing {product-title} on a single node requires an installation ISO, which 
    $ ARCH=<architecture> ①
    ```
    1. Replace `<architecture>` with the target host architecture, for example, `aarch64` or `x86_64`.
-3. Download the {product-title} client (`oc`) and make it available for use by entering the following commands:
+3. Download the OpenShift Container Platform client (`oc`) and make it available for use by entering the following commands:
 
    ```terminal
    $ curl -k https://mirror.openshift.com/pub/openshift-v4/clients/ocp/$OCP_VERSION/openshift-client-linux.tar.gz -o oc.tar.gz
@@ -30,7 +30,7 @@ Installing {product-title} on a single node requires an installation ISO, which 
    ```terminal
    $ chmod +x oc
    ```
-4. Download the {product-title} installer and make it available for use by entering the following commands:
+4. Download the OpenShift Container Platform installer and make it available for use by entering the following commands:
 
    ```terminal
    $ curl -k https://mirror.openshift.com/pub/openshift-v4/clients/ocp/$OCP_VERSION/openshift-install-linux.tar.gz -o openshift-install-linux.tar.gz
@@ -88,11 +88,11 @@ Installing {product-title} on a single node requires an installation ISO, which 
    3. Set the `controlPlane` replicas to `1`. In conjunction with the previous `compute` setting, this setting ensures the cluster runs on a single node.
    4. Set the `metadata` name to the cluster name.
    5. Set the `networking` details. OVN-Kubernetes is the only allowed network plugin type for single-node clusters.
-   6. Set the `cidr` value to match the subnet of the {sno} cluster.
+   6. Set the `cidr` value to match the subnet of the single-node Openshift cluster.
    7. Set the path to the installation disk drive, for example, `/dev/disk/by-id/wwn-0x64cd98f04fde100024684cf3034da5c2`.
    8. Copy the {cluster-manager-url-pull} and add the contents to this configuration setting.
    9. Add the public SSH key from the administration host so that you can log in to the cluster after installation.
-8. Generate {product-title} assets by running the following commands:
+8. Generate OpenShift Container Platform assets by running the following commands:
 
    ```terminal
    $ mkdir ocp

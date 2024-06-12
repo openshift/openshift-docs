@@ -1,6 +1,6 @@
 # Generating the discovery ISO with the Assisted Installer
 
-Installing {product-title} on a single node requires a discovery ISO, which the Assisted Installer can generate.
+Installing OpenShift Container Platform on a single node requires a discovery ISO, which the Assisted Installer can generate.
 
 1. On the administration host, open a browser and navigate to [{cluster-manager-first}](https://console.redhat.com/openshift/assisted-installer/clusters).
 2. Click **Create Cluster** to create a new cluster.

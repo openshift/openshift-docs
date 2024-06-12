@@ -1,4 +1,4 @@
-# Installing {sno} with the Assisted Installer
+# Installing single-node Openshift with the Assisted Installer
 
 Use the Assisted Installer to install the single-node cluster.
 

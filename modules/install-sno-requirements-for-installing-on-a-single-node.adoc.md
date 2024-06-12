@@ -1,11 +1,11 @@
 # Requirements for installing OpenShift on a single node
 
-Installing {product-title} on a single node alleviates some of the requirements for high availability and large scale clusters. However, you must address the following requirements:
+Installing OpenShift Container Platform on a single node alleviates some of the requirements for high availability and large scale clusters. However, you must address the following requirements:
 
 * **Administration host:** You must have a computer to prepare the ISO, to create the USB boot drive, and to monitor the installation.
-* **CPU Architecture:** Installing {product-title} on a single node supports `x86_64` and `arm64` CPU architectures.
-* **Supported platforms:** Installing {product-title} on a single node is supported on bare metal, vSphere, AWS, Red Hat OpenStack, and {rh-virtualization-first} platforms.
-* **Production-grade server:** Installing {product-title} on a single node requires a server with sufficient resources to run {product-title} services and a production workload.
+* **CPU Architecture:** Installing OpenShift Container Platform on a single node supports `x86_64` and `arm64` CPU architectures.
+* **Supported platforms:** Installing OpenShift Container Platform on a single node is supported on bare metal, vSphere, AWS, Red Hat OpenStack, and {rh-virtualization-first} platforms.
+* **Production-grade server:** Installing OpenShift Container Platform on a single node requires a server with sufficient resources to run OpenShift Container Platform services and a production workload.
 
   **Minimum resource requirements**
 
@@ -22,7 +22,7 @@ Installing {product-title} on a single node alleviates some of the requirements 
   * Adding Operators during the installation process might increase the minimum resource requirements.
   </dd></dl>
 
-  The server must have a Baseboard Management Controller (BMC) when booting with virtual media. 
+  The server must have a Baseboard Management Controller (BMC) when booting with virtual media.
 * **Networking:** The server must have access to the internet or access to a local registry if it is not connected to a routable network. The server must have a DHCP reservation or a static IP address for the Kubernetes API, ingress route, and cluster node domain names. You must configure the DNS to resolve the IP address to each of the following fully qualified domain names (FQDN):
 
   **Required DNS records**
