@@ -1,0 +1,213 @@
+// Module included in the following assemblies:
+//
+// * scalability_and_performance/ztp_far_edge/ztp-advanced-install-ztp.adoc
+
+:_module-type: PROCEDURE
+[id="ztp-configuring-ipsec-using-ztp-and-siteconfig_{context}"]
+= Configuring IPsec encryption for {sno} clusters using {ztp} and SiteConfig resources
+
+You can enable IPsec encryption in managed {sno} clusters that you install using {ztp} and {rh-rhacm-first}.
+You can encrypt external traffic between pods and IPsec endpoints external to the managed cluster. All pod-to-pod network traffic between nodes on the OVN-Kubernetes cluster network is encrypted with IPsec in Transport mode.
+
+[NOTE]
+====
+In {product-title} {product-version}, deploying IPsec encryption by using {ztp} and {rh-rhacm} is validated for {sno} clusters only.
+
+The {ztp} IPsec implementation assumes you are deploying to a resource constrained platform.
+As such, you install the feature with a single `MachineConfig` CR only, and you do not need to install the NMState Operator on the {sno} cluster as a prerequisite.
+====
+
+.Prerequisites
+
+* You have installed the OpenShift CLI (`oc`).
+
+* You have logged in to the hub cluster as a user with `cluster-admin` privileges.
+
+* You have configured {rh-rhacm} and the hub cluster for generating the required installation and policy custom resources (CRs) for managed clusters.
+
+* You have created a Git repository where you manage your custom site configuration data.
+The repository must be accessible from the hub cluster and be defined as a source repository for the Argo CD application.
+
+* You have installed the `butane` utility, version 0.20.0 or higher.
+
+* You have a PKCS#12 certificate for the IPsec endpoint and a CA cert in PEM format.
+
+.Procedure
+
+. Extract the latest version of the `ztp-site-generate` container source and merge it with your repository where you manage your custom site configuration data.
+
+. Configure `optional-extra-manifest/ipsec/ipsec-endpoint-config.yaml` with the required values that configure IPsec in the cluster. For example:
++
+[source,yaml]
+----
+interfaces:
+- name: hosta_conn
+  type: ipsec
+  libreswan:
+    left: <cluster_node> <1>
+    leftid: '%fromcert'
+    leftmodecfgclient: false
+    leftcert: <left_cert> <2>
+    leftrsasigkey: '%cert'
+    right: <external_host> <3>
+    rightid: '%fromcert'
+    rightrsasigkey: '%cert'
+    rightsubnet: <external_address> <4>
+    ikev2: insist <5>
+    type: tunnel
+----
+<1> Replace `<cluster_node>` with the IP address or DNS hostname of the cluster node for the cluster-side IPsec tunnel.
+<2> Replace `<left_cert>` with the IPsec certificate nickname.
+<3> Replace `<external_host>` with the external host IP address or DNS hostname.
+<4> Replace `<external_address>` with the IP address or subnet of the external host on the other side of the IPsec tunnel.
+<5> Use the IKEv2 VPN encryption protocol only. Do not use IKEv1, which is deprecated.
+
+. Add your `ca.pem` and `left_server.p12` certificates to the `optional-extra-manifest/ipsec` folder.
+The certificate files are required for the Network Security Services (NSS) database on each host. These files are imported as part of the Butane configuration in later steps.
+
+.. `left_server.p12`: The certificate bundle for the IPsec endpoints
+
+.. `ca.pem`: The certificate authority that you signed your certificates with
+
+. Open a shell prompt at the `optional-extra-manifest/ipsec` folder of the Git repository where you maintain your custom site configuration data.
+
+. Run the `optional-extra-manifest/ipsec/build.sh` script to generate the required Butane and `MachineConfig` CRs files.
++
+.Example output
+[source,terminal]
+----
+out
+ └── argocd
+      └── example
+           └── optional-extra-manifest
+                └── ipsec
+                     ├── 99-ipsec-master-endpoint-config.bu <1>
+                     ├── 99-ipsec-master-endpoint-config.yaml
+                     ├── 99-ipsec-worker-endpoint-config.bu
+                     ├── 99-ipsec-worker-endpoint-config.yaml
+                     ├── build.sh
+                     ├── ca.pem <2>
+                     ├── left_server.p12
+                     ├── enable-ipsec.yaml
+                     ├── ipsec-endpoint-config.yml
+                     └── README.md
+----
+<1> The `ipsec/build.sh` script generates the Butane and endpoint configuration CRs.
+<2> You provide `ca.pem` and `left_server.p12` certificate files that are relevant to your network.
+
+. Create a `custom-manifest/` folder in the repository where you manage your custom site configuration data.
+Add the `enable-ipsec.yaml` and `99-ipsec-*` YAML files to the directory.
+For example:
++
+[source,terminal]
+----
+siteconfig
+  ├── site1-sno-du.yaml
+  ├── extra-manifest/
+  └── custom-manifest
+        ├── enable-ipsec.yaml
+        ├── 99-ipsec-worker-endpoint-config.yaml
+        └── 99-ipsec-master-endpoint-config.yaml
+----
+
+. In your `SiteConfig` CR, add the `custom-manifest/` directory to the `extraManifests.searchPaths` field.
+For example:
++
+[source,yaml]
+----
+clusters:
+- clusterName: "site1-sno-du"
+  networkType: "OVNKubernetes"
+  extraManifests:
+    searchPaths:
+      - extra-manifest/
+      - custom-manifest/
+----
+
+. Commit the `SiteConfig` CR changes and updated files in your Git repository and push the changes to provision the managed cluster and configure IPsec encryption.
++
+The Argo CD pipeline detects the changes and begins the managed cluster deployment.
++
+During cluster provisioning, the {ztp} pipeline appends the CRs in the `/custom-manifest` directory to the default set of extra manifests stored in `extra-manifest/`.
+
+.Verification
+
+To verify that the IPsec encryption is successfully applied in the managed {sno} cluster, perform the following steps:
+
+. Start a debug pod for the managed cluster by running the following command:
++
+[source,terminal]
+----
+$ oc debug node/<node_name>
+----
+
+. Check that the IPsec policy is applied in the cluster node:
++
+[source,terminal]
+----
+sh-5.1# ip xfrm policy
+----
++
+.Example output
+[source,terminal]
+----
+src 172.16.123.0/24 dst 10.1.232.10/32
+  dir out priority 1757377 ptype main
+  tmpl src 10.1.28.190 dst 10.1.232.10
+    proto esp reqid 16393 mode tunnel
+src 10.1.232.10/32 dst 172.16.123.0/24
+  dir fwd priority 1757377 ptype main
+  tmpl src 10.1.232.10 dst 10.1.28.190
+    proto esp reqid 16393 mode tunnel
+src 10.1.232.10/32 dst 172.16.123.0/24
+  dir in priority 1757377 ptype main
+  tmpl src 10.1.232.10 dst 10.1.28.190
+    proto esp reqid 16393 mode tunnel
+----
+
+. Check that the IPsec tunnel is up and connected:
++
+[source,terminal]
+----
+sh-5.1# ip xfrm state
+----
++
+.Example output
+[source,terminal]
+----
+src 10.1.232.10 dst 10.1.28.190
+  proto esp spi 0xa62a05aa reqid 16393 mode tunnel
+  replay-window 0 flag af-unspec esn
+  auth-trunc hmac(sha1) 0x8c59f680c8ea1e667b665d8424e2ab749cec12dc 96
+  enc cbc(aes) 0x2818a489fe84929c8ab72907e9ce2f0eac6f16f2258bd22240f4087e0326badb
+  anti-replay esn context:
+   seq-hi 0x0, seq 0x0, oseq-hi 0x0, oseq 0x0
+   replay_window 128, bitmap-length 4
+   00000000 00000000 00000000 00000000
+src 10.1.28.190 dst 10.1.232.10
+  proto esp spi 0x8e96e9f9 reqid 16393 mode tunnel
+  replay-window 0 flag af-unspec esn
+  auth-trunc hmac(sha1) 0xd960ddc0a6baaccb343396a51295e08cfd8aaddd 96
+  enc cbc(aes) 0x0273c02e05b4216d5e652de3fc9b3528fea94648bc2b88fa01139fdf0beb27ab
+  anti-replay esn context:
+   seq-hi 0x0, seq 0x0, oseq-hi 0x0, oseq 0x0
+   replay_window 128, bitmap-length 4
+   00000000 00000000 00000000 00000000
+----
+
+. Ping a known IP in the external host subnet.
+For example, ping an IP in the `rightsubnet` range that you set in `ipsec/ipsec-endpoint-config.yaml`:
++
+[source,terminal]
+----
+sh-5.1# ping 172.16.110.8
+----
++
+.Example output
+[source,terminal]
+----
+sh-5.1# ping 172.16.110.8
+PING 172.16.110.8 (172.16.110.8) 56(84) bytes of data.
+64 bytes from 172.16.110.8: icmp_seq=1 ttl=64 time=153 ms
+64 bytes from 172.16.110.8: icmp_seq=2 ttl=64 time=155 ms
+----
