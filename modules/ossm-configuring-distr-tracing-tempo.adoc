@@ -5,20 +5,66 @@ This module is included in the following assemblies:
 
 :_mod-docs-content-type: PROCEDURE
 [id="ossm-configuring-distr-tracing-tempo_{context}"]
-= Configuring the distributed tracing platform (Tempo)
+= Configuring the distributed tracing platform (Tempo) and the Red Hat build of OpenTelemetry
 
-You can expose tracing data to the {TempoName} stack by appending a named element and the `zipkin` provider to the `spec.meshConfig.extensionProviders` specification in the `ServiceMehControlPlane`, as shown in the following example. Then, a telemetry custom resource configures Istio proxies to collect trace spans and send them to the Tempo distributor service endpoint.
+You can expose tracing data to the {TempoName} by appending a named element and the `opentelemetry` provider to the `spec.meshConfig.extensionProviders` specification in the `ServiceMehControlPlane`. Then, a telemetry custom resource configures Istio proxies to collect trace spans and send them to the OpenTelemetry Collector endpoint.
 
-You can create a TempoStack instance in the `tracing-system` namespace _after_ creating the `ServiceMeshControlPlane` and the `ServiceMeshMemberRoll` resources.
+//There is no common attribute for OpenTelemetry Collector.
+
+You can create a {OTELName} instance in a mesh namespace and configure it to send tracing data to a tracing platform backend service.
 
 .Prerequisites
 
-* You have installed the {TempoOperator} and {SMProductName} Operator in the `openshift-operators` namespace.
-* You have created namespaces such as `istio-system` and `tracing-system`.
+* You have created a TempoStack instance using the Red Hat {TempoOperator} in the `tracing-system` namespace. For more information, see "Installing the distributed tracing platform (Tempo)" in the "Additional resources" section.
+
+* You have installed the {OTELOperator} in the namespace `openshift-operators`. For more information, see "Installing the {OTELName}" in the "Additional resources" section.
 
 .Procedure
 
-. Configure the `ServiceMeshControlPlane` resource to define an extension provider:
+. Create an OpenTelemetry Collector instance in a mesh namespace such as `bookinfo`:
++
+[source, yaml]
+----
+apiVersion: opentelemetry.io/v1alpha1
+kind: OpenTelemetryCollector
+metadata:
+  name: otel
+  namespace: bookinfo # <1>
+spec:
+  mode: deployment
+  config: |
+    receivers:
+      jaeger:
+        protocols:
+          grpc:
+          thrift_binary:
+          thrift_compact:
+          thrift_http:
+      otlp:
+        protocols:
+          grpc:
+            endpoint: 0.0.0.0:4317
+          http:
+      zipkin:
+    processors:
+      batch:
+    exporters:
+      otlp:
+        endpoint: "tempo-sample-distributor.tracing-system.svc.cluster.local:4317"
+        tls:
+          insecure: true
+    service:
+      pipelines:
+        traces:
+          receivers: [jaeger, otlp, zipkin]
+          processors: [batch]
+          exporters: [otlp]
+----
+<1> Include this namespace in the `ServiceMeshMemberRoll` member list.
+
+. Check the `otel-collector` pod log and verify that it is running correctly.
+
+. Create or update a `ServiceMeshControlPlane` custom resource (CR) in the `istio-system` namespace:
 +
 [source,yaml]
 ----
@@ -28,33 +74,41 @@ metadata:
   name: basic
   namespace: istio-system
 spec:
-# ...
+  addons:
+    grafana:
+      enabled: false
+    kiali:
+      enabled: true
+    prometheus:
+      enabled: true
   meshConfig:
     extensionProviders:
-      - name: tempo
-        zipkin:
-          service: tempo-sample-distributor.tracing-system.svc.cluster.local
-          port: 9411
-  tracing:
-    sampling: 10000
-    type: None <1>
-  version: v2.5
----
-kind: ServiceMeshMemberRoll
-apiVersion: maistra.io/v1
+      - name: otel
+        opentelemetry:
+          port: 4317
+          service: otel-collector.bookinfo.svc.cluster.local
+  policy:
+    type: Istiod
+  telemetry:
+    type: Istiod
+  version: v2.6
+----
+
+. Create a Telemetry resource in the `istio-system` namespace and verify `istiod` log:
++
+[source,yaml]
+----
+apiVersion: telemetry.istio.io/v1alpha1
+kind: Telemetry
 metadata:
-  name: default
+  name: mesh-default
   namespace: istio-system
 spec:
-  members:
-    - tracing-system
+  tracing:
+  - providers:
+    - name: otel
+    randomSamplingPercentage: 100
 ----
-<1> The `spec.tracing.type` setting defines a deprecated distributed tracing Jaeger instance. Set `spec.tracing.type` to `None` when connecting to a TempoStack using an `extensionProvider` setting.
-+
-[NOTE]
-====
-Create a TempoStack instance _after_ creating the `ServiceMeshControlPlane` and the `ServiceMeshMemberRoll` resources.
-====
 
 . Configure the Kiali resource specification to enable a Kiali workload traces dashboard. You can use the dashboard to view tracing query results.
 +
@@ -79,22 +133,4 @@ spec:
 Kiali 1.73 uses the Jaeger Query API, which causes a longer response time depending on Tempo resource limits. If you see a `Could not fetch spans` error message in the Kiali UI, then check your Tempo configuration or reduce the limit per query in Kiali.
 ====
 
-. Create a TempoStack instance using the Red Hat {TempoOperator} in the `tracing-system` namespace. For more information, see "Installing the distributed tracing platform (Tempo)" in the "Additional resources" section.
-
-. Apply a Telemetry custom resource for {SMProductShortName} to start the Tempo provider setting.
-+
-[source,yaml]
-----
-apiVersion: telemetry.istio.io/v1alpha1
-kind: Telemetry
-metadata:
-  name: mesh-default
-  namespace: istio-system
-spec:
-  tracing:
-  - providers:
-    - name: tempo
-    randomSamplingPercentage: 100
-----
-
-You can also create an Istio gateway and virtual service resources to expose an {product-title} route for accessing the Tempo Jaeger Query console.
+. Send requests to your applications such as bookinfo application and verify `istiod` pod logs and `otel-collector` pod logs.
