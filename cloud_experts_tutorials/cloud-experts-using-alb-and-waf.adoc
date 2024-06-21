@@ -21,24 +21,21 @@ AWS WAF is a web application firewall that lets you monitor the HTTP and HTTPS r
 
 You can use an AWS Application Load Balancer (ALB) to add a Web Application Firewall (WAF) to your {product-title} (ROSA) workloads. Using an external solution protects ROSA resources from experiencing denial of service due to handling the WAF.
 
-[NOTE]
+[IMPORTANT]
 ====
-It is recommended that you use the xref:../cloud_experts_tutorials/cloud-experts-using-cloudfront-and-waf.adoc#cloud-experts-using-cloudfront-and-waf[CloudFront method] unless you absolutely must use an ALB based solution.
+It is recommended that you use the more flexible xref:../cloud_experts_tutorials/cloud-experts-using-cloudfront-and-waf.adoc#cloud-experts-using-cloudfront-and-waf[CloudFront method] unless you absolutely must use an ALB based solution.
 ====
-
-//[Here](https://iamondemand.com/blog/elb-vs-alb-vs-nlb-choosing-the-best-aws-load-balancer-for-your-needs/)'s a good overview of AWS LB types and what they support
-
-// Loosely based off EKS instructions here - https://aws.amazon.com/premiumsupport/knowledge-center/eks-alb-ingress-aws-waf/
 
 [id="prerequisites_{context}"]
 == Prerequisites
 
+* Multiple availability zone (AZ) ROSA (HCP or Classic) cluster.
++
 [NOTE]
 ====
-AWS ALBs require a multi-AZ cluster, as well as three public subnets split across three AZs in the same VPC as the cluster.
+AWS ALBs require at least two _public_ subnets across AZs, link:https://docs.aws.amazon.com/elasticloadbalancing/latest/application/application-load-balancers.html#availability-zones[per the AWS documentation]. For this reason, only multiple AZ ROSA clusters can be used with ALBs.
 ====
-
-* xref:../rosa_install_access_delete_clusters/rosa-sts-creating-a-cluster-quickly.adoc#rosa-sts-creating-a-cluster-quickly[A multi-AZ ROSA Classic cluster].
++
 * You have access to the OpenShift CLI (`oc`).
 * You have access to the AWS CLI (`aws`).
 
@@ -50,13 +47,13 @@ AWS ALBs require a multi-AZ cluster, as well as three public subnets split acros
 [source,terminal]
 ----
 $ export AWS_PAGER=""
-$ export CLUSTER_NAME=$(oc get infrastructure cluster -o=jsonpath="{.status.infrastructureName}"  | sed 's/-[a-z0-9]\{5\}$//')
+$ export CLUSTER=$(oc get infrastructure cluster -o=jsonpath="{.status.infrastructureName}")
 $ export REGION=$(oc get infrastructure cluster -o=jsonpath="{.status.platformStatus.aws.region}")
 $ export OIDC_ENDPOINT=$(oc get authentication.config.openshift.io cluster -o jsonpath='{.spec.serviceAccountIssuer}' | sed  's|^https://||')
 $ export AWS_ACCOUNT_ID=$(aws sts get-caller-identity --query Account --output text)
-$ export SCRATCH="/tmp/${CLUSTER_NAME}/alb-waf"
+$ export SCRATCH="/tmp/${CLUSTER}/alb-waf"
 $ mkdir -p ${SCRATCH}
-$ echo "Cluster: ${CLUSTER_NAME}, Region: ${REGION}, OIDC Endpoint: ${OIDC_ENDPOINT}, AWS Account ID: ${AWS_ACCOUNT_ID}"
+$ echo "Cluster: $(echo ${CLUSTER} | sed 's/-[a-z0-9]\{5\}$//'), Region: ${REGION}, OIDC Endpoint: ${OIDC_ENDPOINT}, AWS Account ID: ${AWS_ACCOUNT_ID}"
 ----
 
 [id="aws-vpc-and-subnets_{context}"]
@@ -71,16 +68,20 @@ This section only applies to clusters that were deployed into existing VPCs. If 
 +
 [source,terminal]
 ----
-$ export VPC_ID=<vpc-id>
-$ export PUBLIC_SUBNET_IDS=<public-subnets>
-$ export PRIVATE_SUBNET_IDS=<private-subnets>
+$ export VPC_ID=<vpc-id> <1>
+$ export PUBLIC_SUBNET_IDS=(<space-separated-list-of-ids>) <2>
+$ export PRIVATE_SUBNET_IDS=(<space-separated-list-of-ids>) <3>
 ----
+<1> Replace with the VPC ID of the cluster, for example: `export VPC_ID=vpc-04c429b7dbc4680ba`.
+<2> Replace with a space-separated list of the private subnet IDs of the cluster, making sure to preserve the `()`. For example: `export PUBLIC_SUBNET_IDS=(subnet-056fd6861ad332ba2 subnet-08ce3b4ec753fe74c subnet-071aa28228664972f)`.
+<3> Replace with a space-separated list of the private subnet IDs of the cluster, making sure to preserve the `()`. For example: `export PRIVATE_SUBNET_IDS=(subnet-0b933d72a8d72c36a subnet-0817eb72070f1d3c2 subnet-0806e64159b66665a)`.
 +
-. Add a tag to your cluster's VPC with the cluster name:
+. Add a tag to your cluster's VPC with the cluster identifier:
 +
 [source,terminal]
 ----
-$ aws ec2 create-tags --resources ${VPC_ID} --tags Key=kubernetes.io/cluster/${CLUSTER_NAME},Value=owned --region ${REGION}
+$ aws ec2 create-tags --resources ${VPC_ID} \
+  --tags Key=kubernetes.io/cluster/${CLUSTER},Value=shared --region ${REGION}
 ----
 +
 . Add a tag to your public subnets:
@@ -88,9 +89,10 @@ $ aws ec2 create-tags --resources ${VPC_ID} --tags Key=kubernetes.io/cluster/${C
 [source,terminal]
 ----
 $ aws ec2 create-tags \
-     --resources ${PUBLIC_SUBNET_IDS} \
-     --tags Key=kubernetes.io/role/elb,Value='' \
-     --region ${REGION}
+  --resources ${PUBLIC_SUBNET_IDS} \
+  --tags Key=kubernetes.io/role/elb,Value='1' \
+        Key=kubernetes.io/cluster/${CLUSTER},Value=shared \
+  --region ${REGION}
 ----
 +
 . Add a tag to your private subnets:
@@ -98,9 +100,10 @@ $ aws ec2 create-tags \
 [source,terminal]
 ----
 $ aws ec2 create-tags \
-     --resources "${PRIVATE_SUBNET_IDS}" \
-     --tags Key=kubernetes.io/role/internal-elb,Value='' \
-     --region ${REGION}
+  --resources ${PRIVATE_SUBNET_IDS} \
+  --tags Key=kubernetes.io/role/internal-elb,Value='1' \
+        Key=kubernetes.io/cluster/${CLUSTER},Value=shared \
+  --region ${REGION}
 ----
 
 [id="deploy-aws-load-balancer-operator_{context}"]
@@ -108,28 +111,37 @@ $ aws ec2 create-tags \
 
 The link:https://github.com/openshift/aws-load-balancer-operator[AWS Load Balancer Operator] is used to used to install, manage and configure an instance of `aws-load-balancer-controller` in a ROSA cluster. To deploy ALBs in ROSA, we need to first deploy the AWS Load Balancer Operator.
 
-. Create an AWS IAM policy for the AWS Load Balancer Controller:
-+
-[NOTE]
-====
-The policy is sourced from link:https://raw.githubusercontent.com/kubernetes-sigs/aws-load-balancer-controller/v2.4.4/docs/install/iam_policy.json[the upstream AWS Load Balancer Controller policy] plus permission to create tags on subnets. This is required by the operator to function.
-====
+. Create a new project to deploy the AWS Load Balancer Operator into by running the following command:
 +
 [source,terminal]
 ----
 $ oc new-project aws-load-balancer-operator
+----
++
+. Create an AWS IAM policy for the AWS Load Balancer Controller if one does not already exist by running the following command:
++
+[NOTE]
+====
+The policy is sourced from link:https://raw.githubusercontent.com/kubernetes-sigs/aws-load-balancer-controller/main/docs/install/iam_policy.json[the upstream AWS Load Balancer Controller policy]. This is required by the operator to function.
+====
++
+[source,terminal]
+----
 $ POLICY_ARN=$(aws iam list-policies --query \
      "Policies[?PolicyName=='aws-load-balancer-operator-policy'].{ARN:Arn}" \
      --output text)
+----
++
+[source,terminal]
+----
 $ if [[ -z "${POLICY_ARN}" ]]; then
     wget -O "${SCRATCH}/load-balancer-operator-policy.json" \
-       https://raw.githubusercontent.com/rh-mobb/documentation/main/content/rosa/aws-load-balancer-operator/load-balancer-operator-policy.json
+       https://raw.githubusercontent.com/kubernetes-sigs/aws-load-balancer-controller/main/docs/install/iam_policy.json
      POLICY_ARN=$(aws --region "$REGION" --query Policy.Arn \
      --output text iam create-policy \
      --policy-name aws-load-balancer-operator-policy \
      --policy-document "file://${SCRATCH}/load-balancer-operator-policy.json")
 fi
-$ echo $POLICY_ARN
 ----
 +
 . Create an AWS IAM trust policy for AWS Load Balancer Operator:
@@ -161,13 +173,17 @@ EOF
 +
 [source,terminal]
 ----
-$ ROLE_ARN=$(aws iam create-role --role-name "${CLUSTER_NAME}-alb-operator" \
+$ ROLE_ARN=$(aws iam create-role --role-name "${CLUSTER}-alb-operator" \
    --assume-role-policy-document "file://${SCRATCH}/trust-policy.json" \
    --query Role.Arn --output text)
-$ echo $ROLE_ARN
-
-$ aws iam attach-role-policy --role-name "${CLUSTER_NAME}-alb-operator" \
-     --policy-arn $POLICY_ARN
+----
++
+. Attach the AWS Load Balancer Operator policy to the IAM role we created previously by running the following command:
++
+[source,terminal]
+----
+$ aws iam attach-role-policy --role-name "${CLUSTER}-alb-operator" \
+     --policy-arn ${POLICY_ARN}
 ----
 +
 . Create a secret for the AWS Load Balancer Operator to assume our newly created AWS IAM role:
@@ -183,7 +199,7 @@ metadata:
 stringData:
   credentials: |
     [default]
-    role_arn = $ROLE_ARN
+    role_arn = ${ROLE_ARN}
     web_identity_token_file = /var/run/secrets/openshift/serviceaccount/token
 EOF
 ----
@@ -382,11 +398,11 @@ This will enable the Core (Common) and SQL AWS Managed Rule Sets.
 [source,terminal]
 ----
 $ WAF_ARN=$(aws wafv2 create-web-acl \
-  --name ${CLUSTER_NAME}-waf \
+  --name ${CLUSTER}-waf \
   --region ${REGION} \
   --default-action Allow={} \
   --scope REGIONAL \
-  --visibility-config SampledRequestsEnabled=true,CloudWatchMetricsEnabled=true,MetricName=${CLUSTER_NAME}-waf-metrics \
+  --visibility-config SampledRequestsEnabled=true,CloudWatchMetricsEnabled=true,MetricName=${CLUSTER}-waf-metrics \
   --rules file://${SCRATCH}/waf-rules.json \
   --query 'Summary.ARN' \
   --output text)
@@ -433,11 +449,15 @@ $ curl -X POST "http://${INGRESS}" \
 </html
 ----
 +
+[NOTE]
+====
+Activation of the AWS WAF integration can sometimes take several minutes. If you do not receive a `403 Forbidden` error, please wait a few seconds and try again.
+====
++
 The expected result is a `403 Forbidden` error, which means the AWS WAF is protecting your application.
 
 [role="_additional-resources"]
 [id="additional-resources_{context}"]
 == Additional resources
 
-* link:https://docs.openshift.com/rosa/applications/deployments/osd-config-custom-domains-applications.html[Custom domains for applications] in the Red{nbsp}Hat documentation
 * link:https://youtu.be/-HorEsl2ho4[Adding Extra Security with AWS WAF, CloudFront and ROSA | Amazon Web Services] on YouTube
