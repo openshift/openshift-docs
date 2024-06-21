@@ -12,18 +12,38 @@ The Machine Config Operator (MCO) is responsible for mounting a secondary disk f
 
 [NOTE]
 ====
-This procedure does not move parts of the root file system, such as `/var/`, to another disk or partition on an installed node.
+This encoded script only supports device names for the following device types:
+
+SCSI or SATA:: `/dev/sd*`
+Virtual device:: `/dev/vd*`
+NVMe:: `/dev/nvme*[0-9]\*n*`
 ====
+
+.Limitations
+
+* When the new disk is attached to the cluster, the etcd database is part of the root mount. It is not part of the secondary disk or the intended disk when the primary node is recreated. As a result, the primary node will not create a separate `/var/lib/etcd` mount.
 
 .Prerequisites
 
+* You have a backup of your cluster's etcd data.
 * You have installed the {oc-first}.
 * You have access to the cluster with `cluster-admin` privileges.
+* Add additional disks before uploading the machine configuration.
 * The `MachineConfigPool` must match `metadata.labels[machineconfiguration.openshift.io/role]`. This applies to a controller, worker, or a custom pool.
+
+[NOTE]
+====
+This procedure does not move parts of the root file system, such as `/var/`, to another disk or partition on an installed node.
+====
+
+[IMPORTANT]
+====
+This procedure is not supported when using control plane machine sets.
+====
 
 .Procedure
 
-. Attach the new disk to the cluster and verify that the disk is detected in the node by using the `lsblk` command in a debug shell:
+. Attach the new disk to the cluster and verify that the disk is detected in the node by running the `lsblk` command in a debug shell:
 +
 [source,terminal]
 ----
@@ -37,7 +57,29 @@ $ oc debug node/<node_name>
 +
 Note the device name of the new disk reported by the `lsblk` command.
 
-. Create a `MachineConfig` YAML file named `etcd-mc.yml` with contents such as the following, replacing instances of `<new_disk_name>` with the noted device name:
+. Decode and replace the device name in the script according to your environment.
++
+[source,bash]
+----
+#!/bin/bash
+set -uo pipefail
+
+for device in <device_type_glob>; do # <1>
+/usr/sbin/blkid $device &> /dev/null
+ if [ $? == 2  ]; then
+    echo "secondary device found $device"
+    echo "creating filesystem for etcd mount"
+    mkfs.xfs -L var-lib-etcd -f $device &> /dev/null
+    udevadm settle
+    touch /etc/var-lib-etcd-mount
+    exit
+ fi
+done
+echo "Couldn't find secondary block device!" >&2
+exit 77
+----
+<1> Replace `<device_type_glob>` with a shell glob for your block device type. For SCSI or SATA drives, use `/dev/sd*`; for virtual drives, use `/dev/vd*`; for NVMe drives, use `/dev/nvme*[0-9]\*n*`.
+. Create a `MachineConfig` YAML file named `etcd-mc.yml` with contents such as the following:
 +
 [source,yaml]
 ----
@@ -50,146 +92,91 @@ metadata:
 spec:
   config:
     ignition:
-      version: 3.4.0
+      version: 3.1.0
+    storage:
+      files:
+        - path: /etc/find-secondary-device
+          mode: 0755
+          contents:
+            source: data:text/plain;charset=utf-8;base64,<encoded_etc_find_secondary_device_script> # <1>
     systemd:
       units:
-      - contents: |
-          [Unit]
-          Description=Make File System on /dev/<new_disk_name>
-          DefaultDependencies=no
-          BindsTo=dev-<new_disk_name>.device
-          After=dev-<new_disk_name>.device var.mount
-          Before=systemd-fsck@dev-<new_disk_name>.service
+        - name: find-secondary-device.service
+          enabled: true
+          contents: |
+            [Unit]
+            Description=Find secondary device
+            DefaultDependencies=false
+            After=systemd-udev-settle.service
+            Before=local-fs-pre.target
+            ConditionPathExists=!/etc/var-lib-etcd-mount
 
-          [Service]
-          Type=oneshot
-          RemainAfterExit=yes
-          ExecStart=/usr/lib/systemd/systemd-makfs.xfs -f /dev/<new_disk_name>
-          TimeoutSec=0
+            [Service]
+            RemainAfterExit=yes
+            ExecStart=/etc/find-secondary-device
 
-          [Install]
-          WantedBy=var-lib-containers.mount
-        enabled: true
-        name: systemd-mkfs@dev-<new_disk_name>.service
-      - contents: |
-          [Unit]
-          Description=Mount /dev/<new_disk_name> to /var/lib/etcd
-          Before=local-fs.target
-          Requires=systemd-mkfs@dev-<new_disk_name>.service
-          After=systemd-mkfs@dev-<new_disk_name>.service var.mount
+            RestartForceExitStatus=77
 
-          [Mount]
-          What=/dev/<new_disk_name>
-          Where=/var/lib/etcd
-          Type=xfs
-          Options=defaults,prjquota
+            [Install]
+            WantedBy=multi-user.target
+        - name: var-lib-etcd.mount
+          enabled: true
+          contents: |
+            [Unit]
+            Before=local-fs.target
 
-          [Install]
-          WantedBy=local-fs.target
-        enabled: true
-        name: var-lib-etcd.mount
-      - contents: |
-          [Unit]
-          Description=Sync etcd data if new mount is empty
-          DefaultDependencies=no
-          After=var-lib-etcd.mount var.mount
-          Before=crio.service
+            [Mount]
+            What=/dev/disk/by-label/var-lib-etcd
+            Where=/var/lib/etcd
+            Type=xfs
+            TimeoutSec=120s
 
-          [Service]
-          Type=oneshot
-          RemainAfterExit=yes
-          ExecCondition=/usr/bin/test ! -d /var/lib/etcd/member
-          ExecStart=semanage fcontext -a -e /sysroot/ostree/deploy/rhcos/var/lib/etcd/ /var/lib/etcd/
-          ExecStart=/bin/rsync -ar /sysroot/ostree/deploy/rhcos/var/lib/etcd/ /var/lib/etcd/
-          TimeoutSec=0
+            [Install]
+            RequiredBy=local-fs.target
+        - name: sync-var-lib-etcd-to-etcd.service
+          enabled: true
+          contents: |
+            [Unit]
+            Description=Sync etcd data if new mount is empty
+            DefaultDependencies=no
+            After=var-lib-etcd.mount var.mount
+            Before=crio.service
 
-          [Install]
-          WantedBy=multi-user.target graphical.target
-        enabled: true
-        name: sync-var-lib-etcd-to-etcd.service
-      - contents: |
-          [Unit]
-          Description=Restore recursive SELinux security contexts
-          DefaultDependencies=no
-          After=var-lib-etcd.mount
-          Before=crio.service
+            [Service]
+            Type=oneshot
+            RemainAfterExit=yes
+            ExecCondition=/usr/bin/test ! -d /var/lib/etcd/member
+            ExecStart=/usr/sbin/setsebool -P rsync_full_access 1
+            ExecStart=/bin/rsync -ar /sysroot/ostree/deploy/rhcos/var/lib/etcd/ /var/lib/etcd/
+            ExecStart=/usr/sbin/semanage fcontext -a -t container_var_lib_t '/var/lib/etcd(/.*)?'
+            ExecStart=/usr/sbin/setsebool -P rsync_full_access 0
+            TimeoutSec=0
 
-          [Service]
-          Type=oneshot
-          RemainAfterExit=yes
-          ExecStart=/sbin/restorecon -R /var/lib/etcd/
-          TimeoutSec=0
+            [Install]
+            WantedBy=multi-user.target graphical.target
+        - name: restorecon-var-lib-etcd.service
+          enabled: true
+          contents: |
+            [Unit]
+            Description=Restore recursive SELinux security contexts
+            DefaultDependencies=no
+            After=var-lib-etcd.mount
+            Before=crio.service
 
-          [Install]
-          WantedBy=multi-user.target graphical.target
-        enabled: true
-        name: restorecon-var-lib-etcd.service
+            [Service]
+            Type=oneshot
+            RemainAfterExit=yes
+            ExecStart=/sbin/restorecon -R /var/lib/etcd/
+            TimeoutSec=0
+
+            [Install]
+            WantedBy=multi-user.target graphical.target
 ----
-
-. Log in to the cluster as a user with `cluster-admin` privileges and create the machine configuration:
-+
-[source,terminal]
-----
-$ oc login -u <username> -p <password>
-----
-+
-[source,terminal]
-----
-$ oc create -f etcd-mc.yml
-----
-+
-The nodes are updated and rebooted. After the reboot completes, the following events occur:
-+
-* An XFS file system is created on the specified disk.
-* The disk mounts to `/var/lib/etcd`.
-* The content from `/sysroot/ostree/deploy/rhcos/var/lib/etcd` syncs to `/var/lib/etcd`.
-* A restore of `SELinux` labels is forced for `/var/lib/etcd`.
-* The old content is not removed.
-
-. After the nodes are on a separate disk, update the `etcd-mc.yml` file with contents such as the following, replacing instances of `<new_disk_name>` with the noted device name:
-+
-[source,yaml]
-----
-apiVersion: machineconfiguration.openshift.io/v1
-kind: MachineConfig
-metadata:
-  labels:
-    machineconfiguration.openshift.io/role: master
-  name: 98-var-lib-etcd
-spec:
-  config:
-    ignition:
-      version: 3.4.0
-    systemd:
-      units:
-      - contents: |
-          [Unit]
-          Description=Mount /dev/<new_disk_name> to /var/lib/etcd
-          Before=local-fs.target
-          After=var.mount
-
-          [Mount]
-          What=/dev/<new_disk_name>
-          Where=/var/lib/etcd
-          Type=xfs
-          Options=defaults,prjquota
-
-          [Install]
-          WantedBy=local-fs.target
-        enabled: true
-        name: var-lib-etcd.mount
-----
-
-. Apply the modified version that removes the logic for creating and syncing the device to prevent the nodes from rebooting:
-+
-[source,terminal]
-----
-$ oc replace -f etcd-mc.yml
-----
+<1> Use the encoded string that you previously created and replace it with the encoded script that you noted.
 
 .Verification steps
 
-* Run the `grep <new_disk_name> /proc/mounts` command in a debug shell for the node to ensure that the disk mounted:
+* Run the `grep /var/lib/etcd /proc/mounts` command in a debug shell for the node to ensure that the disk is mounted:
 +
 [source,terminal]
 ----
@@ -198,12 +185,12 @@ $ oc debug node/<node_name>
 +
 [source,terminal]
 ----
-# grep <new_disk_name> /proc/mounts
+# grep -w "/var/lib/etcd" /proc/mounts
 ----
 +
 .Example output
 +
 [source,terminal]
 ----
-/dev/nvme1n1 /var/lib/etcd xfs rw,seclabel,relatime,attr2,inode64,logbufs=8,logbsize=32k,prjquota 0 0
+/dev/sdb /var/lib/etcd xfs rw,seclabel,relatime,attr2,inode64,logbufs=8,logbsize=32k,noquota 0 0
 ----

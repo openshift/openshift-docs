@@ -1,0 +1,232 @@
+// Module included in the following assemblies:
+//
+// * post-installation_configuration/coreos-layering.adoc
+
+:_mod-docs-content-type: PROCEDURE
+[id="coreos-layering-configuring-on_{context}"]
+= Using on-cluster layering to apply a custom layered image
+
+To apply a custom layered image to your cluster by using the on-cluster build process, make a `MachineOSConfig` custom resource that includes a Containerfile, a machine config pool reference, repository push and pull secrets, and other parameters as described in the prerequisites. 
+
+When you create the object, the Machine Config Operator (MCO) creates a `MachineOSBuild` object and a `machine-os-builder` pod. The build process also creates transient objects, such as config maps, which are cleaned up after the build is complete. 
+
+When the build is complete, the MCO pushes the new custom layered image to your repository for use when deploying new nodes. You can see the digested image pull spec for the new custom layered image in the `MachineOSBuild` object and `machine-os-builder` pod.
+
+You should not need to interact with these new objects or the `machine-os-builder` pod. However, you can use all of these resources for troubleshooting, if necessary.
+
+You need a separate `MachineOSConfig` CR for each machine config pool where you want to use a custom layered image.
+
+:FeatureName: On-cluster image layering
+include::snippets/technology-preview.adoc[]
+
+.Prerequisites
+
+* You have enabled the `TechPreviewNoUpgrade` feature set by using the feature gates. For more information, see "Enabling features using feature gates".
+
+* You have the pull secret in the `openshift-machine-config-operator` namespace that the MCO needs to pull the base operating system image.
+
+* You have the push secret that the MCO needs to push the new custom layered image to your registry.
+
+* You have a pull secret that your nodes need to pull the new custom layered image from your registry. This should be a different secret than the one used to push the image to the repository.
+
+* You are familiar with how to configure a Containerfile. Instructions on how to create a Containerfile are beyond the scope of this documentation.
+
+* Optional: You have a separate machine config pool for the nodes where you want to apply the custom layered image.
+
+.Procedure
+
+. Create a `MachineOSConfig` object:
+
+.. Create a YAML file similar to the following:
++
+[source,terminal]
+----
+apiVersion: machineconfiguration.openshift.io/v1alpha1
+kind: MachineOSConfig
+metadata:
+  name: layered
+spec:
+  machineConfigPool:
+    name: <mcp_name> <1>
+  buildInputs:
+    containerFile: # <2>
+    - containerfileArch: noarch
+      content: |-
+        FROM configs AS final
+        RUN rpm-ostree install cowsay && \
+          ostree container commit
+    imageBuilder: # <3>
+      imageBuilderType: PodImageBuilder
+    baseImagePullSecret: # <4>
+      name: global-pull-secret-copy
+    renderedImagePushspec: image-registry.openshift-image-registry.svc:5000/openshift/os-image:latest  # <5>
+    renderedImagePushSecret: # <6>
+      name: builder-dockercfg-7lzwl
+  buildOutputs: # <7>
+    currentImagePullSecret:
+      name: builder-dockercfg-7lzwl
+----
+<1> Specifies the name of the machine config pool associated with the nodes where you want to deploy the custom layered image.
+<2> Specifies the Containerfile to configure the custom layered image.
+<3> Specifies the name of the image builder to use. This must be `PodImageBuilder`.
+<4> Specifies the name of the pull secret that the MCO needs to pull the base operating system image from the registry.
+<5> Specifies the image registry to push the newly-built custom layered image to. This can be any registry that your cluster has access to. This example uses the internal {product-title} registry.
+<6> Specifies the name of the push secret that the MCO needs to push the newly-built custom layered image to that registry.
+<7> Specifies the secret required by the image registry that the nodes need to pull the newly-built custom layered image. This should be a different secret than the one used to push the image to your repository.
+
+.. Create the `MachineOSConfig` object:
++
+[source,terminal]
+----
+$ oc create -f <file_name>.yaml
+----
+
+. If necessary, when the `MachineOSBuild` object has been created and is in the `READY` state, modify the node spec for the nodes where you want to use the new custom layered image:
+
+.. Check that the `MachineOSBuild` object is `READY`. When the `SUCCEEDED` value is `True`, the build is complete.
++
+[source,terminal]
+----
+$ oc get machineosbuild
+----
++
+.Example output showing that the `MachineOSBuild` object is ready
+[source,terminal]
+----
+NAME                                                                PREPARED   BUILDING   SUCCEEDED   INTERRUPTED   FAILED
+layered-rendered-layered-ad5a3cad36303c363cf458ab0524e7c0-builder   False      False      True        False         False
+----
+
+.. Edit the nodes where you want to deploy the custom layered image by adding a label for the machine config pool you specified in the `MachineOSConfig` object:
++
+[source,terminal]
+----
+$ oc label node <node_name> 'node-role.kubernetes.io/<mcp_name>='
+----
++
+--
+where:
+
+node-role.kubernetes.io/<mcp_name>=:: Specifies a node selector that identifies the nodes to deploy the custom layered image. 
+--
++
+When you save the changes, the MCO drains, cordons, and reboots the nodes. After the reboot, the node will be using the new custom layered image.
+
+.Verification
+
+. Verify that the new pods are running by using the following command:
++
+[source,terminal]
+----
+$ oc get pods -n <machineosbuilds_namespace>
+----
++
+[source,terminal]
+----
+NAME                                                              READY   STATUS    RESTARTS   AGE
+build-rendered-layered-ad5a3cad36303c363cf458ab0524e7c0           2/2     Running   0          2m40s # <1>
+# ...
+machine-os-builder-6fb66cfb99-zcpvq                               1/1     Running   0          2m42s # <2>
+----
+<1> This is the build pod where the custom layered image is building.
+<2> This pod can be used for troubleshooting.
+
+. Verify that the `MachineOSConfig` object contains a reference to the new custom layered image:
++
+[source,terminal]
+----
+$ oc describe MachineOSConfig <object_name>
+----
++
+[source,yaml]
+----
+apiVersion: machineconfiguration.openshift.io/v1alpha1
+kind: MachineOSConfig
+metadata:
+  name: layered
+spec:
+  buildInputs:
+    baseImagePullSecret:
+      name: global-pull-secret-copy
+    containerFile:
+    - containerfileArch: noarch
+      content: ""
+    imageBuilder:
+      imageBuilderType: PodImageBuilder
+    renderedImagePushSecret:
+      name: builder-dockercfg-ng82t-canonical
+    renderedImagePushspec: image-registry.openshift-image-registry.svc:5000/openshift-machine-config-operator/os-image:latest
+  buildOutputs:
+    currentImagePullSecret:
+      name: global-pull-secret-copy
+  machineConfigPool:
+    name: layered
+status:
+  currentImagePullspec: image-registry.openshift-image-registry.svc:5000/openshift-machine-config-operator/os-image@sha256:f636fa5b504e92e6faa22ecd71a60b089dab72200f3d130c68dfec07148d11cd # <1>
+----
+<1> Digested image pull spec for the new custom layered image.
+
+. Verify that the `MachineOSBuild` object contains a reference to the new custom layered image.
++
+[source,terminal]
+----
+$ oc describe machineosbuild <object_name>
+----
++
+[source,yaml]
+----
+apiVersion: machineconfiguration.openshift.io/v1alpha1
+kind: MachineOSBuild
+metadata:
+  name: layered-rendered-layered-ad5a3cad36303c363cf458ab0524e7c0-builder
+spec:
+  desiredConfig:
+    name: rendered-layered-ad5a3cad36303c363cf458ab0524e7c0
+  machineOSConfig:
+    name: layered
+  renderedImagePushspec: image-registry.openshift-image-registry.svc:5000/openshift-machine-config-operator/os-image:latest
+# ...
+status:
+  conditions:
+    - lastTransitionTime: "2024-05-21T20:25:06Z"
+      message: Build Ready
+      reason: Ready
+      status: "True"
+      type: Succeeded
+  finalImagePullspec: image-registry.openshift-image-registry.svc:5000/openshift-machine-config-operator/os-image@sha256:f636fa5b504e92e6faa22ecd71a60b089dab72200f3d130c68dfec07148d11cd # <1>
+----
+<1> Digested image pull spec for the new custom layered image.
+
+. Verify that the appropriate nodes are using the new custom layered image:
+
+.. Start a debug session as root for a control plane node:
++
+[source,terminal]
+----
+$ oc debug node/<node_name>
+----
+
+.. Set `/host` as the root directory within the debug shell:
++
+[source,terminal]
+----
+sh-4.4# chroot /host
+----
+
+.. Run the `rpm-ostree status` command to view that the custom layered image is in use:
++
+[source,terminal]
+----
+sh-5.1# rpm-ostree status
+----
++
+.Example output
+[source,terminal]
+----
+# ...
+Deployments:
+* ostree-unverified-registry:quay.io/openshift-release-dev/os-image@sha256:f636fa5b504e92e6faa22ecd71a60b089dab72200f3d130c68dfec07148d11cd # <1>
+                   Digest: sha256:bcea2546295b2a55e0a9bf6dd4789433a9867e378661093b6fdee0031ed1e8a4
+                  Version: 416.94.202405141654-0 (2024-05-14T16:58:43Z)
+----
+<1> Digested image pull spec for the new custom layered image.

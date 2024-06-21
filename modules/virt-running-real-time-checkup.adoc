@@ -1,0 +1,215 @@
+// Module included in the following assemblies:
+//
+// * virt/monitoring/virt-running-cluster-checkups.adoc
+
+:_mod-docs-content-type: PROCEDURE
+[id="virt-running-real-time-checkup_{context}"]
+= Running a real-time checkup
+
+Use a predefined checkup to verify that your {product-title} cluster can run virtualized real-time workloads.
+
+
+.Prerequisites
+* You have installed the OpenShift CLI (`oc`).
+* The cluster is configured to run real-time applications.
+
+.Procedure
+
+. Create a `ServiceAccount`, `Role`, and `RoleBinding` manifest file for the real-time checkup:
++
+.Example service account, role, and rolebinding manifest file
+[%collapsible]
+====
+[source,yaml]
+----
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: realtime-checkup-sa
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: kiagnose-configmap-access
+rules:
+  - apiGroups: [ "" ]
+    resources: [ "configmaps" ]
+    verbs: [ "get", "update" ]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: kiagnose-configmap-access
+subjects:
+  - kind: ServiceAccount
+    name: realtime-checkup-sa
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: kiagnose-configmap-access
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: kubevirt-realtime-checker
+rules:
+  - apiGroups: [ "kubevirt.io" ]
+    resources: [ "virtualmachineinstances" ]
+    verbs: [ "create", "get", "delete" ]
+  - apiGroups: [ "subresources.kubevirt.io" ]
+    resources: [ "virtualmachineinstances/console" ]
+    verbs: [ "get" ]
+  - apiGroups: [ "" ]
+    resources: [ "configmaps" ]
+    verbs: [ "create", "delete" ]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: kubevirt-realtime-checker
+subjects:
+  - kind: ServiceAccount
+    name: realtime-checkup-sa
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: kubevirt-realtime-checker
+----
+====
+
+. Apply the `ServiceAccount`, `Role`, and `RoleBinding` manifest to the target namespace:
++
+[source,terminal]
+----
+$ oc apply -n <target_namespace> -f <realtime_sa_roles_rolebinding>.yaml
+----
+
+. Create a `ConfigMap` manifest file that contains the input parameters for the checkup:
++
+.Example input config map
+[source,yaml]
+----
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: realtime-checkup-config
+  labels:
+    kiagnose/checkup-type: kubevirt-realtime
+data:
+  spec.timeout: 1h10m # <1>
+  spec.param.vmUnderTestContainerDiskImage: quay.io/kiagnose/kubevirt-realtime-checkup-vm:v0.2.0 # <2>
+  spec.param.oslatDuration: 1h # <3>
+----
+<1> The time, in hours and minutes, before the checkup fails.
+<2> The container disk image for the VM under test.
+<3> The duration for which the OS level thread latency test program runs.
+
+. Apply the `ConfigMap` manifest in the target namespace:
++
+[source,terminal]
+----
+$ oc apply -n <target_namespace> -f <real-time_config_map>.yaml
+----
+
+. Create a `Job` manifest to run the checkup:
++
+.Example job manifest
+[source,yaml,subs="attributes+"]
+----
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: realtime-checkup
+  labels:
+    kiagnose/checkup-type: kubevirt-realtime
+spec:
+  backoffLimit: 0
+  template:
+    spec:
+      serviceAccountName: realtime-checkup-sa
+      restartPolicy: Never
+      containers:
+        - name: realtime-checkup
+          image: registry.redhat.io/container-native-virtualization/kubevirt-realtime-checkup-rhel9:v{product-version}.0
+          imagePullPolicy: Always
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop: [ "ALL" ]
+            runAsNonRoot: true
+            seccompProfile:
+              type: "RuntimeDefault"
+          env:
+            - name: CONFIGMAP_NAMESPACE
+              value: <target-namespace>
+            - name: CONFIGMAP_NAME
+              value: realtime-checkup-config
+            - name: POD_UID
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.uid
+----
+
+. Apply the `Job` manifest in the target namespace:
++
+[source,terminal]
+----
+$ oc apply -n <target_namespace> -f <real-time_job>.yaml
+----
+
+. Wait for the job to complete:
++
+[source,terminal]
+----
+$ oc wait job realtime-checkup -n <target_namespace> --for condition=complete --timeout 1h15m
+----
+
+. Review the results of the checkup by running the following command:
++
+[source,terminal]
+----
+$ oc get configmap realtime-checkup-config -n <target_namespace> -o yaml
+----
++
+.Example output config map (success)
+[source,yaml]
+----
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: realtime-checkup-config
+data:
+# ...
+  status.succeeded: "true" # <1>
+  status.failureReason: "" # <2>
+  status.startTimestamp: "2023-07-31T13:14:38Z" # <3>
+  status.completionTimestamp: "2023-07-31T13:19:41Z" # <4>
+  status.result.vmUnderTestActualNodeName: worker1 # <5>
+  status.result.oslatMaxLatencyMicroSeconds: 6 # <6>
+----
+<1> Specifies if the checkup is successful (`true`) or not (`false`).
+<2> The reason for failure if the checkup fails.
+<3> The time when the checkup started, in RFC 3339 time format.
+<4> The time when the checkup has completed, in RFC 3339 time format.
+<5> The node on which the VM under test was scheduled.
+<6> The actual latency measured by the checkup.
+
+. Delete the job and config map that you previously created by running the following commands:
++
+[source,terminal]
+----
+$ oc delete job -n <target_namespace> realtime-checkup
+----
++
+[source,terminal]
+----
+$ oc delete config-map -n <target_namespace> realtime-checkup-config
+----
+
+. Optional: If you do not plan to run another checkup, delete the `ServiceAccount`, `Role`, and `RoleBinding` manifest:
++
+[source,terminal]
+----
+$ oc delete -f -n <target_namespace> <realtime_sa_roles_rolebinding>.yaml
+----
