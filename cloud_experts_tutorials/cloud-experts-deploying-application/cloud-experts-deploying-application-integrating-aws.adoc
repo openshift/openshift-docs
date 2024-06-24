@@ -1,0 +1,393 @@
+:_mod-docs-content-type: ASSEMBLY
+[id="cloud-experts-deploying-application-integrating-aws"]
+= Tutorial: Integrating with AWS Services
+include::_attributes/attributes-openshift-dedicated.adoc[]
+include::_attributes/common-attributes.adoc[]
+:context: cloud-experts-deploying-application-integrating-aws
+
+toc::[]
+
+//rosaworkshop.io content metadata
+//Brought into ROSA product docs 2024-05-03
+
+Although the OSToy application functions independently, many real-world applications require external services such as databases, object stores, or messaging services.
+
+.Objectives
+
+* Learn how to integrate the OSToy application with other Amazon Web Services (AWS) services, specifically AWS S3 Storage. By the end of this section, the application will securely create and read objects from AWS S3 Storage.
+* Use the Amazon Controller for Kubernetes (ACK) to create the necessary services for our application directly from Kubernetes.
+* Use Identity and Access Management (IAM) roles for service accounts to manage access and authentication.
+* Use OSToy to create a basic text file and save it in an S3 bucket.
+* Confirm that the file was successfully added and can be read from the bucket.
+
+== Amazon Controller for Kubernetes (ACK)
+
+Use the link:https://aws-controllers-k8s.github.io/community/docs/community/overview/[ACK] to create and use AWS services directly from Kubernetes. You can deploy your applications directly in the Kubernetes framework by using a familiar structure to declaratively define and create AWS services such as S3 buckets or Relational Database Service (RDS) databases.
+
+With ACK, you can create an S3 bucket, integrate it with the OSToy application, upload a file to it, and view the file in your application.
+
+== IAM roles for service accounts
+
+You can use IAM roles for service accounts to assign IAM roles directly to Kubernetes service accounts. You can use it to grant the ACK controller credentials to deploy services in your AWS account. Use link:https://docs.aws.amazon.com/eks/latest/userguide/iam-roles-for-service-accounts.html[IAM roles for service accounts] to automate the management and rotation of temporary credentials.
+
+Pods receive a valid OpenID Connect (OIDC) JSON web token (JWT) and pass it to the AWS STS `AssumeRoleWithWebIdentity` API operation to receive IAM temporary role credentials. The process relies on the EKS pod identity mutating webhook which modifies pods that require AWS IAM access.
+
+IAM roles for service accounts adheres to the following best practices:
+
+* *Principle of least privilege*: You can create IAM permissions for AWS roles that only allow limited access. These permissions are limited to the service account associated with the role and only the pods that use that service account have access.
+* *Credential isolation*: A pod can only retrieve credentials for the IAM role associated with the service account that the pod is using.
+* *Auditing*: All AWS resource access can be viewed in CloudTrail.
+
+[role="_additional-resources"]
+.Additional resources
+
+* link:https://aws-controllers-k8s.github.io/community/docs/user-docs/irsa/[ACK documentation page]
+
+== Installing the ACK controller
+Install the ACK controller to create and delete buckets in the S3 service by using a Kubernetes custom resource for the bucket. Installing the controller will also create the required namespace and service account.
+
+We will use an Operator to make it easy. The Operator installation will also create an `ack-system` namespace and a service account `ack-s3-controller` for you.
+
+. Log in to the cluster console.
+. On the left menu, click *Operators*, then *OperatorHub*.
+. In the filter box, enter "S3" and select *AWS Controller for Kubernetes - Amazon S3*.
++
+image:cloud-experts-deploying-integrating-ack-operator.png[]
++
+. If a pop-up about community operators appears, click *Continue*.
+. Click *Install*.
+. Select *All namespaces on the cluster* under "Installation mode".
+. Select *ack-system* under "Installed Namespace".
+. Select *Manual* under "Update approval".
++
+[IMPORTANT]
+====
+Make sure *Manual Mode* is selected so changes to the service account are not overwritten by an automatic operator update.
+====
++
+. Click *Install*.
++
+The settings should look like the below image.
++
+image:cloud-experts-deployment-integrating-ack-install.png[]
++
+. Click *Approve*.
+. The installation begins but will not complete until you have created an IAM role and policy for the ACK controller.
+
+== Creating an IAM role and policy for the ACK controller
+
+. Run one of the following scripts to create the AWS IAM role for the ACK controller and assign the S3 policy:
+** Automatically download the link:https://www.rosaworkshop.io/ostoy/resources/setup-s3-ack-controller.sh[setup-s3-ack-controller.sh] script, which automates the process for you.
+** Run the following script in your command line interface (CLI):
++
+[source,terminal]
+----
+$ curl https://raw.githubusercontent.com/openshift-cs/rosaworkshop/master/rosa-workshop/ostoy/resources/setup-s3-ack-controller.sh | bash
+----
++
+. When the script completes, it restarts the deployment which updates the service controller pods with the IAM roles for service accounts environment variables.
+. Confirm that the environment variables are set by running the following command:
++
+[source,terminal]
+----
+$ oc describe pod ack-s3-controller -n ack-system | grep "^\s*AWS_"
+----
++
+.Example output
++
+[source,terminal]
+----
+AWS_ROLE_ARN:                 arn:aws:iam::000000000000:role/ack-s3-controller
+AWS_WEB_IDENTITY_TOKEN_FILE:  /var/run/secrets/eks.amazonaws.com/serviceaccount/token
+----
++
+. Confirm successful setup of the ACK controller in the web console by clicking *Operators* and then *Installed operators*.
++
+image:cloud-experts-deployment-installing-ack-oper-installed.png[]
++
+. If you do not see a successful Operator installation and the environment variables, manually restart the deployment by running the following command:
++
+[source,terminal]
+----
+$ oc rollout restart deployment ack-s3-controller -n ack-system
+----
+
+== Setting up access for the application
+
+You can create an AWS IAM role and service account so that OSToy can read and write objects to an S3 bucket.
+
+. Create a new unique project for OSToy by running the following command:
++
+[source,terminal]
+----
+$ oc new-project ostoy-$(uuidgen | cut -d - -f 2 | tr '[:upper:]' '[:lower:]')
+----
++
+. Save the name of the namespace and project to an environment variable by running the following command:
++
+[source,terminal]
+----
+$ export OSTOY_NAMESPACE=$(oc config view --minify -o 'jsonpath={..namespace}')
+----
+
+== Creating an AWS IAM role
+
+. Get your AWS account ID by running the following command:
++
+[source,terminal]
+----
+$ export AWS_ACCOUNT_ID=$(aws sts get-caller-identity --query Account --output text)
+----
+. Get the OIDC provider by running the following command, replacing `<cluster-name>` with the name of your cluster:
++
+[source,terminal]
+----
+$ export OIDC_PROVIDER=$(rosa describe cluster -c <cluster-name> -o yaml | awk '/oidc_endpoint_url/ {print $2}' | cut -d '/' -f 3,4)
+----
++
+. Create the trust policy file by running the following command:
++
+[source,terminal]
+----
+$ cat <<EOF > ./ostoy-sa-trust.json
+{
+  "Version": "2012-10-17",
+  "Statement": [
+    {
+      "Effect": "Allow",
+      "Principal": {
+        "Federated": "arn:aws:iam::${AWS_ACCOUNT_ID}:oidc-provider/${OIDC_PROVIDER}"
+      },
+      "Action": "sts:AssumeRoleWithWebIdentity",
+      "Condition": {
+        "StringEquals": {
+          "${OIDC_PROVIDER}:sub": "system:serviceaccount:${OSTOY_NAMESPACE}:ostoy-sa"
+        }
+      }
+    }
+  ]
+}
+EOF
+----
++
+. Create the AWS IAM role to be used with your service account by running the following command:
++
+[source,terminal]
+----
+$ aws iam create-role --role-name "ostoy-sa-role" --assume-role-policy-document file://ostoy-sa-trust.json
+----
+
+== Attaching the S3 policy to the IAM role
+
+. Get the S3 full access policy ARN by running the following command:
++
+[source,terminal]
+----
+$ export POLICY_ARN=$(aws iam list-policies --query 'Policies[?PolicyName==`AmazonS3FullAccess`].Arn' --output text)
+----
++
+. Attach the policy to the AWS IAM role by running the following command:
++
+[source,terminal]
+----
+$ aws iam attach-role-policy --role-name "ostoy-sa-role" --policy-arn "${POLICY_ARN}"
+----
+
+== Creating the service account for your pod
+
+. Get the ARN for the AWS IAM role we created so that it will be included as an annotation when you create your service account by running the following command:
++
+[source,terminal]
+----
+$ export APP_IAM_ROLE_ARN=$(aws iam get-role --role-name=ostoy-sa-role --query Role.Arn --output text)
+----
++
+. Create the service account by running the following command:
++
+[source,terminal]
+----
+$ cat <<EOF | oc apply -f -
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: ostoy-sa
+  namespace: ${OSTOY_NAMESPACE}
+  annotations:
+    eks.amazonaws.com/role-arn: "$APP_IAM_ROLE_ARN"
+EOF
+----
++
+[IMPORTANT]
+====
+Do not change the name of the service account from "ostoy-sa" or you will have to change the trust relationship for the AWS IAM role.
+====
++
+. Grant the service account the `restricted` role by running the following command:
++
+[source,terminal]
+----
+$ oc adm policy add-scc-to-user restricted system:serviceaccount:${OSTOY_NAMESPACE}:ostoy-sa
+----
++
+. Confirm that the annotation was successful by running the following command:
++
+[source,terminal]
+----
+$ oc describe serviceaccount ostoy-sa -n ${OSTOY_NAMESPACE}
+----
++
+.Example output
++
+[source,terminal]
+----
+Name:                ostoy-sa
+Namespace:           ostoy
+Labels:              <none>
+Annotations:         eks.amazonaws.com/role-arn: arn:aws:iam::000000000000:role/ostoy-sa-role
+Image pull secrets:  ostoy-sa-dockercfg-b2l94
+Mountable secrets:   ostoy-sa-dockercfg-b2l94
+Tokens:              ostoy-sa-token-jlc6d
+Events:              <none>
+----
+
+== Creating an S3 bucket
+
+. Create an S3 bucket using a manifest file by running the following command:
++
+[source,terminal]
+----
+$ cat <<EOF | oc apply -f -
+apiVersion: s3.services.k8s.aws/v1alpha1
+kind: Bucket
+metadata:
+  name: ${OSTOY_NAMESPACE}-bucket
+  namespace: ${OSTOY_NAMESPACE}
+spec:
+  name: ${OSTOY_NAMESPACE}-bucket
+EOF
+----
++
+[IMPORTANT]
+====
+The OSToy application expects to find a bucket named `<namespace>-bucket`. If you use anything other than the namespace of your OSToy project, this feature will not work. For example, if our project is "ostoy", the value for `name` must be `ostoy-bucket`.
+====
++
+. Confirm the bucket was created by running the following command:
++
+[source,terminal]
+----
+$ aws s3 ls | grep ${OSTOY_NAMESPACE}-bucket
+----
+
+== Redeploying the OSToy app with the new service account
+
+. Run your pod with the service account you created.
+. Deploy the microservice by running the following command:
++
+[source,terminal]
+----
+$ - oc apply -f https://raw.githubusercontent.com/openshift-cs/rosaworkshop/master/rosa-workshop/ostoy/yaml/ostoy-microservice-deployment.yaml
+----
++
+. Deploy the `ostoy-frontend` by running the following command:
++
+[source,terminal]
+----
+$ - oc apply -f https://raw.githubusercontent.com/openshift-cs/rosaworkshop/master/rosa-workshop/ostoy/yaml/ostoy-frontend-deployment.yaml
+----
++
+. Patch the `ostoy-frontend` deployment by running the following command:
++
+[source,terminal]
+----
+$ oc patch deploy ostoy-frontend -n ${OSTOY_NAMESPACE} --type=merge --patch '{"spec": {"template": {"spec":{"serviceAccount":"ostoy-sa"}}}}'
+----
++
+.Example output
++
+[source,terminal]
+----
+spec:
+  # Uncomment to use with ACK portion of the workshop
+  # If you chose a different service account name please replace it.
+  serviceAccount: ostoy-sa
+  containers:
+  - name: ostoy-frontend
+    image: quay.io/ostoylab/ostoy-frontend:1.6.0
+    imagePullPolicy: IfNotPresent
+[...]
+----
++
+. Wait for the pod to update.
+
+== Confirming the environment variables
+
+* Use the following command to describe the pods and verify that the `AWS_WEB_IDENTITY_TOKEN_FILE` and `AWS_ROLE_ARN` environment variables exist for our application:
++
+[source,terminal]
+----
+$ oc describe pod ostoy-frontend -n ${OSTOY_NAMESPACE} | grep "^\s*AWS_"
+----
++
+.Example output
++
+[source,terminal]
+----
+AWS_ROLE_ARN:                 arn:aws:iam::000000000000:role/ostoy-sa
+AWS_WEB_IDENTITY_TOKEN_FILE:  /var/run/secrets/eks.amazonaws.com/serviceaccount/token
+----
+
+== Viewing the bucket contents through OSToy
+
+Use your app to view the contents of your S3 bucket.
+
+. Get the route for the newly deployed application by running the following command:
++
+[source,terminal]
+----
+$ oc get route ostoy-route -n ${OSTOY_NAMESPACE} -o jsonpath='{.spec.host}{"\n"}'
+----
++
+. Open a new browser tab and enter the route obtained in the previous step.
++
+[IMPORTANT]
+====
+Be sure to use `http://` and not `https://`.
+====
++
+. Click *ACK S3* in the left menu in OSToy.
+. Because it is a new bucket, the bucket should be empty.
++
+image:cloud-expert-deploying-integrating-ack-views3contents.png[]
+
+== Creating files in your S3 bucket
+
+Use OStoy to create a file and upload it to the S3 bucket. While S3 can accept any kind of file, for this tutorial use text files so that the contents can easily be rendered in the browser.
+
+. Click *ACK S3* in the left menu in OSToy.
+. Scroll down to *Upload a text file to S3*.
+. Enter a file name for your file.
+. Enter content for your file.
+. Click *Create file*.
++
+image:cloud-expert-deploying-integrating-ack-creates3obj.png[]
++
+. Scroll to the top section for existing files and confirm that the file you just created is there.
+. Click the file name to view the file.
++
+image:cloud-experts-deploying-integrating-ack-viewobj.png[]
++
+. Confirm with the AWS CLI by running the following command to list the contents of your bucket:
++
+[source,terminal]
+----
+$ aws s3 ls s3://${OSTOY_NAMESPACE}-bucket
+----
++
+.Example output
++
+[source,terminal]
+----
+$ aws s3 ls s3://ostoy-bucket
+2023-05-04 22:20:51         51 OSToy.txt
+----
