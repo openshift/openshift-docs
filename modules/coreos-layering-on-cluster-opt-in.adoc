@@ -1,0 +1,136 @@
+// Modules included in the following assemblies:
+//
+// * post-installation_configuration/coreos-layering.adoc
+
+:_content-type: PROCEDURE
+[id="coreos-layering-on-cluster-opt-in_{context}"]
+= Opting in to create on-cluster {op-system} builds
+
+In order to create on-cluster builds, you need to opt in. This process involves adding a specific annotation to any specified `MachineConfigPool` objects to signal that the Machine Config Operator (MCO) should begin an on-cluster build.
+
+.Prerequisites
+
+. You have a running {product-title} cluster.
+. You installed the OpenShift CLI (`oc`).
+. You are logged in to the cluster as a user with administrative privileges.
+. You have at least one SSH key pair configured either using the `install-config.yaml` file or a machine config file.
+. You have access to an image registry and those permissions have been added to the global pull secret.
+
+.Procedure
+
+. Perform the initial setup by obtaining the following information.
+
+.. Get the name of the pull secret for the base {op-system} image and the extensions container and add it as a secret in the MCO namespace. You can do this by cloning the global pull secret:
++
+[source,terminal]
+----
+$ oc create secret docker-registry global-pull-secret-copy && \
+  -n openshift-machine-config-operator && \
+  --from-file=.dockerconfigjson=<(oc get secret/pull-secret -n openshift-config -o json | jq -r '.data[".dockerconfigjson"] | @base64d')
+----
+
+.. Get the final image pullspec from your registry. For example:
++
+[source,terminal]
+----
+$ podman pull quay.io/my-registry/custom-image:latest
+----
++
+Any tags you provide are ignored. Instead, images are tagged with the name of the rendered machine config that was used to produce the image. For example:
++
+[source,text]
+----
+quay.io/my-registry/custom-image:rendered-worker-dd37180cefa6a1e88834966330c0c028
+----
+
+.. Get the name of the push secret to enable the final {op-system} image that will be pushed using the above pullspec. This must be created as a secret within the MCO namespace. For example:
++
+[source,terminal]
+----
+$ <command to copy final image push secret to MCO namespace>
+----
+
+.. Optional: Make a note of the original {op-system} image. You will need this to revert the node, in the case that you want to opt-out:
++
+[source,terminal]
+----
+$ oc get configmap/machine-config-osimageurl && \
+  -n openshift-machine-config-operator && \
+  -o=jsonpath='{.data.baseOSContainerImage}'
+----
+
+. Create a new `ConfigMap` object in the MCO namespace using the information from the previous step:
++
+[source,terminal]
+----
+$ oc apply -f <<EOF
+apiVersion: v1
+data:
+  baseImagePullSecretName: global-pull-secret-copy
+  finalImagePushSecretName: final-image-push-secret
+  finalImagePullspec: "quay.io/my-registry/custom-image:latest"
+kind: ConfigMap
+metadata:
+  name: on-cluster-build-config
+  namespace: openshift-machine-config-operator
+EOF
+----
+
+. Create a new `MachineConfigPool` object to use for layering:
++
+[source,terminal]
+----
+$ oc apply -f <<EOF
+apiVersion: machineconfiguration.openshift.io/v1
+kind: MachineConfigPool
+metadata:
+  name: layering
+spec:
+  machineConfigSelector:
+    matchExpressions:
+      - {key: machineconfiguration.openshift.io/role, operator: In, values: [layering, worker]}
+  nodeSelector:
+    matchLabels:
+      node-role.kubernetes.io/layering: ""
+EOF
+----
+
+. Create a new a `MachineConfig` object for this new pool that contains the image pullspec:
++
+.layered-os-image-override.yaml
+[source,terminal]
+----
+$ oc apply -f <<EOF
+---
+apiVersion: machineconfiguration.openshift.io/v1
+kind: MachineConfig
+metadata:
+  labels:
+    machineconfiguration.openshift.io/role: layered
+  name: layered-os-image-override
+spec:
+  config:
+    ignition:
+      config: {}
+      security:
+        tls: {}
+      timeouts: {}
+      version: 3.2.0
+    storage: {}
+  osImageURL: quay.io/my-registry/custom-image:latest-layered <1>
+EOF
+----
+<1> The image pullspec must be a tagged pullspec, not a fully-qualified one. For example, `latest-layered` instead of `@sha256:abcd...`.
+
+. Label the newly created machine config pool to opt it into layering:
++
+[source,terminal]
+----
+$ oc label mcp/layered 'machineconfiguration.openshift.io/layering-enabled='
+----
++
+The machine config pool does not need to have nodes allocated to it, an on-cluster build happens regardless.
++
+After running the above command, a `machine-os-build` pod will start within the MCO namespace. Afterwards, there will also be a build pod within the MCO namespace for the layered machine config pool.
++
+Once the build finishes, the `MachineConfigPool` object will have an annotation with a fully-qualified pullspec.
