@@ -25,7 +25,7 @@ cli.init_logging(False, True)
 
 list_of_errors = []
 CLONE_DIR = "."
-BASE_PORTAL_URL = "https://access.redhat.com/documentation/en-us/"
+BASE_PORTAL_URL = "https://docs.redhat.com/en-us/documentation"
 # ID_RE = re.compile("^\[(?:\[|id=\'|#)(.*?)(\'?,.*?)?(?:\]|\')?\]", re.M | re.DOTALL)
 ID_RE = re.compile(
     "^\[(?:\[|id='|#|id=\")(.*?)('?,.*?)?(?:\]|'|\")?\]", re.M | re.DOTALL
