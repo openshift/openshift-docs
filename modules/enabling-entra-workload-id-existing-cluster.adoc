@@ -1,0 +1,249 @@
+// Module included in the following assemblies:
+//
+// * post_installation_configuration/cluster-tasks.adoc
+
+:_mod-docs-content-type: PROCEDURE
+[id="enabling-entra-workload-id-existing-cluster_{context}"]
+= Enabling {entra-first} on an existing cluster
+
+If you did not configure your {azure-first} {product-title} cluster to use {entra-first} during installation, you can enable this authentication method on an existing cluster.
+
+[IMPORTANT]
+====
+The process to enable {entra-short} on an existing cluster is disruptive and takes a significant amount of time.
+Before proceeding, observe the following considerations:
+
+* Read the following steps and ensure that you understand and accept the time requirement.
+The exact time requirement varies depending on the individual cluster, but it is likely to require at least one hour.
+
+* During this process, you must refresh all service accounts and restart all pods on the cluster.
+These actions are disruptive to workloads.
+To mitigate this impact, you can temporarily halt these services and then redeploy them when the cluster is ready.
+
+* After starting this process, do not attempt to update the cluster until it is complete.
+If an update is triggered, the process to enable {entra-short} on an existing cluster fails.
+====
+
+.Prerequisites
+
+* You have installed an {product-title} cluster on {azure-first}.
+* You have access to the cluster using an account with `cluster-admin` permissions.
+* You have installed the {oc-first}.
+* You have extracted and prepared the Cloud Credential Operator utility (`ccoctl`) binary.
+* You have access to your {azure-short} account by using the {azure-short} CLI (`az`).
+
+.Procedure
+
+. Create an output directory for the manifests that the `ccoctl` utility generates.
+This procedure uses `./output_dir` as an example.
+
+. Extract the service account public signing key for the cluster to the output directory by running the following command:
++
+[source,terminal]
+----
+$ oc get configmap \
+  --namespace openshift-kube-apiserver bound-sa-token-signing-certs \
+  --output 'go-template={{index .data "service-account-001.pub"}}' > ./output_dir/serviceaccount-signer.public <1>
+----
+<1> This procedure uses a file named `serviceaccount-signer.public` as an example.
+
+. Use the extracted service account public signing key to create an OpenID Connect (OIDC) issuer and {azure-short} blob storage container with OIDC configuration files by running the following command:
++
+[source,terminal]
+----
+$ ./ccoctl azure create-oidc-issuer \
+  --name <azure_infra_name> \// <1>
+  --output-dir ./output_dir \
+  --region <azure_region> \// <2>
+  --subscription-id <azure_subscription_id> \// <3>
+  --tenant-id <azure_tenant_id> \
+  --public-key-file ./output_dir/serviceaccount-signer.public <4>
+----
+<1> The value of the `name` parameter is used to create an Azure resource group.
+To use an existing Azure resource group instead of creating a new one, specify the `--oidc-resource-group-name` argument with the existing group name as its value.
+<2> Specify the region of the existing cluster.
+<3> Specify the subscription ID of the existing cluster.
+<4> Specify the file that contains the service account public signing key for the cluster.
+
+. Verify that the configuration file for the Azure pod identity webhook was created by running the following command:
++
+[source,terminal]
+----
+$ ll ./output_dir/manifests
+----
++
+.Example output
++
+[source,text]
+----
+total 8
+-rw-------. 1 cloud-user cloud-user 193 May 22 02:29 azure-ad-pod-identity-webhook-config.yaml <1>
+-rw-------. 1 cloud-user cloud-user 165 May 22 02:29 cluster-authentication-02-config.yaml
+----
+<1> The file `azure-ad-pod-identity-webhook-config.yaml` contains the Azure pod identity webhook configuration.
+
+. Set an `OIDC_ISSUER_URL` variable with the OIDC issuer URL from the generated manifests in the output directory by running the following command:
++
+[source,terminal]
+----
+$ OIDC_ISSUER_URL=`awk '/serviceAccountIssuer/ { print $2 }' ./output_dir/manifests/cluster-authentication-02-config.yaml`
+----
+
+. Update the `spec.serviceAccountIssuer` parameter of the cluster `authentication` configuration by running the following command:
++
+[source,terminal]
+----
+$ oc patch authentication cluster \
+  --type=merge \
+  -p "{\"spec\":{\"serviceAccountIssuer\":\"${OIDC_ISSUER_URL}\"}}"
+----
+
+. Monitor the configuration update progress by running the following command:
++
+[source,terminal]
+----
+$ oc adm wait-for-stable-cluster
+----
++
+This process might take 15 minutes or longer.
+The following output indicates that the process is complete:
++
+[source,text]
+----
+All clusteroperators are stable
+----
+
+. Restart all of the pods in the cluster by running the following command:
++
+[source,terminal]
+----
+$ oc adm reboot-machine-config-pool mcp/worker mcp/master
+----
++
+Restarting a pod updates the `serviceAccountIssuer` field and refreshes the service account public signing key.
+
+. Monitor the restart and update process by running the following command:
++
+[source,terminal]
+----
+$ oc adm wait-for-node-reboot nodes --all
+----
++
+This process might take 15 minutes or longer.
+The following output indicates that the process is complete:
++
+[source,text]
+----
+All nodes rebooted
+----
+
+. Update the Cloud Credential Operator `spec.credentialsMode` parameter to `Manual` by running the following command:
++
+[source,terminal]
+----
+$ oc patch cloudcredential cluster \
+  --type=merge \
+  --patch '{"spec":{"credentialsMode":"Manual"}}'
+----
+
+. Extract the list of `CredentialsRequest` objects from the {product-title} release image by running the following command:
++
+[source,terminal]
+----
+$ oc adm release extract \
+  --credentials-requests \
+  --included \
+  --to <path_to_directory_for_credentials_requests> \
+  --registry-config ~/.pull-secret
+----
++
+[NOTE]
+====
+This command might take a few moments to run.
+====
+
+. Set an `AZURE_INSTALL_RG` variable with the {azure-short} resource group name by running the following command:
++
+[source,terminal]
+----
+$ AZURE_INSTALL_RG=`oc get infrastructure cluster -o jsonpath --template '{ .status.platformStatus.azure.resourceGroupName }'`
+----
+
+. Use the `ccoctl` utility to create managed identities for all `CredentialsRequest` objects by running the following command:
++
+[source,terminal]
+----
+$ ccoctl azure create-managed-identities \
+  --name <azure_infra_name> \
+  --output-dir ./output_dir \
+  --region <azure_region> \
+  --subscription-id <azure_subscription_id> \
+  --credentials-requests-dir <path_to_directory_for_credentials_requests> \
+  --issuer-url "${OIDC_ISSUER_URL}" \
+  --dnszone-resource-group-name <azure_dns_zone_resourcegroup_name> \// <1>
+  --installation-resource-group-name "${AZURE_INSTALL_RG}"
+----
+<1> Specify the name of the resource group that contains the DNS zone.
+
+. Apply the {azure-short} pod identity webhook configuration for {entra-short} by running the following command:
++
+[source,terminal]
+----
+$ oc apply -f ./output_dir/manifests/azure-ad-pod-identity-webhook-config.yaml
+----
+
+. Apply the secrets generated by the `ccoctl` utility by running the following command:
++
+[source,terminal]
+----
+$ find ./output_dir/manifests -iname "openshift*yaml" -print0 | xargs -I {} -0 -t oc replace -f {}
+----
++
+This process might take several minutes.
+
+
+. Restart all of the pods in the cluster by running the following command:
++
+[source,terminal]
+----
+$ oc adm reboot-machine-config-pool mcp/worker mcp/master
+----
++
+Restarting a pod updates the `serviceAccountIssuer` field and refreshes the service account public signing key.
+
+. Monitor the restart and update process by running the following command:
++
+[source,terminal]
+----
+$ oc adm wait-for-node-reboot nodes --all
+----
++
+This process might take 15 minutes or longer.
+The following output indicates that the process is complete:
++
+[source,text]
+----
+All nodes rebooted
+----
+
+. Monitor the configuration update progress by running the following command:
++
+[source,terminal]
+----
+$ oc adm wait-for-stable-cluster
+----
++
+This process might take 15 minutes or longer.
+The following output indicates that the process is complete:
++
+[source,text]
+----
+All clusteroperators are stable
+----
+
+. Optional: Remove the {azure-short} root credentials secret by running the following command:
++
+[source,terminal]
+----
+$ oc delete secret -n kube-system azure-credentials
+----

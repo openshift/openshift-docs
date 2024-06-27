@@ -18,14 +18,7 @@ toc::[]
 //  - Dustin Scott
 //---
 
-[WARNING]
-====
-Starting with {product-title} 4.14, the Custom Domain Operator is deprecated. To manage Ingress in {product-title} 4.14, use the Ingress Operator. The functionality is unchanged for {product-title} 4.13 and earlier versions.
-====
-
-Configuring the xref:../applications/deployments/rosa-config-custom-domains-applications.adoc[Custom Domain Operator] requires a wildcard CNAME DNS record in your Amazon Route 53 hosted zone. If you do not want to use a wildcard record, you can use the `External DNS` Operator to create individual entries for routes.
-
-Use this tutorial to deploy and configure the `External DNS` Operator with a custom domain in {product-title} (ROSA).
+The External DNS Operator deploys and manages `ExternalDNS` to provide the name resolution for services and routes from the external DNS provider, like Amazon Route 53, to {product-title} (ROSA) clusters. In this tutorial, we will deploy and configure the External DNS Operator with a secondary ingress controller to manage DNS records in Amazon Route 53. 
 
 [IMPORTANT]
 ====
@@ -35,100 +28,115 @@ The `External DNS` Operator does not support STS using IAM Roles for Service Acc
 [id="cloud-experts-external-dns-prerequisites"]
 == Prerequisites
 
-* A ROSA cluster
-* A user account with `dedicated-admin` privileges
+* A ROSA Classic cluster
++
+[NOTE]
+====
+ROSA with HCP is not supported at this time.
+====
++
+* A user account with `cluster-admin` privileges
 * The OpenShift CLI (`oc`)
 * The Amazon Web Services (AWS) CLI (`aws`)
-* A unique domain, such as `*.apps.<company_name>.io`
+* A unique domain, such as `apps.example.com`
 * An Amazon Route 53 public hosted zone for the above domain
 
 [id="cloud-experts-external-dns-environment-setup"]
 == Setting up your environment
 
-. Configure the following environment variables, replacing `CLUSTER_NAME` with the name of your cluster:
+. Configure the following environment variables:
 +
 [source,terminal]
 ----
-$ export DOMAIN=apps.<company_name>.io <1>
+$ export DOMAIN=<apps.example.com> <1>
 $ export AWS_PAGER=""
-$ export CLUSTER_NAME=$(oc get infrastructure cluster -o=jsonpath="{.status.infrastructureName}"  | sed 's/-[a-z0-9]\{5\}$//')
+$ export CLUSTER=$(oc get infrastructure cluster -o=jsonpath="{.status.infrastructureName}"  | sed 's/-[a-z0-9]\{5\}$//')
 $ export REGION=$(oc get infrastructure cluster -o=jsonpath="{.status.platformStatus.aws.region}")
 $ export AWS_ACCOUNT_ID=$(aws sts get-caller-identity --query Account --output text)
-$ export SCRATCH="/tmp/${CLUSTER_NAME}/external-dns"
+$ export SCRATCH="/tmp/${CLUSTER}/external-dns"
 $ mkdir -p ${SCRATCH}
 ----
-<1> The custom domain.
+<1> Replace with the custom domain you want to use for the `IngressController`.
++
 . Ensure all fields output correctly before moving to the next section:
 +
 [source,terminal]
 ----
-$ echo "Cluster: ${CLUSTER_NAME}, Region: ${REGION}, AWS Account ID: ${AWS_ACCOUNT_ID}"
+$ echo "Cluster: ${CLUSTER}, Region: ${REGION}, AWS Account ID: ${AWS_ACCOUNT_ID}"
 ----
++
+[NOTE]
+====
+The "Cluster" output from the previous command may be the name of your cluster, the internal ID of your cluster, or the cluster's domain prefix. If you prefer to use another identifier, you can manually set this value by running the following command:
 
-[id="cloud-experts-external-dns-custom-domain-setup"]
-== Setting up your custom domain
+[source,terminal]
+----
+$ export CLUSTER=my-custom-value
+----
+====
 
-ROSA manages secondary Ingress Controllers using the `Custom Domain` Operator. Use the following procedure to deploy a secondary Ingress Controller using a custom domain.
+[id="secondary_ingress_controller_setup_{context}"]
+== Secondary ingress controller setup
+
+Use the following procedure to deploy a secondary ingress controller using a custom domain.
 
 .Prerequisites
 
-* A unique domain, such as `*.apps.<company_name>.io`
-* A custom SAN or wildcard certificate, such as `CN=*.apps.<company_name>.io`
+* A unique domain, such as `apps.example.com`
+* A wildcard or SAN TLS certificate configured with the custom domain selected above (`CN=*.apps.example.com`)
 
 .Procedure
-
-. Create a new project:
-+
-[source,terminal]
-----
-$ oc new-project external-dns-operator
-----
 
 . Create a new TLS secret from a private key and a public certificate, where `fullchain.pem` is your full wildcard certificate chain (including any intermediaries) and `privkey.pem` is your wildcard certificate's private key:
 +
 [source,terminal]
 ----
-$ oc -n external-dns-operator create secret tls external-dns-tls --cert=fullchain.pem --key=privkey.pem
+$ oc -n openshift-ingress create secret tls external-dns-tls --cert=fullchain.pem --key=privkey.pem
 ----
 
-. Create a new `CustomDomain` custom resource (CR):
+. Create a new `IngressController` resource:
 +
-.Example `external-dns-custom-domain.yaml`
-[source,yaml]
+[source,terminal]
 ----
-apiVersion: managed.openshift.io/v1alpha1
-kind: CustomDomain
+$ cat << EOF | oc apply -f -
+apiVersion: operator.openshift.io/v1
+kind: IngressController
 metadata:
-  name: external-dns
+  name: external-dns-ingress
+  namespace: openshift-ingress-operator
 spec:
-  domain: apps.<company_name>.io <1>
-  scope: External
-  loadBalancerType: NLB
-  certificate:
+  domain: ${DOMAIN}
+  defaultCertificate:
     name: external-dns-tls
-    namespace: external-dns-operator
+  endpointPublishingStrategy:
+    loadBalancer:
+      dnsManagementPolicy: Unmanaged
+      providerParameters:
+        aws:
+          type: NLB
+        type: AWS
+      scope: External
+    type: LoadBalancerService
+EOF
 ----
-<1> The custom domain.
-
-. Apply the CR:
++
+[WARNING]
+====
+This `IngressController` example will create an internet accessible Network Load Balancer (NLB) in your AWS account. To provision an internal NLB instead, set the `.spec.endpointPublishingStrategy.loadBalancer.scope` parameter to `Internal` before creating the `IngressController` resource.
+====
++
+. Verify that your custom domain IngressController has successfully created an external load balancer:
 +
 [source,terminal]
 ----
-$ oc apply -f external-dns-custom-domain.yaml
-----
-
-. Verify that your custom domain Ingress Controller has been deployed and has a `Ready` status:
-+
-[source,terminal]
-----
-$ oc get customdomains
+$ oc -n openshift-ingress get service/router-external-dns-ingress
 ----
 +
 .Example output
 [source,terminal]
 ----
-NAME               ENDPOINT                                                    DOMAIN                       STATUS
-external-dns       xxrywp.<company_name>.cluster-01.opln.s1.openshiftapps.com  *.apps.<company_name>.io     Ready
+NAME                          TYPE           CLUSTER-IP      EXTERNAL-IP                                                                     PORT(S)                      AGE
+router-external-dns-ingress   LoadBalancer   172.30.71.250   a4838bb991c6748439134ab89f132a43-aeae124077b50c01.elb.us-east-1.amazonaws.com   80:32227/TCP,443:30310/TCP   43s
 ----
 
 [id="cloud-experts-external-dns-prepare-aws-account"]
@@ -140,6 +148,40 @@ external-dns       xxrywp.<company_name>.cluster-01.opln.s1.openshiftapps.com  *
 ----
 $ export ZONE_ID=$(aws route53 list-hosted-zones-by-name --output json \
   --dns-name "${DOMAIN}." --query 'HostedZones[0]'.Id --out text | sed 's/\/hostedzone\///')
+----
++
+. Prepare a document with the necessary DNS changes to enable DNS resolution for the canonical domain of the Ingress Controller:
++
+[source,terminal]
+----
+$ NLB_HOST=$(oc -n openshift-ingress get service/router-external-dns-ingress -ojsonpath="{.status.loadBalancer.ingress[0].hostname}")
+$ cat << EOF > "${SCRATCH}/create-cname.json"
+{
+  "Comment":"Add CNAME to ingress controller canonical domain",
+  "Changes":[{
+      "Action":"CREATE",
+      "ResourceRecordSet":{
+        "Name": "router-external-dns-ingress.${DOMAIN}",
+      "Type":"CNAME",
+      "TTL":30,
+      "ResourceRecords":[{
+        "Value": "${NLB_HOST}"
+      }]
+    }
+  }]
+}
+EOF
+----
++
+The External DNS Operator uses this canonical domain as the target for CNAME records. 
++
+. Submit your changes to Amazon Route 53 for propagation:
++
+[source,terminal]
+----
+aws route53 change-resource-record-sets \
+  --hosted-zone-id ${ZONE_ID} \
+  --change-batch file://${SCRATCH}/create-cname.json
 ----
 +
 . Create an AWS IAM Policy document that allows the `External DNS` Operator to update _only_ the custom domain public hosted zone:
@@ -174,26 +216,17 @@ $ cat << EOF > "${SCRATCH}/external-dns-policy.json"
 EOF
 ----
 +
-. Create an AWS IAM policy:
-+
-[source,terminal]
-----
-$ export POLICY_ARN=$(aws iam create-policy --policy-name "${CLUSTER_NAME}-AllowExternalDNSUpdates" \
-  --policy-document file://${SCRATCH}/external-dns-policy.json \
-  --query 'Policy.Arn' --output text)
-----
-+
 . Create an AWS IAM user:
 +
 [source,terminal]
 ----
-$ aws iam create-user --user-name "${CLUSTER_NAME}-external-dns-operator"
+$ aws iam create-user --user-name "${CLUSTER}-external-dns-operator"
 ----
 . Attach the policy:
 +
 [source,terminal]
 ----
-$ aws iam attach-user-policy --user-name "${CLUSTER_NAME}-external-dns-operator" --policy-arn $POLICY_ARN
+$ aws iam attach-user-policy --user-name "${CLUSTER}-external-dns-operator" --policy-arn $POLICY_ARN
 ----
 +
 [NOTE]
@@ -204,7 +237,7 @@ This will be changed to STS using IRSA in the future.
 +
 [source,terminal]
 ----
-$ SECRET_ACCESS_KEY=$(aws iam create-access-key --user-name "${CLUSTER_NAME}-external-dns-operator")
+$ SECRET_ACCESS_KEY=$(aws iam create-access-key --user-name "${CLUSTER}-external-dns-operator")
 ----
 . Create static credentials:
 +
@@ -219,6 +252,13 @@ EOF
 
 [id="cloud-experts-external-dns-install-external-dns-operator"]
 == Installing the External DNS Operator
+
+. Create a new project:
++
+[source,terminal]
+----
+$ oc new-project external-dns-operator
+----
 
 . Install the `External DNS` Operator from OperatorHub:
 +
@@ -262,6 +302,7 @@ $ oc rollout status deploy external-dns-operator --timeout=300s
 $ oc -n external-dns-operator create secret generic external-dns \
   --from-file "${SCRATCH}/credentials"
 ----
++
 . Deploy the `ExternalDNS` controller:
 +
 [source,terminal]
@@ -283,7 +324,7 @@ spec:
     type: AWS
   source:
     openshiftRouteOptions:
-      routerName: external-dns
+      routerName: external-dns-ingress
     type: OpenShiftRoute
   zones:
     - ${ZONE_ID}
@@ -341,9 +382,17 @@ $ aws route53 list-resource-record-sets --hosted-zone-id ${ZONE_ID} \
 $ aws route53 list-resource-record-sets --hosted-zone-id ${ZONE_ID} \
    --query "ResourceRecordSets[?Type == 'TXT']" | grep ${DOMAIN}
 ----
-. Navigate to your custom console domain in the browser where you see the OpenShift login:
++
+. Curl the newly created DNS record to your sample application to verify the hello world application is accessible:
 +
 [source,terminal]
 ----
-$ echo console.${DOMAIN}
+$ curl https://hello-openshift.${DOMAIN}
 ----
++
+.Example output
+[source,terminal]
+----
+Hello OpenShift!
+----
+
