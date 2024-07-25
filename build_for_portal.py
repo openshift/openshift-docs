@@ -35,15 +35,19 @@ LINKS_RE = re.compile(
     re.M | re.DOTALL,
 )
 EXTERNAL_LINK_RE = re.compile(
-    "[\./]*([\w_-]+)/[\w_/-]*?([\w_.-]*\.(?:html|adoc))", re.DOTALL
+    r"[\./]*([\w_-]+)/[\w_/-]*?([\w_.-]*\.(?:html|adoc))", re.DOTALL
 )
-INCLUDE_RE = re.compile("include::(.*?)\[(.*?)\]", re.M)
+INCLUDE_RE = re.compile(r"include::(.*?)\[(.*?)\]", re.M)
 IFDEF_RE = re.compile(r"^if(n?)def::(.*?)\[\]", re.M)
 ENDIF_RE = re.compile(r"^endif::(.*?)\[\]\r?\n", re.M)
 COMMENT_CONTENT_RE = re.compile(r"^^////$.*?^////$", re.M | re.DOTALL)
 TAG_CONTENT_RE = re.compile(
     r"//\s+tag::(.*?)\[\].*?// end::(.*?)\[\]", re.M | re.DOTALL
 )
+RELFILEPREFIX_RE = re.compile(r":relfileprefix: ((\.\.\/)+)", re.DOTALL)
+MODULES_INCLUDE_RE = re.compile(r"^include::(modules/.+)\[.*\]$", re.MULTILINE)
+XREF_RE = re.compile(r"xref:(?!..\/)+", re.DOTALL)
+
 CMP_IGNORE_FILES = [".git", ".gitignore", "README.md", "build.cfg"]
 DEVNULL = open(os.devnull, "wb")
 
@@ -408,7 +412,31 @@ def generate_master_entry(
     return "\n".join(master_entries)
 
 
-def reformat_for_drupal(info):
+def get_relfileprefix_list(current_dir):
+
+    # List of assemblies, included files, and the relfileprefix value
+    file_info_list = []
+
+    # Iterate through all AsciiDoc files
+    for root, dirs, files in os.walk(current_dir):
+        for filename in files:
+            file_path = os.path.join(root, filename)
+            if filename.endswith('.adoc') and "modules" not in file_path:
+                included_files = []
+                with open(file_path, 'r') as file:
+                    content = file.read()
+                    relfileprefix_match = re.search(RELFILEPREFIX_RE, content)
+                    if relfileprefix_match:
+                        fileprefix = relfileprefix_match.group(1)
+                        matches = MODULES_INCLUDE_RE.findall(content)
+                        included_files = [current_dir + "/" + match for match in matches]
+                        file_info = {file_path: included_files, "prefix": fileprefix}
+                        file_info_list.append(file_info)
+
+    return file_info_list
+
+
+def reformat_for_drupal(info, assemblies_with_relfileprefix):
     """
     Reformats the source content for use in the Customer Portal. This function does the following:
 
@@ -455,7 +483,7 @@ def reformat_for_drupal(info):
         ensure_directory(images_dir)
 
         log.debug("Copying source files for " + book["Name"])
-        copy_files(book, book_src_dir, src_dir, dest_dir, info)
+        copy_files(book, book_src_dir, src_dir, dest_dir, info, assemblies_with_relfileprefix)
 
         log.debug("Copying images for " + book["Name"])
         copy_images(book, src_dir, images_dir, distro)
@@ -479,7 +507,7 @@ def copy_images(node, src_path, dest_dir, distro):
     iter_tree(node, distro, dir_callback, parent_dir=src_path)
 
 
-def copy_files(node, book_src_dir, src_dir, dest_dir, info):
+def copy_files(node, book_src_dir, src_dir, dest_dir, info, assemblies_with_relfileprefix):
     """
     Recursively copy files from the source directory to the destination directory, making sure to scrub the content, add id's where the
     content is referenced elsewhere and fix any links that should be cross references.
@@ -497,7 +525,7 @@ def copy_files(node, book_src_dir, src_dir, dest_dir, info):
         dest_file = os.path.join(node_dest_dir, topic_node["File"] + ".adoc")
 
         # Copy the file
-        copy_file(info, book_src_dir, src_file, dest_dir, dest_file)
+        copy_file(info, book_src_dir, src_file, dest_dir, dest_file, assemblies_with_relfileprefix)
 
     iter_tree(node, info["distro"], dir_callback, topic_callback)
 
@@ -508,6 +536,7 @@ def copy_file(
     src_file,
     dest_dir,
     dest_file,
+    assemblies_with_relfileprefix,
     include_check=True,
     tag=None,
     cwd=None,
@@ -528,7 +557,7 @@ def copy_file(
     # os.mknod(dest_file)
     open(dest_file, "w").close()
     # Scrub/fix the content
-    content = scrub_file(info, book_src_dir, src_file, tag=tag, cwd=cwd)
+    content = scrub_file(info, book_src_dir, src_file, assemblies_with_relfileprefix, tag=tag, cwd=cwd)
 
     # Check for any includes
     if include_check:
@@ -583,6 +612,7 @@ def copy_file(
                     include_file,
                     dest_dir,
                     dest_include_file,
+                    assemblies_with_relfileprefix,
                     tag=include_tag,
                     cwd=current_dir,
                 )
@@ -597,6 +627,7 @@ def copy_file(
                     info,
                     book_src_dir,
                     include_file,
+                    assemblies_with_relfileprefix,
                     tag=include_tag,
                     cwd=cwd,
                 )
@@ -612,7 +643,7 @@ def copy_file(
         f.write(content)
 
 
-def scrub_file(info, book_src_dir, src_file, tag=None, cwd=None):
+def scrub_file(info, book_src_dir, src_file, assemblies_with_relfileprefix, tag=None, cwd=None):
     """
     Scrubs a file and returns the cleaned file contents.
     """
@@ -700,7 +731,7 @@ def scrub_file(info, book_src_dir, src_file, tag=None, cwd=None):
             content = content.replace(incorrect_link, fixed_link)
 
     # Fix up the links
-    content = fix_links(content, info, book_src_dir, src_file, tag=tag, cwd=cwd)
+    content = fix_links(content, info, book_src_dir, src_file, assemblies_with_relfileprefix, tag=tag, cwd=cwd)
 
     return content
 
@@ -719,20 +750,20 @@ def include_line(line):
     return True
 
 
-def fix_links(content, info, book_src_dir, src_file, tag=None, cwd=None):
+def fix_links(content, info, book_src_dir, src_file, assemblies_with_relfileprefix, tag=None, cwd=None):
     """
     Fix any links that were done incorrectly and reference the output instead of the source content.
     """
     if info["all_in_one"]:
-        content = _fix_links(content, info["src_dir"], src_file, info)
+        content = _fix_links(content, info["src_dir"], src_file, assemblies_with_relfileprefix, info)
     else:
         # Determine if the tag should be passed when fixing the links. If it's in the same book, then process the entire file. If it's
         # outside the book then don't process it.
         if book_src_dir in src_file:
-            content = _fix_links(content, book_src_dir, src_file, info, cwd=cwd)
+            content = _fix_links(content, book_src_dir, src_file, info, assemblies_with_relfileprefix, cwd=cwd)
         else:
             content = _fix_links(
-                content, book_src_dir, src_file, info, tag=tag, cwd=cwd
+                content, book_src_dir, src_file, info, assemblies_with_relfileprefix, tag=tag, cwd=cwd
             )
     return content
 
@@ -751,7 +782,7 @@ def dir_to_book_name(dir,src_file,info):
     return(dir)
 
 
-def _fix_links(content, book_dir, src_file, info, tag=None, cwd=None):
+def _fix_links(content, book_dir, src_file, info, assemblies_with_relfileprefix, tag=None, cwd=None):
     """
     Fix any links that were done incorrectly and reference the output instead of the source content.
     """
@@ -760,6 +791,24 @@ def _fix_links(content, book_dir, src_file, info, tag=None, cwd=None):
     # TODO Deal with xref so that they keep the proper path. Atm it'll just strip the path and leave only the id
     file_to_id_map = info["file_to_id_map"]
     current_dir = cwd or os.path.dirname(src_file)
+
+    # Handle relfilprefix
+    for entry in assemblies_with_relfileprefix:
+        filename = list(entry.keys())[0]
+        module_list = entry[filename]
+        prefix = entry['prefix']
+        replaced_xref = r'xref:' + prefix
+        if src_file == filename:
+            # This is an assembly, comment out the relfileprefix attribute
+            commented_out = r'//:relfileprefix: ' + prefix
+            content = re.sub(RELFILEPREFIX_RE, commented_out, content)
+            # Put back the assembly xref prefixes
+            content = re.sub(r'\bxref:', replaced_xref, content)
+
+        if src_file in module_list:
+            # This is module, put back the xref prefixes
+            content = re.sub(XREF_RE, replaced_xref, content)
+
     cleaned_content = remove_conditional_content(content, info, tag=tag)
     links = LINKS_RE.finditer(cleaned_content)
 
@@ -824,7 +873,7 @@ def _fix_links(content, book_dir, src_file, info, tag=None, cwd=None):
                 # Cross reference or link that isn't in the docs suite
                 fixed_link = link_text
                 if EXTERNAL_LINK_RE.search(link_file) is not None:
-                    rel_src_file = src_file.replace(os.path.dirname(book_dir) + "/", "")
+                    rel_src_file = os.path.relpath(src_file, os.path.dirname(book_dir))
                     link_text_message = link_text.replace("\n", "")
                     log.error(
                         'ERROR (%s): "%s" appears to try to reference a file not included in the "%s" distro',
@@ -1177,8 +1226,11 @@ def main():
     log.info("Building the drupal files")
     build_master_files(info)
 
+    # Build a list of assemblies that set relfileprefix + all included modules
+    assemblies_with_relfileprefix = get_relfileprefix_list(os.getcwd())
+
     # Copy the original data and reformat for drupal
-    reformat_for_drupal(info)
+    reformat_for_drupal(info, assemblies_with_relfileprefix)
 
     if list_of_errors:
         sys.exit(1)
@@ -1188,7 +1240,7 @@ def main():
         config_file = os.path.join(os.path.dirname(__file__), "repos.ini")
         repo_urls = parse_repo_config(config_file, args.distro, args.version)
 
-        # Make sure the base git dire exists
+        # Make sure the base git dir exists
         base_git_dir = os.path.join(os.getcwd(), "gitlab-repos")
         ensure_directory(base_git_dir)
 
