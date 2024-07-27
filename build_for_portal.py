@@ -611,6 +611,11 @@ def copy_file(
     with open(dest_file, "w") as f:
         f.write(content)
 
+# 7/26/24:
+# Corrected the scrub_file function.
+# Local files and URLs are now appropriately addressed individually.
+# URL includes of files within the openshift-docs repo now generate an error.
+# Files outside the `openshift-docs` repo are downloaded directly with error handling for connection issues.
 
 def scrub_file(info, book_src_dir, src_file, tag=None, cwd=None):
     """
@@ -618,58 +623,74 @@ def scrub_file(info, book_src_dir, src_file, tag=None, cwd=None):
     """
     base_src_file = src_file.replace(info["src_dir"] + "/", "")
 
-    # added 1/Sep/2020
-    # to allow loading files like json and yaml from external sources, this
-    # procedure loads the file recognizing that it starts with http
-    # it then checks if it exists or not, and if it exists, returns the raw data
-    # data that it finds.
-    if base_src_file.startswith("https://raw.githubusercontent.com/openshift/"):
+    if base_src_file.startswith("https://raw.githubusercontent.com/"):
+        # Disallow URL inclusion from openshift-docs
+        if "openshift-docs" in base_src_file:
+            log.error(
+                "Inclusion of files within the openshift-docs repository by URL is not supported: %s",
+                base_src_file,
+            )
+            list_of_errors.append(
+                f"Inclusion of files within the openshift-docs repository by URL is not supported: {base_src_file}"
+            )
+            return ""  # Skip processing this file
+
+        # Allow includes only from specific organizations
+        if not any(org in base_src_file for org in ["openshift/", "redhatofficial/"]):
+            log.error(
+                "Inclusion of files from unauthorized repositories by URL is not supported: %s",
+                base_src_file,
+            )
+            list_of_errors.append(
+                f"Inclusion of files from unauthorized repositories by URL is not supported: {base_src_file}"
+            )
+            return ""  # Skip processing this file
+
         try:
             response = requests.get(base_src_file)
-            if response:
-                return response.text
+            if response.status_code == 200:
+                # Only apply scrubbing if the external file is AsciiDoc
+                if base_src_file.endswith(".adoc"):
+                    return scrub_content(response.text, info, book_src_dir, src_file, tag, cwd)
+                else:
+                    return response.text
             else:
-                raise ConnectionError("Malformed URL")
-        except Exception as exception:
-            log.error("An include file wasn't found: %s", base_src_file)
-            list_of_errors.append(f"An include file wasn't found: {base_src_file}")
-            sys.exit(-1)
+                raise ConnectionError(f"Failed to download file from {base_src_file}")
+        except Exception as e:
+            log.error(f"Error fetching external include: {base_src_file} - {e}")
+            list_of_errors.append(f"Error fetching external include: {base_src_file}")
+            return ""  # Skip processing this file
 
-    # Get a list of predefined custom title ids for the file
-    title_ids = TITLE_IDS.get(base_src_file, {})
-
-    # Read in the source content
+    # Local file processing
     with open(src_file, "r") as f:
         src_file_content = f.readlines()
 
-    # Scrub the content
-    content = ""
+    return scrub_content("".join(src_file_content), info, book_src_dir, src_file, tag, cwd)
+
+def scrub_content(content, info, book_src_dir, src_file, tag=None, cwd=None):
+    base_src_file = src_file.replace(info["src_dir"] + "/", "")
+    title_ids = TITLE_IDS.get(base_src_file, {})
     header_found = content_found = False
     current_id = None
-    for line in src_file_content:
-        # Ignore any leading blank lines, before any meaningful content is found
+    scrubbed_content = ""
+
+    for line in content.splitlines(True):
         if line.strip() == "" and not content_found:
             continue
 
-        # Check if the line should be included in the output
         if include_line(line):
             content_found = True
-
-            # Setup the document header content/id
             if not header_found and line.strip() != "" and line.startswith("="):
                 header_found = True
-
                 if (
                     info["all_in_one"]
                     and base_src_file in ALL_IN_ONE_SCRAP_TITLE
                     and line.startswith("= ")
                 ):
                     continue
-                # Add a section id if one doesn't exist, so we have something to link to
                 elif current_id is None and src_file in info["file_to_id_map"]:
                     file_id = info["file_to_id_map"][src_file]
-                    content += "[[" + file_id + "]]\n"
-            # Add a custom title id, if one is needed
+                    scrubbed_content += "[[" + file_id + "]]\n"
             elif line.startswith("=") and current_id is None:
                 for title in title_ids:
                     title_re = (
@@ -678,32 +699,26 @@ def scrub_file(info, book_src_dir, src_file, tag=None, cwd=None):
                         + "( (anchor|\[).*?)?(\n)?$"
                     )
                     if re.match(title_re, line):
-                        content += "[[" + title_ids[title] + "]]\n"
+                        scrubbed_content += "[[" + title_ids[title] + "]]\n"
 
-            # Set the current id based on the line content
             if current_id is None and ID_RE.match(line.strip()):
                 current_id = line.strip()
             elif current_id is not None and line.strip != "":
                 current_id = None
 
-            # Add the line to the processed content
-            content += line
+            scrubbed_content += line
 
-    # Fix up any duplicate ids
     if base_src_file in DUPLICATE_IDS:
         for duplicate_id, new_id in list(DUPLICATE_IDS[base_src_file].items()):
-            content = content.replace("[[" + duplicate_id + "]]", "[[" + new_id + "]]")
+            scrubbed_content = scrubbed_content.replace("[[" + duplicate_id + "]]", "[[" + new_id + "]]")
 
-    # Replace incorrect links with correct ones
     if base_src_file in INCORRECT_LINKS:
         for incorrect_link, fixed_link in list(INCORRECT_LINKS[base_src_file].items()):
-            content = content.replace(incorrect_link, fixed_link)
+            scrubbed_content = scrubbed_content.replace(incorrect_link, fixed_link)
 
-    # Fix up the links
-    content = fix_links(content, info, book_src_dir, src_file, tag=tag, cwd=cwd)
+    scrubbed_content = fix_links(scrubbed_content, info, book_src_dir, src_file, tag=tag, cwd=cwd)
 
-    return content
-
+    return scrubbed_content
 
 def include_line(line):
     """
@@ -889,15 +904,23 @@ def remove_conditional_content(content, info, tag=None):
     for comment in COMMENT_CONTENT_RE.finditer(content):
         content = content.replace(comment.group(0), "")
 
-    # Remove content outside of tags
+# Remove content outside of tags
     if tag is not None:
-        for tag_match in TAG_CONTENT_RE.finditer(content):
-            tag_text = tag_match.group(0)
-            tag_label = tag_match.group(1)
-            if tag_label == tag:
-                # Tag matches, so only use the content in the tag
-                content = tag_text
+        # Handle multiple tags separated by commas or semicolons
+        tags = [t.strip() for t in re.split(r'[;,]', tag)]
+        filtered_content = ""
 
+        for tag_match in TAG_CONTENT_RE.finditer(content):
+            tag_text = tag_match.group(2)  # Content between the tag markers
+            tag_label = tag_match.group(1)
+            if tag_label in tags:
+                # Tag matches, so include this tagged content
+                filtered_content += tag_text
+
+        # Replace the original content with filtered content if any tags matched
+        if filtered_content:
+            content = filtered_content
+            
     return content
 
 
