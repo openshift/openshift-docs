@@ -24,7 +24,7 @@ You can use an Amazon CloudFront to add a Web Application Firewall (WAF) to your
 [id="prerequisites_{context}"]
 == Prerequisites
 
-* xref:../rosa_install_access_delete_clusters/rosa-sts-creating-a-cluster-quickly.adoc#rosa-sts-creating-a-cluster-quickly[A ROSA Classic cluster].
+* A ROSA (HCP or Classic) cluster.
 * You have access to the OpenShift CLI (`oc`).
 * You have access to the AWS CLI (`aws`).
 
@@ -35,85 +35,100 @@ You can use an Amazon CloudFront to add a Web Application Firewall (WAF) to your
 +
 [source,terminal]
 ----
+$ export DOMAIN=apps.example.com <1>
 $ export AWS_PAGER=""
 $ export CLUSTER_NAME=$(oc get infrastructure cluster -o=jsonpath="{.status.infrastructureName}"  | sed 's/-[a-z0-9]\{5\}$//')
 $ export REGION=$(oc get infrastructure cluster -o=jsonpath="{.status.platformStatus.aws.region}")
 $ export AWS_ACCOUNT_ID=$(aws sts get-caller-identity --query Account --output text)
-$ export SCRATCH="/tmp/${CLUSTER_NAME}/cloudfront-waf"
+$ export SCRATCH="/tmp/${CLUSTER}/cloudfront-waf"
 $ mkdir -p ${SCRATCH}
-$ echo "Cluster: ${CLUSTER_NAME}, Region: ${REGION}, AWS Account ID: ${AWS_ACCOUNT_ID}"
+$ echo "Cluster: ${CLUSTER}, Region: ${REGION}, AWS Account ID: ${AWS_ACCOUNT_ID}"
 ----
+<1> Replace with the custom domain you want to use for the `IngressController`.
++
+[NOTE]
+====
+The "Cluster" output from the previous command might be the name of your cluster, the internal ID of your cluster, or the cluster's domain prefix. If you prefer to use another identifier, you can manually set this value by running the following command:
+[source,terminal]
+----
+$ export CLUSTER=my-custom-value
+----
+====
 
-[id="custom_domain_setup{context}"]
-== Custom domain setup
+[id="secondary_ingress_controller_setup_{context}"]
+== Setting up the secondary ingress controller
 
-It is necessary to configure a secondary ingress controller to segment your external WAF-protected traffic from your standard (and default) cluster ingress controller. In ROSA, we do this using the Custom Domain Operator.
+It is necessary to configure a secondary ingress controller to segment your external WAF-protected traffic from your standard (and default) cluster ingress controller. 
 
 .Prerequisites
 
-* A unique domain, such as `*.apps.<company_name>.io`
-* A custom SAN or wildcard certificate, such as `CN=*.apps.<company_name>.io`
+* A publicly trusted SAN or wildcard certificate for your custom domain, such as `CN=*.apps.example.com`
++
+[IMPORTANT]
+====
+Amazon CloudFront uses HTTPS to communicate with your cluster's secondary ingress controller. As explained in the link:https://docs.aws.amazon.com/AmazonCloudFront/latest/DeveloperGuide/using-https-cloudfront-to-custom-origin.html[Amazon CloudFront documentation], you cannot use a self-signed certificate for HTTPS communication between CloudFront and your cluster. Amazon CloudFront verifies that the certificate was issued by a trusted certificate authority.
+====
 
 .Procedure
-
-. Create a new project
-+
-[source,terminal]
-----
-$ oc new-project waf-demo
-----
 
 . Create a new TLS secret from a private key and a public certificate, where `fullchain.pem` is your full wildcard certificate chain (including any intermediaries) and `privkey.pem` is your wildcard certificate's private key.
 +
 .Example
 [source,terminal]
 ----
-$ oc -n waf-demo create secret tls waf-tls --cert=fullchain.pem --key=privkey.pem
+$ oc -n openshift-ingress create secret tls waf-tls --cert=fullchain.pem --key=privkey.pem
 ----
 
-. Create a new `CustomDomain` custom resource (CR):
+. Create a new `IngressController` resource:
 +
-.Example `waf-custom-domain.yaml`
+.Example `waf-ingress-controller.yaml`
 [source,yaml]
 ----
-apiVersion: managed.openshift.io/v1alpha1
-kind: CustomDomain
+apiVersion: operator.openshift.io/v1
+kind: IngressController
 metadata:
   name: cloudfront-waf
+  namespace: openshift-ingress-operator
 spec:
-  domain: apps.<company_name>.io <1>
-  scope: External
-  loadBalancerType: NLB
-  certificate:
+  domain: apps.example.com <1>
+  defaultCertificate:
     name: waf-tls
-    namespace: waf-demo
+  endpointPublishingStrategy:
+    loadBalancer:
+      dnsManagementPolicy: Unmanaged
+      providerParameters:
+        aws:
+          type: NLB
+        type: AWS
+      scope: External
+    type: LoadBalancerService
   routeSelector: <2>
     matchLabels:
      route: waf
 ----
-<1> The custom domain.
-<2> Filters the set of routes serviced by the CustomDomain ingress. In this tutorial, we will use the `waf` route selector, but if no value was to be provided, no filtering would occur.
+<1> Replace with the custom domain you want to use for the `IngressController`.
+<2> Filters the set of routes serviced by the Ingress Controller. In this tutorial, we will use the `waf` route selector, but if no value was to be provided, no filtering would occur.
 
-. Apply the CR:
+. Apply the `IngressController`:
 +
 .Example
 [source,terminal]
 ----
-$ oc apply -f waf-custom-domain.yaml
+$ oc apply -f waf-ingress-controller.yaml
 ----
 
-. Verify that your custom domain ingress controller has been deployed and is `Ready`:
+. Verify that your IngressController has successfully created an external load balancer:
 +
 [source,terminal]
 ----
-$ oc get customdomains
+$ oc -n openshift-ingress get service/router-cloudfront-waf
 ----
 +
 .Example output
 [source,terminal]
 ----
-NAME               ENDPOINT                                                    DOMAIN                       STATUS
-cloudfront-waf     xxrywp.<company_name>.cluster-01.opln.s1.openshiftapps.com  *.apps.<company_name>.io     Ready
+NAME                    TYPE           CLUSTER-IP      EXTERNAL-IP                                                                     PORT(S)                      AGE
+router-cloudfront-waf   LoadBalancer   172.30.16.141   a68a838a7f26440bf8647809b61c4bc8-4225395f488830bd.elb.us-east-1.amazonaws.com   80:30606/TCP,443:31065/TCP   2m19s
 ----
 
 [id="configure-aws-waf_{context}"]
@@ -178,7 +193,7 @@ $ WAF_WACL=$(aws wafv2 create-web-acl \
   --region ${REGION} \
   --default-action Allow={} \
   --scope CLOUDFRONT \
-  --visibility-config SampledRequestsEnabled=true,CloudWatchMetricsEnabled=true,MetricName=${CLUSTER_NAME}-waf-metrics \
+  --visibility-config SampledRequestsEnabled=true,CloudWatchMetricsEnabled=true,MetricName=${CLUSTER}-waf-metrics \
   --rules file://${SCRATCH}/waf-rules.json \
   --query 'Summary.Name' \
   --output text)
@@ -187,13 +202,12 @@ $ WAF_WACL=$(aws wafv2 create-web-acl \
 [id="configure_amazon_cloudfront_{context}"]
 == Configure Amazon CloudFront
 
-. Retrieve the newly created custom domain ingress controller's NLB hostname:
+. Retrieve the newly created custom ingress controller's NLB hostname:
 +
 [source,terminal]
 ----
 $ NLB=$(oc -n openshift-ingress get service router-cloudfront-waf \
   -o jsonpath='{.status.loadBalancer.ingress[0].hostname}')
-$ echo "Origin domain: ${NLB}"
 ----
 
 . Import your certificate into Amazon Certificate Manager, where `cert.pem` is your wildcard certificate, `fullchain.pem` is your wildcard certificate's chain and `privkey.pem` is your wildcard certificate’s private key.
@@ -227,7 +241,7 @@ If an option is not specified in the table below, leave them the default (which 
 |Value
 
 |Origin domain
-|Output from the command above ^[1]^
+|Output from the previous command ^[1]^
 
 |Name
 |rosa-waf-ingress ^[2]^
@@ -254,7 +268,7 @@ If an option is not specified in the table below, leave them the default (which 
 |`cloudfront-waf`
 
 |Alternate domain name (CNAME)
-|*.apps.<company_name>.io ^[3]^
+|*.apps.example.com ^[3]^
 
 |Custom SSL certificate
 |Select the certificate you imported from the step above ^[4]^
@@ -264,7 +278,7 @@ If an option is not specified in the table below, leave them the default (which 
 --
 1. Run `echo ${NLB}` to get the origin domain.
 2. If you have multiple clusters, ensure the origin name is unique.
-3. This should match the wildcard domain you used to create the custom domain ingress controller.
+3. This should match the wildcard domain you used to create the custom ingress controller.
 4. This should match the alternate domain name entered above.
 --
 +
@@ -280,17 +294,24 @@ $ aws cloudfront list-distributions --query "DistributionList.Items[?Origins.Ite
 .Example
 [source,text]
 ----
-*.apps.<company_name>.io CNAME d1b2c3d4e5f6g7.cloudfront.net
+*.apps.example.com CNAME d1b2c3d4e5f6g7.cloudfront.net
 ----
 
 [id="deploy-sample-application_{context}"]
 == Deploy a sample application
 
+. Create a new project for your sample application by running the following command:
++
+[source,terminal]
+----
+$ oc new-project hello-world
+----
++
 . Deploy a hello world application:
 +
 [source,terminal]
 ----
-$ oc -n waf-demo new-app --image=docker.io/openshift/hello-openshift
+$ oc -n hello-world new-app --image=docker.io/openshift/hello-openshift
 ----
 +
 . Create a route for the application specifying your custom domain name:
@@ -298,15 +319,15 @@ $ oc -n waf-demo new-app --image=docker.io/openshift/hello-openshift
 .Example
 [source,terminal]
 ----
-$ oc -n waf-demo create route edge --service=hello-openshift hello-openshift-tls \
---hostname hello-openshift.apps.<company_name>.io
+$ oc -n hello-world create route edge --service=hello-openshift hello-openshift-tls \
+--hostname hello-openshift.${DOMAIN}
 ----
 +
-. Label the route to admit it to your custom domain ingress controller:
+. Label the route to admit it to your custom ingress controller:
 +
 [source,terminal]
 ----
-$ oc -n waf-demo label route.route.openshift.io/hello-openshift-tls route=waf
+$ oc -n hello-world label route.route.openshift.io/hello-openshift-tls route=waf
 ----
 
 [id="test-waf_{context}"]
@@ -318,7 +339,7 @@ $ oc -n waf-demo label route.route.openshift.io/hello-openshift-tls route=waf
 +
 [source,terminal]
 ----
-$ curl "https://hello-openshift.apps.<company_name>.io"
+$ curl "https://hello-openshift.${DOMAIN}"
 ----
 +
 .Example output
@@ -333,7 +354,7 @@ Hello OpenShift!
 +
 [source,terminal]
 ----
-$ curl -X POST "https://hello-openshift.apps.<company_name>.io" \
+$ curl -X POST "https://hello-openshift.${DOMAIN}" \
   -F "user='<script><alert>Hello></alert></script>'"
 ----
 +
@@ -341,19 +362,32 @@ $ curl -X POST "https://hello-openshift.apps.<company_name>.io" \
 +
 [source,text]
 ----
-<html>
-<head><title>403 Forbidden</title></head>
-<body>
-<center><h1>403 Forbidden</h1></center>
-</body>
-</html
+<!DOCTYPE HTML PUBLIC "-//W3C//DTD HTML 4.01 Transitional//EN" "http://www.w3.org/TR/html4/loose.dtd">
+<HTML><HEAD><META HTTP-EQUIV="Content-Type" CONTENT="text/html; charset=iso-8859-1">
+<TITLE>ERROR: The request could not be satisfied</TITLE>
+</HEAD><BODY>
+<H1>403 ERROR</H1>
+<H2>The request could not be satisfied.</H2>
+<HR noshade size="1px">
+Request blocked.
+We can't connect to the server for this app or website at this time. There might be too much traffic or a configuration error. Try again later, or contact the app or website owner.
+<BR clear="all">
+If you provide content to customers through CloudFront, you can find steps to troubleshoot and help prevent this error by reviewing the CloudFront documentation.
+<BR clear="all">
+<HR noshade size="1px">
+<PRE>
+Generated by cloudfront (CloudFront)
+Request ID: nFk9q2yB8jddI6FZOTjdliexzx-FwZtr8xUQUNT75HThPlrALDxbag==
+</PRE>
+<ADDRESS>
+</ADDRESS>
+</BODY></HTML>
 ----
 +
-The expected result is a `403 Forbidden` error, which means the AWS WAF is protecting your application.
+The expected result is a `403 ERROR`, which means the AWS WAF is protecting your application.
 
 [role="_additional-resources"]
 [id="additional-resources_{context}"]
 == Additional resources
 
-* link:https://docs.openshift.com/rosa/applications/deployments/rosa-config-custom-domains-applications.html[Custom domains for applications] in the Red{nbsp}Hat documentation
 * link:https://youtu.be/-HorEsl2ho4[Adding Extra Security with AWS WAF, CloudFront and ROSA | Amazon Web Services] on YouTube

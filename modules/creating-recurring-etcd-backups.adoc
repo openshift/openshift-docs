@@ -1,0 +1,258 @@
+[id="creating-recurring-etcd-backups_{context}"]
+== Creating recurring etcd backups
+
+Follow these steps to create automated recurring backups of etcd.
+
+Use dynamically-provisioned storage to keep the created etcd backup data in a safe, external location if possible. If dynamically-provisioned storage is not available, consider storing the backup data on an NFS share to make backup recovery more accessible.
+
+.Prerequisites
+
+* You have access to the cluster as a user with the `cluster-admin` role.
+* You have access to the OpenShift CLI (`oc`).
+
+.Procedure
+
+. If dynamically-provisioned storage is available, complete the following steps to create automated recurring backups:
+
+.. Create a persistent volume claim (PVC) named `etcd-backup-pvc.yaml` with contents such as the following example:
++
+[source,yaml]
+----
+kind: PersistentVolumeClaim
+apiVersion: v1
+metadata:
+  name: etcd-backup-pvc
+  namespace: openshift-etcd
+spec:
+  accessModes:
+    - ReadWriteOnce
+  resources:
+    requests:
+      storage: 200Gi <1>
+  volumeMode: Filesystem
+  storageClassName: etcd-backup-local-storage
+----
+<1> The amount of storage available to the PVC. Adjust this value for your requirements.
++
+[NOTE]
+====
+Each of the following providers require changes to the `accessModes` and `storageClassName` keys:
+
+[cols="1,1,1"]
+|===
+|Provider|`accessModes` value|`storageClassName` value
+
+|AWS with the `versioned-installer-efc_operator-ci` profile
+|`- ReadWriteMany`
+|`efs-sc`
+
+|Google Cloud Platform
+|`- ReadWriteMany`
+|`filestore-csi`
+
+|Microsoft Azure
+|`- ReadWriteMany`
+|`azurefile-csi`
+|===
+====
+
+.. Apply the PVC by running the following command:
++
+[source,terminal]
+----
+$ oc apply -f etcd-backup-pvc.yaml
+----
+
+.. Verify the creation of the PVC by running the following command:
++
+[source,terminal]
+----
+$ oc get pvc
+----
++
+.Example output
+[source,terminal]
+----
+NAME              STATUS    VOLUME   CAPACITY   ACCESS MODES   STORAGECLASS   AGE
+etcd-backup-pvc   Bound                                                       51s
+----
++
+[NOTE]
+====
+Dynamic PVCs stay in the `Pending` state until they are mounted.
+====
+
+. If dynamically-provisioned storage is unavailable, create a local storage PVC by completing the following steps:
++
+[WARNING]
+====
+If you delete or otherwise lose access to the node that contains the stored backup data, you can lose data.
+====
+
+.. Create a `StorageClass` CR file named `etcd-backup-local-storage.yaml` with the following contents:
++
+[source,yaml]
+----
+apiVersion: storage.k8s.io/v1
+kind: StorageClass
+metadata:
+  name: etcd-backup-local-storage
+provisioner: kubernetes.io/no-provisioner
+volumeBindingMode: Immediate
+----
+
+.. Apply the `StorageClass` CR by running the following command:
++
+[source,terminal]
+----
+$ oc apply -f etcd-backup-local-storage.yaml
+----
+
+.. Create a PV named `etcd-backup-pv-fs.yaml` from the applied `StorageClass` with contents such as the following example:
++
+[source,yaml]
+----
+apiVersion: v1
+kind: PersistentVolume
+metadata:
+  name: etcd-backup-pv-fs
+spec:
+  capacity:
+    storage: 100Gi <1>
+  volumeMode: Filesystem
+  accessModes:
+  - ReadWriteMany
+  persistentVolumeReclaimPolicy: Delete
+  storageClassName: etcd-backup-local-storage
+  local:
+    path: /mnt/
+  nodeAffinity:
+    required:
+      nodeSelectorTerms:
+      - matchExpressions:
+        - key: kubernetes.io/hostname
+          operator: In
+          values:
+          - <example_master_node> <2>
+----
+<1> The amount of storage available to the PV. Adjust this value for your requirements.
+<2> Replace this value with the master node to attach this PV to.
++
+[TIP]
+====
+Run the following command to list the available nodes:
+
+[source,terminal]
+----
+$ oc get nodes
+----
+====
+
+.. Verify the creation of the PV by running the following command:
++
+[source,terminal]
+----
+$ oc get pv
+----
++
+.Example output
+[source,terminal]
+----
+NAME                    CAPACITY   ACCESS MODES   RECLAIM POLICY   STATUS      CLAIM   STORAGECLASS                REASON   AGE
+etcd-backup-pv-fs       100Gi      RWX            Delete           Available           etcd-backup-local-storage            10s
+----
+
+.. Create a PVC named `etcd-backup-pvc.yaml` with contents such as the following example:
++
+[source,yaml]
+----
+kind: PersistentVolumeClaim
+apiVersion: v1
+metadata:
+  name: etcd-backup-pvc
+spec:
+  accessModes:
+  - ReadWriteMany
+  volumeMode: Filesystem
+  resources:
+    requests:
+      storage: 10Gi <1>
+  storageClassName: etcd-backup-local-storage
+----
+<1> The amount of storage available to the PVC. Adjust this value for your requirements.
+
+.. Apply the PVC by running the following command:
++
+[source,terminal]
+----
+$ oc apply -f etcd-backup-pvc.yaml
+----
+
+. Create a custom resource definition (CRD) file named `etcd-recurring-backups.yaml`. The contents of the created CRD define the schedule and retention type of automated backups.
++
+For the default retention type of `RetentionNumber` with 15 retained backups, use contents such as the following example:
++
+[source,yaml]
+----
+apiVersion: config.openshift.io/v1alpha1
+kind: Backup
+metadata:
+  name: etcd-recurring-backup
+spec:
+  etcd:
+    schedule: "20 4 * * *" <1>
+    timeZone: "UTC"
+    pvcName: etcd-backup-pvc
+----
+<1> The `CronTab` schedule for recurring backups. Adjust this value for your needs.
++
+To use retention based on the maximum number of backups, add the following key-value pairs to the `etcd` key:
++
+[source,yaml]
+----
+spec:
+  etcd:
+    retentionPolicy:
+      retentionType: RetentionNumber <1>
+      retentionNumber:
+        maxNumberOfBackups: 5 <2>
+----
+<1> The retention type. Defaults to `RetentionNumber` if unspecified.
+<2> The maximum number of backups to retain. Adjust this value for your needs. Defaults to 15 backups if unspecified.
++
+[WARNING]
+====
+A known issue causes the number of retained backups to be one greater than the configured value.
+====
++
+For retention based on the file size of backups, use the following:
++
+[source,yaml]
+----
+spec:
+  etcd:
+    retentionPolicy:
+      retentionType: RetentionSize
+      retentionSize:
+        maxSizeOfBackupsGb: 20 <1>
+----
+<1> The maximum file size of the retained backups in gigabytes. Adjust this value for your needs. Defaults to 10 GB if unspecified.
++
+[WARNING]
+====
+A known issue causes the maximum size of retained backups to be up to 10 GB greater than the configured value.
+====
+
+. Create the cron job defined by the CRD by running the following command:
++
+[source,terminal]
+----
+$ oc create -f etcd-recurring-backup.yaml
+----
+
+. To find the created cron job, run the following command:
++
+[source,terminal]
+----
+$ oc get cronjob -n openshift-etcd
+----
