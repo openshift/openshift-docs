@@ -1,0 +1,203 @@
+:_mod-docs-content-type: ASSEMBLY
+:context: cluster-logging-architecture
+[id="cluster-logging-architecture"]
+= Installing Logging
+include::_attributes/common-attributes.adoc[]
+include::_attributes/attributes-openshift-dedicated.adoc[]
+
+toc::[]
+
+The cluster logging system is composed of the following components. They can be deployed together as a complete in-cluster logging solution, or separately to store logs outside the cluster.
+
+Collector::
+- collect logs from containers and nodes
+- add meta-data describing where the logs came from
+- forward annotated logs to an in-cluster Loki store
+- forward logs off-cluster: `syslog`, `kafka`, `cloudwatch` and more.
+
+Store::
+- aggregates logs from the entire cluster in a central place.
+- accepts complex queries to select, combine and filter logs.
+
+Console::
+- displays logs selected by simple menu selections or complex store queries
+
+[id="cluster-logging-architecture-cluster-logging-operator"]
+== Cluster Logging Operator
+
+The **Cluster Logging Operator (CLO)** provides the *ClusterLogForwarder* (CLF) resource. This is a simple but flexible API to describe "what you want": which logs to forward, and where to send them. The operator generates a more complex "how to do it" configuration and deploys a `daemonset` running link:https://vector.dev/[DataDog Vector] daemons on each cluster node.
+
+image::cluster-logging-overview.png[Overview of the cluster logging Operator's architecture]
+
+image::cluster-logging-node.png[Flow of the cluster logging nodes]
+
+[id="cluster-logging-architecture-lokistack-operator"]
+== LokiStack Operator
+
+The **LokiStack operator** deploys a link:https://grafana.com/oss/loki/[Grafana Loki] log store to collect aggregated logs and a proxy to control access to logs based on OpenShift credentials.
+
+[id="cluster-logging-architecture-log-types"]
+== Log types
+
+Logs are categorized into three types:
+
+- Application: Container logs from non-infrastrure containers
+- Infrastructure: Container logs from infrastructure containers in `kube-` and `openshift-` namespaces. These node logs are from `journald`
+- Audit: Node logs from `/var/log/audit`, security sensitive
+
+[NOTE]
+====
+Container logs are the `stdout` and `stderr` output from containers in pods in the cluster. Node logs are from the cluster node operating system, `journald` and `/var/log/`.
+====
+
+[id="cluster-logging-architecture-lokistack-normalization"]
+== Normalization
+
+Kubernetes does not enforce a uniform format for logs. Anything that a containerized process writes to `stdout` or `stderr` is considered a log. This "lowest common denominator" approach allows pre-existing applications to run on the cluster.
+
+Traditional log formats write entries as ordered fields; but the order, field separator, format and meaning of fields varies.
+
+*Structured logs* write log entries as JSON objects on a single line. However names, types, and meaning of fields in the JSON object varies between applications.
+
+The link:https://github.com/kubernetes/enhancements/tree/master/keps/sig-instrumentation/1602-structured-logging[Kubernetes Structured Logging proposal] will standardize the log format for *some* k8s components, but there will still be diverse log formats from non-k8s applications running on the cluster.
+
+The collector adds meta-data to *container* logs as per link:https://viaq.github.io/documentation/architecture/index.html[the cluster logging data model].
+
+Infrastructure node logs lack the `kubernetes` section since they are not associated with a container.
+
+Audit and k8s event logs are structured logs that contain their own meta-data, they are forwarded unmodified.
+
+[id="cluster-logging-architecture-lokistack-metrics-labels"]
+== Metrics and Labels
+
+The set of metric labels for logging is described here.
+
+[id="cluster-logging-architecture-lokistack-id-container"]
+=== Labels identifying a container
+
+Metrics associated with a *Pod* get the following labels:
+
+- `namespace`: namespace name
+- `pod`: pod name
+- `uid`: pod UUID
+- `node`: node name, as returned by `oc get node -o=jsonpath='{@.items[*].metadata.name}`
+
+[NOTE]
+====
+This refers to the node resource name. It may, or may not, coincide with the host name, DNS name, or IP address.
+====
+
+Metrics that are associated with a *container* also get this label:
+
+- `container`: container name
+
+For example, the following metrics are associated with container logs, and have all the above labels:
+
+- `log_logged_bytes_total` provided by a separate agent that watches writes to log files.
+- `log_collected_bytes_total` provided by the collector
+
+These labels are compatible with `kubelet`, here's an example `kubelet` metric:
+
+.Example output:
+
+[source,terminal]
+----
+# HELP kubelet_container_log_filesystem_used_bytes [ALPHA] Bytes used by the container's logs on the filesystem.
+# TYPE kubelet_container_log_filesystem_used_bytes gauge
+kubelet_container_log_filesystem_used_bytes{container="authentication-operator",namespace="openshift-authentication-operator",pod="authentication-operator-67c88594b5-zftcn ",uid="ead91de5-5e10-42b9-8ab9-6386f21cd554"} 3.44064e+07
+----
+
+[id="cluster-logging-architecture-lokistack-id-cluster"]
+=== Label identifying a cluster
+
+Multi-cluster deployments need a `cluster` label. OpenShift clusters provide a unique, human-readable name name via the API , which can be retrieved by running the following command:
+
+[source,terminal]
+----
+$ oc get infrastructure/cluster -o template="{{.status.infrastructureName}}"
+----
+
+This will not work on other clusters. Most cluster providers offer a unique name but there is no universal plain kubernetes way to get one.
+
+[id="cluster-logging-architecture-lokistack-prometheus"]
+=== Prometheus standard labels
+
+These labels are added by prometheus, they are of limited relevance for logging. They identify the agent that collects logs, not the resource that produced them.
+
+- `instance`: address of scrape endpoint in the form `<ip-literal>:<port>`
+- `job`: arbitrary string name to identify related endpoints (e.g. `log\_collector`)
+
+[id="cluster-logging-architecture-lokistack-observability"]
+== Observability and Correlation
+
+Observability means collecting, forwarding, storing, analyzing and *correlating* different types of *signal* from a cluster to monitor its health, identify and fix problems, and plan for capacity changes.
+
+[id="cluster-logging-architecture-lokistack-signal-types"]
+=== Types of signal
+
+Log entry::  
+A block of text (usually one line) written by application or infrastructure processes, annotated by the logging system and forwarded for further processing.
+
+Metric::  
+A statistic that changes over time and is sampled to produce a *time\_series*. Presently we can assue all metrics are in link:https://prometheus.io/[Prometheus] format, and are sampled by Prometheus. Processes to be monitored must provide a HTTP "scrape endpoint" where the metrics can be read.
+
+Alert::
+Alerts are not primary signals but summaries of metric time series. They identify conditions that need attention.
+
+Trace::
+Data attached to request-response *scopes* to track the progress and outcome of a request. Trace context can follow a chain of requests from server to server, provided the servers co-operate in passing the trace context.
+
+[id="cluster-logging-architecture-lokistack-correlation-points"]
+=== Correlation Points
+
+Correlation means associating different types of signal, for example:
+
+- I have an alert saying that an application is in trouble. I want to see logs from that application around the time of the alert.
+- I have a log entry showing that a request failed. I want to see traces for the entire life-cycle of that request and dependent requests.
+
+Correlation requires that the signals have data that can be matched, for example:
+
+- timestamp: All signals carry a timestamp. Signals can always be correlated by time-interval
+- origin resource: Many signals are associated with a resource. Resource signals can be correlated by `cluster`, `namespace`, `pod`, and `node`. The logging system, kubelet metrics and link:https://observatorium.io[observatorium metrics] provide this information.
+- trace-id: Trace signals carry a trace-id. Applications that support tracing should include trace-id in an identifiable way in their logs. Metrics can't carry trace-ids due to cardinality limitations
+
+[IMPORTANT]
+====
+Traces need more research.
+====
+
+That names and formats of correlation fields or labels are not uniform across signals. link:https://opentelemetry.io/[OpenTelemetry] does define a reference data-model for all signal types but it is not compatible with the current naming schemes of Openshift Logging, Monitoring or Telemetry, or Kubernetes.
+// The data model we currently use is:
+//
+// - [Openshift Logging](../data_model/public/data_model.html)
+
+// - Metrics: *TODO* Openshift and Kubernetes have consistent labels and
+//     naming schemes.
+
+// - Traces: *TODO*
+
+// OpenTelemetry specs for comparison:
+
+// - [Resources](https://github.com/open-telemetry/opentelemetry-specification/tree/main/specification/resource/semantic_conventions)
+
+// - [Logging](https://github.com/open-telemetry/opentelemetry-specification/blob/main/specification/logs/data-model.md)\]
+
+// - [Metrics](https://github.com/open-telemetry/opentelemetry-specification/blob/main/specification/metrics/datamodel.md)
+
+// ### Correlation Stories
+
+// - On receiving an alert, I want to see correlated logs or traces.
+
+// - On reading a log, I want to see correlated traces or metrics.
+
+// - On following a trace, I want to see correlated logs or metrics.
+
+// - I want to query for a report on (logs/metrics/traces) and have
+//     correlated signals included as well.
+
+// ------------------------------------------------------------------------
+
+// [1](#_footnoteref_1). Do all observatorium metrics provide this?
+
+// [2](#_footnoteref_2). How many applications do this? Are there standards
+// for trace-id format in logs?
