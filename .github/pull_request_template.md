@@ -21,5 +21,8 @@ QE review:
 Additional information:
 <!--- Optional: Include additional context or expand the description here.--->
 
-<!--- After you open your PR, ask for review from the OpenShift docs team:
+<!--- After you open your PR, reviewers and approvers are assigned automatically.
+
+  You can also use /assign, /cc @user, /unassign, or /uncc commands to change or modify the reviewer assignment.
+
   For community authors: Tag @openshift/team-documentation in a GitHub comment.--->
