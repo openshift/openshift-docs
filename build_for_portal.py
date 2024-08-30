@@ -37,10 +37,11 @@ LINKS_RE = re.compile(
 EXTERNAL_LINK_RE = re.compile(
     "[\./]*([\w_-]+)/[\w_/-]*?([\w_.-]*\.(?:html|adoc))", re.DOTALL
 )
-INCLUDE_RE = re.compile("include::(.*?)\[(.*?)\]", re.M)
+INCLUDE_RE = re.compile(r"^include::(.*?)\[(.*?)\]", re.M)
 IFDEF_RE = re.compile(r"^if(n?)def::(.*?)\[\]", re.M)
 ENDIF_RE = re.compile(r"^endif::(.*?)\[\]\r?\n", re.M)
-COMMENT_CONTENT_RE = re.compile(r"^^////$.*?^////$", re.M | re.DOTALL)
+COMMENT_CONTENT_RE = re.compile(r"^////$.*?^////$", re.M | re.DOTALL)
+SINGLE_LINE_COMMENT_RE = re.compile(r"^//.+$")
 TAG_CONTENT_RE = re.compile(
     r"//\s+tag::(.*?)\[\].*?// end::(.*?)\[\]", re.M | re.DOTALL
 )
@@ -892,6 +893,8 @@ def remove_conditional_content(content, info, tag=None):
 
     # Remove commented out content
     for comment in COMMENT_CONTENT_RE.finditer(content):
+        content = content.replace(comment.group(0), "")
+    for comment in SINGLE_LINE_COMMENT_RE.finditer(content):
         content = content.replace(comment.group(0), "")
 
     # Remove content outside of tags
