@@ -76,16 +76,22 @@ if [ $# -eq 0 ]; then
 fi
 
 if [[ "$TEST" == "--preview" || "$TEST" == "-p" ]] && [[ -z "$DISTRO" ]]; then
+    # Clean output folder
+    rm -rf ./_preview/
     echo ""
     echo "🚧 Building with openshift-enterprise distro..."
     $CONTAINER_ENGINE run --rm -it -v "$(pwd)":${CONTAINER_WORKDIR}${SELINUX_LABEL} $CONTAINER_IMAGE asciibinder build -d "$DISTRO"
 
 elif [[ "$TEST" == "--preview" || "$TEST" == "-p" ]] && [[ -n "$DISTRO" ]]; then
+    # Clean output folder
+    rm -rf ./_preview/
     echo ""
     echo "🚧 Building $DISTRO distro..."
     $CONTAINER_ENGINE run --rm -it -v "$(pwd)":${CONTAINER_WORKDIR}${SELINUX_LABEL} $CONTAINER_IMAGE asciibinder build -d "$DISTRO"
 
 elif [[ "$TEST" == "--validate" || "$TEST" == "-v" ]]; then
+    # Clean output folder
+    rm -rf ./drupal_build/
     echo ""
     echo "🚧 Validating the docs..."
     $CONTAINER_ENGINE run --rm -it -v "$(pwd)":${CONTAINER_WORKDIR}${SELINUX_LABEL} $CONTAINER_IMAGE sh -c 'scripts/check-asciidoctor-build.sh && python3 build_for_portal.py --distro '${DISTRO}' --product "'"${PRODUCT_NAME}"'" --version '${VERSION}' --no-upstream-fetch && python3 makeBuild.py'
