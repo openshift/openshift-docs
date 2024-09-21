@@ -75,23 +75,25 @@ if [ $# -eq 0 ]; then
     display_help
 fi
 
+LOG_FILE="test_output.log"
+
 if [[ "$TEST" == "--preview" || "$TEST" == "-p" ]] && [[ -z "$DISTRO" ]]; then
-    echo ""
-    echo "🚧 Building with openshift-enterprise distro..."
-    $CONTAINER_ENGINE run --rm -it -v "$(pwd)":${CONTAINER_WORKDIR}${SELINUX_LABEL} $CONTAINER_IMAGE asciibinder build -d "$DISTRO"
+    echo "" >> $LOG_FILE
+    echo "🚧 Building with openshift-enterprise distro..." >> $LOG_FILE
+    $CONTAINER_ENGINE run --rm -it -v "$(pwd)":${CONTAINER_WORKDIR}${SELINUX_LABEL} $CONTAINER_IMAGE asciibinder build -d "$DISTRO" >> $LOG_FILE 2>&1
 
 elif [[ "$TEST" == "--preview" || "$TEST" == "-p" ]] && [[ -n "$DISTRO" ]]; then
-    echo ""
-    echo "🚧 Building $DISTRO distro..."
-    $CONTAINER_ENGINE run --rm -it -v "$(pwd)":${CONTAINER_WORKDIR}${SELINUX_LABEL} $CONTAINER_IMAGE asciibinder build -d "$DISTRO"
+    echo "" >> $LOG_FILE
+    echo "🚧 Building $DISTRO distro..." >> $LOG_FILE
+    $CONTAINER_ENGINE run --rm -it -v "$(pwd)":${CONTAINER_WORKDIR}${SELINUX_LABEL} $CONTAINER_IMAGE asciibinder build -d "$DISTRO" >> $LOG_FILE 2>&1
 
 elif [[ "$TEST" == "--validate" || "$TEST" == "-v" ]]; then
-    echo ""
-    echo "🚧 Validating the docs..."
-    $CONTAINER_ENGINE run --rm -it -v "$(pwd)":${CONTAINER_WORKDIR}${SELINUX_LABEL} $CONTAINER_IMAGE sh -c 'scripts/check-asciidoctor-build.sh && python3 build_for_portal.py --distro '${DISTRO}' --product "'"${PRODUCT_NAME}"'" --version '${VERSION}' --no-upstream-fetch && python3 makeBuild.py'
+    echo "" >> $LOG_FILE
+    echo "🚧 Validating the docs..." >> $LOG_FILE
+    $CONTAINER_ENGINE run --rm -it -v "$(pwd)":${CONTAINER_WORKDIR}${SELINUX_LABEL} $CONTAINER_IMAGE sh -c 'scripts/check-asciidoctor-build.sh && python3 build_for_portal.py --distro '${DISTRO}' --product "'"${PRODUCT_NAME}"'" --version '${VERSION}' --no-upstream-fetch && python3 makeBuild.py' >> $LOG_FILE 2>&1
 
 elif [[ "$TEST" == "--lint-topicmaps" || "$TEST" == "-l" ]]; then
-    echo ""
-    echo "🚧 Linting the topicmap YAML..."
-    $CONTAINER_ENGINE run --rm -it -v "$(pwd)":${CONTAINER_WORKDIR}${SELINUX_LABEL} $CONTAINER_IMAGE sh -c 'yamllint _topic_maps'
+    echo "" >> $LOG_FILE
+    echo "🚧 Linting the topicmap YAML..." >> $LOG_FILE
+    $CONTAINER_ENGINE run --rm -it -v "$(pwd)":${CONTAINER_WORKDIR}${SELINUX_LABEL} $CONTAINER_IMAGE sh -c 'yamllint _topic_maps' >> $LOG_FILE 2>&1
 fi
