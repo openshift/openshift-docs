@@ -1,0 +1,215 @@
+// Module included in the following assemblies:
+//
+// * nodes/pods/nodes-pods-user-namespaces.adoc
+
+:_mod-docs-content-type: PROCEDURE
+[id="nodes-pods-user-namespaces-configuring_{context}"]
+= Configuring Linux user namespace support
+
+
+.Prerequisites
+
+* You enabled the required Technology Preview features for your cluster by editing the `FeatureGate` CR named `cluster`:
++
+[source,terminal]
+----
+$ oc edit featuregate cluster
+----
++
+.Example `FeatureGate` CR
+[source,yaml]
+----
+apiVersion: config.openshift.io/v1
+kind: FeatureGate
+metadata:
+  name: cluster
+spec:
+  featureSet: TechPreviewNoUpgrade <1>
+----
+<1> Enables the required `UserNamespacesSupport` and `ProcMountType` features.
++
+[WARNING]
+====
+Enabling the `TechPreviewNoUpgrade` feature set on your cluster cannot be undone and prevents minor version updates. This feature set allows you to enable these Technology Preview features on test clusters, where you can fully test them. Do not enable this feature set on production clusters.
+====
++
+After you save the changes, new machine configs are created, the machine config pools are updated, and scheduling on each node is disabled while the change is being applied.
+
+* You enabled the crun container runtime on the worker nodes. crun is currently the only released OCI runtime with support for user namespaces.
++
+[source,yaml]
+----
+apiVersion: machineconfiguration.openshift.io/v1
+kind: ContainerRuntimeConfig
+metadata:
+ name: enable-crun-worker
+spec:
+ machineConfigPoolSelector:
+   matchLabels:
+     pools.operator.machineconfiguration.openshift.io/worker: "" <1>
+ containerRuntimeConfig:
+   defaultRuntime: crun <2>
+----
+<1> Specifies the machine config pool label. 
+<2> Specifies the container runtime to deploy.
+
+.Procedure
+
+. Edit the default user ID (UID) and group ID (GID) range of the {product-title} namespace where your pod is deployed by running the following command:
++
+[source,terminal]
+----
+$ oc edit ns/<namespace_name>
+----
++
+.Example namespace
+[source,yaml]
+----
+apiVersion: v1
+kind: Namespace
+metadata:
+  annotations:
+    openshift.io/description: ""
+    openshift.io/display-name: ""
+    openshift.io/requester: system:admin
+    openshift.io/sa.scc.mcs: s0:c27,c24
+    openshift.io/sa.scc.supplemental-groups: 1024/10000 <1>
+    openshift.io/sa.scc.uid-range: 1024/10000 <2>
+# ...
+name: userns
+# ...
+----
+<1> Edit the default GID to match the value you specified in the pod spec. The range for a Linux user namespace must be lower than 65,535. The default is `1000000000/10000`.
+<2> Edit the default UID to match the value you specified in the pod spec. The range for a Linux user namespace must be lower than 65,535. The default is `1000000000/10000`.
++
+[NOTE]
+====
+The range 1024/10000 means 10,000 values starting with ID 1024, so it specifies the range of IDs from 1024 to 11,023.
+====
+
+. Enable the use of Linux user namespaces by creating a pod configured to run with a `restricted` profile and with the `hostUsers` parameter set to `false`.
+
+.. Create a YAML file similar to the following:
++
+.Example pod specification
+[source,yaml]
+----
+apiVersion: v1
+kind: Pod
+metadata:
+  name: userns-pod
+
+# ...
+
+spec:
+  containers:
+  - name: userns-container
+    image: registry.access.redhat.com/ubi9
+    command: ["sleep", "1000"]
+    securityContext:
+      capabilities:
+        drop: ["ALL"]
+      allowPrivilegeEscalation: false <1>
+      runAsNonRoot: true <2>
+      seccompProfile:
+        type: RuntimeDefault
+      runAsUser: 1024 <3>
+      runAsGroup: 1024 <4>
+  hostUsers: false <5>
+
+# ...
+----
+<1> Specifies that a pod cannot request privilege escalation. This is required for the `restricted-v2` security context constraints (SCC).
+<2> Specifies that the container will run with a user with any UID other than 0.
+<3> Specifies the UID the container is run with.
+<4> Specifies which primary GID the containers is run with.
+<5> Requests that the pod is to be run in a user namespace. If `true`, the pod runs in the host user namespace. If `false`, the pod runs in a new user namespace that is created for the pod. The default is `true`.
+
+.. Create the pod by running the following command:
++
+----
+$ oc create -f <file_name>.yaml
+----
+
+.Verification
+
+. Check the pod user and group IDs being used in the pod container you created. The pod is inside the Linux user namespace.
+
+.. Start a shell session with the container in your pod:
++
+[source,terminal]
+----
+$ oc rsh -c <container_name> pod/<pod_name>
+----
++
+.Example command
+[source,terminal]
+----
+$ oc rsh -c userns-container_name pod/userns-pod
+----
+
+.. Display the user and group IDs being used inside the container:
++
+[source,terminal]
+----
+sh-5.1$ id
+----
++
+.Example output
+[source,terminal]
+----
+uid=1024(1024) gid=1024(1024) groups=1024(1024)
+----
+
+.. Display the user ID being used in the container user namespace:
++
+[source,terminal]
+----
+sh-5.1$ lsns -t user
+----
++
+.Example output
+[source,terminal]
+----
+        NS TYPE  NPROCS PID USER COMMAND
+4026532447 user       3   1 1024 /usr/bin/coreutils --coreutils-prog-shebang=sleep /usr/bin/sleep 1000 <1>
+----
+<1> The UID for the process is `1024`, the same as you set in the pod spec.
+
+. Check the pod user ID being used on the node where the pod was created. The node is outside of the Linux user namespace. This user ID should be different from the UID being used in the container.
+
+.. Start a debug session for that node:
++
+[source,terminal]
+----
+$ oc debug node/ci-ln-z5vppzb-72292-8zp2b-worker-c-q8sh9
+----
++
+.Example command
+[source,terminal]
+----
+$ oc debug node/ci-ln-z5vppzb-72292-8zp2b-worker-c-q8sh9
+----
+
+.. Set `/host` as the root directory within the debug shell:
++
+[source,terminal]
+----
+sh-5.1# chroot /host
+----
+
+.. Display the user ID being used in the node user namespace:
++
+[source,terminal]
+----
+sh-5.1#  lsns -t user
+----
++
+.Example command
+[source,terminal]
+----
+        NS TYPE  NPROCS   PID USER       COMMAND
+4026531837 user     233     1 root       /usr/lib/systemd/systemd --switched-root --system --deserialize 28
+4026532447 user       1  4767 2908816384 /usr/bin/coreutils --coreutils-prog-shebang=sleep /usr/bin/sleep 1000 <1>
+----
+<1> The UID for the process is `2908816384`, which is different from what you set in the pod spec.
