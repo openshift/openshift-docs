@@ -1,0 +1,318 @@
+// Module included in the following assemblies:
+//
+// * virt/post_installation_configuration/virt-configuring-higher-vm-workload-density.adoc
+
+:_mod-docs-content-type: PROCEDURE
+[id="virt-using-wasp-agent-to-configure-higher-vm-workload-density_{context}"]
+= Using `wasp-agent` to configure higher VM workload density
+
+The `wasp-agent` component enables an {product-title} cluster to assign swap resources to virtual machine (VM) workloads.
+Swap usage is only supported on worker nodes.
+
+[IMPORTANT]
+====
+Swap resources can be only assigned to virtual machine workloads (VM pods) of the `Burstable` Quality of Service (QoS) class. VM pods of the `Guaranteed` QoS class and pods of any QoS class that do not belong to VMs cannot swap resources.
+
+For descriptions of QoS classes, see link:https://kubernetes.io/docs/tasks/configure-pod-container/quality-service-pod/[Configure Quality of Service for Pods] (Kubernetes documentation).
+====
+
+.Prerequisites
+
+* The `oc` tool is available.
+* You are logged into the cluster with the cluster-admin role.
+* A memory over-commit ratio is defined.
+* The node belongs to a worker pool.
+
+.Procedure
+
+. Create a privileged service account by entering the following commands:
++
+[source,terminal]
+----
+$ oc adm new-project wasp
+----
++
+[source,terminal]
+----
+$ oc create sa -n wasp wasp
+----
++
+[source,terminal]
+----
+$ oc create clusterrolebinding wasp --clusterrole=cluster-admin --serviceaccount=wasp:wasp
+----
++
+[source,terminal]
+----
+$ oc adm policy add-scc-to-user -n wasp privileged -z wasp
+----
++
+[NOTE]
+====
+The `wasp-agent` component deploys an OCI hook to enable swap usage for containers on the node level. The low-level nature requires the `DaemonSet` object to be privileged.
+====
++
+. Deploy `wasp-agent` by creating a `DaemonSet` object as follows:
++
+[source,yaml]
+----
+kind: DaemonSet
+apiVersion: apps/v1
+metadata:
+  name: wasp-agent
+  namespace: wasp
+  labels:
+    app: wasp
+    tier: node
+spec:
+  selector:
+    matchLabels:
+      name: wasp
+  template:
+    metadata:
+      annotations:
+        description: >-
+          Configures swap for workloads
+      labels:
+          name: wasp
+    spec:
+      serviceAccountName: wasp
+      hostPID: true
+      hostUsers: true
+      terminationGracePeriodSeconds: 5
+      containers:
+        - name: wasp-agent
+          image: >-
+            registry.redhat.io/container-native-virtualization/wasp-agent-rhel9:v4.16
+          imagePullPolicy: Always
+          env:
+          - name: "FSROOT"
+            value: "/host"
+          resources:
+            requests:
+              cpu: 100m
+              memory: 50M
+          securityContext:
+            privileged: true
+          volumeMounts:
+          - name: host
+            mountPath: "/host"
+      volumes:
+      - name: host
+        hostPath:
+          path: "/"
+      priorityClassName: system-node-critical
+  updateStrategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxUnavailable: 10%
+      maxSurge: 0
+status: {}
+----
+. Configure the `kubelet` service to permit swap:
+.. Create a `KubeletConfiguration` file as shown in the example:
++
+.Example of a `KubeletConfiguration` file
+[source,yaml]
+----
+apiVersion: machineconfiguration.openshift.io/v1
+kind: KubeletConfig
+metadata:
+  name: custom-config
+spec:
+  machineConfigPoolSelector:
+    matchLabels:
+      pools.operator.machineconfiguration.openshift.io/worker: ''  # MCP
+      #machine.openshift.io/cluster-api-machine-role: worker # machine
+      #node-role.kubernetes.io/worker: '' # node
+  kubeletConfig:
+    failSwapOn: false
+    evictionSoft:
+      memory.available: "1Gi"
+    evictionSoftGracePeriod:
+      memory.available: "10s"
+----
++
+If the cluster is already using an existing `KubeletConfiguration` file, add the following to the `spec` section:
++
+[source,yaml]
+----
+apiVersion: machineconfiguration.openshift.io/v1
+kind: KubeletConfig
+metadata:
+  name: custom-config
+# ...
+spec
+# ...
+    kubeletConfig:
+      evictionSoft:
+        memory.available: 1Gi
+      evictionSoftGracePeriod:
+        memory.available: 1m30s
+      failSwapOn: false
+----
+.. Run the following command:
++
+[source,yaml]
+----
+$ oc wait mcp worker --for condition=Updated=True
+----
+. Create a `MachineConfig` object to provision swap as follows:
++
+[source,yaml]
+----
+apiVersion: machineconfiguration.openshift.io/v1
+kind: MachineConfig
+metadata:
+  labels:
+    machineconfiguration.openshift.io/role: worker
+  name: 90-worker-swap
+spec:
+  config:
+    ignition:
+      version: 3.4.0
+    systemd:
+      units:
+      - contents: |
+          [Unit]
+          Description=Provision and enable swap
+          ConditionFirstBoot=no
+
+          [Service]
+          Type=oneshot
+          Environment=SWAP_SIZE_MB=5000
+          ExecStart=/bin/sh -c "sudo dd if=/dev/zero of=/var/tmp/swapfile count=${SWAP_SIZE_MB} bs=1M && \
+          sudo chmod 600 /var/tmp/swapfile && \
+          sudo mkswap /var/tmp/swapfile && \
+          sudo swapon /var/tmp/swapfile && \
+          free -h && \
+          sudo systemctl set-property --runtime system.slice MemorySwapMax=0 IODeviceLatencyTargetSec=\"/ 50ms\""
+
+          [Install]
+          RequiredBy=kubelet-dependencies.target
+        enabled: true
+        name: swap-provision.service
+----
++
+To have enough swap space for the worst-case scenario, make sure to have at least as much swap space provisioned as overcommitted RAM. Calculate the amount of swap space to be provisioned on a node using the following formula:
++
+[source,terminal]
+----
+NODE_SWAP_SPACE = NODE_RAM * (MEMORY_OVER_COMMIT_PERCENT / 100% - 1)
+----
++
+Example:
++
+[source,terminal]
+----
+NODE_SWAP_SPACE = 16 GB * (150% / 100% - 1)
+                = 16 GB * (1.5 - 1)
+                = 16 GB * (0.5)
+                =  8 GB
+----
++
+. Deploy alerting rules as follows:
++
+[source,yaml]
+----
+apiVersion: monitoring.openshift.io/v1
+kind: AlertingRule
+metadata:
+  name: wasp-alerts
+  namespace: openshift-monitoring
+spec:
+  groups:
+  - name: wasp.rules
+    rules:
+    - alert: NodeSwapping
+      annotations:
+        description: Node {{ $labels.instance }} is swapping at a rate of {{ printf "%.2f" $value }} MB/s
+        runbook_url: https://github.com/openshift-virtualization/wasp-agent/tree/main/runbooks/alerts/NodeSwapping.md
+        summary: A node is swapping memory pages
+      expr: |
+        # In MB/s
+        irate(node_memory_SwapFree_bytes{job="node-exporter"}[5m]) / 1024^2 > 0
+      for: 1m
+      labels:
+        severity: critical
+----
+. Configure {VirtProductName} to use memory overcommit either by using the {product-title} web console or by editing the HyperConverged custom resource (CR) file as shown in the following example.
++
+Example:
++
+[source,yaml]
+----
+apiVersion: hco.kubevirt.io/v1beta1
+kind: HyperConverged
+metadata:
+  name: kubevirt-hyperconverged
+  namespace: openshift-cnv
+spec:
+  higherWorkloadDensity:
+    memoryOvercommitPercentage: 150
+----
+. Apply all the configurations to compute nodes in your cluster by entering the following command:
++
+[source,terminal]
+----
+$ oc patch --type=merge \
+  -f <../manifests/hco-set-memory-overcommit.yaml> \
+  --patch-file <../manifests/hco-set-memory-overcommit.yaml>
+----
++
+[NOTE]
+====
+After applying all configurations, the swap feature is fully available only after all `MachineConfigPool` rollouts are complete.
+====
+
+.Verification
+
+. To verify the deployment of `wasp-agent`, run the following command:
++
+[source, terminal]
+----
+$  oc rollout status ds wasp-agent -n wasp
+----
++
+If the deployment is successful, the following message is displayed:
++
+[source, terminal]
+----
+daemon set "wasp-agent" successfully rolled out
+----
+
+. To verify that swap is correctly provisioned, do the following:
+.. Run the following command:
++
+[source,terminal]
+----
+$ oc get nodes -l node-role.kubernetes.io/worker
+----
+.. Select a node from the provided list and run the following command:
++
+[source,terminal]
+----
+$ oc debug node/<selected-node> -- free -m
+----
++
+If swap is provisioned correctly, an amount greater than zero is displayed, similar to the following:
++
+[cols="1,1,1,1,1,1,1"]
+|===
+| |total |used |free |shared |buff/cache |available
+|Mem: |31846 |23155 |1044 |6014 |14483 |8690
+|Swap: |8191 |2337 |5854 | | |
+|===
+
+. Verify the {VirtProductName} memory overcommitment configuration by running the following command:
++
+[source,terminal]
+----
+$ oc get -n openshift-cnv HyperConverged kubevirt-hyperconverged -o jsonpath="{.spec.higherWorkloadDensity.memoryOvercommitPercentage}"
+150
+----
++
+The returned value, for example `150`, must match the value you had previously configured.
+
+
+
