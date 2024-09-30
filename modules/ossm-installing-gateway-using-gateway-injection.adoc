@@ -1,0 +1,260 @@
+:_mod-docs-content-type: PROCEDURE
+[id="ossm-about-gateway-injection_{context}"]
+= Installing a gateway by using gateway injection
+:context: ossm-installing-gateway-using-gateway-injection
+
+This procedure explains how to install a gateway by using gateway injection.
+
+[NOTE]
+====
+You can use this procedure to create ingress or egress gateways. 
+====
+
+.Prerequisites
+
+* You have installed the {SMProduct} Operator version 3.0 or later.
+* You have created an {istio} control plane.
+* You have created an `IstioCNI` resource.
+
+.Procedure
+
+. Create a namespace that you will use to install the gateway.
++
+[source,terminal]
+----
+$ oc create namespace <gateway_namespace>
+----
++
+[NOTE]
+====
+Install the gateway and the {istio} control plane in different namespaces. 
+
+You can install the gateway in a dedicated gateway namespace. This approach allows the gateway to be shared by many applications operating in different namespaces. Alternatively, you can install the gateway in an application namespace. In this approach, the gateway acts as a dedicated gateway for the application in that namespace.
+====
+
+. Create a YAML file named `secret-reader.yml` that defines the service account, role, and role binding for the gateway deployment. These settings enable the gateway to read the secrets, which is required for obtaining TLS credentials.
++
+[source,yaml,subs="attributes,verbatim"]
+----
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: secret-reader
+  namespace: <gateway_namespace>
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: secret-reader
+  namespace: <gateway_namespace>
+rules:
+  - apiGroups: [""]
+    resources: ["secrets"]
+    verbs: ["get", "watch", "list"]
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name:  secret-reader
+  namespace: <gateway_namespace>
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: secret-reader
+subjects:
+  - kind: ServiceAccount
+    name:  secret-reader
+----
+
+. Apply the YAML file by running the following command:
++
+[source,terminal]
+----
+$ oc apply -f secret-reader.yml
+----
+
+. Create a YAML file named `gateway-deployment.yml` that defines the Kubernetes `Deployment` object for the gateway. 
++
+[source,yaml,subs="attributes,verbatim"]
+----
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: <gateway_name>
+  namespace: <gateway_namespace>
+spec:
+  selector:
+    matchLabels:
+      istio: <gateway_name> 
+  template:
+    metadata:
+      annotations:
+        inject.istio.io/templates: gateway <1>
+      labels:
+        istio: <gateway_name> <2>
+        sidecar.istio.io/inject: "true" <3>
+    spec:
+      containers:
+        - name: istio-proxy
+          image: auto <4>
+          securityContext:
+            capabilities:
+              drop:
+              - ALL
+            allowPrivilegeEscalation: false
+            privileged: false
+            readOnlyRootFilesystem: true
+            runAsNonRoot: true
+          ports:
+          - containerPort: 15090
+            protocol: TCP
+            name: http-envoy-prom
+          resources:
+            limits:
+              cpu: 2000m
+              memory: 1024Mi
+            requests:
+              cpu: 100m
+              memory: 128Mi
+      securityContext:
+        sysctls:
+        - name: net.ipv4.ip_unprivileged_port_start
+          value: "0"
+      serviceAccountName: secret-reader <5>
+----
+<1> Indicates that the {istio} control plane uses the gateway injection template instead of the default sidecar template.
+<2> Ensure that a unique label is set for the gateway deployment. A unique label is required so that {istio} `Gateway` resources can select gateway workloads. 
+<3> Enables gateway injection by setting the `sidecar.istio.io/inject` label to `true`. If the name of the {istio} resource is not `default` you must use the `istio.io/rev: <istio_revision>` label instead, where the revision represents the active revision of the {istio} resource.
+<4> Sets the image field to `auto` so that the image automatically updates each time the pod starts.
+<5> Sets the `serviceAccountName` to the name of the `ServiceAccount` created previously.
+
+. Apply the YAML file by running the following command:
++
+[source,terminal]
+----
+$ oc apply -f gateway-deployment.yml
+----
+
+. Verify that the gateway `Deployment` rollout was successful by running the following command:
++
+[source,terminal]
+----
+$ oc rollout status deployment/<gateway_name> -n <gateway_namespace>
+----
++
+You should see output similar to the following:
++
+.Example output
+[source,terminal]
+----
+Waiting for deployment "<gateway_name>" rollout to finish: 0 of 1 updated replicas are available...
+deployment "<gateway_name>" successfully rolled out
+----
+
+. Create a YAML file named `gateway-service.yml` that contains the Kubernetes `Service` object for the gateway. 
++
+[source,yaml,subs="attributes,verbatim"]
+----
+apiVersion: v1
+kind: Service
+metadata:
+  name: <gateway_name>
+  namespace: <gateway_namespace>
+spec:
+  type: ClusterIP <1>
+  selector:
+    istio: <gateway_name> <2>
+  ports:
+    - name: status-port
+      port: 15021
+      protocol: TCP
+      targetPort: 15021
+    - name: http2
+      port: 80
+      protocol: TCP
+      targetPort: 80
+    - name: https
+      port: 443
+      protocol: TCP
+      targetPort: 443
+----
+<1> When you  set `spec.type` to `ClusterIP` the gateway `Service` object can be accessed only from within the cluster. If the gateway has to handle ingress traffic from outside the cluster, set `spec.type` to `LoadBalancer`. Alternatively, you can use OpenShift Routes. 
+<2> Set the `selector` to the unique label or set of labels specified in the pod template of the gateway deployment that you previously created.
+
+. Apply the YAML file by running the following command:
++
+[source,terminal]
+----
+$ oc apply -f gateway-service.yml
+----
+
+. Verify that the gateway service is targeting the endpoint of the gateway pods by running the following command:
++
+[source,terminal]
+----
+$ oc get endpoints <gateway_name> -n <gateway_namespace>
+----
++
+You should see output similar to the following example:
++
+.Example output
+[source,terminal]
+----
+NAME              ENDPOINTS                             AGE
+<gateway_name>    10.131.0.181:8080,10.131.0.181:8443   1m
+----
+
+. Optional: Create a YAML file named `gateway-hpa.yml` that defines a horizontal pod autoscaler for the gateway. The following example sets the minimum replicas to `2` and the maximum replicas to `5` and scales the replicas up when average CPU utilization exceeds 80% of the CPU resource limit. This limit is specified in the pod template of the deployment for the gateway.  
++
+[source,yaml,subs="attributes,verbatim"]
+----
+apiVersion: autoscaling/v2
+kind: HorizontalPodAutoscaler
+metadata:
+  name: <gateway_name>
+  namespace: <gateway_namespace>
+spec:
+  minReplicas: 2
+  maxReplicas: 5
+  metrics:
+  - resource:
+      name: cpu
+      target:
+        averageUtilization: 80
+        type: Utilization
+    type: Resource
+  scaleTargetRef:
+    apiVersion: apps/v1
+    kind: Deployment
+    name: <gateway_name> <1>
+----
+<1> Set `spec.scaleTargetRef.name` to the name of the gateway deployment previously created.
+
+. Optional: Apply the YAML file by running the following command:
++
+[source,terminal]
+----
+$ oc apply -f gateway-hpa.yml
+----
+
+. Optional: Create a YAML file named `gateway-pdb.yml` that defines a pod disruption budget for the gateway. The following example allows gateway pods to be evicted only when at least 1 healthy gateway pod will remain on the cluster after the eviction.
++
+[source,yaml,subs="attributes,verbatim"]
+----
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: <gateway_name>
+  namespace: <gateway_namespace>
+spec:
+  minAvailable: 1
+  selector:
+    matchLabels:
+      istio: <gateway_name> <1>
+----
+<1> Set the `spec.selector.matchLabels` to the unique label or set of labels specified in the pod template of the gateway deployment previously created.
+
+. Optional: Apply the YAML file by running the following command:
++
+[source,terminal]
+----
+$ oc apply -f gateway-pdb.yml
+----
