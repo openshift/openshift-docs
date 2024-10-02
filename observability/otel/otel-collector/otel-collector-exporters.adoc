@@ -8,6 +8,122 @@ toc::[]
 
 Exporters send data to one or more back ends or destinations. An exporter can be push or pull based. By default, no exporters are configured. One or more exporters must be configured. Exporters can support one or more data sources. Exporters might be used with their default settings, but many exporters require configuration to specify at least the destination and security settings.
 
+[id="load-balancing-exporter_{context}"]
+== Load Balancing Exporter
+
+The Load Balancing Exporter exports spans, metrics, and logs based on the `routing_key` configuration.
+
+:FeatureName: The Load Balancing Exporter
+include::snippets/technology-preview.adoc[leveloffset=+1]
+
+.OpenTelemetry Collector custom resource with an enabled Load Balancing Exporter
+[source,yaml]
+----
+# ...
+  config: |
+    exporters:
+      loadbalancing:
+        routing_key: "service"
+        protocol:
+          otlp: # <1>
+            timeout: 1s
+        resolver: # <2>
+          static: # <3>
+            hostnames:
+            - backend-1:4317
+            - backend-2:4317
+          dns: # <4>
+            hostname: otelcol-headless.observability.svc.cluster.local
+          k8s: # <5>
+            service: lb-svc.kube-public
+            ports:
+              - 15317
+              - 16317
+# ...
+----
+<1> The OTLP protocol is supported for load balancing.
+<2> Only one resolver can be configured.
+<3> The static resolver distributes load using a fixed list of backends.
+<4> The DNS resolver is compatible with Kubernetes headless services.
+<5> The Kubernetes resolver is recommended for dynamic environments.
+
+This exporter will export signals (spans, metrics, logs) based on the configured `routing_key`.
+
+.Supported `routing_key` options
+[cols="1,2", options="header"]
+|===
+| `routing_key` | Can be used for 
+| `service`     | logs, spans, metrics 
+| `traceID`     | logs, spans
+| `resource`    | metrics
+| `metric`      | metrics
+| `streamID`    | metrics
+|===
+
+If no `routing_key` is specified, the default behavior is `traceID` for traces and `service` for metrics. This ensures that signals from the same trace or service reach the same backend.
+
+The load balancing exporter requires backend information, either via a static list of backends or a DNS-based resolver (e.g., a Kubernetes headless service). DNS resolution periodically updates the backend list.
+
+The exporter makes routing decisions based on the trace ID or service name. Backend load is not taken into consideration, but load distribution is expected to be stable, with less than 5% deviation.
+
+This exporter is particularly useful for backends with tail-based samplers or red-metrics-collectors, which need visibility into full traces.
+
+When the backend list changes, some signals are rerouted to different backends. he number of rerouted paths is approximately `R/N`, where:
+
+* `R` is the total number of routes (trace IDs or service names mapped to a backend).
+* `N` is the total number of backends.
+
+This load balancer supports service name-based routing for traces. In scenarios where spanmetrics connectors generate metrics and push them to Prometheus, routing based on `service` avoids label collisions caused by multiple collectors seeing the same `service+operation` labels.
+
+The following metrics are generated when this exporter is in use:
+
+- `otelcol_loadbalancer_num_resolutions`: Total number of resolutions performed by the resolver (tagged by resolver and success status).
+- `otelcol_loadbalancer_num_backends`: Number of active backends. For static resolvers, this should match the configuration.
+- `otelcol_loadbalancer_num_backend_updates`: Number of backend list updates. High update frequency may indicate an issue with the load balancer.
+- `otelcol_loadbalancer_backend_latency`: Measures backend latency.
+- `otelcol_loadbalancer_backend_outcome`: Tracks the success or failure (success=true|false) for each backend endpoint.
+
+The `loadbalancingexporter` creates an exporter per backend, conforming to the configured send queue and retry mechanisms. However, failed delivery to an endpoint can result in data loss if the target remains unavailable after retries are exhausted.
+
+* When using the `static` resolver, all telemetry routed to an unavailable backend will fail until the backend is restored or removed.
+* The `dns` and `k8s` resolvers periodically update the list of available backends. The `k8s` resolver is generally faster to react than the `dns` resolver, but a temporary mismatch between the exporter's view and the actual topology may occur.
+
+
+.Parameters used by the Load Balancing Exporter
+[options="header"]
+[cols="a,a,a"]
+|===
+|Parameter |Description |Default
+
+|`routing_key`
+|Determines how the load balancer distributes the telemetry signals. Options include `service`, `traceID`, `metric`, `resource`, and `streamID`.
+|`traceID`
+
+|`protocol.otlp`
+|OTLP configuration fields are supported.
+|N/A
+
+|`resolver`
+|Only one resolver can be configured.
+|N/A
+
+|`resolver.static.hostnames`
+|The static resolver assigns load based on a fixed list of backends.
+|N/A
+
+|`resolver.dns.hostname`
+|The DNS resolver is compatible with Kubernetes headless services.
+|N/A
+
+|`resolver.k8s.service`
+|Specifies the Kubernetes service for the Kubernetes resolver.
+|N/A
+
+|`resolver.k8s.ports`
+|Lists the ports for the Kubernetes resolver.
+|N/A
+|===
+
 [id="otlp-exporter_{context}"]
 == OTLP Exporter
 
@@ -100,46 +216,6 @@ The Debug Exporter prints traces and metrics to the standard output.
 # ...
 ----
 <1> Verbosity of the debug export: `detailed` or `normal` or `basic`. When set to `detailed`, pipeline data is verbosely logged. Defaults to `normal`.
-
-[id="load-balancing-exporter_{context}"]
-== Load Balancing Exporter
-
-The Load Balancing Exporter consistently exports spans, metrics, and logs according to the `routing_key` configuration.
-
-:FeatureName: The Load Balancing Exporter
-include::snippets/technology-preview.adoc[leveloffset=+1]
-
-.OpenTelemetry Collector custom resource with an enabled Load Balancing Exporter
-[source,yaml]
-----
-# ...
-  config: |
-    exporters:
-      loadbalancing:
-        routing_key: "service" # <1>
-        protocol:
-          otlp: # <2>
-            timeout: 1s
-        resolver: # <3>
-          static: # <4>
-            hostnames:
-            - backend-1:4317
-            - backend-2:4317
-          dns: # <5>
-            hostname: otelcol-headless.observability.svc.cluster.local
-          k8s: # <6>
-            service: lb-svc.kube-public
-            ports:
-              - 15317
-              - 16317
-# ...
-----
-<1> The `routing_key: service` exports spans for the same service name to the same Collector instance to provide accurate aggregation. The `routing_key: traceID` exports spans based on their `traceID`. The implicit default is `traceID` based routing.
-<2> The OTLP is the only supported load-balancing protocol. All options of the OTLP exporter are supported.
-<3> You can configure only one resolver.
-<4> The static resolver distributes the load across the listed endpoints.
-<5> You can use the DNS resolver only with a Kubernetes headless service.
-<6> The Kubernetes resolver is recommended.
 
 [id="prometheus-exporter_{context}"]
 == Prometheus Exporter
