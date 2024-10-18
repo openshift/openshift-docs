@@ -1,0 +1,19 @@
+:_mod-docs-content-type: ASSEMBLY
+[id="rosa-tuning-config"]
+= Using the Node Tuning Operator on {hcp-title} clusters
+include::_attributes/attributes-openshift-dedicated.adoc[]
+:context: rosa-tuning-config
+
+toc::[]
+
+{hcp-title-first} supports the Node Tuning Operator to improve performance of your nodes on your {hcp-title} clusters. Prior to creating a node tuning configuration, you must create a custom tuning specification.
+
+include::modules/node-tuning-operator.adoc[leveloffset=+1]
+
+include::modules/custom-tuning-specification.adoc[leveloffset=+1]
+
+include::modules/rosa-creating-node-tuning.adoc[leveloffset=+1]
+
+include::modules/rosa-modifying-node-tuning.adoc[leveloffset=+1]
+
+include::modules/rosa-deleting-node-tuning.adoc[leveloffset=+1]
