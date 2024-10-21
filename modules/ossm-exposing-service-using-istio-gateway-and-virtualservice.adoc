@@ -1,0 +1,138 @@
+:_mod-docs-content-type: PROCEDURE
+[id="ossm-exposing-service-using-istio-gateway-and-virtualservice_{context}"]
+= Exposing a service using an Istio gateway and a VirtualService
+:context: ossm-exposing-service-using-istio-gateway-and-virtualservice
+
+This procedure uses the {istio} `Gateway` and `VirtualService` resources to configure a gateway that was deployed using gateway injection. This procedure configures the gateway to expose a service in the mesh to traffic outside the mesh. Once configured, the gateway is exposed to traffic outside the cluster by setting the gateway `Service` to type `LoadBalancer`.
+
+.Prerequisites
+
+* You have installed an {istio} gateway using gateway injection.
+
+.Procedure
+
+. Deploy a sample service in a mesh namespace. 
++
+[source,terminal]
+----
+oc create namespace httpbin
+oc label namespace httpbin istio-injection=enabled
+oc apply -n httpbin -f https://raw.githubusercontent.com/openshift-service-mesh/istio/refs/heads/master/samples/httpbin/httpbin.yaml
+----
+
+. Create an Istio `Gateway` resource to configure gateway proxies to expose port 80 (HTTP) for the host `httpbin.example.com`.
++
+[source,yaml,subs="attributes,verbatim"]
+----
+apiVersion: networking.istio.io/v1
+kind: Gateway
+metadata:
+  name: httpbin-gateway
+  namespace: httpbin
+spec:
+  selector:
+    istio: <gateway_name> <1>
+  servers:
+  - port:
+      number: 80
+      name: http
+      protocol: HTTP
+    hosts:
+    - httpbin.example.com <2>
+----
+<1> Set the `selector` to the unique label or set of labels specified in the pod template of the gateway proxy `Deployment`. By default, the Istio `Gateway` resource configuration will apply to matching gateway pods in all namespaces.
+<2> Using the `hosts` field, specify a list of addresses that can be used by clients when attempting to access a mesh service at the associated port.
+
+. Create a `VirtualService` defining rules to route traffic from the gateway proxy to the sample service.
++
+[source,yaml,subs="attributes,verbatim"]
+----
+apiVersion: networking.istio.io/v1
+kind: VirtualService
+metadata:
+  name: httpbin
+  namespace: httpbin
+spec:
+  hosts:
+  - httpbin.example.com <1>
+  gateways:
+  - httpbin-gateway <2>
+  http:
+  - match:
+    - uri:
+        prefix: /status
+    - uri:
+        prefix: /headers
+    route:
+    - destination: <3>
+        port:
+          number: 8000
+        host: httpbin
+----
+<1> Specify the `hosts` that the routing rules of the `VirtualService` will be applied to. The `hosts` specified must be exposed by the {istio} `Gateway` resource the VirtualService is bound to.
+<2> Bind the `VirtualService` to the {istio} `Gateway` resource created in the previous step by adding the `Gateway` name to the list of gateways.
+<3> Route matching traffic to the sample service deployed earlier by defining a `destination` that includes the `host` and `port` of the httpbin `Service`.
+
+. For verification purposes, deploy a `curl` client in a namespace outside of the mesh.
++
+[source,terminal]
+----
+oc create namespace curl
+oc apply -n curl -f https://raw.githubusercontent.com/openshift-service-mesh/istio/refs/heads/master/samples/curl/curl.yaml
+----
+
+. Using the `curl` client, send a request to the `/headers` endpoint of the httpbin application via the ingress gateway `Service`. Set the `Host` header of the request to `httpbin.example.com` to match the host specified in the {istio} `Gateway` and `VirtualService` resources.
++
+[source,terminal]
+----
+CURL_POD=$(oc get pods -n curl -l app=curl -o jsonpath='{.items[*].metadata.name}')
+
+oc exec $CURL_POD -n curl -- \
+  curl -s -I \
+    -H Host:httpbin.example.com \
+    <gateway_name>.<gateway_namespace>.svc.cluster.local/headers
+----
+
+. The response should have a 200 OK HTTP status indicating that the request was successful.
++
+.Example output
+[source,terminal]
+----
+HTTP/1.1 200 OK
+server: istio-envoy
+----
+
+. Send a curl request to an endpoint that does not have a corresponding URI prefix match defined in the httpbin `VirtualService`.
++
+[source,terminal]
+----
+oc exec $CURL_POD -n curl -- \
+  curl -s -I \
+    -H Host:httpbin.example.com \
+    <gateway_name>.<gateway_namespace>.svc.cluster.local/get
+----
++
+The response should return a `404 Not Found` status. This is expected because the `/get` endpoint does not have a matching URI prefix in the httpbin `VirtualService`.
++
+.Example output
+[source,terminal]
+----
+HTTP/1.1 404 Not Found
+server: istio-envoy
+...
+----
+
+. Optional: Expose the gateway proxy to traffic outside the cluster by setting its `Service` type to `LoadBalancer`.
++
+[source,terminal]
+----
+oc patch service <gateway_name> -n <gateway_namespace> -p '{"spec": {"type": "LoadBalancer"}}'
+----
++
+[NOTE]
+====
+A gateway can also be exposed to traffic outside the cluster by using OpenShift Routes. For more information, see "Exposing a gateway to traffic outside the cluster using OpenShift Routes".
+====
+
+. Verify that the httpbin service can now be accessed from outside the cluster. Ensure that you set the `INGRESS_HOST` variable appropriately for the environment your cluster is running in.
+
