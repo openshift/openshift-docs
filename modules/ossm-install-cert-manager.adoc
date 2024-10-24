@@ -1,0 +1,334 @@
+// Module included in the following assemblies:
+//
+// * service-mesh-docs-main/install/ossm-installing-openshift-service-mesh.adoc
+
+:_mod-docs-content-type: PROCEDURE
+[id="ossm-install-cert-manager_{context}"]
+= Installing cert-manager
+//TP1 content influx. Title, etc may change.
+//Content is very similar to 2.x content
+//all kinds of formatting things to fix. want to see if a build will generate to have a look, and see how it fits structurally with the IA.
+
+You can install the `cert-manager` tool to manage the lifecycle of TLS certificates and ensure that they are valid and up-to-date.
+
+If you are running Istio in your environment, you can also install the `istio-csr` certificate authority (CA) server, which handles certificate signing requests (CSR) from Istio proxies. The `istio-csr` CA delegates signing to the `cert-manager` tool, which delegates to the configured CA.
+
+.Procedure
+
+. Create the `istio-system` namespace:
++
+[source, terminal]
+----
+$ oc create namespace istio-system
+----
+
+. Create the root issuer:
++
+.. Create the `Issuer` object as in the following example:
++
+.Example `issuer.yaml`
+[source, yaml]
+----
+    apiVersion: cert-manager.io/v1
+    kind: Issuer
+    metadata:
+      name: selfsigned
+      namespace: istio-system
+    spec:
+      selfSigned: {}
+    ---
+    apiVersion: cert-manager.io/v1
+    kind: Certificate
+    metadata:
+        name: istio-ca
+        namespace: istio-system
+    spec:
+      isCA: true
+      duration: 87600h # 10 years
+      secretName: istio-ca
+      commonName: istio-ca
+      privateKey:
+        algorithm: ECDSA
+        size: 256
+      subject:
+        organizations:
+          - cluster.local
+          - cert-manager
+      issuerRef:
+        name: selfsigned
+        kind: Issuer
+        group: cert-manager.io
+    ---
+    apiVersion: cert-manager.io/v1
+    kind: Issuer
+    metadata:
+      name: istio-ca
+      namespace: istio-system
+    spec:
+      ca:
+        secretName: istio-ca
+----
++
+.. Create the objects using the following command:
++
+[source, terminal]
++
+----
+$ oc apply -f issuer.yaml
+----
++
+.. Wait for the `istio-ca` certificate to become ready:
++
+[source, terminal]
+----
+$ oc wait --for=condition=Ready certificates/istio-ca -n istio-system
+----
+
+. Export the Root CA to a local file:
++
+This copies your `istio-ca` certificate to the `cert-manager` namespace where it can be used by `istio-csr`.
++
+.. Copy the secret to a local file:
++
+[source, terminal]
+----
+$ oc get -n istio-system secret istio-ca -o jsonpath='{.data.tls\.crt}' | base64 -d > ca.pem
+----
++
+.. Create a secret from the local cert file in the `cert-manager` namespace:
++
+[source, terminal]
+----
+$ oc create secret generic -n cert-manager istio-root-ca --from-file=ca.pem=ca.pem
+----
+
+. Install `istio-csr` in the `cert-manager` namespace based on `updateStrategy`:
++
+Depending on which `updateStrategy` (`InPlace` or `RevisionBased`) you chose for your `Istio` resource, you may need to pass additional options.
++
+[NOTE]
+====
+If your `controlplane` namespace is not `istio-system`, you need to update `app.istio.namespace` to match your `controlplane` namespace.
+====
++
+.. `InPlace` strategy `istio-csr` installation:
++
+... Add the jetstack charts to your local Helm repo:
++
+[source, terminal]
+----
+helm repo add jetstack https://charts.jetstack.io --force-update
+----
++
+... Install the `istio-csr`chart:
++
+[source, terminal]
+----
+    helm upgrade cert-manager-istio-csr jetstack/cert-manager-istio-csr \
+        --install \
+        --namespace cert-manager \
+        --wait \
+        --set "app.tls.rootCAFile=/var/run/secrets/istio-csr/ca.pem" \
+        --set "volumeMounts[0].name=root-ca" \
+        --set "volumeMounts[0].mountPath=/var/run/secrets/istio-csr" \
+        --set "volumes[0].name=root-ca" \
+        --set "volumes[0].secret.secretName=istio-root-ca" \
+        --set "app.istio.namespace=istio-system"
+----
++
+.. `RevisionBased` strategy `istio-csr` installation:
++
+If you chose the `RevisionBased` strategy, then you need to specify all the istio revisions to your link:https://github.com/cert-manager/istio-csr/tree/main/deploy/charts/istio-csr#appistiorevisions0--string[`istio-csr` deployment].
++
+... Find the names of your `IstioRevision` by running the following command:
++
+[source, terminal]
+----
+$ oc get istiorevisions
+----
++
+... Add the jetstack charts to your local Helm repo by running the following command:
++
+[source, terminal]
+----
+helm repo add jetstack https://charts.jetstack.io --force-update
+----
++
+... Install the `istio-csr` chart with your revision name:
++
+[source, terminal]
+----
+    helm upgrade cert-manager-istio-csr jetstack/cert-manager-istio-csr \
+        --install \
+        --namespace cert-manager \
+        --wait \
+        --set "app.tls.rootCAFile=/var/run/secrets/istio-csr/ca.pem" \
+        --set "volumeMounts[0].name=root-ca" \
+        --set "volumeMounts[0].mountPath=/var/run/secrets/istio-csr" \
+        --set "volumes[0].name=root-ca" \
+        --set "volumes[0].secret.secretName=istio-root-ca" \
+        --set "app.istio.namespace=istio-system" \
+        --set "app.istio.revisions={default-v1-23-0}"
+----
+
+. Install your `Istio` resource:
++
+This disables Istio's built in CA server and points istiod to the `istio-csr` CA server. The `istio-csr` CA server issues certificates for both istiod and user workloads. Additionally, the istiod TLS cert is mounted into the pod at a known location where it will be read. Mounting the certificates to a known location is only necessary for {SMProduct}.
++
+.. Create the `Istio` object as in the following example:
++
+.Example `Istio` object
+[source, yaml]
+----
+apiVersion: sailoperator.io/v1alpha1
+kind: Istio
+metadata:
+  name: default
+spec:
+  version: v1.23.0
+  namespace: istio-system
+  values:
+    global:
+      caAddress: cert-manager-istio-csr.cert-manager.svc:443
+    pilot:
+      env:
+        ENABLE_CA_SERVER: "false"
+      volumeMounts:
+        - mountPath: /tmp/var/run/secrets/istiod/tls
+          name: istio-csr-dns-cert
+          readOnly: true
+----
++
+.. Create the `Istio` resource using the following command:
++
+[source, terminal]
+----
+$ oc apply -f istio.yaml
+----
++
+.. Wait for `Istio` to become ready:
++
+[source, terminal]
+----
+$ oc wait --for=condition=Ready istios/default -n istio-system
+----
+
+.Verification
+
+Use the sample `httpbin`` service and `sleep`` app to check traffic between the workloads is possible and check the workload certificate of the proxy to verify that the cert-manager tool is installed correctly.
+
+. Create the `sample` namespace:
++
+[source, terminal]
+----
+$ oc new-project sample
+----
+
+. Find your active `IstioRevision`:
++
+[source, terminal]
+----
+$ oc get istiorevisions
+----
+
+. Add the injection label for your active revision to the `sample` namespace:
++
+[source, terminal]
+----
+$ oc label namespace sample istio.io/rev=<your-active-revision-name> --overwrite=true
+----
+
+. Deploy the HTTP and sleep apps:
++
+[source, terminal]
+----
+$ oc apply -n sample -f https://raw.githubusercontent.com/istio/istio/refs/heads/master/samples/httpbin/httpbin.yaml
+----
++
+[source, terminal]
+----
+$ oc apply -n sample -f https://raw.githubusercontent.com/istio/istio/refs/heads/master/samples/sleep/sleep.yaml
+----
+
+. Wait for both apps to become ready:
++
+[source, terminal]
+----
+$ oc rollout status -n sample deployment httpbin sleep
+----
+
+. Verify that `sleep` can access the `httpbin` service:
++
+[source, terminal]
+----
+$ oc exec "$(oc get pod -l app=sleep -n sample \
+     -o jsonpath={.items..metadata.name})" -c sleep -n sample -- \
+     url http://httpbin.sample:8000/ip -s -o /dev/null \
+     -w "%{http_code}\n"
+----
++
+.Example output
+[source, terminal]
+----
+200
+----
+
+. Verify `httpbin` workload certificate matches what is expected:
++
+[source, terminal]
+----
+istioctl proxy-config secret -n sample $(oc get pods -n sample -o jsonpath='{.items..metadata.name}' --selector app=httpbin) -o json | jq -r '.dynamicActiveSecrets[0].secret.tlsCertificate.certificateChain.inlineBytes' | base64 --decode | openssl x509 -text -noout
+----
++
+.Example output
+[source, terminal]
+----
+...
+Issuer: O = cert-manager + O = cluster.local, CN = istio-ca
+...
+X509v3 Subject Alternative Name:
+  URI:spiffe://cluster.local/ns/sample/sa/httpbin
+----
+
+[id="upgrading-istio-csr-revision-based_{context}"]
+== Upgrading `istio-csr` and `RevisionBased` control plane
+
+If you chose the `RevisionBased` upgrade strategy, then `istio-csr` requires you to pass all revisions each time you upgrade your `RevisionBased` control plane. To do this, you need to follow this order each time you upgrade:
+
+. Update `istio-csr` deployment with new revision.
+. Update `Istio.spec.version`.
+
+[id="example-upgrade-revision-based_{context}"]
+=== Example upgrade for `RevisionBased` control plane
+
+In this example, the `controlplane` is being updated from `v1.23.0` to `1.23.1.`
+
+. Update `istio-csr` deployment with the new revision:
++
+[source, terminal]
+----
+helm upgrade cert-manager-istio-csr jetstack/cert-manager-istio-csr \
+  --install \
+  --namespace cert-manager \
+  --wait \
+  --reuse-values \
+  --set "app.istio.revisions={default-v1-23-0,default-v1-23-1}"
+----
+
+. Update `Istio.spec.version = v1.23.1`:
++
+[source, terminal]
+----
+helm upgrade cert-manager-istio-csr jetstack/cert-manager-istio-csr \
+  --install \
+  --namespace cert-manager \
+  --wait \
+  --reuse-values \
+  --set "app.istio.revisions={default-v1-23-1}"
+----
+
+Once the old revision is no longer in use, you can remove the revision from your `istio-csr` deployment.
+
+// Additional resources For information about how to install the cert-manager Operator for OpenShift Container Platform, see: [Installing the cert-manager Operator for Red Hat OpenShift](https://docs.openshift.com/container-platform/4.16/security/cert_manager_operator/cert-manager-operator-install.html).
+//temporary comment out so hopefully builds pass
+
