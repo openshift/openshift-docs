@@ -18,11 +18,6 @@ import yaml
 
 import logging
 
-# See manual and pip3 install aura.tar.gz for logging
-from aura import cli
-
-cli.init_logging(False, True)
-
 list_of_errors = []
 CLONE_DIR = "."
 BASE_PORTAL_URL = "https://docs.redhat.com/en/documentation/"
