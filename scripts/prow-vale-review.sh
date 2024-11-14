@@ -15,7 +15,7 @@ else
     COMMIT_ID=$2
 fi
 
-FILES=$(git diff --name-only HEAD~1 HEAD --diff-filter=d "*.adoc" ':(exclude)_unused_topics/*')
+FILES=$(git diff --name-only HEAD~1 HEAD --diff-filter=d "*.adoc" ':(exclude)_unused_topics/*' ':(exclude)rest_api/*' ':(exclude)microshift_rest_api/*' ':(exclude)modules/virt-runbook-*' ':(exclude)modules/oc-by-example-content.adoc' ':(exclude)modules/oc-adm-by-example-content.adoc' ':(exclude)monitoring/config-map-reference-for-the-cluster-monitoring-operator.adoc' ':(exclude)modules/microshift-oc-adm-by-example-content.adoc' ':(exclude)modules/microshift-oc-by-example-content.adoc')
 
 function post_review_comment {
 
@@ -42,9 +42,18 @@ function get_vale_errors {
 # Run vale with the custom template on updated files and determine if a review comment should be posted
 for FILE in ${FILES};
 do
-    # Clean out conditional markup in place and parse for vale errors
-    sed -i 's/ifdef::.*\|ifndef::.*\|ifeval::.*\|endif::.*/ /' "$FILE"
-    vale_json=$(vale --minAlertLevel=error --output=.vale/templates/bot-comment-output.tmpl "$FILE" | jq)
+    # Check if Vale should use the modules config or the root config. Ensures correct rule enabling/disabling
+    if [[ $FILE == modules/* ]]; then
+        INI="modules/.vale.ini"
+    else
+        INI=".vale.ini"
+    fi
+
+    # Update conditional markup in place
+    sed -i 's/ifdef::.*/ifdef::temp-ifdef[]/; s/ifeval::.*/ifeval::["{temp-ifeval}" == "temp"]/; s/ifndef::.*/ifndef::temp-ifndef[]/; s/endif::.*/endif::[]/;' "$FILE"
+
+    # Parse for vale errors
+    vale_json=$(vale --minAlertLevel=error --output=.vale/templates/bot-comment-output.tmpl --config="$INI" "$FILE" | jq)
 
     # Check if there are Vale errors before processing the file further.
     if [[ "$vale_json" != "[]" ]]; then

@@ -11,16 +11,18 @@ const urlMappings = {
   "openshift-origin": "https://docs.okd.io/",
   "openshift-pipelines": "https://docs.openshift.com/pipelines/",
   "openshift-serverless": "https://docs.openshift.com/serverless/",
+  "openshift-telco": "https://docs.openshift.com/container-platform-telco/",
 };
 
 function versionSelector(list) {
   "use strict";
 
   newVersion = list[list.selectedIndex].value;
-  if (dk === "openshift-enterprise") {
-    currentVersion = window.location.pathname.split("/")[2];
-  } else if (dk === "openshift-origin") {
+
+  if (dk === "openshift-origin") {
     currentVersion = window.location.pathname.split("/")[1];
+  } else {
+    currentVersion = window.location.pathname.split("/")[2];
   }
 
   let baseUrl = urlMappings[dk];

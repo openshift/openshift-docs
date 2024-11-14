@@ -23,9 +23,9 @@ from aura import cli
 
 cli.init_logging(False, True)
 
-has_errors = False
+list_of_errors = []
 CLONE_DIR = "."
-BASE_PORTAL_URL = "https://access.redhat.com/documentation/en-us/"
+BASE_PORTAL_URL = "https://docs.redhat.com/en/documentation/"
 # ID_RE = re.compile("^\[(?:\[|id=\'|#)(.*?)(\'?,.*?)?(?:\]|\')?\]", re.M | re.DOTALL)
 ID_RE = re.compile(
     "^\[(?:\[|id='|#|id=\")(.*?)('?,.*?)?(?:\]|'|\")?\]", re.M | re.DOTALL
@@ -442,6 +442,7 @@ def reformat_for_drupal(info):
 
     # Reformat the data
     for book in books:
+
         log.info("Processing %s", book["Dir"])
         book_src_dir = os.path.join(src_dir, book["Dir"])
 
@@ -458,6 +459,7 @@ def reformat_for_drupal(info):
 
         log.debug("Copying images for " + book["Name"])
         copy_images(book, src_dir, images_dir, distro)
+
 
 
 def copy_images(node, src_path, dest_dir, distro):
@@ -621,7 +623,12 @@ def scrub_file(info, book_src_dir, src_file, tag=None, cwd=None):
     # procedure loads the file recognizing that it starts with http
     # it then checks if it exists or not, and if it exists, returns the raw data
     # data that it finds.
-    if base_src_file.startswith("https://raw.githubusercontent.com/openshift/"):
+    # modified 20/Aug/2024 to process https links which are preceded
+    # by an added directory (happens with hugeBook)
+
+    https_pos = base_src_file.find("https://raw.githubusercontent.com/openshift/")
+    if https_pos >=0:
+        base_src_file = base_src_file[https_pos:]
         try:
             response = requests.get(base_src_file)
             if response:
@@ -630,7 +637,7 @@ def scrub_file(info, book_src_dir, src_file, tag=None, cwd=None):
                 raise ConnectionError("Malformed URL")
         except Exception as exception:
             log.error("An include file wasn't found: %s", base_src_file)
-            has_errors = True
+            list_of_errors.append(f"An include file wasn't found: {base_src_file}")
             sys.exit(-1)
 
     # Get a list of predefined custom title ids for the file
@@ -732,7 +739,6 @@ def fix_links(content, info, book_src_dir, src_file, tag=None, cwd=None):
             content = _fix_links(
                 content, book_src_dir, src_file, info, tag=tag, cwd=cwd
             )
-
     return content
 
 def dir_to_book_name(dir,src_file,info):
@@ -742,11 +748,11 @@ def dir_to_book_name(dir,src_file,info):
             return(book["Name"])
             break
 
-    has_errors = True
     log.error(
         'ERROR (%s): book not found for the directory %s',
         src_file,
         dir)
+    list_of_errors.append(f"ERROR ({src_file}): book not found for the directory {dir}")
     return(dir)
 
 
@@ -791,6 +797,7 @@ def _fix_links(content, book_dir, src_file, info, tag=None, cwd=None):
                         'ERROR (%s): link pointing outside source directory? %s',
                         src_file,
                         link_file)
+                    list_of_errors.append(f'ERROR ({src_file}): link pointing outside source directory? {link_file}')
                     continue
                 split_relative_path = full_relative_path.split("/")
                 book_dir_name = split_relative_path[0]
@@ -823,13 +830,14 @@ def _fix_links(content, book_dir, src_file, info, tag=None, cwd=None):
                 fixed_link = link_text
                 if EXTERNAL_LINK_RE.search(link_file) is not None:
                     rel_src_file = src_file.replace(os.path.dirname(book_dir) + "/", "")
-                    has_errors = True
+                    link_text_message = link_text.replace("\n", "")
                     log.error(
                         'ERROR (%s): "%s" appears to try to reference a file not included in the "%s" distro',
                         rel_src_file,
-                        link_text.replace("\n", ""),
+                        link_text_message,
                         info["distro"],
                     )
+                    list_of_errors.append(f'ERROR ({rel_src_file})): {link_text_message} appears to try to reference a file not included in the {info["distro"]} distro')
         else:
             fixed_link = "xref:" + link_anchor.replace("#", "") + link_title
 
@@ -1177,7 +1185,7 @@ def main():
     # Copy the original data and reformat for drupal
     reformat_for_drupal(info)
 
-    if has_errors:
+    if list_of_errors:
         sys.exit(1)
 
     if args.push:
