@@ -1,0 +1,233 @@
+// This procedure is used in the following assembly:
+// * gateways/ossm-directing-outbound-traffic-through-a-gateway
+
+:_mod-docs-content-type: PROCEDURE
+[id="ossm-directing-egress-traffic-through-a-gateway-using-istio-apis_{context}"]
+= Directing egress traffic through a gateway using Istio APIs
+
+Use {istio} APIs to direct outbound HTTP traffic through a gateway that was installed using gateway injection.
+
+.Prerequisites
+
+* You have installed a gateway using gateway injection.
+
+.Procedure
+
+. Create a namespace called `curl` by running the following command:
++
+[source,terminal]
+----
+$ oc create namespace curl
+----
+
+. Depending on the update strategy you are using, enable sidecar injection in the namespace by running the appropriate commands: 
+
+.. If you are using the `InPlace` update strategy, run the following command:
++
+[source,terminal]
+----
+$ oc label namespace curl istio-injection=enabled
+----
+
+.. If you are using the `RevisionBased` update strategy, run the following commands:
+
+... Display the revision name by running the following command:
++
+[source,terminal]
+----
+$ oc get istiorevisions.sailoperator.io
+----
++
+.Example output
+[source,terminal]
+----
+NAME              TYPE    READY   STATUS    IN USE   VERSION   AGE
+default-v1-23-0   Local   True    Healthy   True     v1.23.0   3m33s
+----
+
+... Label the namespace with the revision name to enable sidecar injection by running the following command:
++
+[source,terminal]
+----
+$ oc label namespace curl istio.io/rev=default-v1-23-0
+----
+
+
+. Deploy a `curl` application by running the following command:
++
+[source,terminal]
+----
+$ oc apply -n curl -f https://raw.githubusercontent.com/openshift-service-mesh/istio/refs/heads/master/samples/curl/curl.yaml
+----
+
+. Export a `CURL_POD` environment variable that has been initialized with the name of the curl pod:
++
+[source,terminal]
+----
+$ export CURL_POD=$(oc get pod -n curl -l app=curl -o jsonpath='{.items[0].metadata.name}')
+----
+
+. Create a YAML file named `http-se.yaml` that directs traffic from the mesh to an external service. The following example defines a `ServiceEntry` for a URL.
++
+.Example configuration
+[source,yaml,subs="attributes,verbatim"]
+----
+apiVersion: networking.istio.io/v1
+kind: ServiceEntry
+metadata:
+  name: egress-se
+  namespace: curl
+spec:
+  hosts:
+    - docs.redhat.com
+  ports:
+    - number: 80
+      name: http-port
+      protocol: HTTP
+  location: MESH_EXTERNAL
+  resolution: DNS
+----
+
+. Apply the YAML file by running the following command:
++
+[source,terminal]
+----
+$ oc apply -f http-se.yaml
+----
+
+. Ensure the `ServiceEntry` configuration was applied correctly. Send an HTTP request to the host that you specified in the previous step by running the following command: 
++
+[source,terminal]
+----
+$ oc exec "$CURL_POD" -n curl -c curl -- curl -sSL -o /dev/null -D - http://docs.redhat.com
+----
++
+This command should return HTTP status codes, such as `301` (redirect) or `200` (success), indicating that the connection works.
+
+. Create a YAML file named `http-gtw.yaml` that creates an egress `Gateway` and routes traffic from the mesh to the host specified for the external service.
++
+.Example configuration
+[source,yaml,subs="attributes,verbatim"]
+----
+apiVersion: networking.istio.io/v1alpha3
+kind: Gateway
+metadata:
+  name: egress-gw
+  namespace: <gateway_namespace> # Namespace where the egress gateway is deployed
+spec:
+  selector:
+    istio: <gateway_name> # Selects the egress-gateway instance to handle this traffic
+  servers:
+    - port:
+        number: 80
+        name: http
+        protocol: HTTP
+      hosts:
+        - docs.redhat.com # External service host, not a full URL.
+---
+apiVersion: networking.istio.io/v1alpha3
+kind: DestinationRule
+metadata:
+  name: egress-dr
+  namespace: <gateway_namespace> # Namespace where the egress gateway is deployed
+spec:
+  host: <gateway_name>.<gateway_namespace>.svc.cluster.local
+  subsets:
+    - name: rh-docs
+----
+
+. Apply the YAML file by running the following command:
++
+[source,terminal]
+----
+$ oc apply -f http-gtw.yaml
+----
+
+. Create a YAML file named `http-vs.yaml` that sets up a `VirtualService` to manage the flow of traffic from the application sidecars through the egress gateway to the external host.
++
+.Example configuration
+[source,yaml,subs="attributes,verbatim"]
+----
+apiVersion: networking.istio.io/v1alpha3
+kind: VirtualService
+metadata:
+  name: egress-vs
+  namespace: curl # Namespace where the curl pod is running
+spec:
+  hosts:
+    - docs.redhat.com # External service host, not a full URL.
+  gateways:
+    - mesh
+    - <gateway_namespace>/egress-gw # Egress gateway name defined in the file that you used in the previous step.
+  http:
+    - match:
+        - gateways:
+            - mesh
+          port: 80
+      route:
+        - destination:
+            host: <gateway_name>.<gateway_namespace>.svc.cluster.local
+            subset: rh-docs
+            port:
+              number: 80
+          weight: 100
+    - match:
+        - gateways:
+            - <gateway_namespace>/egress-gw # Egress gateway name defined in the file that you used in the previous step.
+          port: 80
+      route:
+        - destination:
+            host: docs.redhat.com
+            port:
+              number: 80
+          weight: 100
+----
+
+. Apply the YAML file by running the following command:
++
+[source,terminal]
+----
+$ oc apply -f http-vs.yaml
+----
+
+. Resend the HTTP request to the URL:
++
+[source,terminal]
+----
+$ oc exec "$CURL_POD" -n curl -c curl -- curl -sSL -o /dev/null -D - http://docs.redhat.com
+----
++
+The terminal should display information similar to the following output:
++
+.Example output
+[source,terminal]
+----
+...
+HTTP/1.1 301 Moved Permanently
+...
+location: <example_url>
+...
+
+HTTP/2 200
+Content-Type: text/html; charset=utf-8
+----
+
+. Ensure that the request was routed through the gateway by running the following command:
++
+[source,terminal]
+----
+$ oc logs deployment/<gateway_name> -n <gateway_namespace> | tail -1
+----
++
+[NOTE]
+====
+Access logging must be enabled for this verification step to work. You can enable access logging to the standard output by setting the `spec.values.meshConfig.accessLogFile` field to `/dev/stdout` in the {istio} resource.
+====
++
+The terminal should display information similar to the following output:
++
+.Example output
+[source,terminal]
+----
+[2024-11-07T14:35:52.428Z] "GET / HTTP/2" 301 - via_upstream - "-" 0 0 24 24 "10.128.2.30" "curl/8.11.0" "79551af2-341b-456d-b414-9220b487a03b" "docs.redhat.com" "23.55.176.201:80" outbound|80||docs.redhat.com 10.128.2.29:49766 10.128.2.29:80 10.128.2.30:38296 - 
+----
