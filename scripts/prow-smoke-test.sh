@@ -10,13 +10,16 @@
 #%    Validates openshift-docs AsciiDoc source files using the same tools that run in the Prow CI
 #%
 #%OPTIONS ⚙️
-#%    -v, --validate                                    Validate the AsciiDoc source
+#%    -v, --validate $DISTRO                            Validate the AsciiDoc source. Use --validate to run with default options
+#%    -a, --validate-incl-api-book                      Validate the AsciiDoc source and include the REST API books
 #%    -l, --lint-topicmaps                              Lint topic-map YAML
 #%    -p, --preview $DISTRO "$PRODUCT_NAME" $VERSION    Use --preview to run with default options
 #%    -h, --help                                        Print this help
 #%
 #%EXAMPLES 🤔
 #%    ./scripts/prow-smoke-test.sh --validate
+#%    ./scripts/prow-smoke-test.sh --validate openshift-rosa
+#%    ./scripts/prow-smoke-test.sh --validate-incl-api-book
 #%    ./scripts/prow-smoke-test.sh --lint-topicmaps
 #%    ./scripts/prow-smoke-test.sh --preview
 #%    ./scripts/prow-smoke-test.sh --preview openshift-rosa
@@ -86,6 +89,13 @@ elif [[ "$TEST" == "--validate" || "$TEST" == "-v" ]]; then
     echo ""
     echo "🚧 Validating the docs..."
   $CONTAINER_ENGINE run --rm -it -v "$(pwd)":${CONTAINER_WORKDIR}:Z $CONTAINER_IMAGE sh -c 'scripts/check-asciidoctor-build.sh && python3 build_for_portal.py --distro '${DISTRO}' --product "'"${PRODUCT_NAME}"'" --version '${VERSION}' --no-upstream-fetch && python3 makeBuild.py'
+
+elif [[ "$TEST" == "--validate-incl-api-book" || "$TEST" == "-a" ]]; then
+    # Clean output folder
+    rm -rf ./drupal-build
+    echo ""
+    echo "🚧 Validating the docs..."
+    $CONTAINER_ENGINE run --rm -it -v "$(pwd)":${CONTAINER_WORKDIR}${SELINUX_LABEL} $CONTAINER_IMAGE sh -c 'scripts/check-asciidoctor-build.sh && python3 build_for_portal.py --distro '${DISTRO}' --product "'"${PRODUCT_NAME}"'" --version '${VERSION}' --no-upstream-fetch && python3 makeBuild.py --include-api-book'
 
 elif [[ "$TEST" == "--lint-topicmaps" || "$TEST" == "-l" ]]; then
     echo ""
