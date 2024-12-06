@@ -37,7 +37,7 @@ LINKS_RE = re.compile(
 EXTERNAL_LINK_RE = re.compile(
     "[\./]*([\w_-]+)/[\w_/-]*?([\w_.-]*\.(?:html|adoc))", re.DOTALL
 )
-INCLUDE_RE = re.compile("include::(.*?)\[(.*?)\]", re.M)
+INCLUDE_RE = re.compile(r"^include::(.*?)\[(.*?)\]", re.M)
 IFDEF_RE = re.compile(r"^if(n?)def::(.*?)\[\]", re.M)
 ENDIF_RE = re.compile(r"^endif::(.*?)\[\]\r?\n", re.M)
 COMMENT_CONTENT_RE = re.compile(r"^^////$.*?^////$", re.M | re.DOTALL)
