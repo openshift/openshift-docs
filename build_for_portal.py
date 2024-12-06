@@ -37,10 +37,11 @@ LINKS_RE = re.compile(
 EXTERNAL_LINK_RE = re.compile(
     "[\./]*([\w_-]+)/[\w_/-]*?([\w_.-]*\.(?:html|adoc))", re.DOTALL
 )
-INCLUDE_RE = re.compile("include::(.*?)\[(.*?)\]", re.M)
+INCLUDE_RE = re.compile(r"^include::(.*?)\[(.*?)\]", re.M)
 IFDEF_RE = re.compile(r"^if(n?)def::(.*?)\[\]", re.M)
 ENDIF_RE = re.compile(r"^endif::(.*?)\[\]\r?\n", re.M)
 COMMENT_CONTENT_RE = re.compile(r"^^////$.*?^////$", re.M | re.DOTALL)
+COMMENTED_XREF_RE = re.compile(r"^//.*xref:.*$")
 TAG_CONTENT_RE = re.compile(
     r"//\s+tag::(.*?)\[\].*?// end::(.*?)\[\]", re.M | re.DOTALL
 )
@@ -653,6 +654,9 @@ def scrub_file(info, book_src_dir, src_file, tag=None, cwd=None):
         # Ignore any leading blank lines, before any meaningful content is found
         if line.strip() == "" and not content_found:
             continue
+
+        # Replace lines containing commented xrefs
+        line = COMMENTED_XREF_RE.sub("// Removed commented line that contains an xref", line)
 
         # Check if the line should be included in the output
         if include_line(line):
