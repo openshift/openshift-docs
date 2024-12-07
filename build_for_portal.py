@@ -624,10 +624,19 @@ def scrub_file(info, book_src_dir, src_file, tag=None, cwd=None):
     # data that it finds.
     # modified 20/Aug/2024 to process https links which are preceded
     # by an added directory (happens with hugeBook)
+    # Modified 05/Dec/2024 to allow for https links from openshift-kni repo.
 
+    # Check for both allowed URL patterns
     https_pos = base_src_file.find("https://raw.githubusercontent.com/openshift/")
-    if https_pos >=0:
-        base_src_file = base_src_file[https_pos:]
+    https_kni_pos = base_src_file.find("https://raw.githubusercontent.com/openshift-kni/")
+
+    if https_pos >= 0 or https_kni_pos >= 0:
+        # Ensure we start from the correct URL (either github or openshift-kni)
+        if https_kni_pos >= 0:
+            base_src_file = base_src_file[https_kni_pos:]
+        else:
+            base_src_file = base_src_file[https_pos:]
+
         try:
             response = requests.get(base_src_file)
             if response:
