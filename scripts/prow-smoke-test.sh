@@ -11,6 +11,7 @@
 #%
 #%OPTIONS ⚙️
 #%    -v, --validate $DISTRO                            Validate the AsciiDoc source. Use --validate to run with default options
+#%    -a, --validate-incl-api-book                      Validate the AsciiDoc source and include the REST API books
 #%    -l, --lint-topicmaps                              Lint topic-map YAML
 #%    -p, --preview $DISTRO "$PRODUCT_NAME" $VERSION    Use --preview to run with default options
 #%    -h, --help                                        Print this help
@@ -18,6 +19,7 @@
 #%EXAMPLES 🤔
 #%    ./scripts/prow-smoke-test.sh --validate
 #%    ./scripts/prow-smoke-test.sh --validate openshift-rosa
+#%    ./scripts/prow-smoke-test.sh --validate-incl-api-book
 #%    ./scripts/prow-smoke-test.sh --lint-topicmaps
 #%    ./scripts/prow-smoke-test.sh --preview
 #%    ./scripts/prow-smoke-test.sh --preview openshift-rosa
@@ -76,19 +78,32 @@ if [ $# -eq 0 ]; then
 fi
 
 if [[ "$TEST" == "--preview" || "$TEST" == "-p" ]] && [[ -z "$DISTRO" ]]; then
+    # Clean output folder
+    rm -rf ./_preview
     echo ""
     echo "🚧 Building with openshift-enterprise distro..."
     $CONTAINER_ENGINE run --rm -it -v "$(pwd)":${CONTAINER_WORKDIR}${SELINUX_LABEL} $CONTAINER_IMAGE asciibinder build -d "$DISTRO"
 
 elif [[ "$TEST" == "--preview" || "$TEST" == "-p" ]] && [[ -n "$DISTRO" ]]; then
+    # Clean output folder
+    rm -rf ./_preview
     echo ""
     echo "🚧 Building $DISTRO distro..."
     $CONTAINER_ENGINE run --rm -it -v "$(pwd)":${CONTAINER_WORKDIR}${SELINUX_LABEL} $CONTAINER_IMAGE asciibinder build -d "$DISTRO"
 
 elif [[ "$TEST" == "--validate" || "$TEST" == "-v" ]]; then
+    # Clean output folder
+    rm -rf ./drupal-build
     echo ""
     echo "🚧 Validating the docs..."
     $CONTAINER_ENGINE run --rm -it -v "$(pwd)":${CONTAINER_WORKDIR}${SELINUX_LABEL} $CONTAINER_IMAGE sh -c 'scripts/check-asciidoctor-build.sh && python3 build_for_portal.py --distro '${DISTRO}' --product "'"${PRODUCT_NAME}"'" --version '${VERSION}' --no-upstream-fetch && python3 makeBuild.py'
+
+elif [[ "$TEST" == "--validate-incl-api-book" || "$TEST" == "-a" ]]; then
+    # Clean output folder
+    rm -rf ./drupal-build
+    echo ""
+    echo "🚧 Validating the docs..."
+    $CONTAINER_ENGINE run --rm -it -v "$(pwd)":${CONTAINER_WORKDIR}${SELINUX_LABEL} $CONTAINER_IMAGE sh -c 'scripts/check-asciidoctor-build.sh && python3 build_for_portal.py --distro '${DISTRO}' --product "'"${PRODUCT_NAME}"'" --version '${VERSION}' --no-upstream-fetch && python3 makeBuild.py --include-api-book'
 
 elif [[ "$TEST" == "--lint-topicmaps" || "$TEST" == "-l" ]]; then
     echo ""
