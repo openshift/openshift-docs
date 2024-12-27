@@ -11,13 +11,19 @@ const urlMappings = {
   "openshift-origin": "https://docs.okd.io/",
   "openshift-pipelines": "https://docs.openshift.com/pipelines/",
   "openshift-serverless": "https://docs.openshift.com/serverless/",
+  "openshift-telco": "https://docs.openshift.com/container-platform-telco/",
 };
 
 function versionSelector(list) {
   "use strict";
 
   newVersion = list[list.selectedIndex].value;
-  currentVersion = window.location.pathname.split("/")[2];
+
+  if (dk === "openshift-origin") {
+    currentVersion = window.location.pathname.split("/")[1];
+  } else {
+    currentVersion = window.location.pathname.split("/")[2];
+  }
 
   let baseUrl = urlMappings[dk];
 
@@ -26,7 +32,7 @@ function versionSelector(list) {
     baseUrl = "https://docs.openshift.com/enterprise/";
   }
 
-  if (dk === "openshift-enterprise" && currentVersion.charAt(0) !== newVersion.charAt(0)){
+  if ((dk === "openshift-enterprise" || dk === "openshift-origin") && currentVersion.charAt(0) !== newVersion.charAt(0)){
     fileRequested = "/welcome/index.html";
   } else {
     const versionIndex = window.location.pathname.lastIndexOf(currentVersion) + currentVersion.length;

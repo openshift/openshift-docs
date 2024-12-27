@@ -1,11 +1,7 @@
-FROM registry.access.redhat.com/ubi8/ruby-27 AS ruby
-
-USER root
+FROM registry.access.redhat.com/ubi8-minimal:latest
 
 ENV LANG=en_US.UTF-8
 
-RUN gem install listen ascii_binder && yum clean all
-
-RUN git config --system --add safe.directory '*'
+WORKDIR /go/src/github.com/openshift/openshift-docs
 
 CMD ["/bin/bash"]

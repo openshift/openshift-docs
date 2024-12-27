@@ -2,6 +2,14 @@
 
 set -e
 
+git_root=$(git rev-parse --show-toplevel)
+
+# Exit if Travis is not being used
+if [ -f "${git_root}/.travis.yml.old" ]; then
+    echo "Travis CI is not in use. Exiting..."
+    exit 0
+fi
+
 # Check if jq is installed
 hash jq 2>/dev/null || { echo >&2 "Error: jq is not installed. Please install jq before running this script."; exit 1; }
 
