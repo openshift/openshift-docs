@@ -1,0 +1,127 @@
+// Module included in the following assemblies:
+//
+// * nodes/nodes-sigstore-using.adoc
+
+:_mod-docs-content-type: PROCEDURE
+[id="nodes-sigstore-using-validation_{context}"]
+= Validate cluster-wide policies using sigstore
+
+The following procedure demonstrates how to validate cluster-wide policies using Sigstore in {product-title}.
+
+.Prerequisites
+
+* Ensure that the policy on OpenShift image repositories (quay.io/openshift-release-dev/ocp-release, quay.io/openshift-release-dev/ocp-v4.0-art-dev) allows deployment of OpenShift images required for cluster operation.
+
+.Procedure
+
+. Build and Push an Image for Signing:
++
+[source,sh]
+----
+podman login quay.io
+Enter the username and password as prompted:
+Username: qiwanredhat
+Password: <your-password>
+Login Succeeded!
+----
+
+. Build and push the image:
++
+[source,sh]
+----
+echo "FROM scratch" > Dockerfile
+podman build -t quay.io/qiwanredhat/test-sigstoresigned .
+podman push quay.io/qiwanredhat/test-sigstoresigned:latest
+----
+
+. Generate a key pair for cosign:
++
+[source,sh]
+----
+cosign generate-key-pair
+Enter a password for the private key when prompted. The keys will be saved as cosign.key and cosign.pub.
+Sign the Image Using Cosign:
+Sign the image using your private key and push the signature to the registry:
+sh
+cosign sign --key ./cosign.key --registry-username=<your-username> --registry-password=<your-password> quay.io/qiwanredhat/test-sigstoresigned:latest
+----
+
+. Launch OpenShift Cluster ClusterBot to enable the feature gate:
++
+[source,sh]
+----
+launch quay.io/openshift-release-dev/ocp-release:4.16.0-rc.3-x86_64 techpreview
+----
+
+. Enable CRI-O debug log level:
+.. Create a ContainerRuntimeConfig to set the log level to debug:
++
+[source,sh]
+----
+oc create -f - <<EOF
+apiVersion: machineconfiguration.openshift.io/v1
+kind: ContainerRuntimeConfig
+metadata:
+  name: set-loglevel
+spec:
+  machineConfigPoolSelector:
+    matchLabels:
+      pools.operator.machineconfiguration.openshift.io/worker: ""
+  containerRuntimeConfig:
+    logLevel: debug
+EOF
+----
+
+.. Verify the log level:
++
+[source,sh]
+----
+oc debug node/<node-name>
+chroot /host
+crio config | grep "log_level"
+----
+
+. Create a ClusterImagePolicy for signature verification:
++
+[source,sh]
+----
+oc create -f - <<EOF
+apiVersion: config.openshift.io/v1alpha1
+kind: ClusterImagePolicy
+metadata:
+  name: qisigned
+spec:
+  scopes:
+    - quay.io/qiwanredhat/test-sigstoresigned
+  policy:
+    rootOfTrust:
+      policyType: PublicKey
+      publicKey:
+        keyData: <base64-encoded-cosign.pub>
+    signedIdentity:
+      matchPolicy: MatchRepository
+EOF
+----
+
+. Verify configurations in /etc/containers/policy.json and /etc/containers/registries.d/:
++
+[source,sh]
+----
+oc debug node/<node-name>
+chroot /host
+cat /etc/containers/policy.json
+cat /etc/containers/registries.d/sigstore-registries.yaml
+----
+
+. Pull the signed image and check the CRI-O logs for verification:
++
+[source,sh]
+----
+crictl pull quay.io/qiwanredhat/test-sigstoresigned:latest
+journalctl -u crio --since="3 minutes ago"
+----
+
+[NOTE]
+====
+If multiple scopes match a given image, only the policy requirements for the most specific scope apply.
+====
