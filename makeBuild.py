@@ -3,6 +3,7 @@
 
 # uses a refactored Aura script which is an opensource port of ccutil
 
+import argparse
 import sys
 import os
 import logging
@@ -18,6 +19,15 @@ from aura.transformers.tf_asciidoc import AsciiDocPublicanTransformer, XML_NS, L
 #branch = os.system("git symbolic-ref -q --short HEAD")
 
 #print(branch)
+
+def setup_parser():
+    parser = argparse.ArgumentParser(
+        formatter_class=argparse.ArgumentDefaultsHelpFormatter
+    )
+    parser.add_argument(
+        "--include-api-book", help="Include the rest_api book in the build", action="store_true", default=False,
+    )
+    return parser
 
 # function to convert XML ids to HTML 4 compatible ids from ccutil
 def _fix_ids_for_html4(tree):
@@ -122,6 +132,10 @@ all_validated = True
 # Initialize logging
 cli.init_logging(False, False)
 
+
+parser = setup_parser()
+args = parser.parse_args()
+
 for distro in os.listdir("drupal-build"):
 
     print("---------------------------------------")
@@ -136,7 +150,9 @@ for distro in os.listdir("drupal-build"):
             continue
         # rest api book is a pain and doesn't convert well
         if book == "rest_api":
-            continue
+            # Exclude the REST API book unless we explicitly require it
+            if not args.include_api_book:
+                continue
 
         if os.path.exists(os.path.join("drupal-build", distro, book,"hugeBook.flag")):
             for secondary_book in os.listdir(os.path.join("drupal-build", distro, book)):

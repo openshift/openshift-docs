@@ -37,10 +37,11 @@ LINKS_RE = re.compile(
 EXTERNAL_LINK_RE = re.compile(
     "[\./]*([\w_-]+)/[\w_/-]*?([\w_.-]*\.(?:html|adoc))", re.DOTALL
 )
-INCLUDE_RE = re.compile("include::(.*?)\[(.*?)\]", re.M)
+INCLUDE_RE = re.compile(r"^include::(.*?)\[(.*?)\]", re.M)
 IFDEF_RE = re.compile(r"^if(n?)def::(.*?)\[\]", re.M)
 ENDIF_RE = re.compile(r"^endif::(.*?)\[\]\r?\n", re.M)
 COMMENT_CONTENT_RE = re.compile(r"^^////$.*?^////$", re.M | re.DOTALL)
+COMMENTED_XREF_RE = re.compile(r"^//.*xref:.*$")
 TAG_CONTENT_RE = re.compile(
     r"//\s+tag::(.*?)\[\].*?// end::(.*?)\[\]", re.M | re.DOTALL
 )
@@ -625,10 +626,19 @@ def scrub_file(info, book_src_dir, src_file, tag=None, cwd=None):
     # data that it finds.
     # modified 20/Aug/2024 to process https links which are preceded
     # by an added directory (happens with hugeBook)
+    # Modified 05/Dec/2024 to allow for https links from openshift-kni repo.
 
+    # Check for both allowed URL patterns
     https_pos = base_src_file.find("https://raw.githubusercontent.com/openshift/")
-    if https_pos >=0:
-        base_src_file = base_src_file[https_pos:]
+    https_kni_pos = base_src_file.find("https://raw.githubusercontent.com/openshift-kni/")
+
+    if https_pos >= 0 or https_kni_pos >= 0:
+        # Ensure we start from the correct URL (either github or openshift-kni)
+        if https_kni_pos >= 0:
+            base_src_file = base_src_file[https_kni_pos:]
+        else:
+            base_src_file = base_src_file[https_pos:]
+
         try:
             response = requests.get(base_src_file)
             if response:
@@ -655,6 +665,9 @@ def scrub_file(info, book_src_dir, src_file, tag=None, cwd=None):
         # Ignore any leading blank lines, before any meaningful content is found
         if line.strip() == "" and not content_found:
             continue
+
+        # Replace lines containing commented xrefs
+        line = COMMENTED_XREF_RE.sub("// Removed commented line that contains an xref", line)
 
         # Check if the line should be included in the output
         if include_line(line):
