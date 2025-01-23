@@ -23,7 +23,7 @@ from aura import cli
 
 cli.init_logging(False, True)
 
-has_errors = False
+list_of_errors = []
 CLONE_DIR = "."
 BASE_PORTAL_URL = "https://docs.redhat.com/en/documentation/"
 # ID_RE = re.compile("^\[(?:\[|id=\'|#)(.*?)(\'?,.*?)?(?:\]|\')?\]", re.M | re.DOTALL)
@@ -443,6 +443,7 @@ def reformat_for_drupal(info):
 
     # Reformat the data
     for book in books:
+
         log.info("Processing %s", book["Dir"])
         book_src_dir = os.path.join(src_dir, book["Dir"])
 
@@ -454,31 +455,39 @@ def reformat_for_drupal(info):
 
         ensure_directory(images_dir)
 
+        # ADDED 21 Jan 2025: selective processing of images
+        # the set of file names is to be stored in image_files
+        # The initial value includes images defined in attributes (to copy every time)
+        image_files = set()
+
         log.debug("Copying source files for " + book["Name"])
-        copy_files(book, book_src_dir, src_dir, dest_dir, info)
+        copy_files(book, book_src_dir, src_dir, dest_dir, info, image_files)
 
         log.debug("Copying images for " + book["Name"])
-        copy_images(book, src_dir, images_dir, distro)
+        copy_images(book, src_dir, images_dir, distro, image_files)
 
 
-def copy_images(node, src_path, dest_dir, distro):
+
+def copy_images(node, src_path, dest_dir, distro, image_files):
     """
     Copy images over to the destination directory and flatten all image directories into the one top level dir.
+
+    REWORKED 21 Jan 2025: we now assume that there is a single images directory and
+     that all other images subdirectories are simply symlinks into it. So we do not
+     iterate over the tree but simply copy the necessary files from that one images directory
     """
 
-    def dir_callback(dir_node, parent_dir, depth):
-        node_dir = os.path.join(parent_dir, dir_node["Dir"])
-        src = os.path.join(node_dir, "images")
-
-        if os.path.exists(src):
-            src_files = os.listdir(src)
-            for src_file in src_files:
-                shutil.copy(os.path.join(src, src_file), dest_dir)
-
-    iter_tree(node, distro, dir_callback, parent_dir=src_path)
+    images_source_dir = os.path.join(src_path, "images")
+    for image_file_name in image_files:
+        image_file_pathname = os.path.join(images_source_dir,image_file_name)
+        if os.path.exists(image_file_pathname):
+            shutil.copy(image_file_pathname, dest_dir)
+        # if an image file is not found, this is not an error, because it might
+        # have been picked up from a commented-out line. Actual missing images
+        # should be caught by the asciidoctor/asciibinder part of CI
 
 
-def copy_files(node, book_src_dir, src_dir, dest_dir, info):
+def copy_files(node, book_src_dir, src_dir, dest_dir, info, image_files):
     """
     Recursively copy files from the source directory to the destination directory, making sure to scrub the content, add id's where the
     content is referenced elsewhere and fix any links that should be cross references.
@@ -496,7 +505,7 @@ def copy_files(node, book_src_dir, src_dir, dest_dir, info):
         dest_file = os.path.join(node_dest_dir, topic_node["File"] + ".adoc")
 
         # Copy the file
-        copy_file(info, book_src_dir, src_file, dest_dir, dest_file)
+        copy_file(info, book_src_dir, src_file, dest_dir, dest_file, image_files)
 
     iter_tree(node, info["distro"], dir_callback, topic_callback)
 
@@ -507,6 +516,7 @@ def copy_file(
     src_file,
     dest_dir,
     dest_file,
+    image_files,
     include_check=True,
     tag=None,
     cwd=None,
@@ -527,7 +537,7 @@ def copy_file(
     # os.mknod(dest_file)
     open(dest_file, "w").close()
     # Scrub/fix the content
-    content = scrub_file(info, book_src_dir, src_file, tag=tag, cwd=cwd)
+    content = scrub_file(info, book_src_dir, src_file, image_files, tag=tag, cwd=cwd)
 
     # Check for any includes
     if include_check:
@@ -582,6 +592,7 @@ def copy_file(
                     include_file,
                     dest_dir,
                     dest_include_file,
+                    image_files,
                     tag=include_tag,
                     cwd=current_dir,
                 )
@@ -610,8 +621,21 @@ def copy_file(
     with open(dest_file, "w") as f:
         f.write(content)
 
+def detect_images(content, image_files):
+    """
+    Detects all image file names referenced in the content, which is a readlines() output
+    Adds the filenames to the image_files set
+    Does NOT control for false positives such as commented out content,
+        because "false negatives" are worse
 
-def scrub_file(info, book_src_dir, src_file, tag=None, cwd=None):
+    TEMPORARY: use both procedural and RE detection and report any misalignment
+    """
+    image_pattern = re.compile(r'image::?([^\s\[]+)\[.*?\]')
+
+    for content_str in content:
+        image_files.update({os.path.basename(f) for f in image_pattern.findall(content_str)})
+
+def scrub_file(info, book_src_dir, src_file, image_files, tag=None, cwd=None):
     """
     Scrubs a file and returns the cleaned file contents.
     """
@@ -645,7 +669,7 @@ def scrub_file(info, book_src_dir, src_file, tag=None, cwd=None):
                 raise ConnectionError("Malformed URL")
         except Exception as exception:
             log.error("An include file wasn't found: %s", base_src_file)
-            has_errors = True
+            list_of_errors.append(f"An include file wasn't found: {base_src_file}")
             sys.exit(-1)
 
     # Get a list of predefined custom title ids for the file
@@ -654,6 +678,9 @@ def scrub_file(info, book_src_dir, src_file, tag=None, cwd=None):
     # Read in the source content
     with open(src_file, "r") as f:
         src_file_content = f.readlines()
+
+    # detect image references in the content
+    detect_images(src_file_content, image_files)
 
     # Scrub the content
     content = ""
@@ -750,7 +777,6 @@ def fix_links(content, info, book_src_dir, src_file, tag=None, cwd=None):
             content = _fix_links(
                 content, book_src_dir, src_file, info, tag=tag, cwd=cwd
             )
-
     return content
 
 def dir_to_book_name(dir,src_file,info):
@@ -760,11 +786,11 @@ def dir_to_book_name(dir,src_file,info):
             return(book["Name"])
             break
 
-    has_errors = True
     log.error(
         'ERROR (%s): book not found for the directory %s',
         src_file,
         dir)
+    list_of_errors.append(f"ERROR ({src_file}): book not found for the directory {dir}")
     return(dir)
 
 
@@ -809,6 +835,7 @@ def _fix_links(content, book_dir, src_file, info, tag=None, cwd=None):
                         'ERROR (%s): link pointing outside source directory? %s',
                         src_file,
                         link_file)
+                    list_of_errors.append(f'ERROR ({src_file}): link pointing outside source directory? {link_file}')
                     continue
                 split_relative_path = full_relative_path.split("/")
                 book_dir_name = split_relative_path[0]
@@ -841,13 +868,14 @@ def _fix_links(content, book_dir, src_file, info, tag=None, cwd=None):
                 fixed_link = link_text
                 if EXTERNAL_LINK_RE.search(link_file) is not None:
                     rel_src_file = src_file.replace(os.path.dirname(book_dir) + "/", "")
-                    has_errors = True
+                    link_text_message = link_text.replace("\n", "")
                     log.error(
                         'ERROR (%s): "%s" appears to try to reference a file not included in the "%s" distro',
                         rel_src_file,
-                        link_text.replace("\n", ""),
+                        link_text_message,
                         info["distro"],
                     )
+                    list_of_errors.append(f'ERROR ({rel_src_file})): {link_text_message} appears to try to reference a file not included in the {info["distro"]} distro')
         else:
             fixed_link = "xref:" + link_anchor.replace("#", "") + link_title
 
@@ -1195,7 +1223,7 @@ def main():
     # Copy the original data and reformat for drupal
     reformat_for_drupal(info)
 
-    if has_errors:
+    if list_of_errors:
         sys.exit(1)
 
     if args.push:
