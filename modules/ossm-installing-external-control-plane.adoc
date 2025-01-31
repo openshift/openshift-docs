@@ -5,37 +5,32 @@
 [id="ossm-installing-external-control-plane_{context}"]
 = Installing the control plane and data plane on separate clusters
 
-Install {istio} in a primary-remote single-network topology on two {ocp-product-title} clusters. 
+Install {istio} on a control plane cluster and a separate data plane cluster. This installation provides increased security.
 
-[NOTE]
-====
-In this procedure, `CLUSTER1` is the East cluster and `CLUSTER2` is the West cluster. 
-====
-
-You can adapt these instructions for a mesh spanning more than two clusters.
+You can adapt these instructions for a mesh spanning more than one data plane cluster. You can also adapt these instructions for multiple meshes with multiple control planes on the same control plane cluster.
 
 .Prerequisites
 
-* You have installed all of the clusters on the same network, and there is direct connectivity between the pods in all of the clusters.
+* You have installed all of the clusters on the same network, and there is direct connectivity between the pods in all of the clusters. NEED TO CONFIRM
 
 * You have installed the {SMProduct} Operator on the control plane cluster and the data plane cluster.
 
-* You have created an {istio} Container Network Interface (CNI) resource. IS THIS ONLY FOR DATA PLANE CLUSTER?
+* You have created an {IstioCNI} resource. IS THIS ONLY FOR DATA PLANE CLUSTER?
 
-* You have `istioctl` installed on the laptop you will use to run these instructions. 
+* You have `istioctl` installed on the laptop you will use to run these instructions.
 
 CHECK ALL TOPOLOGY DOCS TO CONFIRM KUBECONFIG FILE IS MENTIONED IN PREREQS.
 
 .Procedure
 
-. Create an `ISTIO_VERSION` environment variable that defines the {istio} version to install by running the following command:
+. Create an `ISTIO_VERSION` environment variable that defines the {istio} version to install on all the clusters by running the following command:
 +
 [source,terminal]
 ----
-$ export ISTIO_VERSION=1.24.1 
+$ export ISTIO_VERSION=1.24.1
 ----
 
-. Create a `REMOTE_CLUSTER_NAME` environment variable that defines the name of the cluster..
+. Create a `REMOTE_CLUSTER_NAME` environment variable that defines the name of the cluster.
 +
 [source,terminal]
 ----
@@ -61,188 +56,329 @@ $ export CTX_DATA_PLANE_CLUSTER=<context name of the data plane cluster>
 
 
 
+. Set up the Ingress gateway for the control plane:
+
+.. Create a project called `istio-system` by running the following command:
++
+[source,terminal]
+----
+$ oc get project istio-system --context "${CTX_CONTROL_PLANE_CLUSTER}" || oc new-project istio-system --context "${CTX_CONTROL_PLANE_CLUSTER}"
+----
+
+.. Create an `Istio` resource on the Control Plane cluster to manage the ingress gateway by running the following command:
++
+[source,terminal]
+----
+$ cat <<EOF | oc --context "${CTX_CONTROL_PLANE_CLUSTER}" apply -f -
+apiVersion: sailoperator.io/v1
+kind: Istio
+  metadata:
+    name: default
+spec:
+  version: v${ISTIO_VERSION}
+  namespace: istio-system
+  global:
+    network: network1
+EOF
+----
+
+.. Create the ingress gateway for the control plane by running the following command:
++
+[source,terminal]
+----
+$ oc --context "${CTX_CONTROL_PLANE_CLUSTER}" apply -f https://raw.githubusercontent.com/istio-ecosystem/sail-operator/main/docs/multicluster/controlplane-gateway.yaml
+----
+
+.. Wait for the ingress gateway to be assigned an IP address by running the following command:
++
+[source,terminal]
+----
+$ oc --context "${CTX_CONTROL_PLANE_CLUSTER}" wait --for='jsonpath={.status.loadBalancer.ingress[].ip}' --timeout=300s svc istio-ingressgateway -n istio-system
+----
+
+.. Store the IP address of the ingress gateway in an environment variable by running the following command:
++
+[source,terminal]
+----
+$ export EXTERNAL_ISTIOD_ADDR=$(oc -n istio-system --context="${CTX_CONTROL_PLANE_CLUSTER}" get svc istio-ingressgateway -o jsonpath='{.status.loadBalancer.ingress[0].ip}')
+----
 
 
 
-. Create a project called `external-istiod` by running the following command:
+. Install Istio in the Data Plane cluster:
+
+.. Create a project called `external-istiod` on the Data Plane cluster by running the following command:
++
+[source,terminal]
+----
+$ oc get project external-istiod --context "${CTX_DATA_PLANE_CLUSTER}" || oc new-project external-istiod --context "${CTX_DATA_PLANE_CLUSTER}"
+----
+
+.. Create an `Istio` resource on the Data Plane cluster by running the following command:
++
+[source,terminal]
+----
+$ cat <<EOF | oc --context "${CTX_DATA_PLANE_CLUSTER}" apply -f -
+apiVersion: sailoperator.io/v1
+kind: Istio
+metadata:
+  name: external-istiod
+spec:
+  version: v${ISTIO_VERSION}
+  namespace: external-istiod
+  profile: remote
+  values:
+    defaultRevision: external-istiod
+    global:
+      remotePilotAddress: ${EXTERNAL_ISTIOD_ADDR}
+      configCluster: true <1>
+    pilot:
+      configMap: true
+      istiodRemote:
+        injectionPath: /inject/cluster/cluster2/net/network1
+EOF
+----
+<1> This setting identifies the Data Plane cluster as the source of the mesh configuration.
+
+
+. Set up the external {istio} control plane on the Control Plane cluster: CONFIRM IS IN OR ON SHOULD BE USED
+
+.. Create a project called `external-istiod` on the Control Plane cluster by running the following command:
 +
 [source,terminal]
 ----
 $ oc get project external-istiod --context "${CTX_CONTROL_PLANE_CLUSTER}" || oc new-project external-istiod --context "${CTX_CONTROL_PLANE_CLUSTER}"
 ----
 
-. Install {istio} on the Control Plane cluster 
-
 .. Create an `Istio` resource on the Control Plane cluster by running the following command:
 +
 [source,terminal]
 ----
-$ cat <<EOF | oc --context "${CTX_CLUSTER1}" apply -f -
-apiVersion: sailoperator.io/v1alpha1
+$ cat <<EOF | oc --context "${CTX_CONTROL_PLANE_CLUSTER}" apply -f -
+apiVersion: sailoperator.io/v1
 kind: Istio
 metadata:
-  namespace: external-istiod
+  name: external-istiod
 spec:
+  namespace: external-istiod
   profile: empty
-  meshConfig:
-    rootNamespace: external-istiod
-    defaultConfig:
-      discoveryAddress: $EXTERNAL_ISTIOD_ADDR:15012
-      proxyMetadata:
-        XDS_ROOT_CA: /etc/ssl/certs/ca-certificates.crt
-        CA_ROOT_CA: /etc/ssl/certs/ca-certificates.crt
-  components:
+  values:
+    meshConfig:
+      rootNamespace: external-istiod
+      defaultConfig:
+        discoveryAddress: $EXTERNAL_ISTIOD_ADDR:15012
     pilot:
       enabled: true
-      k8s:
-        overlays:
-        - kind: Deployment
-          name: istiod
-          patches:
-          - path: spec.template.spec.volumes[100]
-            value: |-
-              name: config-volume
-              configMap:
-                name: istio
-          - path: spec.template.spec.volumes[100]
-            value: |-
-              name: inject-volume
-              configMap:
-                name: istio-sidecar-injector
-          - path: spec.template.spec.containers[0].volumeMounts[100]
-            value: |-
-              name: config-volume
-              mountPath: /etc/istio/config
-          - path: spec.template.spec.containers[0].volumeMounts[100]
-            value: |-
-              name: inject-volume
-              mountPath: /var/lib/istio/inject
-        env:
-        - name: INJECTION_WEBHOOK_CONFIG_NAME
-          value: ""
-        - name: VALIDATION_WEBHOOK_CONFIG_NAME
-          value: ""
-        - name: EXTERNAL_ISTIOD
-          value: "true"
-        - name: LOCAL_CLUSTER_SECRET_WATCHER
-          value: "true"
-        - name: CLUSTER_ID
-          value: ${REMOTE_CLUSTER_NAME}
-        - name: SHARED_MESH_CONFIG
-          value: istio
-  values:
+      volumes:
+        - name: config-volume
+          configMap:
+            name: istio-external-istiod
+        - name: inject-volume
+          configMap:
+            name: istio-sidecar-injector-external-istiod
+      volumeMounts:
+        - name: config-volume
+          mountPath: /etc/istio/config
+        - name: inject-volume
+          mountPath: /var/lib/istio/inject
+      env:
+        INJECTION_WEBHOOK_CONFIG_NAME: "istio-sidecar-injector-external-istiod-external-istiod"
+        VALIDATION_WEBHOOK_CONFIG_NAME: "istio-validator-external-istiod-external-istiod"
+        EXTERNAL_ISTIOD: "true"
+        LOCAL_CLUSTER_SECRET_WATCHER: "true"
+        CLUSTER_ID: cluster2
+        SHARED_MESH_CONFIG: istio
     global:
-      externalIstiod: true
       caAddress: $EXTERNAL_ISTIOD_ADDR:15012
-      istioNamespace: external-istiod
-      operatorManageWebhooks: true
       configValidation: false
       meshID: mesh1
       multiCluster:
-        clusterName: ${REMOTE_CLUSTER_NAME}
+        clusterName: cluster2
       network: network1
 EOF
-
-
-
-
-
-
-
-
-
-
-apiVersion: sailoperator.io/v1alpha1
-kind: Istio
-metadata:
-  name: default
-spec:
-  version: v${ISTIO_VERSION}
-  namespace: istio-system
-  values:
-    global:
-      meshID: mesh1
-      multiCluster:
-        clusterName: cluster1
-      network: network1
-      externalIstiod: true <1>
-EOF      
 ----
-<1> This enables the control plane installed on the East cluster to serve as an external control plane for other remote clusters.
 
-.. Wait for the control plane to return the "Ready" status condition by running the following command:
+.. Create a `ServiceAccount` resource in the Control Plane cluster by running the following command:
 +
 [source,terminal]
 ----
-$ oc --context "${CTX_CLUSTER1}" wait --for condition=Ready istio/default --timeout=3m
+$ oc --context="${CTX_CONTROL_PLANE_CLUSTER}" create serviceaccount istiod-service-account -n external-istiod
 ----
 
-.. Create an East-West gateway on the East cluster by running the following command:
+.. Store the API server address for the Data Plane cluster in an environment variable by running the following command:
 +
 [source,terminal]
 ----
-$ oc --context "${CTX_CLUSTER1}" apply -f https://raw.githubusercontent.com/istio-ecosystem/sail-operator/main/docs/multicluster/east-west-gateway-net1.yaml
+$ DATA_PLANE_API_SERVER=https://<hostname or IP address of the Data Plane cluster's API server>
 ----
 
-.. Expose the control plane through the gateway so that services in the West cluster can access the control plane by running the following command:
-+
-[source,terminal]
-----
-$ oc --context "${CTX_CLUSTER1}" apply -n istio-system -f https://raw.githubusercontent.com/istio-ecosystem/sail-operator/main/docs/multicluster/expose-istiod.yaml
-----
-
-. Install {istio} on the West cluster:
-
-.. Save the IP address of the East-West gateway running in the East cluster by running the following command:
-+
-[source,terminal]
-----
-$ export DISCOVERY_ADDRESS=$(oc --context="${CTX_CLUSTER1}" \
-    -n istio-system get svc istio-eastwestgateway \
-    -o jsonpath='{.status.loadBalancer.ingress[0].ip}')
-----
-
-.. Create an `Istio` resource on the West cluster by running the following command:
-+
-[source,terminal]
-----
-$ cat <<EOF | oc --context "${CTX_CLUSTER2}" apply -f -
-apiVersion: sailoperator.io/v1alpha1
-kind: Istio
-metadata:
-  name: default
-spec:
-  version: v${ISTIO_VERSION}
-  namespace: istio-system
-  profile: remote
-  values:
-    istiodRemote: 
-      injectionPath: /inject/cluster/cluster2/net/network1
-    global:
-      remotePilotAddress: ${DISCOVERY_ADDRESS}
-EOF      
-----
-
-.. Annotate the `istio-system` namespace in the West cluster so that it is managed by the control plane in the East cluster by running the following command:
-+
-[source,terminal]
-----
-$ oc --context="${CTX_CLUSTER2}" annotate namespace istio-system topology.istio.io/controlPlaneClusters=cluster1
-----
-
-.. Install a remote secret on the East cluster that provides access to the API server on the West cluster by running the following command:
+.. Install a remote secret on the Control Plane cluster that provides access to the API server on the Data Plane cluster by running the following command:
 +
 [source,terminal]
 ----
 $ istioctl create-remote-secret \
-  --context="${CTX_CLUSTER2}" \
-  --name=cluster2 | \
-  oc --context="${CTX_CLUSTER1}" apply -f -
+  --context="${CTX_DATA_PLANE_CLUSTER}" \
+  --type=config \
+  --namespace=external-istiod \
+  --service-account=istiod-external-istiod \
+  --create-service-account=false \
+  --server="${DATA_PLANE_API_SERVER}" | \
+  oc --context="${CTX_CONTROL_PLANE_CLUSTER}" apply -f -
 ----
 
-.. Wait for the `Istio` resource to return the "Ready" status condition by running the following command:
+.. Create `Gateway` and `VirtualService` resources so that the sidecar proxies in the data plane cluster can access the control plane by running the following command:
 +
 [source,terminal]
 ----
-$ oc --context "${CTX_CLUSTER2}" wait --for condition=Ready istio/default --timeout=3m
+$ oc --context "${CTX_CONTROL_PLANE_CLUSTER}" apply -f - <<EOF
+apiVersion: networking.istio.io/v1
+kind: Gateway
+metadata:
+  name: external-istiod-gw
+  namespace: external-istiod
+spec:
+  selector:
+    istio: ingressgateway
+  servers:
+    - port:
+        number: 15012
+        protocol: tls
+        name: tls-XDS
+      tls:
+        mode: PASSTHROUGH
+      hosts:
+      - "*"
+    - port:
+        number: 15017
+        protocol: tls
+        name: tls-WEBHOOK
+      tls:
+        mode: PASSTHROUGH
+      hosts:
+      - "*"
+---
+apiVersion: networking.istio.io/v1
+kind: VirtualService
+metadata:
+  name: external-istiod-vs
+  namespace: external-istiod
+spec:
+    hosts:
+    - "*"
+    gateways:
+    - external-istiod-gw
+    tls:
+    - match:
+      - port: 15012
+        sniHosts:
+        - "*"
+      route:
+      - destination:
+          host: istiod-external-istiod.external-istiod.svc.cluster.local
+          port:
+            number: 15012
+    - match:
+      - port: 15017
+        sniHosts:
+        - "*"
+      route:
+      - destination:
+          host: istiod-external-istiod.external-istiod.svc.cluster.local
+          port:
+            number: 443
+EOF
+----
+
+.. Wait for the `external-istiod` `Istio` resource on the Control Plane cluster to return the "Ready" status condition by running the following command:
++
+[source,terminal]
+----
+$ oc --context "${CTX_CONTROL_PLANE_CLUSTER}" wait --for condition=Ready istio/external-istiod --timeout=3m
+----
+
+.. Wait for the `Istio` resource on the Data Plane cluster to return the "Ready" status condition by running the following command:
++
+[source,terminal]
+----
+$ oc --context "${CTX_DATA_PLANE_CLUSTER}" wait --for condition=Ready istio/external-istiod --timeout=3m
+----
+
+
+
+
+.Verification
+
+. Deploy sample applications on the Data Plane cluster:
+
+.. Create a sample application namespace on the Data Plane cluster by running the following command:
++
+[source,terminal]
+----
+$ oc --context "${CTX_DATA_PLANE_CLUSTER}" get project sample || oc --context="${CTX_DATA_PLANE_CLUSTER}" new-project sample
+----
+
+.. Label the application namespace to support sidecar injection by running the following command:
++
+[source,terminal]
+----
+$ oc --context="${CTX_DATA_PLANE_CLUSTER}" label namespace sample istio.io/rev=external-istiod
+----
+
+.. Deploy the `helloworld` application:
+
+... Create the `helloworld` service by running the following command:
++
+[source,terminal]
+----
+$ oc --context="${CTX_DATA_PLANE_CLUSTER}" apply \
+  -f https://raw.githubusercontent.com/istio/istio/${ISTIO_VERSION}/samples/helloworld/helloworld.yaml \
+  -l service=helloworld -n sample
+----
+
+... Create the `helloworld-v1` deployment by running the following command:
++
+[source,terminal]
+----
+$ oc --context="${CTX_DATA_PLANE_CLUSTER}" apply \
+  -f https://raw.githubusercontent.com/istio/istio/${ISTIO_VERSION}/samples/helloworld/helloworld.yaml \
+  -l version=v1 -n sample
+----
+
+.. Deploy the `sleep` application by running the following command:
++
+[source,terminal]
+----
+$ oc --context="${CTX_DATA_PLANE_CLUSTER}" apply \
+  -f https://raw.githubusercontent.com/istio/istio/${ISTIO_VERSION}/samples/sleep/sleep.yaml -n sample
+----
+
+.. Verify that the pods in the `sample` namespace have a sidecar injected by running the following command:
++
+[source,terminal]
+----
+$ oc --context="${CTX_DATA_PLANE_CLUSTER}" get pods -n sample
+----
+
+You should see `2/2` for each pod in the `sample` namespace:
++
+[source,terminal]
+----
+NAME                             READY   STATUS    RESTARTS   AGE
+helloworld-v1-6d65866976-jb6qc   2/2     Running   0          1m
+sleep-5fcd8fd6c8-mg8n2           2/2     Running   0          1m
+----
+
+
+.. Verify you can send a request to `helloworld` through the `sleep` app:
++
+[source,terminal]
+----
+$ oc exec --context="${CTX_DATA_PLANE_CLUSTER}" -n sample -c sleep deploy/sleep -- curl -sS helloworld.sample:5000/hello
+----
+
+You should see a response from the `helloworld` app:
++
+[source,terminal]
+----
+Hello version: v1, instance: helloworld-v1-6d65866976-jb6qc
 ----
