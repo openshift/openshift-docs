@@ -32,6 +32,15 @@ check_updated_assemblies () {
     ASSEMBLIES=$(echo "$FILES" | awk '!/modules\/(.*)\.adoc/')
     # concatenate both lists and remove dupe entries
     ALL_ASSEMBLIES=$(echo "$UPDATED_ASSEMBLIES $ASSEMBLIES" | tr ' ' '\n' | sort -u)
+
+    # get htmltest and prepare temporary tree for the tests
+
+    mkdir tmp_ci
+    pushd tmp_ci
+    curl https://htmltest.wjdp.uk | bash
+    mkdir out
+    popd
+
     # check that assemblies are in a topic_map
     for ASSEMBLY in ${ALL_ASSEMBLIES}; do
         # get the page name to search the topic_map
@@ -43,14 +52,23 @@ check_updated_assemblies () {
             echo "Validating $ASSEMBLY ..."
             RED='\033[0;31m'
             NC='\033[0m'
-            OUTPUT=$(asciidoctor "$ASSEMBLY" -a source-highlighter=rouge -a icons! -o /tmp/out.html -v --failure-level WARN --trace 2>&1)
+            OUTPUT=$(asciidoctor "$ASSEMBLY" -a source-highlighter=rouge -a icons! -o tmp_ci/out/out.html -v --failure-level WARN --trace 2>&1)
             # check assemblies and fail if errors are reported
             if [[ $? != 0 ]];
             then
                 echo -e "${RED}$OUTPUT${NC}"
                 ERRORS=true
             else
-                echo "No errors found for $ASSEMBLY! ✅"
+                # check links
+                echo "Checking links..."
+                OUTPUT=$(tmp_ci/bin/htmltest tmp_ci/out | grep 404 | grep -v svg | sed s/"--- out.html -"//)
+                if [ -z "$OUTPUT" ];
+                then
+                  echo "No errors found for $ASSEMBLY! ✅"
+                else
+                  echo -e "${RED}$OUTPUT${NC}"
+                  ERRORS=true
+                fi
             fi
         else
             echo "$ASSEMBLY is not in a topic_map, skipping validation... 😙"
