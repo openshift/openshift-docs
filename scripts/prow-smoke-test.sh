@@ -14,6 +14,7 @@
 #%    -a, --validate-incl-api-book                      Validate the AsciiDoc source and include the REST API books
 #%    -l, --lint-topicmaps                              Lint topic-map YAML
 #%    -p, --preview $DISTRO "$PRODUCT_NAME" $VERSION    Use --preview to run with default options
+#%    -t, --htmltest $DISTRO                            Validate the built html and check for broken links
 #%    -h, --help                                        Print this help
 #%
 #%EXAMPLES 🤔
@@ -109,4 +110,13 @@ elif [[ "$TEST" == "--lint-topicmaps" || "$TEST" == "-l" ]]; then
     echo ""
     echo "🚧 Linting the topicmap YAML..."
     $CONTAINER_ENGINE run --rm -it -v "$(pwd)":${CONTAINER_WORKDIR}${SELINUX_LABEL} $CONTAINER_IMAGE sh -c 'yamllint _topic_maps'
+
+elif [[ "$TEST" == "--htmltest" || "$TEST" == "-t" ]]; then
+    if [[ ! -d "./drupal-build" ]]; then
+    echo "/drupal-build not found. Run ./scripts/prow-smoke-test.sh --preview and try again."
+    exit 1
+fi
+    echo ""
+    echo "🚧 Running htmltest..."
+    $CONTAINER_ENGINE run --rm -it -v "$(pwd)":${CONTAINER_WORKDIR}${SELINUX_LABEL} $CONTAINER_IMAGE sh -c 'htmltest ./drupal-build'
 fi
