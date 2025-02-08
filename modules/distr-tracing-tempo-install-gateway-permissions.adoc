@@ -1,0 +1,165 @@
+// Module included in the following assemblies:
+//
+// * observability/distr_tracing/distr_tracing_tempo/distr-tracing-tempo-installing.adoc
+
+:_mod-docs-content-type: PROCEDURE
+[id="distr-tracing-tempo-install-tempostack-web-console_{context}"]
+= Configure tenants and permissions
+
+Authentication and authorization is provided in the Tempo Gateway service. The authentication uses OpenShift OAuth and the Kubernetes `TokenReview` API. The authorization uses the Kubernetes `SubjectAccessReview` API.
+
+To properly define tenants and manage their read and write access, the distributed tracing stack—built on the Red Hat distribution of OpenTelemetry and Tempo—requires a well-configured authorization setup. This setup relies on Kubernetes Role-Based Access Control (RBAC) through ClusterRole and ClusterRoleBinding. By default, no users are granted read or write permissions, ensuring a secure baseline until explicit configurations are defined.
+
+
+You can install a Configure thosep permissionns from the *Administrator* view of the web console.
+
+.Prerequisites
+
+* You are logged in to the {product-title} web console as a cluster administrator with the `cluster-admin` role.
+* For {product-dedicated}, you must be logged in using an account with the `dedicated-admin` role.
+
+.Reading traces 
+
+To grant users permission to read a specific tenant, follow these steps:
+
+. Define desired tenant name and tenant Id. 
+. Enable tenants to read traces by adding them to a `ClusterRole` and giving them read (get) permissions
+.Sample of the read RBAC configuration that allows authenticated users to read the trace data of the `dev` and `prod` tenants
+[source,yaml]
+----
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: tempostack-traces-reader
+rules:
+  - apiGroups:
+      - 'tempo.grafana.com'
+    resources: # <1>
+      - dev
+      - prod
+    resourceNames:
+      - traces
+    verbs:
+      - 'get' # <2>
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: tempostack-traces-reader
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: tempostack-traces-reader
+subjects:
+  - kind: Group
+    apiGroup: rbac.authorization.k8s.io
+    name: system:authenticated # <3>
+----
+<1> Lists the tenants.
+<2> The `get` value enables the read operation.
+<3> Grants all authenticated users the read permissions for trace data.
+
+.Writing traces
+
+To ingest traces, we must first install the OpenTelemetry Collector and configure it to use a properly authorized service account with the necessary permissions.
+
+. Create a ServiceAccount to be used with OpenTelemetry Collector
++
+[source,yaml]
+----
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: otel-collector # <1>
+  namespace: otel
+----
+. Grant the OpenTelemetry Collector write permissions by defining a ClusterRoleBinding to the previously defined role and attaching it to the ServiceAccount
+the following is a sample on how to write RBAC configuration that allows the `otel-collector` service account to write the trace data for the `dev` tenant
++
+[source,yaml]
+----
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: tempostack-traces-write
+rules:
+  - apiGroups:
+      - 'tempo.grafana.com'
+    resources: # <1>
+      - dev
+    resourceNames:
+      - traces
+    verbs:
+      - 'create' # <2>
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: tempostack-traces
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: tempostack-traces-write
+subjects:
+  - kind: ServiceAccount
+    name: otel-collector # <3>
+    namespace: otel
+----
+<1> Lists the tenants.
+<2> The `create` value enables the write operation.
+<3> The service account name for the client to use when exporting trace data. The client must send the service account token, `/var/run/secrets/kubernetes.io/serviceaccount/token`, as the bearer token header.
++
+. Configure the OpenTelemetry collector by:
+  * Adding the bearertokenauth extension and a valid token to the tracing pipeline service.
+  * Add the desired tenant in the otlp/otlphttp exporters as the "X-Scope-OrgID" headers
+  * Enable TLS with a valid certificate authority file.
+
+Trace data can be sent to the Tempo instance from the OpenTelemetry Collector that uses the service account with RBAC for writing the data.
+
+.Sample OpenTelemetry CR configuration
+[source,yaml]
+----
+apiVersion: opentelemetry.io/v1alpha1
+kind: OpenTelemetryCollector
+metadata:
+  name: cluster-collector
+  namespace: tracing-system
+spec:
+  mode: deployment
+  serviceAccount: otel-collector # <1>
+  config: |
+      extensions: 
+        bearertokenauth: # <2>
+          filename: "/var/run/secrets/kubernetes.io/serviceaccount/token"
+      exporters:
+        otlp/dev: # <3>
+          endpoint: tempo-simplest-gateway.tempo.svc.cluster.local:8090
+          tls:
+            insecure: false
+            ca_file: "/var/run/secrets/kubernetes.io/serviceaccount/service-ca.crt" # <4>
+          auth:
+            authenticator: bearertokenauth # <4>
+          headers:
+            X-Scope-OrgID: "dev" <5>
+        otlphttp/dev: # <6>
+          endpoint: https://tempo-simplest-gateway.chainsaw-multitenancy.svc.cluster.local:8080/api/traces/v1/dev
+          tls:
+            insecure: false
+            ca_file: "/var/run/secrets/kubernetes.io/serviceaccount/service-ca.crt"
+          auth:
+            authenticator: bearertokenauth
+          headers:
+            X-Scope-OrgID: "dev"
+      service:
+        extensions: [bearertokenauth]
+        pipelines:
+          traces:
+            exporters: [otlp/dev] # <7>
+----
+<1> Service Account configured with write permissions
+<2> Bearer Token extension to use service account token
+<3> OTLP gRPC Exporter.
+<4> Service account CA
+<5> Header with tenant name
+<6> OTLP HTTP Exporter.
+<7> You can specify `otlp/dev` for the OTLP gRPC Exporter or `otlphttp/dev` for the OTLP HTTP Exporter.
