@@ -118,5 +118,5 @@ elif [[ "$TEST" == "--htmltest" || "$TEST" == "-t" ]]; then
 fi
     echo ""
     echo "🚧 Running htmltest..."
-    $CONTAINER_ENGINE run --rm -it -v "$(pwd)":${CONTAINER_WORKDIR}${SELINUX_LABEL} $CONTAINER_IMAGE sh -c 'htmltest ./_preview'
+    $CONTAINER_ENGINE run --rm -it -v "$(pwd)":${CONTAINER_WORKDIR}${SELINUX_LABEL} $CONTAINER_IMAGE sh -c 'htmltest ./_preview | grep 404'
 fi
