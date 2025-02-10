@@ -44,7 +44,7 @@ check_updated_assemblies () {
             echo "Validating $ASSEMBLY ..."
             RED='\033[0;31m'
             NC='\033[0m'
-            OUTPUT=$(asciidoctor "$ASSEMBLY" -a source-highlighter=rouge -a icons! -o tmp/out.html -v --failure-level WARN --trace 2>&1 && htmltest tmp/out.html)
+            OUTPUT=$(asciidoctor "$ASSEMBLY" -a source-highlighter=rouge -a icons! -o .tmp/out.html -v --failure-level WARN --trace 2>&1 && htmltest .tmp/out.html)
             # check assemblies and fail if errors are reported
             if [[ $? != 0 ]];
             then
