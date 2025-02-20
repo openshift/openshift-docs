@@ -7,7 +7,7 @@
 [id="persistent-storage-csi-efs-cross-account_{context}"]
 = AWS EFS CSI cross account support
 
-Cross account support allows you to have an {product-title} cluster in one AWS account and mount your file system in another AWS account using the AWS Elastic File System (EFS) Container Storage Interface (CSI) driver.
+Cross account support allows you to have an {product-title} cluster in one AWS account and mount your file system in another AWS account by using the AWS Elastic File System (EFS) Container Storage Interface (CSI) driver.
 
 [NOTE]
 ====
@@ -60,7 +60,7 @@ To use AWS EFS across accounts:
 
 .. Find the Security Group used by the AWS EFS volume by filtering for the group ID copied earlier.
 
-.. On the *Inbound rules* tab, click  *Edit inbound rules*, and then add a new rule to allow {product-title} nodes to access the AWS EFS volumes (that is, use NFS ports from the cluster):
+.. On the *Inbound rules* tab, click *Edit inbound rules*, and then add a new rule to allow {product-title} nodes to access the AWS EFS volumes (that is, use NFS ports from the cluster):
 +
 * *Type*: NFS
 * *Protocol*: TCP
@@ -68,6 +68,7 @@ To use AWS EFS across accounts:
 * *Source*: Custom/IP address range of your {product-title} cluster nodes (for example, “10.0.0.0/16”)
 
 .. Save the rule.
+
 +
 [NOTE]
 ====
@@ -105,6 +106,328 @@ Ensure the two VPCs are using different network CIDRs, and after creating the VP
 ... Under *Destination*, enter the CIDR for the VPC in account B, which for this example is 172.20.0.0/16.
 
 ... Under *Target*, use the peer connection type point from the created peer connection.
+// this is where the changes for ROSA starts to line 396
+ifdef::openshift-rosa,openshift-rosa-hcp[]
+. Prepare the **AWS account A** IAM roles and policies.
++
+[NOTE]
+====
+This process requires **two separate** AWS accounts.
+====
+
+.. Create an IAM policy for the EFS CSI driver.
+
++
+[NOTE]
+====
+This has additional permission's compared to a single account EFS CSI policy.
+====
+
++
+[source, json]
+----
+{
+    "Version": "2012-10-17",
+    "Statement": [
+        {
+            "Effect": "Allow",
+            "Action": [
+                "elasticfilesystem:DescribeAccessPoints",
+                "elasticfilesystem:DescribeFileSystems",
+                "elasticfilesystem:DescribeMountTargets",
+                "elasticfilesystem:TagResource",
+                "elasticfilesystem:ClientMount",
+                "elasticfilesystem:ClientRootAccess",
+                "elasticfilesystem:ClientWrite",
+                "elasticfilesystem:DescribeMountTargets",
+                "ec2:DescribeAvailabilityZones"
+            ],
+            "Resource": "*"
+        },
+        {
+            "Effect": "Allow",
+            "Action": [
+                "elasticfilesystem:CreateAccessPoint"
+            ],
+            "Resource": "*",
+            "Condition": {
+                "StringLike": {
+                    "aws:RequestTag/efs.csi.aws.com/cluster": "true"
+                }
+            }
+        },
+        {
+            "Effect": "Allow",
+            "Action": "elasticfilesystem:DeleteAccessPoint",
+            "Resource": "*",
+            "Condition": {
+                "StringEquals": {
+                    "aws:ResourceTag/efs.csi.aws.com/cluster": "true"
+                }
+            }
+        },
+        {
+            "Effect": "Allow",
+            "Action": "sts:AssumeRole",
+            "Resource": "arn:aws:iam::${AWS_ACCOUNT_B_ID}:role/cross-account-efs-role"
+        }
+    ]
+}
+----
+
+.. Create the policy.
++
+[source,terminal]
+----
+$ aws iam create-policy --policy-name "${CLUSTER_NAME}-rosa-efs-csi" \
+   --policy-document file://<path-to-file>.json \
+   --query 'Policy.Arn' --output text
+----
+
+.. Create a trust policy.
++
+[source, json]
+----
+{
+    "Version": "2012-10-17",
+    "Statement": [
+        {
+            "Effect": "Allow",
+            "Principal": {
+                "Federated": "arn:aws:iam::${AWS_ACCOUNT_A_ID}:oidc-provider/${OIDC_PROVIDER}"
+            },
+            "Action": "sts:AssumeRoleWithWebIdentity",
+            "Condition": {
+                "StringEquals": {
+                    "${OIDC_PROVIDER}:sub": [
+                        "system:serviceaccount:openshift-cluster-csi-drivers:aws-efs-csi-driver-operator",
+                        "system:serviceaccount:openshift-cluster-csi-drivers:aws-efs-csi-driver-controller-sa"
+                    ]
+                }
+            }
+        }
+    ]
+}
+----
+
+.. Create a role for the EFS CSI Driver Operator.
++
+[source, terminal]
+----
+$ aws iam create-role \
+  --role-name "${CLUSTER_NAME}-aws-efs-csi-operator" \
+  --assume-role-policy-document file://<path-to-file>.json \
+  --query "Role.Arn" --output text
+----
+
+.. Attach the policies to the role.
++
+[source, terminal]
+----
+$ aws iam attach-role-policy \
+   --role-name "${CLUSTER_NAME}-aws-efs-csi-operator" \
+   --policy-arn ${ACCOUNT_A_POLICY_ARN}
+----
+
++
+This role that the EFS CSI controller uses can now assume a role inside account B.
+
+. Prepare the **AWS account B** IAM roles and policies.
+
+.. Create an IAM policy.
++
+[source, json]
+----
+{
+    "Version": "2012-10-17",
+    "Statement": [
+        {
+            "Sid": "VisualEditor0",
+            "Effect": "Allow",
+            "Action": [
+                "ec2:DescribeNetworkInterfaces",
+                "ec2:DescribeSubnets"
+            ],
+            "Resource": "*"
+        },
+        {
+            "Sid": "VisualEditor1",
+            "Effect": "Allow",
+            "Action": [
+                "elasticfilesystem:DescribeMountTargets",
+                "elasticfilesystem:DeleteAccessPoint",
+                "elasticfilesystem:ClientMount",
+                "elasticfilesystem:DescribeAccessPoints",
+                "elasticfilesystem:ClientWrite",
+                "elasticfilesystem:ClientRootAccess",
+                "elasticfilesystem:DescribeFileSystems",
+                "elasticfilesystem:CreateAccessPoint",
+                "elasticfilesystem:TagResource"
+            ],
+            "Resource": "*"
+        }
+    ]
+}
+----
+
+.. Create the policy.
++
+[source,terminal]
+----
+$ aws iam create-policy --policy-name "cross-account-rosa-efs-csi" \
+   --policy-document file://<path-to-file>.json \
+   --query 'Policy.Arn' --output text
+----
+
+.. Create a trust policy.
++
+[source, json]
+----
+{
+    "Version": "2012-10-17",
+    "Statement": [
+        {
+            "Effect": "Allow",
+            "Principal": {
+                "AWS": "arn:aws:iam::${AWS_ACCOUNT_A_ID}:root"
+            },
+            "Action": "sts:AssumeRole",
+            "Condition": {}
+        }
+    ]
+}
+----
+
+.. Create the role for the EFS CSI Driver Operator to assume.
++
+[source,terminal]
+----
+$ aws iam create-role \
+  --role-name "cross-account-efs-role" \
+  --assume-role-policy-document file://<path-to-file>.json \
+  --query "Role.Arn" --output text
+----
+
+.. Attach the policies to the role.
++
+[source, terminal]
+----
+$ aws iam attach-role-policy \
+--role-name "cross-account-efs-role" \
+--policy-arn ${ACCOUNT_B_POLICY_ARN}
+----
+
+. Deploy the AWS EFS CSI Operator in **AWS account A**.
+
+.. Create a `secret` to tell the AWS EFS Operator which IAM role to request.
++
+[source, yaml]
+----
+apiVersion: v1
+kind: Secret
+metadata:
+ name: aws-efs-cloud-credentials
+ namespace: openshift-cluster-csi-drivers
+stringData:
+  credentials: |-
+    [default]
+    role_arn = ${ACCOUNT_A_ROLE_ARN}
+    web_identity_token_file = /var/run/secrets/openshift/serviceaccount/token
+----
+
+.. Install the EFS Operator.
++
+[source, yaml]
+----
+apiVersion: operators.coreos.com/v1
+kind: OperatorGroup
+metadata:
+  generateName: openshift-cluster-csi-drivers-
+  namespace: openshift-cluster-csi-drivers
+---
+apiVersion: operators.coreos.com/v1alpha1
+kind: Subscription
+metadata:
+  labels:
+    operators.coreos.com/aws-efs-csi-driver-operator.openshift-cluster-csi-drivers: ""
+  name: aws-efs-csi-driver-operator
+  namespace: openshift-cluster-csi-drivers
+spec:
+  channel: stable
+  installPlanApproval: Automatic
+  name: aws-efs-csi-driver-operator
+  source: redhat-operators
+  sourceNamespace: openshift-marketplace
+----
+
+.. Check if the operator is running.
++
+[source, terminal]
+----
+$ oc get deployment aws-efs-csi-driver-operator -n openshift-cluster-csi-drivers
+----
+
+.. Install the AWS EFS CSI driver.
++
+[source, yaml]
+----
+apiVersion: operator.openshift.io/v1
+kind: ClusterCSIDriver
+metadata:
+    name: efs.csi.aws.com
+spec:
+  managementState: Managed
+----
+
+.. Check if the CSI driver is running.
++
+[source, terminal]
+----
+$ oc get daemonset aws-efs-csi-driver-node -n openshift-cluster-csi-drivers
+----
+
+.. Create a new secret that will tell the CSI driver the role name in Account B to assume.
++
+[source, terminal]
+----
+$ oc create secret generic cross-account-arn \
+  -n openshift-cluster-csi-drivers \
+  --from-literal=awsRoleArn="arn:aws:iam::${AWS_ACCOUNT_B_ID}:role/cross-account-efs-role"
+----
+
+.. Allow the EFS CSI controller to read this secret.
++
+[source, terminal]
+----
+$ oc -n openshift-cluster-csi-drivers create role access-secrets --verb=get,list,watch --resource=secrets
+$ oc -n openshift-cluster-csi-drivers create rolebinding --role=access-secrets default-to-secrets --serviceaccount=openshift-cluster-csi-drivers:aws-efs-csi-driver-controller-sa
+----
+
+.. Create a storage class for the EFS volume.
++
+[source, yaml]
+----
+# The cross account efs volume storageClass
+kind: StorageClass
+apiVersion: storage.k8s.io/v1
+metadata:
+  name: efs-sc
+provisioner: efs.csi.aws.com
+parameters:
+  provisioningMode: efs-ap
+  fileSystemId: ${EFS_FILESYSTEM_ID}
+  directoryPerms: "700"
+  gidRangeStart: "1000"
+  gidRangeEnd: "2000"
+  basePath: "/dynamic_provisioning"
+  csi.storage.k8s.io/provisioner-secret-name: cross-account-arn
+  csi.storage.k8s.io/provisioner-secret-namespace: openshift-cluster-csi-drivers
+----
+endif::openshift-rosa,openshift-rosa-hcp[]
+
+// ROSA solution ends here
+
+ifdef::openshift-enterprise[]
 
 . Create an IAM role, for example, “my-efs-acrossaccount-role” in AWS account B, which has a trust relationship with AWS account A, and add an inline AWS EFS policy with permissions to call “my-efs-acrossaccount-driver-policy”.
 +
@@ -113,33 +436,6 @@ This role is used by the CSI driver's controller service running on the {product
 [source, json]
 ----
 # Trust relationships trusted entity trusted account A configuration on my-efs-acrossaccount-role in account B
-
-{
-    "Version": "2012-10-17",
-    "Statement": [
-        {
-            "Effect": "Allow",
-            "Principal": {
-                "AWS": "arn:aws:iam::301721915996:root"
-            },
-            "Action": "sts:AssumeRole",
-            "Condition": {}
-        }
-    ]
-}
-
-# my-cross-account-assume-policy policy attached to my-efs-acrossaccount-role in account B
-
-{
-    "Version": "2012-10-17",
-    "Statement": {
-        "Effect": "Allow",
-        "Action": "sts:AssumeRole",
-        "Resource": "arn:aws:iam::589722580343:role/my-efs-acrossaccount-role"
-    }
-}
-
-# my-efs-acrossaccount-driver-policy attached to my-efs-acrossaccount-role in account B
 
 {
     "Version": "2012-10-17",
@@ -210,11 +506,13 @@ $ oc -n openshift-cluster-csi-drivers create rolebinding --role=access-secrets d
 ----
 
 . Create a `filesystem` policy for the file system (AWS EFS volume) in account B, which allows AWS account A to perform a mount on it.
+
 +
 [NOTE]
-----
+====
 This step is not mandatory, but can be safer for AWS EFS volume usage.
-----
+====
+
 +
 [source, json]
 ----
@@ -266,23 +564,19 @@ This step is not mandatory, but can be safer for AWS EFS volume usage.
 kind: StorageClass
 apiVersion: storage.k8s.io/v1
 metadata:
-  name: efs-cross-account-mount-sc
+name: efs-cross-account-mount-sc
 provisioner: efs.csi.aws.com
 mountOptions:
-  - tls
+- tls
 parameters:
-  provisioningMode: efs-ap
-  fileSystemId: fs-00f6c3ae6f06388bb
-  directoryPerms: "700"
-  gidRangeStart: "1000"
-  gidRangeEnd: "2000"
-  basePath: "/account-a-data"
-  csi.storage.k8s.io/provisioner-secret-name: my-efs-cross-account
-  csi.storage.k8s.io/provisioner-secret-namespace: openshift-cluster-csi-drivers
+provisioningMode: efs-ap
+fileSystemId: fs-00f6c3ae6f06388bb
+directoryPerms: "700"
+gidRangeStart: "1000"
+gidRangeEnd: "2000"
+basePath: "/account-a-data"
+csi.storage.k8s.io/provisioner-secret-name: my-efs-cross-account
+csi.storage.k8s.io/provisioner-secret-namespace: openshift-cluster-csi-drivers
 volumeBindingMode: Immediate
 ----
-
-
-
-
-
+endif::openshift-enterprise[]
