@@ -1,0 +1,159 @@
+// Module included in the following assemblies:
+//
+// * security/container_security/security-understanding.adoc
+
+:_mod-docs-content-type: CONCEPT
+[id="security-understanding-container-validation_{context}"]
+= Container security and validation
+
+{product-title} is released as a set of container images that comprise the different functions of the software.
+These images must be validated in order to ensure that they have not been tampered with by an external party, and to ensure that they are the intended images provided by Red{nbsp}Hat.
+
+[id="security-understanding-image-integrity_{context}"]
+== Image integrity validation at pull time
+
+When images are downloaded, or pulled, from a registry, an {product-title} cluster performs the following actions to ensure the integrity of each image:
+
+. The cluster downloads an image manifest and calculates its digest.
+
+. The cluster compares the calculated digest of the image manifest with the known digest.
+If the digest values do not match, the image is rejected without further processing.
+
+. The cluster downloads an image config file and calculates its digest.
+
+. The cluster compares the calculated digest of the image config file with the digest that is provided in the image manifest.
+If the digest values do not match, the image is rejected without further processing.
+
+. For each file, or layer, that comprises the container image, the cluster downloads the file and calculates its digest.
+
+. The cluster compares the calculated digest of each file that makes up the image with the corresponding digest that is provided in the image manifest.
+If the digest values do not match, the image is rejected.
+
+Once the cluster completes all of the previous steps, the integrity of the image has been validated.
+
+[NOTE]
+====
+The image manifest is validated only when the manifest digest is known, which is true in the following cases:
+
+. The image is pulled by specifying the SHA256 image digest, for example `quay.io/openshift-release-dev/ocp-release@sha256:ea7ac3ad42169b39fce07e5e53403a028644810bee9a212e7456074894df40f3`.
+
+. The image signature is also being validated. See “Image authenticity validation” for more information.
+
+However, if the image manifest is not validated in these cases, the image config and layers are still checked for integrity.
+====
+
+[id="security-understanding-image-authenticity_{context}"]
+== Image authenticity validation
+
+Cluster administrators can use `ClusterImagePolicy` resources to declare an image policy for the cluster, requiring signature validation and other policy checks in addition to image integrity.
+
+:FeatureName: Configuring cluster image policies
+include::snippets/technology-preview.adoc[]
+
+.Example `ClusterImagePolicy` resource 1
+[source,yaml]
+----
+apiVersion: config.openshift.io/v1alpha1
+kind: ClusterImagePolicy
+metadata:
+  name: mypolicy-0
+spec:
+  scopes:
+  - test0.com <1>
+  - test1.com
+  policy:
+    rootOfTrust:
+      policyType: PublicKey
+      publicKey:
+        keyData: dGVzdC1rZXktZGF0YQ==
+----
+<1> This policy for `test0.com` and the policy from `mypolicy-1` will be appended together.
+
+
+.Example `ClusterImagePolicy` resource 2
+[source,yaml]
+----
+apiVersion: config.openshift.io/v1alpha1
+kind: ClusterImagePolicy
+metadata:
+  name: mypolicy-1
+spec:
+  scopes:
+  - test0.com
+  policy:
+    rootOfTrust:
+      policyType: FulcioCAWithRekor
+      fulcioCAWithRekor:
+        fulcioCAData: dGVzdC1jYS1kYXRhLWRhdGE=
+        rekorKeyData: dGVzdC1yZWtvci1rZXktZGF0YQ==
+        fulcioSubject: <1>
+          oidcIssuer: https://OIDC.example.com
+          signedEmail: test-user@example.com
+    signedIdentity:
+      matchPolicy: RemapIdentity
+      remapIdentity:
+        prefix: test-remap-prefix
+        signedPrefix: test-remap-signed-prefix
+
+----
+<1> Specifies the OIDC issuer and the email of the Fulcio authentication configuration.
+
+The previous example resources define two policies, both of which apply to `test0.com` pullspecs, and only one of which applies to `test1.com` pullspecs.
+
+When image integrity is validated at pull time for images whose pullspecs have configured policies with matching `scopes` values, CRI-O will retrieve any Sigstore signature images associated with the image and check them against the configured policies.
+If multiple scopes match a given image, only the policy requirements for the most specific scope apply.
+The policy requirements for more general scopes are ignored.
+
+If signature verification fails for any configured policy, the associated image pull will be rejected.
+Events will be created in the associated namespace explaining the verification failure, and the Pod `status` for containers consuming that image will set a relevant `state`.
+
+[id="security-understanding-trusting-install_{context}"]
+== Trusting an {product-title} installation
+
+In order to validate the integrity and authenticity of an {product-title} installation, all of its components must be verified, including container images as well as the binaries needed to install a cluster.
+
+The binaries required for a cluster installation are the installation program (`openshift-install`) and one of the {op-system} base image distributions.
+
+If the OpenShift CLI (`oc`) is used during an installation, it is verified through the following steps:
+
+. The OpenShift CLI (`oc`) archive is signed and therefore trusted.
+
+. The OpenShift CLI (`oc`) binary is transitively trusted.
+
+Each version of {product-title} has a unique release image.
+A release image represents a single release and includes a manifest containing all of the images that comprise the release.
+The method of validating an installation depends on whether the cluster is being installed in a connected or disconnected environment.
+
+[id="security-understanding-trusting-connected-install_{context}"]
+=== Trusting a connected installation
+
+For a connected installation of {product-title}, the chain of trust is established in the following order:
+
+. The `openshift-install` archive is trusted using a SHA256sum signature.
+
+. The `openshift-install` binary is transitively trusted.
+
+. The release image digest is hard coded into the `openshift-install` binary, therefore the digest is transitively trusted.
+
+. Image digests of the images that comprise the release are hard coded in the release image, therefore the digests are transitively trusted.
+
+. Because images are referenced using a digest, their integrity is verified when they are pulled from a registry.
+
+[id="security-understanding-trusting-disconnected-install_{context}"]
+=== Trusting a disconnected installation
+
+For a disconnected installation of {product-title}, which requires mirroring images to a registry that is available in the disconnected environment, the chain of trust is established in the following order:
+
+. The `openshift-install` binary is obtained by the trusted `oc` binary passing a trusted release image pull spec, in digest format, from the mirrored repository.
+Therefore, the `openshift-install` binary is transitively trusted.
+For each release, a manifest of the release is published and signed.
+From this manifest, you can obtain a trusted digest of a release image.
+
+. Image mirroring is configured in the `install-config` manifest.
+The rest of the installation, which involves verifying the digests for the release image and the other images that comprise {product-title}, proceeds in the same way as a connected installation.
+
+[NOTE]
+====
+There is no process to verify the mirroring process or the mirror registry.
+If images have not been mirrored correctly, the installation program will fail to pull the correct images, and the installation will fail.
+====
