@@ -1,6 +1,8 @@
 <!--- PR title format: [GH#<gh-issue-id>][BZ#<bz-issue-id>][OCPBUGS#<jira-issue-id>][OSDOCS#<jira-issue-id>]: <short-description-of-the-pr> --->
 
 <!--- If your changes apply to the latest release and/or in-development version of OpenShift, open your PR against the `main` branch.
+Do not create or rename a top-level directory (or any subdirectory in a directory that contains a hugebook.flag file) in the repository and topic map without checking with a docs program manager first.
+If a book is being created or modified, there are changes on the Customer Portal that must also be made.
 
 * For more details about the information requested in this template, see:
   https://github.com/openshift/openshift-docs/blob/main/contributing_to_docs/create_or_edit_content.adoc#submit-PR --->

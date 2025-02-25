@@ -37,10 +37,11 @@ LINKS_RE = re.compile(
 EXTERNAL_LINK_RE = re.compile(
     "[\./]*([\w_-]+)/[\w_/-]*?([\w_.-]*\.(?:html|adoc))", re.DOTALL
 )
-INCLUDE_RE = re.compile("include::(.*?)\[(.*?)\]", re.M)
+INCLUDE_RE = re.compile(r"^include::(.*?)\[(.*?)\]", re.M)
 IFDEF_RE = re.compile(r"^if(n?)def::(.*?)\[\]", re.M)
 ENDIF_RE = re.compile(r"^endif::(.*?)\[\]\r?\n", re.M)
 COMMENT_CONTENT_RE = re.compile(r"^^////$.*?^////$", re.M | re.DOTALL)
+COMMENTED_XREF_RE = re.compile(r"^//.*xref:.*$")
 TAG_CONTENT_RE = re.compile(
     r"//\s+tag::(.*?)\[\].*?// end::(.*?)\[\]", re.M | re.DOTALL
 )
@@ -454,32 +455,39 @@ def reformat_for_drupal(info):
 
         ensure_directory(images_dir)
 
+        # ADDED 21 Jan 2025: selective processing of images
+        # the set of file names is to be stored in image_files
+        # The initial value includes images defined in attributes (to copy every time)
+        image_files = set()
+
         log.debug("Copying source files for " + book["Name"])
-        copy_files(book, book_src_dir, src_dir, dest_dir, info)
+        copy_files(book, book_src_dir, src_dir, dest_dir, info, image_files)
 
         log.debug("Copying images for " + book["Name"])
-        copy_images(book, src_dir, images_dir, distro)
+        copy_images(book, src_dir, images_dir, distro, image_files)
 
 
 
-def copy_images(node, src_path, dest_dir, distro):
+def copy_images(node, src_path, dest_dir, distro, image_files):
     """
     Copy images over to the destination directory and flatten all image directories into the one top level dir.
+
+    REWORKED 21 Jan 2025: we now assume that there is a single images directory and
+     that all other images subdirectories are simply symlinks into it. So we do not
+     iterate over the tree but simply copy the necessary files from that one images directory
     """
 
-    def dir_callback(dir_node, parent_dir, depth):
-        node_dir = os.path.join(parent_dir, dir_node["Dir"])
-        src = os.path.join(node_dir, "images")
-
-        if os.path.exists(src):
-            src_files = os.listdir(src)
-            for src_file in src_files:
-                shutil.copy(os.path.join(src, src_file), dest_dir)
-
-    iter_tree(node, distro, dir_callback, parent_dir=src_path)
+    images_source_dir = os.path.join(src_path, "images")
+    for image_file_name in image_files:
+        image_file_pathname = os.path.join(images_source_dir,image_file_name)
+        if os.path.exists(image_file_pathname):
+            shutil.copy(image_file_pathname, dest_dir)
+        # if an image file is not found, this is not an error, because it might
+        # have been picked up from a commented-out line. Actual missing images
+        # should be caught by the asciidoctor/asciibinder part of CI
 
 
-def copy_files(node, book_src_dir, src_dir, dest_dir, info):
+def copy_files(node, book_src_dir, src_dir, dest_dir, info, image_files):
     """
     Recursively copy files from the source directory to the destination directory, making sure to scrub the content, add id's where the
     content is referenced elsewhere and fix any links that should be cross references.
@@ -497,7 +505,7 @@ def copy_files(node, book_src_dir, src_dir, dest_dir, info):
         dest_file = os.path.join(node_dest_dir, topic_node["File"] + ".adoc")
 
         # Copy the file
-        copy_file(info, book_src_dir, src_file, dest_dir, dest_file)
+        copy_file(info, book_src_dir, src_file, dest_dir, dest_file, image_files)
 
     iter_tree(node, info["distro"], dir_callback, topic_callback)
 
@@ -508,6 +516,7 @@ def copy_file(
     src_file,
     dest_dir,
     dest_file,
+    image_files,
     include_check=True,
     tag=None,
     cwd=None,
@@ -528,7 +537,7 @@ def copy_file(
     # os.mknod(dest_file)
     open(dest_file, "w").close()
     # Scrub/fix the content
-    content = scrub_file(info, book_src_dir, src_file, tag=tag, cwd=cwd)
+    content = scrub_file(info, book_src_dir, src_file, image_files, tag=tag, cwd=cwd)
 
     # Check for any includes
     if include_check:
@@ -583,6 +592,7 @@ def copy_file(
                     include_file,
                     dest_dir,
                     dest_include_file,
+                    image_files,
                     tag=include_tag,
                     cwd=current_dir,
                 )
@@ -611,8 +621,21 @@ def copy_file(
     with open(dest_file, "w") as f:
         f.write(content)
 
+def detect_images(content, image_files):
+    """
+    Detects all image file names referenced in the content, which is a readlines() output
+    Adds the filenames to the image_files set
+    Does NOT control for false positives such as commented out content,
+        because "false negatives" are worse
 
-def scrub_file(info, book_src_dir, src_file, tag=None, cwd=None):
+    TEMPORARY: use both procedural and RE detection and report any misalignment
+    """
+    image_pattern = re.compile(r'image::?([^\s\[]+)\[.*?\]')
+
+    for content_str in content:
+        image_files.update({os.path.basename(f) for f in image_pattern.findall(content_str)})
+
+def scrub_file(info, book_src_dir, src_file, image_files, tag=None, cwd=None):
     """
     Scrubs a file and returns the cleaned file contents.
     """
@@ -623,7 +646,21 @@ def scrub_file(info, book_src_dir, src_file, tag=None, cwd=None):
     # procedure loads the file recognizing that it starts with http
     # it then checks if it exists or not, and if it exists, returns the raw data
     # data that it finds.
-    if base_src_file.startswith("https://raw.githubusercontent.com/openshift/"):
+    # modified 20/Aug/2024 to process https links which are preceded
+    # by an added directory (happens with hugeBook)
+    # Modified 05/Dec/2024 to allow for https links from openshift-kni repo.
+
+    # Check for both allowed URL patterns
+    https_pos = base_src_file.find("https://raw.githubusercontent.com/openshift/")
+    https_kni_pos = base_src_file.find("https://raw.githubusercontent.com/openshift-kni/")
+
+    if https_pos >= 0 or https_kni_pos >= 0:
+        # Ensure we start from the correct URL (either github or openshift-kni)
+        if https_kni_pos >= 0:
+            base_src_file = base_src_file[https_kni_pos:]
+        else:
+            base_src_file = base_src_file[https_pos:]
+
         try:
             response = requests.get(base_src_file)
             if response:
@@ -642,6 +679,9 @@ def scrub_file(info, book_src_dir, src_file, tag=None, cwd=None):
     with open(src_file, "r") as f:
         src_file_content = f.readlines()
 
+    # detect image references in the content
+    detect_images(src_file_content, image_files)
+
     # Scrub the content
     content = ""
     header_found = content_found = False
@@ -650,6 +690,9 @@ def scrub_file(info, book_src_dir, src_file, tag=None, cwd=None):
         # Ignore any leading blank lines, before any meaningful content is found
         if line.strip() == "" and not content_found:
             continue
+
+        # Replace lines containing commented xrefs
+        line = COMMENTED_XREF_RE.sub("// Removed commented line that contains an xref", line)
 
         # Check if the line should be included in the output
         if include_line(line):
