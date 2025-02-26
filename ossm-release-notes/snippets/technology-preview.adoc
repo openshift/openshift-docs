@@ -1,0 +1,12 @@
+// When including this file, ensure that {FeatureName} is set immediately before
+// the include. Otherwise it will result in an incorrect replacement.
+
+[IMPORTANT]
+====
+[subs="attributes+"]
+{FeatureName} is a Technology Preview feature only. Technology Preview features are not supported with Red Hat production service level agreements (SLAs) and might not be functionally complete. Red Hat does not recommend using them in production. These features provide early access to upcoming product features, enabling customers to test functionality and provide feedback during the development process.
+
+For more information about the support scope of Red Hat Technology Preview features, see link:https://access.redhat.com/support/offerings/techpreview/[Technology Preview Features Support Scope].
+====
+// Undefine {FeatureName} attribute, so that any mistakes are easily spotted
+:!FeatureName:
