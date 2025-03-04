@@ -1,0 +1,207 @@
+// This procedure is used in the following assembly:
+// * install/ossm-multi-cluster-topologies.adoc
+
+:_mod-docs-content-type: PROCEDURE
+[id="ossm-adding-clusters-to-a-mesh_{context}"]
+= Adding clusters to a mesh
+
+Add clusters to a mesh that is controlled by an external {istio} control plane.
+
+.Prerequisites
+
+* You have installed the control plane and data plane on separate clusters.
+
+.Procedure
+
+. Create a `SECOND_REMOTE_CLUSTER_NAME` environment variable that defines the name of the cluster by running the following command:
++
+[source,terminal]
+----
+$ export SECOND_REMOTE_CLUSTER_NAME=cluster2
+----
+
+. Set up the environment variable that contains the `oc` command context for the data plane cluster by running the following command:
++
+[source,terminal]
+----
+$ export CTX_SECOND_DATA_PLANE_CLUSTER=<context name of the second data plane cluster>
+----
+
+. Install {istio} on the second data plane cluster:
+
+.. Create a project called `external-istiod` on the data plane cluster by running the following command:
++
+[source,terminal]
+----
+$ oc get project external-istiod --context "${CTX_SECOND_DATA_PLANE_CLUSTER}" || oc new-project external-istiod --context "${CTX_SECOND_DATA_PLANE_CLUSTER}"
+----
+
+.. Annotate the system namespace on the remote cluster by running the following command:
++
+[source,terminal]
+----
+$ oc --context="${CTX_SECOND_DATA_PLANE_CLUSTER}" annotate namespace external-istiod "topology.istio.io/controlPlaneClusters=${REMOTE_CLUSTER_NAME}"
+----
+
+.. Create an `Istio` resource on the second data plane cluster by running the following command:
++
+[source,terminal]
+----
+$ cat <<EOF | oc --context "${CTX_SECOND_DATA_PLANE_CLUSTER}" apply -f -
+apiVersion: sailoperator.io/v1
+kind: Istio
+metadata:
+  name: external-istiod
+spec:
+  version: v${ISTIO_VERSION}
+  namespace: external-istiod
+  profile: remote
+  values:
+    pilot:
+      istiodRemote:
+        injectionURL: https://${EXTERNAL_ISTIOD_ADDR}:15017/inject/cluster/${SECOND_REMOTE_CLUSTER_NAME}/net/network2
+EOF
+----
+
+.. Store the API server address for the data plane cluster in an environment variable by running the following command:
++
+[source,terminal]
+----
+$ SECOND_DATA_PLANE_API_SERVER=https://<hostname or IP address of the second data plane cluster's API server>
+----
+
+.. Install a remote secret on the control plane cluster that provides access to the API server on the second data plane cluster by running the following command:
++
+[source,terminal]
+----
+$ istioctl create-remote-secret \
+  --context="${CTX_SECOND_DATA_PLANE_CLUSTER}" \
+  --name="${SECOND_REMOTE_CLUSTER_NAME}" \
+  --type=remote \ <1>
+  --namespace=external-istiod \
+  --create-service-account=false \
+  --server="${SECOND_DATA_PLANE_API_SERVER}" | \
+  oc --context="${CTX_CONTROL_PLANE_CLUSTER}" apply -f -
+----
+<1> Unlike the first remote cluster of the mesh, which also serves as the configuration cluster, set the `--type` argument to `remote`. The remote cluster only contains endpoints. The control plane ignores any {istio} configuration resources, such as a `VirtualService`, `DestinationRule,` or other resources on the remote cluster.
+
+. Set up an East-West gateway to enable communication between the remote clusters.
+
+.. Create an East-West gateway on the first remote cluster by running the following command:
++
+[source,terminal]
+----
+$ oc --context "${CTX_DATA_PLANE_CLUSTER}" apply -f https://raw.githubusercontent.com/istio-ecosystem/sail-operator/main/docs/multicluster/east-west-gateway-external-net1.yaml
+----
+
+.. Create an East-West gateway on the second remote cluster by running the following command:
++
+[source,terminal]
+----
+$ oc --context "${CTX_SECOND_DATA_PLANE_CLUSTER}" apply -f https://raw.githubusercontent.com/istio-ecosystem/sail-operator/main/docs/multicluster/east-west-gateway-external-net2.yaml
+----
+
+.. Expose the application services through the gateway by running the following command:
++
+[source,terminal]
+----
+$ oc --context "${CTX_DATA_PLANE_CLUSTER}" apply -n external-istiod -f https://raw.githubusercontent.com/istio-ecosystem/sail-operator/main/docs/multicluster/expose-services.yaml
+----
+
+.Verification
+
+. Deploy sample applications on the second data plane cluster:
+
+.. Create a namespace for sample applications on the second data plane cluster by running the following command:
++
+[source,terminal]
+----
+$ oc --context "${CTX_SECOND_DATA_PLANE_CLUSTER}" get project sample || oc --context="${CTX_SECOND_DATA_PLANE_CLUSTER}" new-project sample
+----
+
+.. Label the application namespace to support sidecar injection by running the following command:
++
+[source,terminal]
+----
+$ oc --context="${CTX_SECOND_DATA_PLANE_CLUSTER}" label namespace sample istio.io/rev=external-istiod
+----
+
+.. Deploy the `helloworld` application:
+
+... Create the `helloworld` service by running the following command:
++
+[source,terminal]
+----
+$ oc --context="${CTX_SECOND_DATA_PLANE_CLUSTER}" apply \
+  -f https://raw.githubusercontent.com/istio/istio/${ISTIO_VERSION}/samples/helloworld/helloworld.yaml \
+  -l service=helloworld -n sample
+----
+
+... Create the `helloworld-v2` deployment by running the following command:
++
+[source,terminal]
+----
+$ oc --context="${CTX_SECOND_DATA_PLANE_CLUSTER}" apply \
+  -f https://raw.githubusercontent.com/istio/istio/${ISTIO_VERSION}/samples/helloworld/helloworld.yaml \
+  -l version=v2 -n sample
+----
+
+.. Deploy the `sleep` application by running the following command:
++
+[source,terminal]
+----
+$ oc --context="${CTX_SECOND_DATA_PLANE_CLUSTER}" apply \
+  -f https://raw.githubusercontent.com/istio/istio/${ISTIO_VERSION}/samples/sleep/sleep.yaml -n sample
+----
+
+.. Verify that the pods on the `sample` namespace have a sidecar injected by running the following command:
++
+[source,terminal]
+----
+$ oc --context="${CTX_SECOND_DATA_PLANE_CLUSTER}" get pods -n sample
+----
++
+The terminal should return `2/2` for each pod on the `sample` namespace:
++
+.Example output
+[source,terminal]
+----
+NAME                             READY   STATUS    RESTARTS   AGE
+helloworld-v2-54df5f84ba-nd5mt   2/2     Running   0          1m
+sleep-5fcd8fd6c8-mg8n2           2/2     Running   0          1m
+----
+
+
+.. Verify a request can be sent to the `helloworld` application through the `sleep` application by running the following command:
++
+[source,terminal]
+----
+$ oc exec --context="${CTX_SECOND_DATA_PLANE_CLUSTER}" -n sample -c sleep deploy/sleep -- curl -sS helloworld.sample:5000/hello
+----
++
+The terminal should return a response from the `helloworld` application:
++
+.Example output
+[source,terminal]
+----
+Hello version: v2, instance: helloworld-v2-54df5f84ba-nd5mt
+----
+
+. Confirm version 1 and version 2 of the `helloworld` service are accessible through the ingress gateway by running the following command:
++
+[source,terminal]
+----
+$ for i in {1..10}; do curl -s "http://${GATEWAY_URL}/hello"; done
+----
++
+Verify that the terminal returns a response from both clusters. This means version 1 and version 2 of the service can be seen in the responses. 
++
+.Example output
+[source,terminal]
+----
+Hello version: v1, instance: helloworld-v1-6d65866976-jb6qc
+Hello version: v2, instance: helloworld-v2-54df5f84ba-nd5mt
+Hello version: v1, instance: helloworld-v1-6d65866976-jb6qc
+Hello version: v2, instance: helloworld-v2-54df5f84ba-nd5mt
+...
+----
