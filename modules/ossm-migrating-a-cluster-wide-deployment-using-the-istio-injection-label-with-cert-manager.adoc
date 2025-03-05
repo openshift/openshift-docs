@@ -1,0 +1,141 @@
+// Module included in the following assemblies:
+//
+// * service-mesh-docs-main/migrating/cluster-wide/ossm-migrating-cluster-wide-assembly.adoc
+
+:_mod-docs-content-type: PROCEDURE
+[id="ossm-migrating-a-cluster-wide-deployment-using-the-istio-injection-label-with-cert-manager_{context}"]
+= Migrating a cluster-wide deployment using the istio injection label with cert-manager
+
+This procedure performs a canary upgrade with the gradual migration of data plane namespaces for a cluster-wide deployment using the `istio-injection=enabled` label and the `default` revision tag. 
+
+This procedure contains more steps than the simple migration method, and you must re-label all of the data plane namespaces. However, during the {SMProduct} {SMv2Version} to {SMProduct} 3 migration process using the `istio-injection=enabled` label, it is safe to restart any of the workloads at any point during the migration process. 
+
+The `bookinfo` example application is being used for demonstration purposes with a minimal example for the `Istio` resource. For more information on configuration differences between the {SMProduct} 2 `ServiceMeshControlPlane` resource and the {SMProduct} 3 `Istio` resource, see "ServiceMeshControlPlane resource to Istio resource fields mapping".
+
+You can follow these same steps with your own workloads.
+
+.Prerequisites
+
+* You have deployed {ocp-product-title} 4.14 or later.
+* You are logged in to the {ocp-product-title} web console as a user with the `cluster-admin` role.
+* You have completed the premigration checklists.
+* You have the {SMProduct} {SMv2Version} Operator installed.
+* You have the {SMProduct} 3 Operator installed.
+* You created an `IstioCNI` resource.
+* You have the `istioctl` tool installed.
+* You are running a `ClusterWide` `ServiceMeshControlPlane`.
+* You have installed the `bookinfo` application.
+
+.Procedure
+
+. Check that your {SMProduct} 2 `ServiceMeshControlPlane` is configured with the cert-manager-tool:
++
+.Example `ServiceMeshControlPlane` cert-manager configuration
+[source,yaml]
+----
+apiVersion: maistra.io/v2
+kind: ServiceMeshControlPlane
+metadata:
+  name: basic
+  namespace: istio-system
+spec:
+  ...
+  security:
+    certificateAuthority:
+      cert-manager:
+        address: cert-manager-istio-csr.istio-system.svc:443
+      type: cert-manager
+    dataPlane:
+      mtls: true
+    identity:
+      type: ThirdParty
+    manageNetworkPolicy: false
+----
+
+. Update the `istio-csr` deployment to include your {SMProduct} 3 control plane by running the following command:
++
+[source,terminal]
+----
+  helm upgrade cert-manager-istio-csr jetstack/cert-manager-istio-csr \
+      --install \
+      --reuse-values \
+      --namespace istio-system \
+      --wait \
+      --set "app.istio.revisions={basic,istio-tenant-a}" <1>
+----
++
+<1> The `app.istio.revisions` field needs to include your {SMProduct} 3.0 control plane revision _before_ you create your `Istio` resource so that proxies can properly communicate with the {SMProduct} 3.0 control plane.
+
+. Create a YAML file named `ossm-3.yaml` that creates the {istio} resource for the 3.0 installation in the same namespace as the `ServiceMeshControlPlane` resource for the 2.6 installation.
++
+.Example `Istio` resource
+[source,yaml,subs="attributes,verbatim"]
+----
+apiVersion: sailoperator.io/v1alpha1
+kind: Istio
+metadata:
+  name: ossm-3 <1>
+spec:
+  updateStrategy:
+    type: RevisionBased
+  namespace: istio-system <2>
+  version: v1.24.3
+  values:  
+    meshConfig:
+    extensionProviders: <3>
+      - name: prometheus
+        prometheus: {}
+      - name: otel
+        opentelemetry:
+          port: 4317
+          service: otel-collector.opentelemetrycollector-3.svc.cluster.local
+  global:
+      caAddress: cert-manager-istio-csr.istio-system.svc:443
+      pilot:
+        env:
+          ENABLE_CA_SERVER: "false"
+----
+<1> The `name`, `updateStrategy` and `version` fields are significant for injection labels.
+<2> The 3.0 and 2.6 control planes must run in the same namespace.
+<3> Optional: If you are migrating metrics and tracing, update the `extensionProviders` fields according to your tracing and metrics configurations.
++
+This example configuration does not use any `discoverySelectors`, which means the {istio} control plane has access to all namespaces. If you want to define `discoverySelectors` all data plane namespaces that you plan to migrate from 2.6 must be matched.
++
+[NOTE]
+====
+Namespaces that have `istio-injection=enabled` label applied and are managed by {SMProduct} 2.6 control plane. To prevent the {SMProduct} 3.0 control pane from injecting proxies in workloads, do not use use the `default` name for the {istio} resource, and do not create the `default` revision tag at this time. You will create the `default` revision tag later in this procedure.
+====
+
+. Identify the namespaces that contain a 2.6 control plane by running the following command:
++
+[source,terminal]
+----
+$ oc get smcp -A
+----
++
+.Sample output:
+[source,terminal]
+----
+NAMESPACE      NAME                   READY   STATUS            PROFILES      VERSION   AGE
+istio-system   install-istio-system   6/6     ComponentsReady   ["default"]   2.6.6     115m
+----
+
+. Apply the YAML file by running the following command:
++
+[source,terminal]
+----
+$ oc apply -f ossm-3.yaml
+----
+
+. Verify that the new `istiod` resource uses the existing root certificate by running the following command:
++
+[source,terminal]
+----
+$ oc logs deployments/istiod-ossm-3-v1-24-3 -n istio-system | grep 'Load signing key and cert from existing secret'
+----
++
+.Sample output:
+[source,terminal]
+----
+2024-12-18T08:13:53.788959Z	info	pkica	Load signing key and cert from existing secret istio-system/istio-ca-secret
+----
