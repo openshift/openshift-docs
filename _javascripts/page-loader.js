@@ -3,8 +3,17 @@ newLink = "";
 newVersion = "";
 currentVersion = "";
 
-// the fileRequested
-fileRequested = "";
+const urlMappings = {
+  "openshift-acs": "https://docs.openshift.com/acs/",
+  "openshift-builds": "https://docs.openshift.com/builds/",
+  "openshift-enterprise": "https://docs.openshift.com/container-platform/",
+  "openshift-gitops": "https://docs.openshift.com/gitops/",
+  "openshift-lightspeed": "https://docs.openshift.com/lightspeed/",
+  "openshift-origin": "https://docs.okd.io/",
+  "openshift-pipelines": "https://docs.openshift.com/pipelines/",
+  "openshift-serverless": "https://docs.openshift.com/serverless/",
+  "openshift-telco": "https://docs.openshift.com/container-platform-telco/",
+};
 
 function versionSelector(list) {
 
