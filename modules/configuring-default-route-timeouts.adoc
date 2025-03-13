@@ -1,0 +1,164 @@
+// Module included in the following assemblies:
+//
+// * knative-serving/config-applications/configuring-revision-timeouts.adoc
+:_content-type: PROCEDURE
+[id="configuring-default-route-timeouts_{context}"]
+= Configuring the default route timeouts
+
+To ensure that requests exceeding the default 600 second timeout set by Knative are not prematurely terminated, you can adjust the timeouts in the following components:
+
+* {ocp-product-title} route
+* Serving
+* Load balancer (if applicable)
+
+By also seting the maximum revision timeout, you ensure that no revision can exceed a specific limit. 
+You can do this globally or per revision.
+
+.Procedure
+
+//Decide wheter you want to configure the thingy globally or per revision
+//Global config (possible FS)
+//1.1
+.. Reset the default by modifying the subscription as follows:
+
+[source,terminal]
+----
+$ oc patch subscription serverless-operator -n openshift-serverless --type='merge' -p '{"spec": {"config": {"env": [{"name": "ROUTE_HAPROXY_TIMEOUT", "value": "900"}]}}}'
+----
+
+ROUTE_HAPROXY_TIMEOUT is an env managed by the Serverless Operator and by default it is set to 600. The subscription update will cause pods to be redeployed in the openshift-serverless namespace.
+
+//1.2
+.. Set the maximum revision timeout as follows in the `KnativeServing` custom resource (CR):
++
+.Example of max-revision-timeout-seconds set to 900 seconds
+[source,yaml]
+----
+apiVersion: operator.knative.dev/v1beta1
+kind: KnativeServing
+metadata:
+  name: knative-serving
+spec:
+  config:
+    defaults:
+      max-revision-timeout-seconds: "900"
+----
++
+Serverless operator automatically adjusts the activator's `terminationGracePeriod` to this value to avoid request termination in cases where activator pods are being terminated themselves.
+
+//1.2.5
+.. You can verify that the timeout has been set as follows: 
+[source,terminal]
+----
+$ oc get deployment activator -n knative-serving -o jsonpath="{.spec.template.spec.terminationGracePeriodSeconds}"
+900
+----
+
+//1.3
+Then you can deploy a Knative Service with the desired timeouts less or equal to the maximum set (900):
+
+[source,yaml]
+----
+apiVersion: serving.knative.dev/v1
+kind: Service
+metadata:
+  name:<>
+spec:
+  template:
+    spec:
+      timeoutSeconds: 800
+      responseStartTimeoutSeconds: 800
+----
+
+//1.3.5
+If you are using Kourier, you can verify the current value of the timeout at the OCP route as follows:
+
+[source,terminal]
+----
+$ oc get route <route-name> -n knative-serving-ingress ess -o jsonpath="{.metadata.annotations.haproxy\.router\.openshift\.io/timeout}"
+800s
+----
+
+//Per revision (possible SS)
+Users can keep the default 600s timeout or any other value set and only adjust OCP route timeouts per revision for specific workloads e.g. AI deployments.
+
+//2.1
+Set the maximum revision timeout as usual:
+
+apiVersion: operator.knative.dev/v1beta1
+kind: KnativeServing
+metadata:
+  name: knative-serving
+spec:
+  config:
+    defaults:
+      max-revision-timeout-seconds: "900"
+
+
+//2.1.5
+You can verify the activator's termination grace period as follows: 
+[source,terminal]
+----
+$ oc get deployment activator -n knative-serving -o jsonpath="{.spec.template.spec.terminationGracePeriodSeconds}"
+900
+----
+
+//2.2
+Then at the ksvc side the user can set:
+
+[source,yaml]
+----
+apiVersion: serving.knative.dev/v1
+kind: Service
+metadata:
+  name:<>
+  annotations:
+    serving.knative.openshift.io/setRouteTimeout: "800"
+spec:
+  template:
+    metadata:
+      annotations:
+#... 
+    spec:
+      timeoutSeconds: 800
+      responseStartTimeoutSeconds: 800
+  
+ serving.knative.openshift.io/setRouteTimeout: "800" <1>
+ timeoutSeconds: 800 <2>
+ responseStartTimeoutSeconds: 800 <3>
+----
+<1> The annotation makes sure that the OCP route will have the right timeout set, here this can be fine-tuned per ksvc instead of via a global default maximum.
+<2> This makes sure that the revision request will not exceed the specific value.
+<3> This makes sure that while we are waiting for the response we don't timeout before the max threshold is reached. The default is 300 so we want to increase that value.
+
+//2.2.5
+If you are using Kourier, you can verify the current value of the timeout at the OCP route as follows:
+
+[source,terminal]
+----
+$ oc get route <route-name> -n knative-serving-ingress ess -o jsonpath="{.metadata.annotations.haproxy\.router\.openshift\.io/timeout}"
+800s
+----
+
+(Note: If users create manually their routes using the annotation `serving.knative.openshift.io/disableRoute` to avoid autogeneration they can set the OCP route timeouts on their own.)
+
+//2.2.10 NOTE
+When using Service Mesh, stopping the activator while a long request is in-flight will interrupt the request unless the following settings is put in `ServiceMeshControlPlane`:
+
+[source,yaml]
+----
+techPreview:
+    meshConfig:
+      defaultConfig:
+        terminationDrainDuration: 1000s <1>
+----
+<1> The `termindationDrainDuration` must be longer than the request duration otherwise the `istio-proxy` is shutdown and interrupts the connection. 
+
+//3.
+. The following applies to both options above. Depending on the clouder provider you may need to set or adjust the load balancer timeout too, here is an example for the AWS LB:
+
+[source,terminal]
+----
+$ oc -n openshift-ingress-operator patch ingresscontroller/default --type=merge --patch='{"spec":{"endpointPublishingStrategy": {"type":"LoadBalancerService", "loadBalancer": {"scope":"External", "providerParameters":{"type":"AWS", "aws": {"type":"Classic", "classicLoadBalancer": {"connectionIdleTimeout":"20m"}}}}}}}'
+ingresscontroller.operator.openshift.io/default patched
+----
