@@ -1,0 +1,118 @@
+// Module included in the following assemblies:
+//
+// * observability/logging/logging-6.0/log6x-clf.adoc
+
+:_mod-docs-content-type: CONCEPT
+[id="log6x-audit-filtering_{context}"]
+= Overview of API audit filter
+OpenShift API servers generate audit events for each API call, detailing the request, response, and the identity of the requester, leading to large volumes of data. The API Audit filter uses rules to enable the exclusion of non-essential events and the reduction of event size, facilitating a more manageable audit trail. Rules are checked in order, and checking stops at the first match. The amount of data that is included in an event is determined by the value of the `level` field:
+
+* `None`: The event is dropped.
+* `Metadata`: Audit metadata is included, request and response bodies are removed.
+* `Request`: Audit metadata and the request body are included, the response body is removed.
+* `RequestResponse`: All data is included: metadata, request body and response body. The response body can be very large. For example, `oc get pods -A` generates a response body containing the YAML description of every pod in the cluster.
+
+The `ClusterLogForwarder` custom resource (CR) uses the same format as the standard link:https://kubernetes.io/docs/tasks/debug/debug-cluster/audit/#audit-policy[Kubernetes audit policy], while providing the following additional functions:
+
+Wildcards:: Names of users, groups, namespaces, and resources can have a leading or trailing `\*` asterisk character. For example, the namespace `openshift-\*` matches `openshift-apiserver` or `openshift-authentication`. Resource `\*/status` matches `Pod/status` or `Deployment/status`.
+
+Default Rules:: Events that do not match any rule in the policy are filtered as follows:
+* Read-only system events such as `get`, `list`, and `watch` are dropped.
+* Service account write events that occur within the same namespace as the service account are dropped.
+* All other events are forwarded, subject to any configured rate limits.
+
+To disable these defaults, either end your rules list with a rule that has only a `level` field or add an empty rule.
+
+Omit Response Codes:: A list of integer status codes to omit. You can drop events based on the HTTP status code in the response by using the `OmitResponseCodes` field, which lists HTTP status codes for which no events are created. The default value is `[404, 409, 422, 429]`. If the value is an empty list, `[]`, then no status codes are omitted.
+
+The `ClusterLogForwarder` CR audit policy acts in addition to the {product-title} audit policy. The `ClusterLogForwarder` CR audit filter changes what the log collector forwards and provides the ability to filter by verb, user, group, namespace, or resource. You can create multiple filters to send different summaries of the same audit stream to different places. For example, you can send a detailed stream to the local cluster log store and a less detailed stream to a remote site.
+
+[NOTE]
+====
+You must have a cluster role `collect-audit-logs` to collect the audit logs. The following example provided is intended to illustrate the range of rules possible in an audit policy and is not a recommended configuration.
+====
+
+.Example audit policy
+[source,yaml]
+----
+apiVersion: observability.openshift.io/v1
+kind: ClusterLogForwarder
+metadata:
+  name: <log_forwarder_name>
+  namespace: <log_forwarder_namespace>
+spec:
+  serviceAccount:
+    name: <service_account_name>
+  pipelines:
+    - name: my-pipeline
+      inputRefs: audit # <1>
+      filterRefs: my-policy # <2>
+  filters:
+    - name: my-policy
+      type: kubeAPIAudit
+      kubeAPIAudit:
+        # Don't generate audit events for all requests in RequestReceived stage.
+        omitStages:
+          - "RequestReceived"
+
+        rules:
+          # Log pod changes at RequestResponse level
+          - level: RequestResponse
+            resources:
+            - group: ""
+              resources: ["pods"]
+
+          # Log "pods/log", "pods/status" at Metadata level
+          - level: Metadata
+            resources:
+            - group: ""
+              resources: ["pods/log", "pods/status"]
+
+          # Don't log requests to a configmap called "controller-leader"
+          - level: None
+            resources:
+            - group: ""
+              resources: ["configmaps"]
+              resourceNames: ["controller-leader"]
+
+          # Don't log watch requests by the "system:kube-proxy" on endpoints or services
+          - level: None
+            users: ["system:kube-proxy"]
+            verbs: ["watch"]
+            resources:
+            - group: "" # core API group
+              resources: ["endpoints", "services"]
+
+          # Don't log authenticated requests to certain non-resource URL paths.
+          - level: None
+            userGroups: ["system:authenticated"]
+            nonResourceURLs:
+            - "/api*" # Wildcard matching.
+            - "/version"
+
+          # Log the request body of configmap changes in kube-system.
+          - level: Request
+            resources:
+            - group: "" # core API group
+              resources: ["configmaps"]
+            # This rule only applies to resources in the "kube-system" namespace.
+            # The empty string "" can be used to select non-namespaced resources.
+            namespaces: ["kube-system"]
+
+          # Log configmap and secret changes in all other namespaces at the Metadata level.
+          - level: Metadata
+            resources:
+            - group: "" # core API group
+              resources: ["secrets", "configmaps"]
+
+          # Log all other resources in core and extensions at the Request level.
+          - level: Request
+            resources:
+            - group: "" # core API group
+            - group: "extensions" # Version of group should NOT be included.
+
+          # A catch-all rule to log all other requests at the Metadata level.
+          - level: Metadata
+----
+<1> The log types that are collected. The value for this field can be `audit` for audit logs, `application` for application logs, `infrastructure` for infrastructure logs, or a named input that has been defined for your application.
+<2> The name of your audit policy.

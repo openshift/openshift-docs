@@ -8,6 +8,7 @@ const urlMappings = {
   "openshift-builds": "https://docs.openshift.com/builds/",
   "openshift-enterprise": "https://docs.openshift.com/container-platform/",
   "openshift-gitops": "https://docs.openshift.com/gitops/",
+  "openshift-lightspeed": "https://docs.openshift.com/lightspeed/",
   "openshift-origin": "https://docs.okd.io/",
   "openshift-pipelines": "https://docs.openshift.com/pipelines/",
   "openshift-serverless": "https://docs.openshift.com/serverless/",
