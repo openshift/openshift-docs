@@ -1,11 +1,12 @@
 #!/bin/bash
 
-# ensure asciidoctor is installed
-if ! command -v asciidoctor &>/dev/null ;
-then
-    echo "Asciidoctor is not installed. Please install it and try again. 👻"
-    exit 127
-fi
+# Ensure asciidoctor and htmltest are installed
+for cmd in asciidoctor htmltest; do
+    if ! command -v "$cmd" &>/dev/null; then
+        echo "$cmd is not installed. Please install it and try again. 👻"
+        exit 127
+    fi
+done
 
 # get the *.adoc modules and assemblies in the pull request
 FILES=$(git diff --name-only HEAD~1 HEAD --diff-filter=d "*.adoc" ':(exclude)_unused_topics/*')
@@ -43,7 +44,7 @@ check_updated_assemblies () {
             echo "Validating $ASSEMBLY ..."
             RED='\033[0;31m'
             NC='\033[0m'
-            OUTPUT=$(asciidoctor "$ASSEMBLY" -a source-highlighter=rouge -a icons! -o /tmp/out.html -v --failure-level WARN --trace 2>&1)
+            OUTPUT=$(asciidoctor "$ASSEMBLY" -a source-highlighter=rouge -a icons! -o tmp/out.html -v --failure-level WARN --trace 2>&1 && htmltest tmp/out.html)
             # check assemblies and fail if errors are reported
             if [[ $? != 0 ]];
             then
