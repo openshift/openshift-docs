@@ -1,0 +1,188 @@
+// Module included in the following assemblies:
+//
+// * monitoring/troubleshooting-monitoring-issues.adoc
+
+:_mod-docs-content-type: PROCEDURE
+[id="troubleshooting-alertmanager-configurations_{context}"]
+= Troubleshooting Alertmanager configuration
+
+If your Alertmanager configuration does not work properly, you can compare the `alertmanager-main` secret with the running Alertmanager configuration to identify possible errors. You can also test your alert routing configuration by creating a test alert.
+
+.Prerequisites
+
+* You have access to the cluster as a user with the `cluster-admin` cluster role.
+* You have installed the {oc-first}.
+
+.Procedure
+
+. Compare the `alertmanager-main` secret with the running Alertmanager configuration:
+
+.. Extract the Alertmanager configuration from the `alertmanager-main` secret into the `alertmanager.yaml` file:
++
+[source,terminal]
+----
+$ oc -n openshift-monitoring get secret alertmanager-main --template='{{ index .data "alertmanager.yaml" }}' | base64 --decode > alertmanager.yaml 
+----
+
+.. Pull the running Alertmanager configuration from the API:
++
+[source,terminal]
+----
+$ oc exec -n openshift-monitoring alertmanager-main-0 -- amtool config show --alertmanager.url http://localhost:9093
+----
++
+.Example output
+[source,terminal]
+----
+global:
+  resolve_timeout: 5m
+  http_config:
+    follow_redirects: true
+    enable_http2: true
+    proxy_from_environment: true
+...
+route:
+  receiver: default
+  group_by:
+  - namespace
+  continue: false
+  routes:
+  ...
+  - matchers: # <1>
+    - service="example-app"
+    continue: false
+    routes:
+    - receiver: team-frontend-page
+      matchers:
+      - severity="critical"
+      continue: false
+  ...
+receivers:
+...
+- name: team-frontend-page # <2>
+  pagerduty_configs:
+  - send_resolved: true
+    http_config:
+      authorization:
+        type: Bearer
+        credentials: <secret>
+      follow_redirects: true
+      enable_http2: true
+      proxy_from_environment: true
+    service_key: <secret>
+    url: https://events.pagerduty.com/v2/enqueue
+    ...
+templates: []
+----
+<1> The example shows the route to the `team-frontend-page` receiver. Alertmanager routes alerts with `service="example-app"` and `severity="critical"` labels to this receiver.
+<2> The `team-frontend-page` receiver configuration. The example shows PagerDuty as a receiver.
+
+.. Compare the contents of the `route` and `receiver` fields of the `alertmanager.yaml` file with the fields in the running Alertmanager configuration. Look for any discrepancies.
+
+.. If you used an `AlertmanagerConfig` object to configure alert routing for user-defined projects, you can use the `alertmanager.yaml` file to see the configuration before the `AlertmanagerConfig` object was applied. The running Alertmanager configuration shows the changes after the object was applied:
++
+.Example running configuration with AlertmanagerConfig applied
+[source,terminal]
+----
+...
+route:
+  ...
+  routes:
+  - receiver: ns1/example-routing/UWM-receiver <1>
+    group_by:
+    - job
+    matchers:
+    - namespace="ns1"
+    continue: true
+  ...
+receivers:
+...
+- name: ns1/example-routing/UWM-receiver <1>
+  webhook_configs:
+  - send_resolved: true
+    http_config:
+      follow_redirects: true
+      enable_http2: true
+      proxy_from_environment: true
+    url: <secret>
+    url_file: ""
+    max_alerts: 0
+    timeout: 0s
+templates: []
+----
+<1> The routing configuration from the `example-routing` `AlertmanagerConfig` object in the `ns1` project for the `UWM-receiver` receiver.
+
+. Check Alertmanager pod logs to see if there are any errors:
++
+[source,terminal]
+----
+$ oc -n openshift-monitoring logs -c alertmanager <alertmanager_pod>
+----
++
+[NOTE]
+====
+For multi-node clusters, ensure that you check all Alertmanager pods and their logs.
+====
++
+.Example command
+[source,terminal]
+----
+$ oc -n openshift-monitoring logs -c alertmanager alertmanager-main-0
+----
+
+. Verify that your receiver is configured correctly by creating a test alert.
+
+.. Get a list of the configured routes:
++
+[source,terminal]
+----
+$ oc exec alertmanager-main-0 -n openshift-monitoring -- amtool config routes show --alertmanager.url http://localhost:9093
+----
++
+.Example output
+[source,terminal]
+----
+Routing tree:
+.
+└── default-route  receiver: default
+    ├── {alertname="Watchdog"}  receiver: Watchdog
+    └── {service="example-app"}  receiver: default
+        └── {severity="critical"}  receiver: team-frontend-page
+----
+
+.. Print the route to your chosen receiver. The following example shows the receiver used for alerts with `service=example-app` and severity=critical` matchers.
++
+[source,terminal]
+----
+$ oc exec alertmanager-main-0 -n openshift-monitoring -- amtool config routes test service=example-app severity=critical --alertmanager.url http://localhost:9093
+----
++
+.Example output
+[source,terminal]
+----
+team-frontend-page
+----
+
+.. Create a test alert and add it to the Alertmanager. The following example creates an alert with `service=example-app` and `severity=critical` to test the `team-frontend-page` receiver:
++
+[source,terminal]
+----
+$ oc exec alertmanager-main-0 -n openshift-monitoring -- amtool alert add --alertmanager.url http://localhost:9093 alertname=myalarm  --start="2025-03-31T00:00:00-00:00" service=example-app severity=critical --annotation="summary=\"This is a test alert with a custom summary\""
+----
+
+.. Verify that the alert was generated:
++
+[source,terminal]
+----
+$ oc exec alertmanager-main-0 -n openshift-monitoring -- amtool alert --alertmanager.url http://localhost:9093
+----
++
+.Example output
+[source,terminal]
+----
+Alertname  Starts At                Summary                                                                                  State   
+myalarm    2025-03-31 00:00:00 UTC  This is a test alert with a custom summary                                               active  
+Watchdog   2025-04-07 10:07:16 UTC  An alert that should always be firing to certify that Alertmanager is working properly.  active  
+----
+
+.. Verify that the receiver was notified with the `myalarm` alert.
