@@ -1,0 +1,138 @@
+// Module included in the following assemblies:
+//
+// IPI
+// * installing/installing_bare_metal/ipi/ipi-install-installation-workflow.adoc
+// * installing/installing_bare_metal/ipi/ipi-install-post-installation-configuration.adoc
+// UPI
+// * installing/installing_bare_metal/upi/installing-bare-metal-network-customizations.adoc
+// * installing/installing_bare_metal/upi/installing-restricted-networks-bare-metal.adoc
+// * installing/installing_bare_metal/upi/installing-bare-metal.adoc
+
+:_mod-docs-content-type: PROCEDURE
+[id="enabling-OVS-balance-slb-mode_{context}"]
+= Enabling OVS balance-slb mode for your cluster
+
+You can enable the Open vSwitch (OVS) `balance-slb` mode for the infrastructure for your cluster so that two or more physical interfaces can share their network traffic. A `balance-slb` mode interface provides source load balancing (SLB) capabilities for your cluster, where the interface can act independently without needing to communicate with a network switch. Source load balancing works by assigning a Media Access Control (MAC) address and a virtual local area network (vLAN), if required, to a physical interface, such as `br-phy`. The physcial interface connects to a bridge uplink switch that operates as a port to receive packets from a physical interface and then transmit the package to the `br-ex` interface that are on the same network.
+
+You can integrate the `balance-slb` mode interface into the following network types:
+
+* Primary networks: Supported during cluster installation time only. OVN-Kubernetes serves as the Container Network Interface (CNI) and physical interfaces connect to a customized `br-ex` bridge. You define the SLB configuration in a `MachineConfig` file.
+* Secondary networks: Supported as a post-installation task only. A third-party  plugin servers as the CNI and physical interfaces connect to a customized `br-ex` bridge by use of a vLAN. You define the SLB configuration in a `NodeNetworkConfigurationPolicy` (NNCP) file.
+* Localnet topology networks: Supported as a post-installation task only. A localnet topology froms part of a secondary network. A localnet topology allows connections to the physical network, but requires additional configuration of the underlying OVS bridge on cluster nodes. You define the SLB configuration in either a `NetworkAttachmentDefinition` (NAD) or a `NodeNetworkConfigurationPolicy` file.
+
+You can use either kernel bonding or OVS bonding to enable the `balance-slb` mode on your chosen network type. The following list details the differences between the kernel bonding and the OVS bonding methods:
+
+* Kernel bonding: Useful for third-party CNI environments but requires additional network configurations, such as condiguring an additional Linux bridge, to support `balance-slb` mode. You can use this method external to your {product-title} cluster, such as communicating to a {op-system-base-full} server. Performance issues notable when compared to the OVS bonding method.
+* OVS bonding: Useful for the OVN-Kubernetes CNI plugin. Natively supports `balance-slb` mode and integrates . All node traffic diverts to a single `balance-slb` mode interface. You cannot use the method external to your {product-title} cluster. This method performs better than the Kernel bonding method.
+
+[IMPORTANT]
+====
+If you use the kernel bonding method to enable `balance-slb` mode for your cluster, Network Manager might experience Gratuitous Address Resolution Protocol (GARP) handling issues. These issues occur when the Network Manager cannot retrieve source MAC addresses from the OVS bridge interface because of a broken link to a port disables the port.
+====
+
+.Prerequisites
+
+* You have logged in to the {product-title} web console.
+* You have installed the {oc-first}.
+* You have logged into {product-title} as a cluster administrator.
+* You have more than one physical interfaces attached to your primary network and you defined the interfaces in the `MachineConfig` file.
+* You created a manifest object and defined a customized `br-ex` bridge in the object configuration file.
+* You have more than one physical interfaces attached to your primary network and you defined the interfaces in the NNCP or NAD file.
+* You created a NNCP CR and defined a customized `br-ex` bridge network configuration in the object configuration file.
+
+.Procedure
+
+. Choose one of the following methods:
++
+.. For OVS bonding, open your NMState configuration file in your editor and add the following configuration in the file:
++
+[source,yaml]
+----
+# ...
+interfaces:
+# ...
+- name: br-phy <1>
+  type: ovs-bridge
+  state: up
+  ipv4:
+    enabled: false
+    dhcp: false
+  ipv6:
+    enabled: false
+    dhcp: false
+  bridge:
+    allow-extra-patch-ports: true
+    port:
+    - name: patch-phy-to-ex
+    - name: ovs-bond
+      link-aggregation:
+        mode: balance-slb <2>
+        port:
+        - name: eno1
+        - name: eno2
+- name: patch-ex-to-phy <3>
+  type: ovs-interface
+  state: up
+  patch:
+    peer: patch-phy-to-ex
+- name: patch-phy-to-ex <4>
+  type: ovs-interface
+  state: up
+  patch:
+    peer: patch-ex-to-phy
+- name: eno1 <5>
+  type: ethernet
+  state: up
+  ipv4:
+    enabled: false
+  ipv6:
+    enabled: false
+- name: eno2 <5>
+  type: ethernet
+  state: up
+  ipv4:
+    enabled: false
+  ipv6:
+    enabled: false
+# ...
+----
+<1> Specify an additional bridge, such as `br-phy`, to manage custom network rules that the OVN-Kubernetes CNI adds to the network environments.
+<2> Enables `balance-slb` mode for the OVS bridge interface.
+<3> Specify the OVS virtual interface that uses an uplink switch to connect the additional bridge with the br-ex bridge.
+<4> Specify the OVS virtual interface that uses an uplink switch to connect the br-ex bridge with the additional bridge.
+<5> Specify the physical interfaces that exist on your primary network.
++
+.. For Kernel bonding,
+
+. Use the `cat` command to base64-encode the contents of the NMState configuration:
++
+[source,terminal]
+----
+$ cat <nmstate_configuration>.yaml | base64 <1>
+----
+<1> Replace `<nmstate_configuration>` with the name of your NMState resource YAML file.
+
+. For static IP address assignment, manually reboot each node that exists in your cluster. For DHCP address assignment, you can reboot all nodes in one reboot operation.
+
+. Optional: If after the reboot operation and you waited a few minutes, a node or some nodes do not have the `READY` status, enter the following commands:
++
+.. Check the current state of an Open vSwitch (OVS) configuration, especially details about bridges, ports, and interfaces, by entering the following command:
++
+[source,terminal]
+----
+$ ovs-vsctl show
+----
++ 
+.. If you identify the `Bridge br-ex` entry in the output, delete the entry by running the following command:
++
+[source,terminal]
+----
+$ ovs-vsctl del-br br-ex
+----
+
+. Use the `nmstate` utility tool to apply the NMState configuration to each node in your cluster:
++
+[source,terminal]
+----
+$ nmstatectl apply node.yml
+----
