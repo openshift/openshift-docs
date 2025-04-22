@@ -1,0 +1,189 @@
+:_mod-docs-content-type: PROCEDURE
+[id="hosted-clusters-openstack-performance"]
+= Tuning performance for hosted cluster nodes
+:context: hostedcluster-openstack-performance
+
+You can tune hosted cluster node performance on {rh-openstack-first} for high-performance workloads, such as
+cloud-native network functions (CNFs). Performance tuning includes configuring {rh-openstack} resources, creating a performance profile, deploying a tuned `NodePool` resource, and enabling SR-IOV device support.
+
+CNFs are designed to run in cloud-native environments. They can provide network services such as routing,
+firewalling, and load balancing. You can configure the node pool to use high-performance computing and networking devices to run CNFs.
+
+.Prerequisites
+
+* You have {rh-openstack} flavor that has the necessary resources to run your workload, including dedicated CPU, memory, and host aggregate information.
+* You have an {rh-openstack} network that is attached to SR-IOV or DPDK-capable NICs. The network must be available to the project used by hosted clusters.
+
+.Procedure
+
+. Create a performance profile that meets your requirements in a file called `perfprofile.yaml`. For example:
++
+.Example performance profile in a config map
+[source,yaml]
+----
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: perfprof-1
+  namespace: clusters
+data:
+  tuning: |
+    apiVersion: v1
+    kind: ConfigMap
+    metadata:
+      name: cnf-performanceprofile
+      namespace: "${HYPERSHIFT_NAMESPACE}"
+    data:
+      tuning: |
+        apiVersion: performance.openshift.io/v2
+        kind: PerformanceProfile
+        metadata:
+          name: cnf-performanceprofile
+        spec:
+          additionalKernelArgs:
+            - nmi_watchdog=0
+            - audit=0
+            - mce=off
+            - processor.max_cstate=1
+            - idle=poll
+            - intel_idle.max_cstate=0
+            - amd_iommu=on
+          cpu:
+            isolated: "${CPU_ISOLATED}"
+            reserved: "${CPU_RESERVED}"
+          hugepages:
+            defaultHugepagesSize: "1G"
+            pages:
+              - count: ${HUGEPAGES}
+                node: 0
+                size: 1G
+          nodeSelector:
+            node-role.kubernetes.io/worker: ''
+          realTimeKernel:
+            enabled: false
+          globallyDisableIrqLoadBalancing: true
+----
++
+IMPORTANT: If you do not already have environment variables set for the HyperShift Operator namespace, isolated and
+reserved
+CPUs, and huge pages count, create them prior to applying the performance profile.
+
+. Apply the performance profile configuration by running the following command:
++
+[source,terminal]
+----
+$ oc apply -f perfprof.yaml
+----
+
+. If you do not already have a `CLUSTER_NAME` environment variable set for the name of your cluster, define it.
+
+. Set a node pool name environment variable by running the following command:
++
+[source,terminal]
+----
+$ export NODEPOOL_NAME=$CLUSTER_NAME-cnf
+----
+
+. Set a flavor environment variable by running the following command:
++
+[source,terminal]
+----
+$ export FLAVOR="m1.xlarge.nfv"
+----
+
+. Create a node pool that uses the performance profile by running the following command:
++
+[source,terminal]
+----
+$ hcp create nodepool openstack \
+  --cluster-name $CLUSTER_NAME \
+  --name $NODEPOOL_NAME \
+  --node-count 0 \
+  --openstack-node-flavor $FLAVOR
+----
+
+. Patch the node pool to reference the `PerformanceProfile` resource by running the following command:
++
+[source,terminal]
+----
+$ oc patch nodepool -n ${HYPERSHIFT_NAMESPACE} ${CLUSTER_NAME} \
+  -p '{"spec":{"tuningConfig":[{"name":"cnf-performanceprofile"}]}}' --type=merge
+----
+
+. Scale the node pool by running the following command:
+
+[source,terminal]
+----
+$ oc scale nodepool/$CLUSTER_NAME --namespace ${HYPERSHIFT_NAMESPACE} --replicas=1
+----
+
+. Wait for the nodes to be ready:
+
+.. Wait for the nodes to be ready by running the following command:
++
+[source,terminal]
+----
+$ oc wait --for=condition=UpdatingConfig=True nodepool \
+-n ${HYPERSHIFT_NAMESPACE} ${CLUSTER_NAME} \
+--timeout=5m
+----
+
+.. Wait for the configuration update to finish by running the following command:
++
+[source,terminal]
+----
+$ oc wait --for=condition=UpdatingConfig=False nodepool \
+  -n ${HYPERSHIFT_NAMESPACE} ${CLUSTER_NAME} \
+  --timeout=30m
+----
+
+.. Wait until all nodes are healthy by running the following command:
++
+[source,terminal]
+----
+$ oc wait --for=condition=AllNodesHealthy nodepool \
+  -n ${HYPERSHIFT_NAMESPACE} ${CLUSTER_NAME} \
+  --timeout=5m
+----
+
+NOTE: You can make an SSH connection into the nodes or use the `oc debug` command to verify performance configurations.
+
+[id="hosted-clusters-openstack-performance-enabling"]
+== Enabling the SR-IOV Network Operator in a hosted cluster
+
+You can enable the SR-IOV Network Operator to manage SR-IOV-capable devices on nodes deployed by the `NodePool` resource. The operator runs in the hosted cluster and requires labeled worker nodes.
+
+.Procedure
+
+. Generate a `kubeconfig` file for the hosted cluster by running the following command:
++
+[source,terminal]
+----
+$ hcp create kubeconfig --name $CLUSTER_NAME > $CLUSTER_NAME-kubeconfig
+----
+
+. Create a `kubeconfig` resource environment variable by running the following command:
++
+[source,terminal]
+----
+$ export KUBECONFIG=$CLUSTER_NAME-kubeconfig
+----
+
+. Label each worker node to indicate SR-IOV capability by running the following command:
++
+[source,terminal]
+----
+$ oc label node <worker_node_name> feature.node.kubernetes.io/network-sriov.capable=true
+----
++
+--
+where:
+
+`<worker_node_name>`:: Specifies the name of a worker node in the hosted cluster.
+--
+// TODO: Since this is a module, I need to link in add'ls. Yeeaahh.
+. Install the SR-IOV Network Operator in the hosted cluster by following the instructions in the OpenShift documentation:
++
+link:https://docs.redhat.com/en/documentation/openshift_container_platform/4.17/html-single/networking/index#installing-sr-iov-operator_installing-sriov-operator[Installing the SR-IOV Network Operator]
+
+. After installation, configure SR-IOV workloads in the hosted cluster by using the same process as for a standalone OpenShift Container Platform cluster.
