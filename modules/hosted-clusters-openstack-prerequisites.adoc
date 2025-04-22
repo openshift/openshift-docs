@@ -1,0 +1,133 @@
+// Module included in the following assemblies:
+//
+// * hosted_control_planes/hypershift-openstack.adoc
+
+:_mod-docs-content-type: CONCEPT
+[id="hosted-clusters-openstack-prerequisites_{context}"]
+= Prerequisites for OpenStack
+
+Before you create a hosted cluster on {rh-openstack-first} or {rhoso-first}, ensure that you meet the following requirements:
+
+* You have administrative access to a management {product-title} cluster version 4.17 or greater. This cluster can run on bare metal, {rh-openstack}, or a supported public cloud.
+* The HyperShift Operator is installed on the management cluster as specified in "Preparing to deploy hosted control planes".
+* The management cluster is configured with OVN-Kubernetes as the default pod network CNI.
+* The OpenShift CLI (`oc`) and hosted control planes CLI, `hcp` are installed.
+* A load-balancer backend, for example, Octavia, is installed on the management OCP cluster. The load balancer is required for the `kube-api` service to be created for each hosted cluster.
+** When ingress is configured with an Octavia load balance, the {rh-openstack} Octavia service is running in the cloud that hosts the guest cluster.
+* A valid link:https://console.redhat.com/openshift/install/platform-agnostic/user-provisioned[pull secret] file is present for the `quay.io/openshift-release-dev` repository.
+* The default external network for the management cluster is reachable from the guest cluster. The `kube-apiserver` load-balancer type service is created on this network.
+
+:_mod-docs-content-type: PROCEDURE
+[id="hosted-clusters-openstack-preparing-etcd_{context}"]
+== Preparing the management cluster for etcd local storage
+
+You can use logical volume manager (LVM) storage with the TopoLVM CSI driver to dynamically provision local storage for etcd on {rh-openstack-first} hosted control planes.
+
+etcd is the critical core data store for the control plane components. By default, etcd uses a persistent volume claim (PVC) that is based on the management cluster's default storage class. On {rh-openstack-first}, this class is often network-attached storage like Cinder, which is not ideal for etcd due to latency and performance characteristics. By using high-performance local disks for etcd storage, your clusters will be more performant.
+
+.Procedure
+
+// https://docs.redhat.com/en/documentation/openshift_container_platform/4.17/html/storage/configuring-persistent-storage#persistent-storage-using-lvms
+. Install LVM Storage on the Management Cluster.
++
+Follow the official procedure to install LVM Storage by using the CLI on the Management Cluster. This is required in production environments to put etcd data on fast storage, which for OpenStack means local storage.
+
+. Create an `LVMCluster` resource for etcd local storage.
++
+Define an `LVMCluster` with a device class targeting nodes suitable for HyperShift and specifying the local device to use for storage.
++
+Create a YAML file with content similar to the following example:
++
+[source,yaml]
+----
+apiVersion: lvm.topolvm.io/v1alpha1
+kind: LVMCluster
+metadata:
+  name: etcd-hcp # <1>
+  namespace: openshift-storage # <2>
+spec:
+  storage:
+    deviceClasses:
+    - name: etcd-class # <3>
+      default: true
+      nodeSelector:
+        nodeSelectorTerms:
+        - matchExpressions:
+          - key: hypershift-capable # <4>
+            operator: In
+            values:
+            - "true"
+      deviceSelector:
+        forceWipeDevicesAndDestroyAllData: true # <5>
+        paths:
+        - /dev/vdb # <6>
+----
+<1> Specify a name for the `LVMCluster` resource.
+<2> Specify the namespace where the LVM Storage components are installed.
+<3> Define a device class name that you will reference later.
+<4> Use a node selector to target specific nodes on the management cluster that have the required local disk for etcd. The `hypershift-capable=true` label is an example and can be arbitrary.
+<5> Set to `true` because the default Nova ephemeral disk often comes formatted (e.g., in vfat), and this ensures data is wiped.
+<6> Specify the path to the local disk. This path should be verified as it is assumed to be `/dev/vdb` in most situations, but symlinks are not supported.
++
+[NOTE]
+====
+`thinPoolConfig` can be used but is not recommended as it affects performance.
+====
++
+Apply this configuration to your management cluster.
++
+[source,terminal]
+----
+oc apply -f <filename>.yaml
+----
+
+. Create the HostedCluster, specifying the local storage class for etcd.
++
+Use the `hcp create cluster openstack` command and include the `--etcd-storage-class` flag, specifying the name of the StorageClass created by the TopoLVM driver based on the `LVMCluster` configuration (e.g., `lvms-etcd-class`). The `hcp` CLI tool is used to manage the creation and destruction of guest clusters.
++
+[source,terminal]
+----
+hcp create cluster openstack \
+  ( ... ) \
+  --etcd-storage-class lvms-etcd-class # <1>
+----
+<1> Specify the name of the StorageClass created by LVM Storage for the `etcd-class` device class. The format is typically `lvms-<device_class_name>`.
+
+. Verify that etcd Persistent Volume Claims (PVCs) are using the local storage class.
++
+Check the PVCs in the hosted cluster's control plane namespace by running the following command:
++
+[source,terminal]
+----
+oc get pvc -A
+----
++
+Look for the `data-etcd-X` PVCs and confirm that their `STORAGECLASS` is the one you specified (e.g., `lvms-etcd-class`).
++
+Example verification output showing the `lvms-etcd-class`:
++
+[source,terminal]
+----
+NAMESPACE             NAME          STATUS   VOLUME                                 CAPACITY   ACCESS MODES   STORAGECLASS     VOLUMEATTRIBUTESCLASS   AGE
+clusters-emacchi-hcp  data-etcd-0   Bound    pvc-f8b4070f-0d11-48b7-93d3-cc2a56ada7e9   8Gi        RWO            lvms-etcd-class  <unset>                 8s
+----
+
+:_mod-docs-content-type: PROCEDURE
+[id="creating-floating-ip_{context}"]
+== Optional: Creating a floating IP for ingress
+
+To get ingress healthy in a hosted cluster without manual intervention, you can create a floating IP that will be used by the ingress service.
+
+.Procedure
+
+. Create a floating IP:
++
+[source,terminal]
+----
+openstack floating ip create <external-network-id>
+----
++
+[NOTE]
+====
+If you provide the floating IP to the `--openstack-ingress-floating-ip` flag without pre-creating it, cloud-provider-openstack creates it for you only if the Neutron API policy allows a user to create a floating IP with a specific IP address.
+====
