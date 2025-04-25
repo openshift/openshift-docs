@@ -13,6 +13,7 @@ const urlMappings = {
   "openshift-pipelines": "https://docs.openshift.com/pipelines/",
   "openshift-serverless": "https://docs.openshift.com/serverless/",
   "openshift-telco": "https://docs.openshift.com/container-platform-telco/",
+  "openshift-logging": "https://docs.openshift.com/logging/",
 };
 
 function versionSelector(list) {
