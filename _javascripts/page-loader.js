@@ -11,11 +11,7 @@ function getBaseUrl() {
 
   // If we're on a page like /logging/6.2/..., the first part is the docType
   // and we should return everything up to that part including the hostname
-  if (pathParts.length >= 1) {
-    // Create a URL that includes everything up to the docType directory
-    const baseUrl = `${window.location.protocol}//${window.location.host}/`;
-    return baseUrl;
-  }
+
 
   // Fallback to current origin
   return `${window.location.protocol}//${window.location.host}/`;
