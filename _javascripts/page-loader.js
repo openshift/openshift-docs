@@ -3,17 +3,38 @@ let newVersion = "";
 let currentVersion = "";
 let fileRequested = "";
 
+// Get the base URL dynamically
+function getBaseUrl() {
+  const path = window.location.pathname;
+  // Find the first directory in the path that matches one of our document types
+  const pathParts = path.split('/').filter(part => part.length > 0);
+
+  // If we're on a page like /logging/6.2/..., the first part is the docType
+  // and we should return everything up to that part including the hostname
+  if (pathParts.length >= 1) {
+    // Create a URL that includes everything up to the docType directory
+    const baseUrl = `${window.location.protocol}//${window.location.host}/`;
+    return baseUrl;
+  }
+
+  // Fallback to current origin
+  return `${window.location.protocol}//${window.location.host}/`;
+}
+
+const baseUrl = getBaseUrl();
+
+// Use relative paths in the mappings
 const urlMappings = {
-  "openshift-acs": "https://docs.openshift.com/acs/",
-  "openshift-builds": "https://docs.openshift.com/builds/",
-  "openshift-enterprise": "https://docs.openshift.com/container-platform/",
-  "openshift-gitops": "https://docs.openshift.com/gitops/",
-  "openshift-lightspeed": "https://docs.openshift.com/lightspeed/",
-  "openshift-origin": "https://docs.okd.io/",
-  "openshift-pipelines": "https://docs.openshift.com/pipelines/",
-  "openshift-serverless": "https://docs.openshift.com/serverless/",
-  "openshift-telco": "https://docs.openshift.com/container-platform-telco/",
-  "openshift-logging": "https://docs.openshift.com/logging/",
+  "openshift-acs": "acs/",
+  "openshift-builds": "builds/",
+  "openshift-enterprise": "container-platform/",
+  "openshift-gitops": "gitops/",
+  "openshift-lightspeed": "lightspeed/",
+  "openshift-origin": "",
+  "openshift-pipelines": "pipelines/",
+  "openshift-serverless": "serverless/",
+  "openshift-telco": "container-platform-telco/",
+  "openshift-logging": "logging/",
 };
 
 function versionSelector(list) {
@@ -27,11 +48,13 @@ function versionSelector(list) {
     currentVersion = window.location.pathname.split("/")[2];
   }
 
-  let baseUrl = urlMappings[dk];
+  // Get the correct URL path from the urlMappings and prepend the base URL
+  let productPath = urlMappings[dk];
+  let fullBaseUrl = baseUrl + productPath;
 
   //Handle special OCP case
   if (["3.0", "3.1", "3.2"].includes(newVersion) && dk === "openshift-enterprise") {
-    baseUrl = "https://docs.openshift.com/enterprise/";
+    fullBaseUrl = baseUrl + "enterprise/";
   }
 
   if ((dk === "openshift-enterprise" || dk === "openshift-origin") && currentVersion.charAt(0) !== newVersion.charAt(0)){
@@ -41,7 +64,7 @@ function versionSelector(list) {
     fileRequested = window.location.pathname.substring(versionIndex);
   }
 
-  newLink = `${baseUrl}${newVersion}${fileRequested}`;
+  newLink = `${fullBaseUrl}${newVersion}${fileRequested}`;
 
   // without doing async loads, there is no way to know if the path actually
   // exists - so we will just have to load
