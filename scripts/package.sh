@@ -36,10 +36,11 @@ if [ "$USE_LOCAL" = "true" ]; then
     asciibinder package --site=$PACKAGE 2>/dev/null
   else
     echo "Warning: Local asciibinder not found. Falling back to container."
-    $CONTAINER_ENGINE run --rm -v `pwd`:/docs:Z quay.io/openshift-cs/asciibinder asciibinder package --site=$PACKAGE
+    $CONTAINER_ENGINE run --rm -v `pwd`:/docs:Z quay.io/openshift-cs/asciibinder asciibinder package --site=$PACKAGE 2>/dev/null
+  fi
 else
   echo "Using $CONTAINER_ENGINE container for build"
-  $CONTAINER_ENGINE run --rm -v `pwd`:/docs:Z quay.io/openshift-cs/asciibinder sh -c "git config --global --add safe.directory /docs && asciibinder package --site=$PACKAGE"
+  $CONTAINER_ENGINE run --rm -v `pwd`:/docs:Z quay.io/openshift-cs/asciibinder sh -c "git config --global --add safe.directory /docs && asciibinder package --site=$PACKAGE" 2>/dev/null
 fi
 
 ## MOVING FILES INTO THE RIGHT PLACES
