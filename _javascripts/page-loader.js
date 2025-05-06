@@ -41,7 +41,17 @@ function versionSelector(list) {
   if (dk === "openshift-origin") {
     currentVersion = window.location.pathname.split("/")[1];
   } else {
-    currentVersion = window.location.pathname.split("/")[2];
+    const path = window.location.pathname;
+    const pathParts = path.split('/').filter(part => part.length > 0);
+
+    // Check if we're in the openshift-docs subdirectory for github pages
+    if (pathParts.length > 0 && pathParts[0] === 'openshift-docs') {
+      currentVersion = pathParts[2];
+    } else {
+      // If not in the openshift-docs subdirectory
+      currentVersion = pathParts[1];
+    }
+
   }
 
   // Get the correct URL path from the urlMappings and prepend the base URL
