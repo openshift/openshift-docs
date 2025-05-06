@@ -5,8 +5,15 @@ let fileRequested = "";
 
 // Get the base URL dynamically
 function getBaseUrl() {
+  const path = window.location.pathname;
+  const pathParts = path.split('/').filter(part => part.length > 0);
 
-  // Fallback to current origin
+  // Check if we're in the openshift-docs subdirectory for github pages
+  if (pathParts.length > 0 && pathParts[0] === 'openshift-docs') {
+    return `${window.location.protocol}//${window.location.host}/openshift-docs/`;
+  }
+
+  // If not in the openshift-docs subdirectory, use the root
   return `${window.location.protocol}//${window.location.host}/`;
 }
 
