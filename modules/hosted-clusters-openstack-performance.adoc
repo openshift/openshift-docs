@@ -1,179 +1,145 @@
-// Module included in the following assemblies:
-//
-// * hosted_control_planes/hypershift-openstack.adoc
-
 :_mod-docs-content-type: PROCEDURE
-[id="hosted-clusters-openstack-performance_{context}"]
-= Configuring node tuning and SR-IOV Network Operator
+[id="performance-tuning-hostedcluster-openstack"]
+= Tuning performance for HostedCluster nodes on OpenStack
+:context: hostedcluster-openstack-performance
 
-You can configure node tuning and the SR-IOV Network Operator to optimize the performance of your hosted cluster.
+You can tune hosted cluster node performance on {rh-openstack-first} for high-performance workloads, such as
+cloud-native network functions (CNFs). It covers configuring OpenStack resources, creating a `PerformanceProfile`, deploying a tuned `NodePool`, and enabling SR-IOV device support.
+
+CNFS are network functions designed to run in cloud-native environments. CNFs can provide network services such as routing, firewalling, and load balancing. You can configure the node pool to use high-performance computing and networking devices to run CNFs.
 
 .Prerequisites
 
-* You have created a hosted cluster.
-* You have access to the management cluster.
-* You have configured additional ports for SR-IOV networking.
+* An OpenStack flavor with the necessary resources to run the workload, including dedicated CPU, memory, and host aggregate information. This ensures the instance is scheduled on hardware capable of high-performance operations, such as Intel or Mellanox NICs that support SR-IOV and DPDK.
+* An OpenStack network attached to SR-IOV or DPDK-capable NICs. The network must be available to the project used by the HostedCluster.
 
-.Procedure
+== Creating a PerformanceProfile
 
-. Create a node pool with performance tuning:
-+
-[source,terminal]
+Before creating an additional NodePool for performance workloads, you must create a `PerformanceProfile` custom resource (CR). This CR defines node performance characteristics, such as CPU isolation, huge pages, and kernel tuning.
+
+.Example PerformanceProfile in a ConfigMap
+[source,yaml]
 ----
-oc create -f - <<EOF
-apiVersion: hypershift.openshift.io/v1beta1
-kind: NodePool
+apiVersion: v1
+kind: ConfigMap
 metadata:
-  name: <node_pool_name>
+  name: perfprof-1
   namespace: clusters
-spec:
-  clusterName: <cluster_name>
-  replicas: <number_of_nodes>
-  platform:
-    type: OpenStack
-    openstack:
-      flavor: <flavor_name>
-      additionalPorts:
-      - network: <network_name>
-        subnet: <subnet_name>
-        fixedIPs:
-        - subnetID: <subnet_id>
-          ipAddress: <ip_address>
-        securityGroups:
-        - <security_group_id>
-      tuning:
-        cpuPartitioning: isolated
-        hugepages:
-          defaultHugepagesSize: 1G
-          pages:
-          - size: 1G
-            count: 4
-  release:
-    image: <image_name>
-EOF
-----
-+
-where:
-+
---
-* `<node_pool_name>` is the name of the node pool.
-* `<cluster_name>` is the name of the hosted cluster.
-* `<number_of_nodes>` is the number of nodes in the node pool.
-* `<flavor_name>` is the name of the OpenStack flavor to use for the nodes.
-* `<network_name>` is the name of the OpenStack network for the additional port.
-* `<subnet_name>` is the name of the OpenStack subnet for the additional port.
-* `<subnet_id>` is the ID of the OpenStack subnet.
-* `<ip_address>` is the IP address to assign to the port.
-* `<security_group_id>` is the ID of the security group to apply to the port.
-* `<image_name>` is the name of the {op-system} image.
---
-
-. Install the SR-IOV Network Operator:
-+
-[source,terminal]
-----
-oc create -f - <<EOF
-apiVersion: operators.coreos.com/v1alpha1
-kind: Subscription
-metadata:
-  name: sriov-network-operator
-  namespace: openshift-sriov-network-operator
-spec:
-  channel: stable
-  name: sriov-network-operator
-  source: redhat-operators
-  sourceNamespace: openshift-marketplace
-EOF
+data:
+  tuning: |
+    apiVersion: v1
+    kind: ConfigMap
+    metadata:
+      name: cnf-performanceprofile
+      namespace: "${HYPERSHIFT_NAMESPACE}"
+    data:
+      tuning: |
+        apiVersion: performance.openshift.io/v2
+        kind: PerformanceProfile
+        metadata:
+          name: cnf-performanceprofile
+        spec:
+          additionalKernelArgs:
+            - nmi_watchdog=0
+            - audit=0
+            - mce=off
+            - processor.max_cstate=1
+            - idle=poll
+            - intel_idle.max_cstate=0
+            - amd_iommu=on
+          cpu:
+            isolated: "${CPU_ISOLATED}"
+            reserved: "${CPU_RESERVED}"
+          hugepages:
+            defaultHugepagesSize: "1G"
+            pages:
+              - count: ${HUGEPAGES}
+                node: 0
+                size: 1G
+          nodeSelector:
+            node-role.kubernetes.io/worker: ''
+          realTimeKernel:
+            enabled: false
+          globallyDisableIrqLoadBalancing: true
 ----
 
-. Configure the SR-IOV Network Operator:
-+
-[source,terminal]
-----
-oc create -f - <<EOF
-apiVersion: sriovnetwork.openshift.io/v1
-kind: SriovNetworkNodePolicy
-metadata:
-  name: <policy_name>
-  namespace: openshift-sriov-network-operator
-spec:
-  deviceType: vfio-pci
-  isRdma: false
-  nicSelector:
-    pfNames:
-    - <interface_name>
-  nodeSelector:
-    node-role.kubernetes.io/worker: ""
-  numVfs: <number_of_vfs>
-  priority: 10
-  resourceName: <resource_name>
-EOF
-----
-+
-where:
-+
---
-* `<policy_name>` is the name of the SR-IOV network node policy.
-* `<interface_name>` is the name of the network interface to use for SR-IOV.
-* `<number_of_vfs>` is the number of virtual functions to create.
-* `<resource_name>` is the name of the SR-IOV resource.
---
+Apply the `PerformanceProfile` configuration:
 
-. Create an SR-IOV network:
-+
 [source,terminal]
 ----
-oc create -f - <<EOF
-apiVersion: sriovnetwork.openshift.io/v1
-kind: SriovNetwork
-metadata:
-  name: <network_name>
-  namespace: openshift-sriov-network-operator
-spec:
-  ipam: |
-    {
-      "type": "host-local",
-      "subnet": "<subnet_cidr>",
-      "rangeStart": "<range_start>",
-      "rangeEnd": "<range_end>"
-    }
-  networkNamespace: <namespace>
-  resourceName: <resource_name>
-  spoofChk: "off"
-  trust: "on"
-  vlan: <vlan_id>
-EOF
-----
-+
-where:
-+
---
-* `<network_name>` is the name of the SR-IOV network.
-* `<subnet_cidr>` is the CIDR of the subnet for the SR-IOV network.
-* `<range_start>` is the start of the IP range.
-* `<range_end>` is the end of the IP range.
-* `<namespace>` is the namespace where the SR-IOV network will be available.
-* `<resource_name>` is the name of the SR-IOV resource.
-* `<vlan_id>` is the VLAN ID for the SR-IOV network.
---
-
-. Verify that the SR-IOV Network Operator is running:
-+
-[source,terminal]
-----
-oc get pods -n openshift-sriov-network-operator
+oc apply -f perfprof.yaml
 ----
 
-. Verify that the SR-IOV network node policy is applied:
-+
+== Creating a NodePool
+
+After creating the `PerformanceProfile`, you can create a `NodePool` configured to use it.
+
 [source,terminal]
 ----
-oc get sriovnetworknodepolicies -n openshift-sriov-network-operator
+export NODEPOOL_NAME=$CLUSTER_NAME-cnf
+export FLAVOR="m1.xlarge.nfv"
+
+hcp create nodepool openstack \
+  --cluster-name $CLUSTER_NAME \
+  --name $NODEPOOL_NAME \
+  --node-count 0 \
+  --openstack-node-flavor $FLAVOR
 ----
 
-. Verify that the SR-IOV network is created:
-+
+Patch the NodePool to reference the `PerformanceProfile`:
+
 [source,terminal]
 ----
-oc get sriovnetworks -n openshift-sriov-network-operator
----- 
+oc patch nodepool -n ${HYPERSHIFT_NAMESPACE} ${CLUSTER_NAME} \
+  -p '{"spec":{"tuningConfig":[{"name":"cnf-performanceprofile"}]}}' --type=merge
+----
+
+Scale the NodePool:
+
+[source,terminal]
+----
+oc scale NodePool/$CLUSTER_NAME --namespace ${HYPERSHIFT_NAMESPACE} --replicas=1
+----
+
+Wait for the node to be ready:
+
+[source,terminal]
+----
+oc wait --for=condition=UpdatingConfig=True nodepool -n ${HYPERSHIFT_NAMESPACE} ${CLUSTER_NAME} --timeout=5m
+oc wait --for=condition=UpdatingConfig=False nodepool -n ${HYPERSHIFT_NAMESPACE} ${CLUSTER_NAME} --timeout=30m
+oc wait --for=condition=AllNodesHealthy nodepool -n ${HYPERSHIFT_NAMESPACE} ${CLUSTER_NAME} --timeout=5m
+----
+
+Verify performance tuning on the node:
+
+[source,terminal]
+----
+ssh core@<node-ip>
+chroot /host
+cat /proc/cmdline
+----
+
+== Enabling SR-IOV Network Operator
+
+The SR-IOV Network Operator manages SR-IOV devices on cluster nodes. You must label the nodes deployed by the NodePool so the operator can manage them.
+
+Generate a kubeconfig file for the HostedCluster:
+
+[source,terminal]
+----
+hcp create kubeconfig --name $CLUSTER_NAME > $CLUSTER_NAME-kubeconfig
+export KUBECONFIG=$CLUSTER_NAME-kubeconfig
+----
+
+Label each worker node:
+
+[source,terminal]
+----
+oc label node "${WORKER_NODE}" feature.node.kubernetes.io/network-sriov.capable="true"
+----
+
+Install the SR-IOV Network Operator in the guest cluster by following the documentation:
+
+link:https://docs.redhat.com/en/documentation/openshift_container_platform/4.17/html-single/networking/index#installing-sr-iov-operator_installing-sriov-operator[Installing the SR-IOV Network Operator]
+
+After installation, configure the workload using the same process as with a standalone OpenShift Container Platform cluster.
