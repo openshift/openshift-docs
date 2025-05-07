@@ -10,6 +10,13 @@ CONTAINER_ENGINE="${CONTAINER_ENGINE:-podman}"
 # By default, use container for building, but allow using local asciibinder
 USE_LOCAL="${USE_LOCAL:-false}"
 
+# Determine if sudo is needed (typically only in GHA if files are created by root in container)
+SUDO_CMD=""
+if [ "$GITHUB_ACTIONS" == "true" ]; then
+  echo "Running in GitHub Actions. Sudo prefix will be used if necessary."
+  SUDO_CMD="sudo"
+fi
+
 ## CLONE REPO
 echo "---> Cloning docs from $BRANCH branch in $REPO"
 # Clone OpenShift Docs into current directory
@@ -46,8 +53,8 @@ fi
 ## MOVING FILES INTO THE RIGHT PLACES
 rm -rf ../_package
 mkdir -p ../_package
-sudo mv _package/${PACKAGE}/* ../_package/
+$SUDO_CMD mv _package/${PACKAGE}/* ../_package/
 git checkout $BRANCH
 
 cd ..
-sudo rm -rf .docs_source
+$SUDO_CMD rm -rf .docs_source
