@@ -1,0 +1,113 @@
+// Module included in the following assemblies:
+//
+// * integration/integrate-with-image-registries.adoc
+:_mod-docs-content-type: PROCEDURE
+[id="quay-keyless-eso_{context}"]
+= Enabling Quay registry keyless authentication using external secret
+
+For validating images stored in Quay private registries, you can configure {product-title-short} to use keyless authentication with Red{nbsp}Hat Quay registries. This method uses the External Secrets Operator (ESO) and OpenID Connect (OIDC) federation.
+
+.Prerequisites
+
+* You have enabled delegated scanning in {product-title-short}. For more information, see "Accessing delegated image scanning" in the "Additional resources" section.
+* The Central endpoint configured for the Secured Cluster `centralEndpoint: central.stackrox:443` or similar.
+* A robot account created in Red{nbsp}Hat Quay with OIDC federation configured.
++
+--
+* The issuer URL in the Quay robot identity federation configuration must match the service account token issuer of your {ocp} cluster.
+* The `sub claim` subject must match the service account name and namespace that you configure in your cluster.
+--
++
+See the link:https://docs.redhat.com/en/documentation/red_hat_quay/latest/html/about_quay_io/allow-robot-access-user-repo[Red Hat Quay Robot Account overview] topic in Quay documentation for more information.
+
+.Procedure
+
+. In your Quay instance, navigate to your robot account settings and configure OIDC federation.
++
+Ensure the *Issuer URL* and *Subject* fields are correctly set to match your {ocp} service account that ESO uses. See the link:https://docs.redhat.com/en/documentation/red_hat_quay/latest/html/about_quay_io/allow-robot-access-user-repo#setting-robot-federation[Setting up robot account federation] topic in the Red Hat Quay documentation for more information.
+
+. If ESO is not already present in your cluster, install it using Helm or another preferred method.
++
+[source,terminal,subs="+attributes"]
+----
+$ helm repo add external-secrets https://charts.external-secrets.io
+helm install external-secrets \
+  external-secrets/external-secrets \
+  -n external-secrets \
+  --create-namespace
+----
+
+. Define and apply the following Kubernetes resources. This example creates a `ServiceAccount` resource, a `QuayAccessToken` generator resource provided by the ESO installation, and an `ExternalSecret` resource that uses the generator to create a `kubernetes.io/dockerconfigjson` secret in the specified namespace.
++
+[IMPORTANT]
+====
+Update the `robotAccount` field in the `QuayAccessToken` resource to match the name of your Quay robot account.
+====
++
+[source,yaml]
+----
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: quay
+  namespace: quay
+---
+apiVersion: generators.external-secrets.io/v1alpha1
+kind: QuayAccessToken
+metadata:
+  name: quay-token
+  namespace: quay
+spec:
+  url: quay.io
+  robotAccount: keyless+account # <1>
+  serviceAccountRef:
+    name: quay
+    namespace: quay
+---
+apiVersion: external-secrets.io/v1beta1
+kind: ExternalSecret
+metadata:
+  name: quay-credentials
+  namespace: quay
+spec:
+  dataFrom:
+  - sourceRef:
+      generatorRef:
+        apiVersion: generators.external-secrets.io/v1alpha1
+        kind: QuayAccessToken
+        name: quay-token
+  refreshInterval: 55m
+  target:
+    name: quay-credentials
+    template:
+      type: kubernetes.io/dockerconfigjson
+      data:
+        .dockerconfigjson: |
+          {
+            "auths": {
+              "{{ .registry }}": {
+                "auth": "{{ .auth }}"
+              }
+            }
+          }
+----
+<1> Replace `keyless+account` with the actual name of your Quay robot account.
+
+.Verification
+
+* Confirm that ESO has successfully created a secret named `quay-credentials` of type `kubernetes.io/dockerconfigjson` in the specified namespace.
++
+[source,terminal]
+----
+$ kubectl get secret quay-credentials -n quay -o yaml
+----
+
+The keyless authentication method supports image scanning by using **delegated scanning**.
+
+* Use delegated image scanning by running the following command:
++
+[source,terminal]
+----
+$ roxctl image scan <image_name> --namespace=<namespace_where_secret_exists> <1>
+----
+<1> Specify the image name and namespace where you created the secret.
