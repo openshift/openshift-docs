@@ -1,0 +1,111 @@
+// Module included in the following assemblies:
+//
+// * observability/logging/log_collection_forwarding/configuring-log-forwarding.adoc
+
+:_mod-docs-content-type: PROCEDURE
+[id="cluster-logging-collector-log-forward-sts-cloudwatch_{context}"]
+= Forwarding logs to Amazon CloudWatch from STS enabled clusters
+
+For clusters with AWS Security Token Service (STS) enabled, you can create an AWS service account manually or create a credentials request by using the Cloud Credential Operator (CCO) utility `ccoctl`.
+
+.Prerequisites
+
+* {logging-title-uc}: 5.5 and later
+
+.Procedure
+
+. Create a `CredentialsRequest` custom resource YAML by using the template below:
++
+.CloudWatch credentials request template
+[source,yaml]
+----
+apiVersion: cloudcredential.openshift.io/v1
+kind: CredentialsRequest
+metadata:
+  name: <your_role_name>-credrequest
+  namespace: openshift-cloud-credential-operator
+spec:
+  providerSpec:
+    apiVersion: cloudcredential.openshift.io/v1
+    kind: AWSProviderSpec
+    statementEntries:
+      - action:
+          - logs:PutLogEvents
+          - logs:CreateLogGroup
+          - logs:PutRetentionPolicy
+          - logs:CreateLogStream
+          - logs:DescribeLogGroups
+          - logs:DescribeLogStreams
+        effect: Allow
+        resource: arn:aws:logs:*:*:*
+  secretRef:
+    name: <your_role_name>
+    namespace: openshift-logging
+  serviceAccountNames:
+    - logcollector
+----
++
+. Use the `ccoctl` command to create a role for AWS using your `CredentialsRequest` CR. With the `CredentialsRequest` object, this `ccoctl` command creates an IAM role with a trust policy that is tied to the specified OIDC identity provider, and a permissions policy that grants permissions to perform operations on CloudWatch resources. This command also creates a YAML configuration file in `/<path_to_ccoctl_output_dir>/manifests/openshift-logging-<your_role_name>-credentials.yaml`. This secret file contains the `role_arn` key/value used during authentication with the AWS IAM identity provider.
++
+[source,terminal]
+----
+$ ccoctl aws create-iam-roles \
+--name=<name> \
+--region=<aws_region> \
+--credentials-requests-dir=<path_to_directory_with_list_of_credentials_requests>/credrequests \
+--identity-provider-arn=arn:aws:iam::<aws_account_id>:oidc-provider/<name>-oidc.s3.<aws_region>.amazonaws.com <1>
+----
+<1> <name> is the name used to tag your cloud resources and should match the name used during your STS cluster install
++
+. Apply the secret created:
+[source,terminal]
++
+----
+$ oc apply -f output/manifests/openshift-logging-<your_role_name>-credentials.yaml
+----
++
+. Create or edit a `ClusterLogForwarder` custom resource:
++
+[source,yaml]
+----
+apiVersion: logging.openshift.io/v1
+kind: ClusterLogForwarder
+metadata:
+  name: <log_forwarder_name> <1>
+  namespace: <log_forwarder_namespace> <2>
+spec:
+  serviceAccountName: clf-collector <3>
+  outputs:
+   - name: cw <4>
+     type: cloudwatch <5>
+     cloudwatch:
+       groupBy: logType <6>
+       groupPrefix: <group prefix> <7>
+       region: us-east-2 <8>
+     secret:
+        name: <your_secret_name> <9>
+  pipelines:
+    - name: to-cloudwatch <10>
+      inputRefs: <11>
+        - infrastructure
+        - audit
+        - application
+      outputRefs:
+        - cw <12>
+----
+<1> In legacy implementations, the CR name must be `instance`. In multi log forwarder implementations, you can use any name.
+<2> In legacy implementations, the CR namespace must be `openshift-logging`. In multi log forwarder implementations, you can use any namespace.
+<3> Specify the `clf-collector` service account. The service account is only required in multi log forwarder implementations if the log forwarder is not deployed in the `openshift-logging` namespace.
+<4> Specify a name for the output.
+<5> Specify the `cloudwatch` type.
+<6> Optional: Specify how to group the logs:
++
+* `logType` creates log groups for each log type.
+* `namespaceName` creates a log group for each application name space. Infrastructure and audit logs are unaffected, remaining grouped by `logType`.
+* `namespaceUUID` creates a new log groups for each application namespace UUID. It also creates separate log groups for infrastructure and audit logs.
+<7> Optional: Specify a string to replace the default `infrastructureName` prefix in the names of the log groups.
+<8> Specify the AWS region.
+<9> Specify the name of the secret that contains your AWS credentials.
+<10> Optional: Specify a name for the pipeline.
+<11> Specify which log types to forward by using the pipeline: `application,` `infrastructure`, or `audit`.
+<12> Specify the name of the output to use when forwarding logs with this pipeline.
