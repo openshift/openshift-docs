@@ -228,6 +228,8 @@ may break at any time without notice.
 | `disableCompaction`
 | `boolean`
 | When true, the Prometheus compaction is disabled.
+When `spec.thanos.objectStorageConfig` or `spec.objectStorageConfigFile` are defined, the operator automatically
+disables block compaction to avoid race conditions during block uploads (as the Thanos documentation recommends).
 
 | `dnsConfig`
 | `object`
@@ -259,6 +261,14 @@ that this behaviour may break at any time without notice.
 
 For more information see https://prometheus.io/docs/prometheus/latest/feature_flags/
 
+| `enableOTLPReceiver`
+| `boolean`
+| Enable Prometheus to be used as a receiver for the OTLP Metrics protocol.
+
+Note that the OTLP receiver endpoint is automatically enabled if `.spec.otlpConfig` is defined.
+
+It requires Prometheus >= v2.47.0.
+
 | `enableRemoteWriteReceiver`
 | `boolean`
 | Enable Prometheus to be used as a receiver for the Prometheus remote
@@ -271,6 +281,10 @@ Prometheus into a push-based metrics collection system.
 For more information see https://prometheus.io/docs/prometheus/latest/querying/api/#remote-write-receiver
 
 It requires Prometheus >= v2.33.0.
+
+| `enableServiceLinks`
+| `boolean`
+| Indicates whether information about services should be injected into pod's environment variables
 
 | `enforcedBodySizeLimit`
 | `string`
@@ -569,6 +583,10 @@ Defaults to 0 (pod will be considered available as soon as it is ready)
 This is an alpha field from kubernetes 1.22 until 1.24 which requires
 enabling the StatefulSetMinReadySeconds feature gate.
 
+| `nameValidationScheme`
+| `string`
+| Specifies the validation scheme for metric and label names.
+
 | `nodeSelector`
 | `object (string)`
 | Defines on which Nodes the Pods are scheduled.
@@ -823,7 +841,7 @@ in a breaking way.
 
 | `scrapeClasses[]`
 | `object`
-|
+| 
 
 | `scrapeConfigNamespaceSelector`
 | `object`
@@ -849,6 +867,17 @@ of the custom resource definition. It is recommended to use
 
 Note that the ScrapeConfig custom resource definition is currently at Alpha level.
 
+| `scrapeFailureLogFile`
+| `string`
+| File to which scrape failures are logged.
+Reloading the configuration will reopen the file.
+
+If the filename has an empty path, e.g. 'file.log', The Prometheus Pods
+will mount the file into an emptyDir volume at `/var/log/prometheus`.
+If a full path is provided, e.g. '/var/log/prometheus/file.log', you
+must mount a volume in the specified directory and it must be writable.
+It requires Prometheus >= v2.55.0.
+
 | `scrapeInterval`
 | `string`
 | Interval between consecutive scrapes.
@@ -864,9 +893,12 @@ If unset, Prometheus uses its default value.
 
 It requires Prometheus >= v2.49.0.
 
+`PrometheusText1.0.0` requires Prometheus >= v3.0.0.
+
 | `scrapeTimeout`
 | `string`
 | Number of seconds to wait until a scrape request times out.
+The value cannot be greater than the scrape interval otherwise the operator will reject the resource.
 
 | `secrets`
 | `array (string)`
@@ -913,25 +945,52 @@ This behavior is *deprecated* and will be removed in the next major version
 of the custom resource definition. It is recommended to use
 `spec.additionalScrapeConfigs` instead.
 
+| `serviceName`
+| `string`
+| The name of the service name used by the underlying StatefulSet(s) as the governing service.
+If defined, the Service  must be created before the Prometheus/PrometheusAgent resource in the same namespace and it must define a selector that matches the pod labels.
+If empty, the operator will create and manage a headless service named `prometheus-operated` for Prometheus resources,
+or `prometheus-agent-operated` for PrometheusAgent resources.
+When deploying multiple Prometheus/PrometheusAgent resources in the same namespace, it is recommended to specify a different value for each.
+See https://kubernetes.io/docs/concepts/workloads/controllers/statefulset/#stable-network-id for more details.
+
 | `sha`
 | `string`
 | Deprecated: use 'spec.image' instead. The image's digest can be specified as part of the image name.
 
+| `shardRetentionPolicy`
+| `object`
+| ShardRetentionPolicy defines the retention policy for the Prometheus shards.
+(Alpha) Using this field requires the 'PrometheusShardRetentionPolicy' feature gate to be enabled.
+
+The final goals for this feature can be seen at https://github.com/prometheus-operator/prometheus-operator/blob/main/Documentation/proposals/202310-shard-autoscaling.md#graceful-scale-down-of-prometheus-servers,
+however, the feature is not yet fully implemented in this PR. The limitation being:
+* Retention duration is not settable, for now, shards are retained forever.
+
 | `shards`
 | `integer`
-| Number of shards to distribute targets onto. `spec.replicas`
-multiplied by `spec.shards` is the total number of Pods created.
+| Number of shards to distribute the scraped targets onto.
 
-Note that scaling down shards will not reshard data onto remaining
+`spec.replicas` multiplied by `spec.shards` is the total number of Pods
+being created.
+
+When not defined, the operator assumes only one shard.
+
+Note that scaling down shards will not reshard data onto the remaining
 instances, it must be manually moved. Increasing shards will not reshard
 data either but it will continue to be available from the same
-instances. To query globally, use Thanos sidecar and Thanos querier or
-remote write data to a central location.
+instances. To query globally, use either
+* Thanos sidecar + querier for query federation and Thanos Ruler for rules.
+* Remote-write to send metrics to a central location.
 
-Sharding is performed on the content of the `__address__` target meta-label
-for PodMonitors and ServiceMonitors and `__param_target__` for Probes.
+By default, the sharding of targets is performed on:
+* The `__address__` target's metadata label for PodMonitor,
+ServiceMonitor and ScrapeConfig resources.
+* The `__param_target__` label for Probe resources.
 
-Default: 1
+Users can define their own sharding implementation by setting the
+`__tmp_hash` label during the target discovery with relabeling
+configuration (either in the monitoring resources or via scrape class).
 
 | `storage`
 | `object`
@@ -968,7 +1027,7 @@ the triple <key,value,effect> using the matching operator <operator>.
 
 | `topologySpreadConstraints[]`
 | `object`
-|
+| 
 
 | `tracingConfig`
 | `object`
@@ -2986,7 +3045,8 @@ More info: https://prometheus.io/docs/prometheus/latest/configuration/configurat
 | `apiVersion`
 | `string`
 | Version of the Alertmanager API that Prometheus uses to send alerts.
-It can be "v1" or "v2".
+It can be "V1" or "V2".
+The field has no effect for Prometheus >= v3.0.0 because only the v2 API is supported.
 
 | `authorization`
 | `object`
@@ -3023,6 +3083,14 @@ Deprecated: this will be removed in a future release. Prefer using `authorizatio
 If not set, the object will be discovered in the namespace of the
 Prometheus object.
 
+| `noProxy`
+| `string`
+| `noProxy` is a comma-separated string that can contain IPs, CIDR notation, domain names
+that should be excluded from proxying. IP and domain names can
+contain port numbers.
+
+It requires Prometheus >= v2.43.0 or Alertmanager >= 0.25.0.
+
 | `pathPrefix`
 | `string`
 | Prefix for the HTTP path alerts are pushed to.
@@ -3030,6 +3098,31 @@ Prometheus object.
 | `port`
 | `integer-or-string`
 | Port on which the Alertmanager API is exposed.
+
+| `proxyConnectHeader`
+| `object`
+| ProxyConnectHeader optionally specifies headers to send to
+proxies during CONNECT requests.
+
+It requires Prometheus >= v2.43.0 or Alertmanager >= 0.25.0.
+
+| `proxyConnectHeader{}`
+| `array`
+| 
+
+| `proxyConnectHeader{}[]`
+| `object`
+| SecretKeySelector selects a key of a Secret.
+
+| `proxyFromEnvironment`
+| `boolean`
+| Whether to use the proxy configuration defined by environment variables (HTTP_PROXY, HTTPS_PROXY, and NO_PROXY).
+
+It requires Prometheus >= v2.43.0 or Alertmanager >= 0.25.0.
+
+| `proxyUrl`
+| `string`
+| `proxyURL` defines the HTTP proxy server to use.
 
 | `relabelings`
 | `array`
@@ -3284,6 +3377,71 @@ Description::
 --
 `username` specifies a key of a Secret containing the username for
 authentication.
+--
+
+Type::
+  `object`
+
+Required::
+  - `key`
+
+
+
+[cols="1,1,1",options="header"]
+|===
+| Property | Type | Description
+
+| `key`
+| `string`
+| The key of the secret to select from.  Must be a valid secret key.
+
+| `name`
+| `string`
+| Name of the referent.
+This field is effectively required, but due to backwards compatibility is
+allowed to be empty. Instances of this type with an empty value here are
+almost certainly wrong.
+More info: https://kubernetes.io/docs/concepts/overview/working-with-objects/names/#names
+
+| `optional`
+| `boolean`
+| Specify whether the Secret or its key must be defined
+
+|===
+=== .spec.alerting.alertmanagers[].proxyConnectHeader
+Description::
++
+--
+ProxyConnectHeader optionally specifies headers to send to
+proxies during CONNECT requests.
+
+It requires Prometheus >= v2.43.0 or Alertmanager >= 0.25.0.
+--
+
+Type::
+  `object`
+
+
+
+
+=== .spec.alerting.alertmanagers[].proxyConnectHeader{}
+Description::
++
+--
+
+--
+
+Type::
+  `array`
+
+
+
+
+=== .spec.alerting.alertmanagers[].proxyConnectHeader{}[]
+Description::
++
+--
+SecretKeySelector selects a key of a Secret.
 --
 
 Type::
@@ -4368,7 +4526,7 @@ Type::
 
 | `deny`
 | `boolean`
-|
+| 
 
 |===
 === .spec.containers
@@ -5021,28 +5179,28 @@ Type::
 
 | `exec`
 | `object`
-| Exec specifies the action to take.
+| Exec specifies a command to execute in the container.
 
 | `httpGet`
 | `object`
-| HTTPGet specifies the http request to perform.
+| HTTPGet specifies an HTTP GET request to perform.
 
 | `sleep`
 | `object`
-| Sleep represents the duration that the container should sleep before being terminated.
+| Sleep represents a duration that the container should sleep.
 
 | `tcpSocket`
 | `object`
 | Deprecated. TCPSocket is NOT supported as a LifecycleHandler and kept
-for the backward compatibility. There are no validation of this field and
-lifecycle hooks will fail in runtime when tcp handler is specified.
+for backward compatibility. There is no validation of this field and
+lifecycle hooks will fail at runtime when it is specified.
 
 |===
 === .spec.containers[].lifecycle.postStart.exec
 Description::
 +
 --
-Exec specifies the action to take.
+Exec specifies a command to execute in the container.
 --
 
 Type::
@@ -5068,7 +5226,7 @@ Exit status of 0 is treated as live/healthy and non-zero is unhealthy.
 Description::
 +
 --
-HTTPGet specifies the http request to perform.
+HTTPGet specifies an HTTP GET request to perform.
 --
 
 Type::
@@ -5159,7 +5317,7 @@ This will be canonicalized upon output, so case-variant names will be understood
 Description::
 +
 --
-Sleep represents the duration that the container should sleep before being terminated.
+Sleep represents a duration that the container should sleep.
 --
 
 Type::
@@ -5184,8 +5342,8 @@ Description::
 +
 --
 Deprecated. TCPSocket is NOT supported as a LifecycleHandler and kept
-for the backward compatibility. There are no validation of this field and
-lifecycle hooks will fail in runtime when tcp handler is specified.
+for backward compatibility. There is no validation of this field and
+lifecycle hooks will fail at runtime when it is specified.
 --
 
 Type::
@@ -5238,28 +5396,28 @@ Type::
 
 | `exec`
 | `object`
-| Exec specifies the action to take.
+| Exec specifies a command to execute in the container.
 
 | `httpGet`
 | `object`
-| HTTPGet specifies the http request to perform.
+| HTTPGet specifies an HTTP GET request to perform.
 
 | `sleep`
 | `object`
-| Sleep represents the duration that the container should sleep before being terminated.
+| Sleep represents a duration that the container should sleep.
 
 | `tcpSocket`
 | `object`
 | Deprecated. TCPSocket is NOT supported as a LifecycleHandler and kept
-for the backward compatibility. There are no validation of this field and
-lifecycle hooks will fail in runtime when tcp handler is specified.
+for backward compatibility. There is no validation of this field and
+lifecycle hooks will fail at runtime when it is specified.
 
 |===
 === .spec.containers[].lifecycle.preStop.exec
 Description::
 +
 --
-Exec specifies the action to take.
+Exec specifies a command to execute in the container.
 --
 
 Type::
@@ -5285,7 +5443,7 @@ Exit status of 0 is treated as live/healthy and non-zero is unhealthy.
 Description::
 +
 --
-HTTPGet specifies the http request to perform.
+HTTPGet specifies an HTTP GET request to perform.
 --
 
 Type::
@@ -5376,7 +5534,7 @@ This will be canonicalized upon output, so case-variant names will be understood
 Description::
 +
 --
-Sleep represents the duration that the container should sleep before being terminated.
+Sleep represents a duration that the container should sleep.
 --
 
 Type::
@@ -5401,8 +5559,8 @@ Description::
 +
 --
 Deprecated. TCPSocket is NOT supported as a LifecycleHandler and kept
-for the backward compatibility. There are no validation of this field and
-lifecycle hooks will fail in runtime when tcp handler is specified.
+for backward compatibility. There is no validation of this field and
+lifecycle hooks will fail at runtime when it is specified.
 --
 
 Type::
@@ -5450,7 +5608,7 @@ Type::
 
 | `exec`
 | `object`
-| Exec specifies the action to take.
+| Exec specifies a command to execute in the container.
 
 | `failureThreshold`
 | `integer`
@@ -5459,11 +5617,11 @@ Defaults to 3. Minimum value is 1.
 
 | `grpc`
 | `object`
-| GRPC specifies an action involving a GRPC port.
+| GRPC specifies a GRPC HealthCheckRequest.
 
 | `httpGet`
 | `object`
-| HTTPGet specifies the http request to perform.
+| HTTPGet specifies an HTTP GET request to perform.
 
 | `initialDelaySeconds`
 | `integer`
@@ -5482,7 +5640,7 @@ Defaults to 1. Must be 1 for liveness and startup. Minimum value is 1.
 
 | `tcpSocket`
 | `object`
-| TCPSocket specifies an action involving a TCP port.
+| TCPSocket specifies a connection to a TCP port.
 
 | `terminationGracePeriodSeconds`
 | `integer`
@@ -5508,7 +5666,7 @@ More info: https://kubernetes.io/docs/concepts/workloads/pods/pod-lifecycle#cont
 Description::
 +
 --
-Exec specifies the action to take.
+Exec specifies a command to execute in the container.
 --
 
 Type::
@@ -5534,7 +5692,7 @@ Exit status of 0 is treated as live/healthy and non-zero is unhealthy.
 Description::
 +
 --
-GRPC specifies an action involving a GRPC port.
+GRPC specifies a GRPC HealthCheckRequest.
 --
 
 Type::
@@ -5565,7 +5723,7 @@ If this is not specified, the default behavior is defined by gRPC.
 Description::
 +
 --
-HTTPGet specifies the http request to perform.
+HTTPGet specifies an HTTP GET request to perform.
 --
 
 Type::
@@ -5656,7 +5814,7 @@ This will be canonicalized upon output, so case-variant names will be understood
 Description::
 +
 --
-TCPSocket specifies an action involving a TCP port.
+TCPSocket specifies a connection to a TCP port.
 --
 
 Type::
@@ -5770,7 +5928,7 @@ Type::
 
 | `exec`
 | `object`
-| Exec specifies the action to take.
+| Exec specifies a command to execute in the container.
 
 | `failureThreshold`
 | `integer`
@@ -5779,11 +5937,11 @@ Defaults to 3. Minimum value is 1.
 
 | `grpc`
 | `object`
-| GRPC specifies an action involving a GRPC port.
+| GRPC specifies a GRPC HealthCheckRequest.
 
 | `httpGet`
 | `object`
-| HTTPGet specifies the http request to perform.
+| HTTPGet specifies an HTTP GET request to perform.
 
 | `initialDelaySeconds`
 | `integer`
@@ -5802,7 +5960,7 @@ Defaults to 1. Must be 1 for liveness and startup. Minimum value is 1.
 
 | `tcpSocket`
 | `object`
-| TCPSocket specifies an action involving a TCP port.
+| TCPSocket specifies a connection to a TCP port.
 
 | `terminationGracePeriodSeconds`
 | `integer`
@@ -5828,7 +5986,7 @@ More info: https://kubernetes.io/docs/concepts/workloads/pods/pod-lifecycle#cont
 Description::
 +
 --
-Exec specifies the action to take.
+Exec specifies a command to execute in the container.
 --
 
 Type::
@@ -5854,7 +6012,7 @@ Exit status of 0 is treated as live/healthy and non-zero is unhealthy.
 Description::
 +
 --
-GRPC specifies an action involving a GRPC port.
+GRPC specifies a GRPC HealthCheckRequest.
 --
 
 Type::
@@ -5885,7 +6043,7 @@ If this is not specified, the default behavior is defined by gRPC.
 Description::
 +
 --
-HTTPGet specifies the http request to perform.
+HTTPGet specifies an HTTP GET request to perform.
 --
 
 Type::
@@ -5976,7 +6134,7 @@ This will be canonicalized upon output, so case-variant names will be understood
 Description::
 +
 --
-TCPSocket specifies an action involving a TCP port.
+TCPSocket specifies a connection to a TCP port.
 --
 
 Type::
@@ -6465,7 +6623,7 @@ Type::
 
 | `exec`
 | `object`
-| Exec specifies the action to take.
+| Exec specifies a command to execute in the container.
 
 | `failureThreshold`
 | `integer`
@@ -6474,11 +6632,11 @@ Defaults to 3. Minimum value is 1.
 
 | `grpc`
 | `object`
-| GRPC specifies an action involving a GRPC port.
+| GRPC specifies a GRPC HealthCheckRequest.
 
 | `httpGet`
 | `object`
-| HTTPGet specifies the http request to perform.
+| HTTPGet specifies an HTTP GET request to perform.
 
 | `initialDelaySeconds`
 | `integer`
@@ -6497,7 +6655,7 @@ Defaults to 1. Must be 1 for liveness and startup. Minimum value is 1.
 
 | `tcpSocket`
 | `object`
-| TCPSocket specifies an action involving a TCP port.
+| TCPSocket specifies a connection to a TCP port.
 
 | `terminationGracePeriodSeconds`
 | `integer`
@@ -6523,7 +6681,7 @@ More info: https://kubernetes.io/docs/concepts/workloads/pods/pod-lifecycle#cont
 Description::
 +
 --
-Exec specifies the action to take.
+Exec specifies a command to execute in the container.
 --
 
 Type::
@@ -6549,7 +6707,7 @@ Exit status of 0 is treated as live/healthy and non-zero is unhealthy.
 Description::
 +
 --
-GRPC specifies an action involving a GRPC port.
+GRPC specifies a GRPC HealthCheckRequest.
 --
 
 Type::
@@ -6580,7 +6738,7 @@ If this is not specified, the default behavior is defined by gRPC.
 Description::
 +
 --
-HTTPGet specifies the http request to perform.
+HTTPGet specifies an HTTP GET request to perform.
 --
 
 Type::
@@ -6671,7 +6829,7 @@ This will be canonicalized upon output, so case-variant names will be understood
 Description::
 +
 --
-TCPSocket specifies an action involving a TCP port.
+TCPSocket specifies a connection to a TCP port.
 --
 
 Type::
@@ -7730,28 +7888,28 @@ Type::
 
 | `exec`
 | `object`
-| Exec specifies the action to take.
+| Exec specifies a command to execute in the container.
 
 | `httpGet`
 | `object`
-| HTTPGet specifies the http request to perform.
+| HTTPGet specifies an HTTP GET request to perform.
 
 | `sleep`
 | `object`
-| Sleep represents the duration that the container should sleep before being terminated.
+| Sleep represents a duration that the container should sleep.
 
 | `tcpSocket`
 | `object`
 | Deprecated. TCPSocket is NOT supported as a LifecycleHandler and kept
-for the backward compatibility. There are no validation of this field and
-lifecycle hooks will fail in runtime when tcp handler is specified.
+for backward compatibility. There is no validation of this field and
+lifecycle hooks will fail at runtime when it is specified.
 
 |===
 === .spec.initContainers[].lifecycle.postStart.exec
 Description::
 +
 --
-Exec specifies the action to take.
+Exec specifies a command to execute in the container.
 --
 
 Type::
@@ -7777,7 +7935,7 @@ Exit status of 0 is treated as live/healthy and non-zero is unhealthy.
 Description::
 +
 --
-HTTPGet specifies the http request to perform.
+HTTPGet specifies an HTTP GET request to perform.
 --
 
 Type::
@@ -7868,7 +8026,7 @@ This will be canonicalized upon output, so case-variant names will be understood
 Description::
 +
 --
-Sleep represents the duration that the container should sleep before being terminated.
+Sleep represents a duration that the container should sleep.
 --
 
 Type::
@@ -7893,8 +8051,8 @@ Description::
 +
 --
 Deprecated. TCPSocket is NOT supported as a LifecycleHandler and kept
-for the backward compatibility. There are no validation of this field and
-lifecycle hooks will fail in runtime when tcp handler is specified.
+for backward compatibility. There is no validation of this field and
+lifecycle hooks will fail at runtime when it is specified.
 --
 
 Type::
@@ -7947,28 +8105,28 @@ Type::
 
 | `exec`
 | `object`
-| Exec specifies the action to take.
+| Exec specifies a command to execute in the container.
 
 | `httpGet`
 | `object`
-| HTTPGet specifies the http request to perform.
+| HTTPGet specifies an HTTP GET request to perform.
 
 | `sleep`
 | `object`
-| Sleep represents the duration that the container should sleep before being terminated.
+| Sleep represents a duration that the container should sleep.
 
 | `tcpSocket`
 | `object`
 | Deprecated. TCPSocket is NOT supported as a LifecycleHandler and kept
-for the backward compatibility. There are no validation of this field and
-lifecycle hooks will fail in runtime when tcp handler is specified.
+for backward compatibility. There is no validation of this field and
+lifecycle hooks will fail at runtime when it is specified.
 
 |===
 === .spec.initContainers[].lifecycle.preStop.exec
 Description::
 +
 --
-Exec specifies the action to take.
+Exec specifies a command to execute in the container.
 --
 
 Type::
@@ -7994,7 +8152,7 @@ Exit status of 0 is treated as live/healthy and non-zero is unhealthy.
 Description::
 +
 --
-HTTPGet specifies the http request to perform.
+HTTPGet specifies an HTTP GET request to perform.
 --
 
 Type::
@@ -8085,7 +8243,7 @@ This will be canonicalized upon output, so case-variant names will be understood
 Description::
 +
 --
-Sleep represents the duration that the container should sleep before being terminated.
+Sleep represents a duration that the container should sleep.
 --
 
 Type::
@@ -8110,8 +8268,8 @@ Description::
 +
 --
 Deprecated. TCPSocket is NOT supported as a LifecycleHandler and kept
-for the backward compatibility. There are no validation of this field and
-lifecycle hooks will fail in runtime when tcp handler is specified.
+for backward compatibility. There is no validation of this field and
+lifecycle hooks will fail at runtime when it is specified.
 --
 
 Type::
@@ -8159,7 +8317,7 @@ Type::
 
 | `exec`
 | `object`
-| Exec specifies the action to take.
+| Exec specifies a command to execute in the container.
 
 | `failureThreshold`
 | `integer`
@@ -8168,11 +8326,11 @@ Defaults to 3. Minimum value is 1.
 
 | `grpc`
 | `object`
-| GRPC specifies an action involving a GRPC port.
+| GRPC specifies a GRPC HealthCheckRequest.
 
 | `httpGet`
 | `object`
-| HTTPGet specifies the http request to perform.
+| HTTPGet specifies an HTTP GET request to perform.
 
 | `initialDelaySeconds`
 | `integer`
@@ -8191,7 +8349,7 @@ Defaults to 1. Must be 1 for liveness and startup. Minimum value is 1.
 
 | `tcpSocket`
 | `object`
-| TCPSocket specifies an action involving a TCP port.
+| TCPSocket specifies a connection to a TCP port.
 
 | `terminationGracePeriodSeconds`
 | `integer`
@@ -8217,7 +8375,7 @@ More info: https://kubernetes.io/docs/concepts/workloads/pods/pod-lifecycle#cont
 Description::
 +
 --
-Exec specifies the action to take.
+Exec specifies a command to execute in the container.
 --
 
 Type::
@@ -8243,7 +8401,7 @@ Exit status of 0 is treated as live/healthy and non-zero is unhealthy.
 Description::
 +
 --
-GRPC specifies an action involving a GRPC port.
+GRPC specifies a GRPC HealthCheckRequest.
 --
 
 Type::
@@ -8274,7 +8432,7 @@ If this is not specified, the default behavior is defined by gRPC.
 Description::
 +
 --
-HTTPGet specifies the http request to perform.
+HTTPGet specifies an HTTP GET request to perform.
 --
 
 Type::
@@ -8365,7 +8523,7 @@ This will be canonicalized upon output, so case-variant names will be understood
 Description::
 +
 --
-TCPSocket specifies an action involving a TCP port.
+TCPSocket specifies a connection to a TCP port.
 --
 
 Type::
@@ -8479,7 +8637,7 @@ Type::
 
 | `exec`
 | `object`
-| Exec specifies the action to take.
+| Exec specifies a command to execute in the container.
 
 | `failureThreshold`
 | `integer`
@@ -8488,11 +8646,11 @@ Defaults to 3. Minimum value is 1.
 
 | `grpc`
 | `object`
-| GRPC specifies an action involving a GRPC port.
+| GRPC specifies a GRPC HealthCheckRequest.
 
 | `httpGet`
 | `object`
-| HTTPGet specifies the http request to perform.
+| HTTPGet specifies an HTTP GET request to perform.
 
 | `initialDelaySeconds`
 | `integer`
@@ -8511,7 +8669,7 @@ Defaults to 1. Must be 1 for liveness and startup. Minimum value is 1.
 
 | `tcpSocket`
 | `object`
-| TCPSocket specifies an action involving a TCP port.
+| TCPSocket specifies a connection to a TCP port.
 
 | `terminationGracePeriodSeconds`
 | `integer`
@@ -8537,7 +8695,7 @@ More info: https://kubernetes.io/docs/concepts/workloads/pods/pod-lifecycle#cont
 Description::
 +
 --
-Exec specifies the action to take.
+Exec specifies a command to execute in the container.
 --
 
 Type::
@@ -8563,7 +8721,7 @@ Exit status of 0 is treated as live/healthy and non-zero is unhealthy.
 Description::
 +
 --
-GRPC specifies an action involving a GRPC port.
+GRPC specifies a GRPC HealthCheckRequest.
 --
 
 Type::
@@ -8594,7 +8752,7 @@ If this is not specified, the default behavior is defined by gRPC.
 Description::
 +
 --
-HTTPGet specifies the http request to perform.
+HTTPGet specifies an HTTP GET request to perform.
 --
 
 Type::
@@ -8685,7 +8843,7 @@ This will be canonicalized upon output, so case-variant names will be understood
 Description::
 +
 --
-TCPSocket specifies an action involving a TCP port.
+TCPSocket specifies a connection to a TCP port.
 --
 
 Type::
@@ -9174,7 +9332,7 @@ Type::
 
 | `exec`
 | `object`
-| Exec specifies the action to take.
+| Exec specifies a command to execute in the container.
 
 | `failureThreshold`
 | `integer`
@@ -9183,11 +9341,11 @@ Defaults to 3. Minimum value is 1.
 
 | `grpc`
 | `object`
-| GRPC specifies an action involving a GRPC port.
+| GRPC specifies a GRPC HealthCheckRequest.
 
 | `httpGet`
 | `object`
-| HTTPGet specifies the http request to perform.
+| HTTPGet specifies an HTTP GET request to perform.
 
 | `initialDelaySeconds`
 | `integer`
@@ -9206,7 +9364,7 @@ Defaults to 1. Must be 1 for liveness and startup. Minimum value is 1.
 
 | `tcpSocket`
 | `object`
-| TCPSocket specifies an action involving a TCP port.
+| TCPSocket specifies a connection to a TCP port.
 
 | `terminationGracePeriodSeconds`
 | `integer`
@@ -9232,7 +9390,7 @@ More info: https://kubernetes.io/docs/concepts/workloads/pods/pod-lifecycle#cont
 Description::
 +
 --
-Exec specifies the action to take.
+Exec specifies a command to execute in the container.
 --
 
 Type::
@@ -9258,7 +9416,7 @@ Exit status of 0 is treated as live/healthy and non-zero is unhealthy.
 Description::
 +
 --
-GRPC specifies an action involving a GRPC port.
+GRPC specifies a GRPC HealthCheckRequest.
 --
 
 Type::
@@ -9289,7 +9447,7 @@ If this is not specified, the default behavior is defined by gRPC.
 Description::
 +
 --
-HTTPGet specifies the http request to perform.
+HTTPGet specifies an HTTP GET request to perform.
 --
 
 Type::
@@ -9380,7 +9538,7 @@ This will be canonicalized upon output, so case-variant names will be understood
 Description::
 +
 --
-TCPSocket specifies an action involving a TCP port.
+TCPSocket specifies a connection to a TCP port.
 --
 
 Type::
@@ -9555,9 +9713,22 @@ Type::
 |===
 | Property | Type | Description
 
+| `keepIdentifyingResourceAttributes`
+| `boolean`
+| Enables adding `service.name`, `service.namespace` and `service.instance.id`
+resource attributes to the `target_info` metric, on top of converting them into the `instance` and `job` labels.
+
+It requires Prometheus >= v3.1.0.
+
 | `promoteResourceAttributes`
 | `array (string)`
 | List of OpenTelemetry Attributes that should be promoted to metric labels, defaults to none.
+
+| `translationStrategy`
+| `string`
+| Configures how the OTLP receiver endpoint translates the incoming metrics.
+
+It requires Prometheus >= v3.0.0.
 
 |===
 === .spec.persistentVolumeClaimRetentionPolicy
@@ -10201,7 +10372,7 @@ It requires Prometheus >= v2.43.0 or Alertmanager >= 0.25.0.
 
 | `proxyConnectHeader{}`
 | `array`
-|
+| 
 
 | `proxyConnectHeader{}[]`
 | `object`
@@ -10475,7 +10646,7 @@ It requires Prometheus >= v2.43.0 or Alertmanager >= 0.25.0.
 
 | `proxyConnectHeader{}`
 | `array`
-|
+| 
 
 | `proxyConnectHeader{}[]`
 | `object`
@@ -11484,7 +11655,7 @@ It requires Prometheus >= v2.43.0 or Alertmanager >= 0.25.0.
 
 | `proxyConnectHeader{}`
 | `array`
-|
+| 
 
 | `proxyConnectHeader{}[]`
 | `object`
@@ -11507,6 +11678,21 @@ It requires Prometheus >= v2.43.0 or Alertmanager >= 0.25.0.
 | `remoteTimeout`
 | `string`
 | Timeout for requests to the remote write endpoint.
+
+| `roundRobinDNS`
+| `boolean`
+| When enabled:
+    - The remote-write mechanism will resolve the hostname via DNS.
+    - It will randomly select one of the resolved IP addresses and connect to it.
+
+When disabled (default behavior):
+    - The Go standard library will handle hostname resolution.
+    - It will attempt connections to each resolved IP address sequentially.
+
+Note: The connection timeout applies to the entire resolution and connection process.
+      If disabled, the timeout is distributed across all connection attempts.
+
+It requires Prometheus >= v3.1.0.
 
 | `sendExemplars`
 | `boolean`
@@ -11982,7 +12168,7 @@ It requires Prometheus >= v2.43.0 or Alertmanager >= 0.25.0.
 
 | `proxyConnectHeader{}`
 | `array`
-|
+| 
 
 | `proxyConnectHeader{}[]`
 | `object`
@@ -13508,12 +13694,24 @@ Required::
 When the scrape object defines its own configuration, it takes
 precedence over the scrape class configuration.
 
+| `authorization`
+| `object`
+| Authorization section for the ScrapeClass.
+It will only apply if the scrape resource doesn't specify any Authorization.
+
 | `default`
 | `boolean`
 | Default indicates that the scrape applies to all scrape objects that
 don't configure an explicit scrape class name.
 
 Only one scrape class can be set as the default.
+
+| `fallbackScrapeProtocol`
+| `string`
+| The protocol to use if a scrape returns blank, unparseable, or otherwise invalid Content-Type.
+It will only apply if the scrape resource doesn't specify any FallbackScrapeProtocol
+
+It requires Prometheus >= v3.0.0.
 
 | `metricRelabelings`
 | `array`
@@ -13541,7 +13739,7 @@ More info: https://prometheus.io/docs/prometheus/latest/configuration/configurat
 | Relabelings configures the relabeling rules to apply to all scrape targets.
 
 The Operator automatically adds relabelings for a few standard Kubernetes fields
-like `\__meta_kubernetes_namespace` and `\__meta_kubernetes_service_name`.
+like `__meta_kubernetes_namespace` and `__meta_kubernetes_service_name`.
 Then the Operator adds the scrape class relabelings defined here.
 Then the Operator adds the target-specific relabelings defined in the scrape object.
 
@@ -13589,6 +13787,77 @@ targets.
 
 The Prometheus service account must have the `list` and `watch`
 permissions on the `Nodes` objects.
+
+|===
+=== .spec.scrapeClasses[].authorization
+Description::
++
+--
+Authorization section for the ScrapeClass.
+It will only apply if the scrape resource doesn't specify any Authorization.
+--
+
+Type::
+  `object`
+
+
+
+
+[cols="1,1,1",options="header"]
+|===
+| Property | Type | Description
+
+| `credentials`
+| `object`
+| Selects a key of a Secret in the namespace that contains the credentials for authentication.
+
+| `credentialsFile`
+| `string`
+| File to read a secret from, mutually exclusive with `credentials`.
+
+| `type`
+| `string`
+| Defines the authentication type. The value is case-insensitive.
+
+"Basic" is not a supported value.
+
+Default: "Bearer"
+
+|===
+=== .spec.scrapeClasses[].authorization.credentials
+Description::
++
+--
+Selects a key of a Secret in the namespace that contains the credentials for authentication.
+--
+
+Type::
+  `object`
+
+Required::
+  - `key`
+
+
+
+[cols="1,1,1",options="header"]
+|===
+| Property | Type | Description
+
+| `key`
+| `string`
+| The key of the secret to select from.  Must be a valid secret key.
+
+| `name`
+| `string`
+| Name of the referent.
+This field is effectively required, but due to backwards compatibility is
+allowed to be empty. Instances of this type with an empty value here are
+almost certainly wrong.
+More info: https://kubernetes.io/docs/concepts/overview/working-with-objects/names/#names
+
+| `optional`
+| `boolean`
+| Specify whether the Secret or its key must be defined
 
 |===
 === .spec.scrapeClasses[].metricRelabelings
@@ -13683,7 +13952,7 @@ Description::
 Relabelings configures the relabeling rules to apply to all scrape targets.
 
 The Operator automatically adds relabelings for a few standard Kubernetes fields
-like `\__meta_kubernetes_namespace` and `\__meta_kubernetes_service_name`.
+like `__meta_kubernetes_namespace` and `__meta_kubernetes_service_name`.
 Then the Operator adds the scrape class relabelings defined here.
 Then the Operator adds the target-specific relabelings defined in the scrape object.
 
@@ -14317,6 +14586,32 @@ PodSecurityContext, the value specified in SecurityContext takes precedence
 for that container.
 Note that this field cannot be set when spec.os.name is windows.
 
+| `seLinuxChangePolicy`
+| `string`
+| seLinuxChangePolicy defines how the container's SELinux label is applied to all volumes used by the Pod.
+It has no effect on nodes that do not support SELinux or to volumes does not support SELinux.
+Valid values are "MountOption" and "Recursive".
+
+"Recursive" means relabeling of all files on all Pod volumes by the container runtime.
+This may be slow for large volumes, but allows mixing privileged and unprivileged Pods sharing the same volume on the same node.
+
+"MountOption" mounts all eligible Pod volumes with `-o context` mount option.
+This requires all Pods that share the same volume to use the same SELinux label.
+It is not possible to share the same volume among privileged and unprivileged Pods.
+Eligible volumes are in-tree FibreChannel and iSCSI volumes, and all CSI volumes
+whose CSI driver announces SELinux support by setting spec.seLinuxMount: true in their
+CSIDriver instance. Other volumes are always re-labelled recursively.
+"MountOption" value is allowed only when SELinuxMount feature gate is enabled.
+
+If not specified and SELinuxMount feature gate is enabled, "MountOption" is used.
+If not specified and SELinuxMount feature gate is disabled, "MountOption" is used for ReadWriteOncePod volumes
+and "Recursive" for all other volumes.
+
+This field affects only Pods that have SELinux label set, either in PodSecurityContext or in SecurityContext of all containers.
+
+All Pods that use the same volume should use the same seLinuxChangePolicy, otherwise some pods can get stuck in ContainerCreating state.
+Note that this field cannot be set when spec.os.name is windows.
+
 | `seLinuxOptions`
 | `object`
 | The SELinux context to be applied to all containers.
@@ -14748,6 +15043,37 @@ Valid operators are In, NotIn, Exists and DoesNotExist.
 the values array must be non-empty. If the operator is Exists or DoesNotExist,
 the values array must be empty. This array is replaced during a strategic
 merge patch.
+
+|===
+=== .spec.shardRetentionPolicy
+Description::
++
+--
+ShardRetentionPolicy defines the retention policy for the Prometheus shards.
+(Alpha) Using this field requires the 'PrometheusShardRetentionPolicy' feature gate to be enabled.
+
+The final goals for this feature can be seen at https://github.com/prometheus-operator/prometheus-operator/blob/main/Documentation/proposals/202310-shard-autoscaling.md#graceful-scale-down-of-prometheus-servers,
+however, the feature is not yet fully implemented in this PR. The limitation being:
+* Retention duration is not settable, for now, shards are retained forever.
+--
+
+Type::
+  `object`
+
+
+
+
+[cols="1,1,1",options="header"]
+|===
+| Property | Type | Description
+
+| `whenScaled`
+| `string`
+| Defines the retention policy when the Prometheus shards are scaled down.
+* `Delete`, the operator will delete the pods from the scaled-down shard(s).
+* `Retain`, the operator will keep the pods from the scaled-down shard(s), so the data can still be queried.
+
+If not defined, the operator assumes the `Delete` value.
 
 |===
 === .spec.storage
@@ -15850,19 +16176,14 @@ persistent volume is being resized.
 
 | `status`
 | `string`
-|
+| Status is the status of the condition.
+Can be True, False, Unknown.
+More info: https://kubernetes.io/docs/reference/kubernetes-api/config-and-storage-resources/persistent-volume-claim-v1/#:~:text=state%20of%20pvc-,conditions.status,-(string)%2C%20required
 
 | `type`
 | `string`
-| PersistentVolumeClaimConditionType defines the condition of PV claim.
-Valid values are:
-  - "Resizing", "FileSystemResizePending"
-
-If RecoverVolumeExpansionFailure feature gate is enabled, then following additional values can be expected:
-  - "ControllerResizeError", "NodeResizeError"
-
-If VolumeAttributesClass feature gate is enabled, then following additional values can be expected:
-  - "ModifyVolumeError", "ModifyingVolume"
+| Type is the type of the condition.
+More info: https://kubernetes.io/docs/reference/kubernetes-api/config-and-storage-resources/persistent-volume-claim-v1/#:~:text=set%20to%20%27ResizeStarted%27.-,PersistentVolumeClaimCondition,-contains%20details%20about
 
 |===
 === .spec.storage.volumeClaimTemplate.status.modifyVolumeStatus
@@ -17506,23 +17827,32 @@ Required::
 | `object`
 | awsElasticBlockStore represents an AWS Disk resource that is attached to a
 kubelet's host machine and then exposed to the pod.
+Deprecated: AWSElasticBlockStore is deprecated. All operations for the in-tree
+awsElasticBlockStore type are redirected to the ebs.csi.aws.com CSI driver.
 More info: https://kubernetes.io/docs/concepts/storage/volumes#awselasticblockstore
 
 | `azureDisk`
 | `object`
 | azureDisk represents an Azure Data Disk mount on the host and bind mount to the pod.
+Deprecated: AzureDisk is deprecated. All operations for the in-tree azureDisk type
+are redirected to the disk.csi.azure.com CSI driver.
 
 | `azureFile`
 | `object`
 | azureFile represents an Azure File Service mount on the host and bind mount to the pod.
+Deprecated: AzureFile is deprecated. All operations for the in-tree azureFile type
+are redirected to the file.csi.azure.com CSI driver.
 
 | `cephfs`
 | `object`
-| cephFS represents a Ceph FS mount on the host that shares a pod's lifetime
+| cephFS represents a Ceph FS mount on the host that shares a pod's lifetime.
+Deprecated: CephFS is deprecated and the in-tree cephfs type is no longer supported.
 
 | `cinder`
 | `object`
 | cinder represents a cinder volume attached and mounted on kubelets host machine.
+Deprecated: Cinder is deprecated. All operations for the in-tree cinder type
+are redirected to the cinder.csi.openstack.org CSI driver.
 More info: https://examples.k8s.io/mysql-cinder-pd/README.md
 
 | `configMap`
@@ -17531,7 +17861,7 @@ More info: https://examples.k8s.io/mysql-cinder-pd/README.md
 
 | `csi`
 | `object`
-| csi (Container Storage Interface) represents ephemeral storage that is handled by certain external CSI drivers (Beta feature).
+| csi (Container Storage Interface) represents ephemeral storage that is handled by certain external CSI drivers.
 
 | `downwardAPI`
 | `object`
@@ -17577,27 +17907,32 @@ persistent volumes at the same time.
 | `object`
 | flexVolume represents a generic volume resource that is
 provisioned/attached using an exec based plugin.
+Deprecated: FlexVolume is deprecated. Consider using a CSIDriver instead.
 
 | `flocker`
 | `object`
-| flocker represents a Flocker volume attached to a kubelet's host machine. This depends on the Flocker control service being running
+| flocker represents a Flocker volume attached to a kubelet's host machine. This depends on the Flocker control service being running.
+Deprecated: Flocker is deprecated and the in-tree flocker type is no longer supported.
 
 | `gcePersistentDisk`
 | `object`
 | gcePersistentDisk represents a GCE Disk resource that is attached to a
 kubelet's host machine and then exposed to the pod.
+Deprecated: GCEPersistentDisk is deprecated. All operations for the in-tree
+gcePersistentDisk type are redirected to the pd.csi.storage.gke.io CSI driver.
 More info: https://kubernetes.io/docs/concepts/storage/volumes#gcepersistentdisk
 
 | `gitRepo`
 | `object`
 | gitRepo represents a git repository at a particular revision.
-DEPRECATED: GitRepo is deprecated. To provision a container with a git repo, mount an
+Deprecated: GitRepo is deprecated. To provision a container with a git repo, mount an
 EmptyDir into an InitContainer that clones the repo using git, then mount the EmptyDir
 into the Pod's container.
 
 | `glusterfs`
 | `object`
 | glusterfs represents a Glusterfs mount on the host that shares a pod's lifetime.
+Deprecated: Glusterfs is deprecated and the in-tree glusterfs type is no longer supported.
 More info: https://examples.k8s.io/volumes/glusterfs/README.md
 
 | `hostPath`
@@ -17650,11 +17985,15 @@ More info: https://kubernetes.io/docs/concepts/storage/persistent-volumes#persis
 
 | `photonPersistentDisk`
 | `object`
-| photonPersistentDisk represents a PhotonController persistent disk attached and mounted on kubelets host machine
+| photonPersistentDisk represents a PhotonController persistent disk attached and mounted on kubelets host machine.
+Deprecated: PhotonPersistentDisk is deprecated and the in-tree photonPersistentDisk type is no longer supported.
 
 | `portworxVolume`
 | `object`
-| portworxVolume represents a portworx volume attached and mounted on kubelets host machine
+| portworxVolume represents a portworx volume attached and mounted on kubelets host machine.
+Deprecated: PortworxVolume is deprecated. All operations for the in-tree portworxVolume type
+are redirected to the pxd.portworx.com CSI driver when the CSIMigrationPortworx feature-gate
+is on.
 
 | `projected`
 | `object`
@@ -17662,16 +18001,19 @@ More info: https://kubernetes.io/docs/concepts/storage/persistent-volumes#persis
 
 | `quobyte`
 | `object`
-| quobyte represents a Quobyte mount on the host that shares a pod's lifetime
+| quobyte represents a Quobyte mount on the host that shares a pod's lifetime.
+Deprecated: Quobyte is deprecated and the in-tree quobyte type is no longer supported.
 
 | `rbd`
 | `object`
 | rbd represents a Rados Block Device mount on the host that shares a pod's lifetime.
+Deprecated: RBD is deprecated and the in-tree rbd type is no longer supported.
 More info: https://examples.k8s.io/volumes/rbd/README.md
 
 | `scaleIO`
 | `object`
 | scaleIO represents a ScaleIO persistent volume attached and mounted on Kubernetes nodes.
+Deprecated: ScaleIO is deprecated and the in-tree scaleIO type is no longer supported.
 
 | `secret`
 | `object`
@@ -17681,10 +18023,13 @@ More info: https://kubernetes.io/docs/concepts/storage/volumes#secret
 | `storageos`
 | `object`
 | storageOS represents a StorageOS volume attached and mounted on Kubernetes nodes.
+Deprecated: StorageOS is deprecated and the in-tree storageos type is no longer supported.
 
 | `vsphereVolume`
 | `object`
-| vsphereVolume represents a vSphere volume attached and mounted on kubelets host machine
+| vsphereVolume represents a vSphere volume attached and mounted on kubelets host machine.
+Deprecated: VsphereVolume is deprecated. All operations for the in-tree vsphereVolume type
+are redirected to the csi.vsphere.vmware.com CSI driver.
 
 |===
 === .spec.volumes[].awsElasticBlockStore
@@ -17693,6 +18038,8 @@ Description::
 --
 awsElasticBlockStore represents an AWS Disk resource that is attached to a
 kubelet's host machine and then exposed to the pod.
+Deprecated: AWSElasticBlockStore is deprecated. All operations for the in-tree
+awsElasticBlockStore type are redirected to the ebs.csi.aws.com CSI driver.
 More info: https://kubernetes.io/docs/concepts/storage/volumes#awselasticblockstore
 --
 
@@ -17738,6 +18085,8 @@ Description::
 +
 --
 azureDisk represents an Azure Data Disk mount on the host and bind mount to the pod.
+Deprecated: AzureDisk is deprecated. All operations for the in-tree azureDisk type
+are redirected to the disk.csi.azure.com CSI driver.
 --
 
 Type::
@@ -17786,6 +18135,8 @@ Description::
 +
 --
 azureFile represents an Azure File Service mount on the host and bind mount to the pod.
+Deprecated: AzureFile is deprecated. All operations for the in-tree azureFile type
+are redirected to the file.csi.azure.com CSI driver.
 --
 
 Type::
@@ -17819,7 +18170,8 @@ the ReadOnly setting in VolumeMounts.
 Description::
 +
 --
-cephFS represents a Ceph FS mount on the host that shares a pod's lifetime
+cephFS represents a Ceph FS mount on the host that shares a pod's lifetime.
+Deprecated: CephFS is deprecated and the in-tree cephfs type is no longer supported.
 --
 
 Type::
@@ -17897,6 +18249,8 @@ Description::
 +
 --
 cinder represents a cinder volume attached and mounted on kubelets host machine.
+Deprecated: Cinder is deprecated. All operations for the in-tree cinder type
+are redirected to the cinder.csi.openstack.org CSI driver.
 More info: https://examples.k8s.io/mysql-cinder-pd/README.md
 --
 
@@ -18081,7 +18435,7 @@ May not start with the string '..'.
 Description::
 +
 --
-csi (Container Storage Interface) represents ephemeral storage that is handled by certain external CSI drivers (Beta feature).
+csi (Container Storage Interface) represents ephemeral storage that is handled by certain external CSI drivers.
 --
 
 Type::
@@ -18852,6 +19206,7 @@ Description::
 --
 flexVolume represents a generic volume resource that is
 provisioned/attached using an exec based plugin.
+Deprecated: FlexVolume is deprecated. Consider using a CSIDriver instead.
 --
 
 Type::
@@ -18928,7 +19283,8 @@ More info: https://kubernetes.io/docs/concepts/overview/working-with-objects/nam
 Description::
 +
 --
-flocker represents a Flocker volume attached to a kubelet's host machine. This depends on the Flocker control service being running
+flocker represents a Flocker volume attached to a kubelet's host machine. This depends on the Flocker control service being running.
+Deprecated: Flocker is deprecated and the in-tree flocker type is no longer supported.
 --
 
 Type::
@@ -18957,6 +19313,8 @@ Description::
 --
 gcePersistentDisk represents a GCE Disk resource that is attached to a
 kubelet's host machine and then exposed to the pod.
+Deprecated: GCEPersistentDisk is deprecated. All operations for the in-tree
+gcePersistentDisk type are redirected to the pd.csi.storage.gke.io CSI driver.
 More info: https://kubernetes.io/docs/concepts/storage/volumes#gcepersistentdisk
 --
 
@@ -19004,7 +19362,7 @@ Description::
 +
 --
 gitRepo represents a git repository at a particular revision.
-DEPRECATED: GitRepo is deprecated. To provision a container with a git repo, mount an
+Deprecated: GitRepo is deprecated. To provision a container with a git repo, mount an
 EmptyDir into an InitContainer that clones the repo using git, then mount the EmptyDir
 into the Pod's container.
 --
@@ -19042,6 +19400,7 @@ Description::
 +
 --
 glusterfs represents a Glusterfs mount on the host that shares a pod's lifetime.
+Deprecated: Glusterfs is deprecated and the in-tree glusterfs type is no longer supported.
 More info: https://examples.k8s.io/volumes/glusterfs/README.md
 --
 
@@ -19336,7 +19695,8 @@ Default false.
 Description::
 +
 --
-photonPersistentDisk represents a PhotonController persistent disk attached and mounted on kubelets host machine
+photonPersistentDisk represents a PhotonController persistent disk attached and mounted on kubelets host machine.
+Deprecated: PhotonPersistentDisk is deprecated and the in-tree photonPersistentDisk type is no longer supported.
 --
 
 Type::
@@ -19366,7 +19726,10 @@ Ex. "ext4", "xfs", "ntfs". Implicitly inferred to be "ext4" if unspecified.
 Description::
 +
 --
-portworxVolume represents a portworx volume attached and mounted on kubelets host machine
+portworxVolume represents a portworx volume attached and mounted on kubelets host machine.
+Deprecated: PortworxVolume is deprecated. All operations for the in-tree portworxVolume type
+are redirected to the pxd.portworx.com CSI driver when the CSIMigrationPortworx feature-gate
+is on.
 --
 
 Type::
@@ -20043,7 +20406,8 @@ token into.
 Description::
 +
 --
-quobyte represents a Quobyte mount on the host that shares a pod's lifetime
+quobyte represents a Quobyte mount on the host that shares a pod's lifetime.
+Deprecated: Quobyte is deprecated and the in-tree quobyte type is no longer supported.
 --
 
 Type::
@@ -20095,6 +20459,7 @@ Description::
 +
 --
 rbd represents a Rados Block Device mount on the host that shares a pod's lifetime.
+Deprecated: RBD is deprecated and the in-tree rbd type is no longer supported.
 More info: https://examples.k8s.io/volumes/rbd/README.md
 --
 
@@ -20194,6 +20559,7 @@ Description::
 +
 --
 scaleIO represents a ScaleIO persistent volume attached and mounted on Kubernetes nodes.
+Deprecated: ScaleIO is deprecated and the in-tree scaleIO type is no longer supported.
 --
 
 Type::
@@ -20402,6 +20768,7 @@ Description::
 +
 --
 storageOS represents a StorageOS volume attached and mounted on Kubernetes nodes.
+Deprecated: StorageOS is deprecated and the in-tree storageos type is no longer supported.
 --
 
 Type::
@@ -20476,7 +20843,9 @@ More info: https://kubernetes.io/docs/concepts/overview/working-with-objects/nam
 Description::
 +
 --
-vsphereVolume represents a vSphere volume attached and mounted on kubelets host machine
+vsphereVolume represents a vSphere volume attached and mounted on kubelets host machine.
+Deprecated: VsphereVolume is deprecated. All operations for the in-tree vsphereVolume type
+are redirected to the csi.vsphere.vmware.com CSI driver.
 --
 
 Type::
@@ -20642,62 +21011,87 @@ Type::
 
 | `cert`
 | `object`
-| Contains the TLS certificate for the server.
+| Secret or ConfigMap containing the TLS certificate for the web server.
+
+Either `keySecret` or `keyFile` must be defined.
+
+It is mutually exclusive with `certFile`.
 
 | `certFile`
 | `string`
-| Path to the TLS certificate file in the Prometheus container for the server.
-Mutually exclusive with `cert`.
+| Path to the TLS certificate file in the container for the web server.
+
+Either `keySecret` or `keyFile` must be defined.
+
+It is mutually exclusive with `cert`.
 
 | `cipherSuites`
 | `array (string)`
-| List of supported cipher suites for TLS versions up to TLS 1.2. If empty,
-Go default cipher suites are used. Available cipher suites are documented
-in the go documentation: https://golang.org/pkg/crypto/tls/#pkg-constants
+| List of supported cipher suites for TLS versions up to TLS 1.2.
+
+If not defined, the Go default cipher suites are used.
+Available cipher suites are documented in the Go documentation:
+https://golang.org/pkg/crypto/tls/#pkg-constants
 
 | `clientAuthType`
 | `string`
-| Server policy for client authentication. Maps to ClientAuth Policies.
+| The server policy for client TLS authentication.
+
 For more detail on clientAuth options:
 https://golang.org/pkg/crypto/tls/#ClientAuthType
 
 | `clientCAFile`
 | `string`
-| Path to the CA certificate file for client certificate authentication to the server.
-Mutually exclusive with `client_ca`.
+| Path to the CA certificate file for client certificate authentication to
+the server.
+
+It is mutually exclusive with `client_ca`.
 
 | `client_ca`
 | `object`
-| Contains the CA certificate for client certificate authentication to the server.
+| Secret or ConfigMap containing the CA certificate for client certificate
+authentication to the server.
+
+It is mutually exclusive with `clientCAFile`.
 
 | `curvePreferences`
 | `array (string)`
 | Elliptic curves that will be used in an ECDHE handshake, in preference
-order. Available curves are documented in the go documentation:
+order.
+
+Available curves are documented in the Go documentation:
 https://golang.org/pkg/crypto/tls/#CurveID
 
 | `keyFile`
 | `string`
-| Path to the TLS key file in the Prometheus container for the server.
-Mutually exclusive with `keySecret`.
+| Path to the TLS private key file in the container for the web server.
+
+If defined, either `cert` or `certFile` must be defined.
+
+It is mutually exclusive with `keySecret`.
 
 | `keySecret`
 | `object`
-| Secret containing the TLS key for the server.
+| Secret containing the TLS private key for the web server.
+
+Either `cert` or `certFile` must be defined.
+
+It is mutually exclusive with `keyFile`.
 
 | `maxVersion`
 | `string`
-| Maximum TLS version that is acceptable. Defaults to TLS13.
+| Maximum TLS version that is acceptable.
 
 | `minVersion`
 | `string`
-| Minimum TLS version that is acceptable. Defaults to TLS12.
+| Minimum TLS version that is acceptable.
 
 | `preferServerCipherSuites`
 | `boolean`
-| Controls whether the server selects the
-client's most preferred cipher suite, or the server's most preferred
-cipher suite. If true then the server's preference, as expressed in
+| Controls whether the server selects the client's most preferred cipher
+suite, or the server's most preferred cipher suite.
+
+If true then the server's preference, as expressed in
 the order of elements in cipherSuites, is used.
 
 |===
@@ -20705,7 +21099,11 @@ the order of elements in cipherSuites, is used.
 Description::
 +
 --
-Contains the TLS certificate for the server.
+Secret or ConfigMap containing the TLS certificate for the web server.
+
+Either `keySecret` or `keyFile` must be defined.
+
+It is mutually exclusive with `certFile`.
 --
 
 Type::
@@ -20803,7 +21201,10 @@ More info: https://kubernetes.io/docs/concepts/overview/working-with-objects/nam
 Description::
 +
 --
-Contains the CA certificate for client certificate authentication to the server.
+Secret or ConfigMap containing the CA certificate for client certificate
+authentication to the server.
+
+It is mutually exclusive with `clientCAFile`.
 --
 
 Type::
@@ -20901,7 +21302,11 @@ More info: https://kubernetes.io/docs/concepts/overview/working-with-objects/nam
 Description::
 +
 --
-Secret containing the TLS key for the server.
+Secret containing the TLS private key for the web server.
+
+Either `cert` or `certFile` must be defined.
+
+It is mutually exclusive with `keyFile`.
 --
 
 Type::
@@ -20992,7 +21397,7 @@ being performed. Only delete actions will be performed.
 
 | `shardStatuses[]`
 | `object`
-|
+| 
 
 | `shards`
 | `integer`
@@ -21246,7 +21651,7 @@ Description::
 | Parameter | Type | Description
 | `body`
 | xref:../monitoring_apis/prometheus-monitoring-coreos-com-v1.adoc#prometheus-monitoring-coreos-com-v1[`Prometheus`] schema
-|
+| 
 |===
 
 .HTTP responses
@@ -21379,7 +21784,7 @@ Description::
 | Parameter | Type | Description
 | `body`
 | xref:../monitoring_apis/prometheus-monitoring-coreos-com-v1.adoc#prometheus-monitoring-coreos-com-v1[`Prometheus`] schema
-|
+| 
 |===
 
 .HTTP responses
@@ -21481,7 +21886,7 @@ Description::
 | Parameter | Type | Description
 | `body`
 | xref:../autoscale_apis/scale-autoscaling-v1.adoc#scale-autoscaling-v1[`Scale`] schema
-|
+| 
 |===
 
 .HTTP responses
@@ -21583,7 +21988,7 @@ Description::
 | Parameter | Type | Description
 | `body`
 | xref:../monitoring_apis/prometheus-monitoring-coreos-com-v1.adoc#prometheus-monitoring-coreos-com-v1[`Prometheus`] schema
-|
+| 
 |===
 
 .HTTP responses
