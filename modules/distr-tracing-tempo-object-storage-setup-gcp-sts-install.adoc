@@ -1,0 +1,105 @@
+// Module included in the following assemblies:
+//
+//* observability/distr_tracing/distr-tracing-tempo-installing.adoc
+
+:_mod-docs-content-type: PROCEDURE
+[id="distr-tracing-tempo-object-storage-setup-gcp-sts-install_{context}"]
+= Setting up the Google Cloud storage with the Security Token Service
+
+You can set up the Goocle Cloud Storage with the Security Token Service (STS) by using the Google Coud CLI.
+
+:FeatureName: The Amazon GCS storage with the Security Token Service
+include::snippets/technology-preview.adoc[leveloffset=+1]
+
+.Prerequisites
+
+* You have installed the latest version of the Google Cloud CLI.
+
+.Procedure
+
+. Create an GCS bucket.
+
+. Create an IAM service account. You can also use any existing IAM service account in any project in your organization.
+
++
+[source,terminal]
+----
+SERVICE_ACCOUNT_EMAIL=$(gcloud iam service-accounts create <IAM_SA_NAME> \  #<1>
+    --display-name="Tempo Account" \
+    --project <PROJECT_ID>  \ #<2>
+    --format='value(email)' \ 
+    --quiet)
+----
+<1> Service account name in Google Cloud.
+<2> Google Cloud Project ID in which the account will be created
+
+. Bind the required GCP roles to the created SA at the project level:
++
+[source,terminal]
+----
+$ gcloud projects add-iam-policy-binding <PROJECT_ID> \
+    --member "serviceAccount:$SERVICE_ACCOUNT_EMAIL" \
+  --role="roles/iam.workloadIdentityUser"
+
+$ gcloud projects add-iam-policy-binding <PROJECT_ID> \
+    --member "serviceAccount:$SERVICE_ACCOUNT_EMAIL" \
+    --role "roles/storage.objectAdmin"
+
+----
+. Retrieve the `POOL_ID` of the Google Cloud Workload Identity Pool associated with the OpenShift cluster.
++
+[source,terminal]
+----
+$ OIDC_ISSUER=$(oc get authentication.config cluster -o jsonpath='{.spec.serviceAccountIssuer}')
+
+$ POOL_ID=$(echo "$OIDC_ISSUER" | awk -F'/' '{print $NF}' | sed 's/-oidc$//')
+----
+.  Allow Kubernetes Service Accounts to impersonate the Google Service Account, SERVICE_ACCOUNT_EMAIL is the output of the commant used to created the service account in the step 2.
++
+[source,terminal]
+----
+$ gcloud iam service-accounts add-iam-policy-binding "$SERVICE_ACCOUNT_EMAIL" \
+  --role="roles/iam.workloadIdentityUser" \
+  --member="principal://iam.googleapis.com/projects/<PROJECT_NUMBER>/locations/global/workloadIdentityPools/<POOL_ID>/subject/system:serviceaccount:<TEMPO_NAMESPACE>:tempo-<TEMPO_NAME>" \
+  --project=<PROJECT_ID> \
+  --quiet
+
+$ gcloud iam service-accounts add-iam-policy-binding "$SERVICE_ACCOUNT_EMAIL" \
+  --role="roles/iam.workloadIdentityUser" \
+  --member="principal://iam.googleapis.com/projects/$PROJECT_NUMBER/locations/global/workloadIdentityPools/$POOL_ID/subject/system:serviceaccount:${TEMPO_NAMESPACE}:tempo-${TEMPO_NAME}-query-frontend" \
+  --project="$PROJECT_ID" \
+  --quiet
+----
+. Create credential file used by Tempo Stack, this will be in the key.json key in the storage secret:
++
+[source,terminal]
+----
+$ gcloud iam workload-identity-pools create-cred-config \
+    "projects/<PROJECT_NUMBER>/locations/global/workloadIdentityPools/$POOL_ID/providers/<PROVIDER_ID>" \
+    --service-account="$SERVICE_ACCOUNT_EMAIL" \
+    --credential-source-file=/var/run/secrets/storage/serviceaccount/token \
+    --credential-source-type=text \
+    --output-file=<OUTPUT_FILE_PATH> #<1>
+----
+<1> Path where the file will be writed
++
+Note: credential-source-file should be always point to /var/run/secrets/storage/serviceaccount/token, this is where the operator will mount the token
+. Get the correct audience as follows:
++
+[source,terminal]
+----
+gcloud iam workload-identity-pools providers describe "$PROVIDER_NAME" --format='value(oidc.allowedAudiences[0])'
+----
++
+. Create storage secret to be used by Tempo.
++
+[source,terminal]
+----
+kubectl -n <TEMPO_NAMESPACE> create secret generic gcs-secret \
+  --from-literal=bucketname="<BUCKET_NAME> \ #<1>
+  --from-literal=audience="<AUDIENCE> \      #<2>
+  --from-file=key.json=<OUTPUT_FILE_PATH>    #<3>
+----
+<1> Bucket name of the Google Cloud Storage
+<2> Audience we get in the previous step
+<3> This is the file we created with gcloud iam workload-identity-pools create-cred-config command.
