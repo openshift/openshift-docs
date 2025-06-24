@@ -1,0 +1,212 @@
+// Module included in the following assemblies:
+// * service-mesh-docs-main/gateways/ossm-getting-traffic-into-a-mesh.adoc
+
+:_mod-docs-content-type: PROCEDURE
+[id="ossm-exposing-a-service-by-using-the-kubernetes-gateway-api_{context}"]
+= Exposing a service by using the {k8s} Gateway API 
+
+Use the {k8s} Gateway API to create `Gateway` and `HTTPRoute` resources and deploy a gateway. The resources configure the gateway to expose a service in the mesh to traffic outside the mesh. Then, you can set the `Service` for the gateway to `LoadBalancer` to expose the gateway to traffic outside the cluster.
+
+.Prerequisites
+
+* You are logged in to the {ocp-product-title} web console as a user with the `cluster-admin` role.
+
+* You installed the {SMProductName} Operator.
+
+* You deployed the {istio} resource.
+
+.Procedure 
+
+. Create a namespace called `httpbin` by running the following command:
++
+[source,terminal]
+----
+$ oc create namespace httpbin 
+----
+
+. Deploy a sample service named `httpbin` by running the following command:
++
+[source,terminal]
+----
+$ oc apply -n httpbin -f https://raw.githubusercontent.com/openshift-service-mesh/istio/refs/heads/master/samples/httpbin/httpbin.yaml
+----
+
+. Create a YAML file named `httpbin-gw.yaml` that defines a {k8s} Gateway resource. This resource configures gateway proxies to expose port 80 (HTTP) for the host, `httpbin.example.com`.
++
+.Example gateway resource file
+[source,yaml,subs="attributes,verbatim"]
+----
+apiVersion: gateway.networking.k8s.io/v1
+kind: Gateway
+metadata:
+  name: httpbin-gateway
+  namespace: httpbin
+spec:
+  gatewayClassName: istio
+  listeners:
+  - name: default
+    hostname: "httpbin.example.com" # <1>
+    port: 80
+    protocol: HTTP
+    allowedRoutes:
+      namespaces:
+        from: All
+----
+<1> Specifies the virtual hostname that clients use when attempting to access a mesh service on the associated port.
+
+. Apply the YAML file by running the following command:
++
+[source,terminal]
+----
+$ oc apply -f httpbin-gw.yaml
+----
+
+. Create a YAML file named `httpbin-hr.yaml` that defines an `HTTPRoute` resource. The `HTTPRoute` resource specifies the rules that route traffic from the gateway proxy to the `httpbin` service.
++
+.Example HTTPRoute file
+[source,yaml,subs="attributes,verbatim"]
+----
+apiVersion: gateway.networking.k8s.io/v1
+kind: HTTPRoute
+metadata:
+  name: httpbin
+  namespace: httpbin
+spec:
+  parentRefs: # <1>
+  - name: httpbin-gateway
+    namespace: httpbin
+  rules:
+  - matches:
+    - path:
+        type: PathPrefix
+        value: /status
+    - path:
+        type: PathPrefix
+        value: /headers
+    backendRefs: # <2>
+    - name: httpbin
+      port: 8000
+----
+<1> Binds the `HTTPROUTE` resource to the {k8s} Gateway resource that was created in the previous step by adding the name of the gateway resource to the list of gateways.
+<2> Routes the matching traffic to the `httpbin` service by defining a `backendRefs` that includes the name and port of the `httpbin` Service.
+
+. Apply the YAML file by running the following command:
++
+[source,terminal]
+----
+$ oc apply -f httpbin-hr.yaml
+----
+
+. Ensure that the Gateway API service is ready, and that an address is allocated to the service, by running the following command:
++
+[source,terminal]
+----
+$ oc wait --for=condition=programmed gtw httpbin-gateway -n httpbin
+----
+
+.Verification
+
+. Create a namespace for a `curl` client by running the following command:
++
+[source,terminal]
+----
+$ oc create namespace curl
+----
+
+. Deploy a `curl` client by running the following command:
++
+[source,terminal]
+----
+$ oc apply -n curl -f https://raw.githubusercontent.com/openshift-service-mesh/istio/refs/heads/master/samples/curl/curl.yaml
+----
+
+. Set a `CURL_POD` variable with the name of the `curl` pod by running the following command:
++
+[source,terminal]
+----
+$ CURL_POD=$(oc get pods -n curl -l app=curl -o jsonpath='{.items[*].metadata.name}')
+----
+
+. Using the `curl` client, send a request to the `/headers` endpoint of the `httpbin` application through the ingress gateway `Service` resource. Set the Host header of the request to `httpbin.example.com` to match the host that the {k8s} Gateway and `HTTPROUTE` resources specify. Send the `curl` request by running the following command:
++
+[source,terminal]
+----
+$ oc exec $CURL_POD -n curl -- \
+  curl -s -I \
+    -H Host:httpbin.example.com \
+    <gateway_name>-istio.<gateway_namespace>.svc.cluster.local/headers
+----
++
+The response should return a `200 OK` HTTP status, which indicates that the request was successful.
++
+.Example output
++
+[source,terminal]
+----
+HTTP/1.1 200 OK
+server: istio-envoy
+...
+----
+
+. Send a `curl` request to an endpoint that does not have a corresponding Uniform Resource Identifier (URI) prefix match defined in the `httpbin` `HTTPROUTE` by running the following command:
++
+[source,terminal]
+----
+$ oc exec $CURL_POD -n curl -- \
+  curl -s -I \
+    -H Host:httpbin.example.com \
+    <gateway_name>-istio.<gateway_namespace>.svc.cluster.local/get
+----
++
+The response returns a `404 Not Found` status. This is expected because the `/get` endpoint does not have a matching URI prefix in the `httpbin` `HTTPROUTE` resource.
++
+.Example output
++
+[source,terminal]
+----
+HTTP/1.1 404 Not Found
+server: istio-envoy
+...
+----
+
+. Expose the gateway proxy to traffic outside the cluster by setting the `Service` type to `LoadBalancer`. Run the following command:
++
+[source,terminal]
+----
+$ oc patch service <gateway_name>-istio -n <gateway_namespace> -p '{"spec": {"type": "LoadBalancer"}}'
+----
++
+[NOTE]
+====
+A gateway can also be exposed to traffic outside the cluster by using {ocp-short-name} Routes. For more information, see "Exposing a gateway to traffic outside the cluster using {ocp-short-name} Routes".
+====
+
+. Verify that the `httpbin` service can be accessed from outside the cluster when using the external hostname or IP address of the gateway Service resource. Ensure that you set the `INGRESS_HOST` variable appropriately for the environment in which your cluster is running.
+
+.. Set the `INGRESS_HOST` variable by running the following command:
++
+[source,terminal]
+----
+$ export INGRESS_HOST=$(oc get gtw <gateway_name> -n <gateway_namespace> -o jsonpath='{.status.addresses[0].value}')
+----
+
+.. Set the `INGRESS_PORT` variable by running the following command:
++
+[source,terminal]
+----
+$ INGRESS_PORT=$(oc get gtw <gateway_name> -n <gateway_namespace> -o jsonpath='{.spec.listeners[?(@.name=="http")].port}')
+----
+
+.. Using the gateway host, send a `curl` request to the `httpbin` service by running the following command:
++
+[source,terminal]
+----
+$ curl -s -I -H Host:httpbin.example.com http://$INGRESS_HOST:$INGRESS_PORT/headers
+----
+
+. Verify that the response has the `HTTP/1.1 200 OK` status, which indicates that the request was successful.
+
+[role="_additional-resources"]
+.Additional resources
+
+* link:https://kubernetes.io/docs/concepts/services-networking/gateway/[Kubernetes Gateway API concept] (Kubernetes documentation)
