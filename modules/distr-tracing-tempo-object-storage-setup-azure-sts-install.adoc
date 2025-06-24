@@ -1,0 +1,165 @@
+// Module included in the following assemblies:
+//
+//* observability/distr_tracing/distr-tracing-tempo-installing.adoc
+
+:_mod-docs-content-type: PROCEDURE
+[id="setting-up-azure-storage-with-security-token-service_{context}"]
+= Setting up the Azure storage with the Security Token Service
+
+You can set up the Azure storage with the Security Token Service (STS) by using the Azure Command Line Interface (Azure CLI).
+
+:FeatureName: Using the {TempoShortName} with the Azure storage and STS
+include::snippets/technology-preview.adoc[leveloffset=+1]
+
+.Prerequisites
+
+* You have installed the latest version of the Azure CLI.
+* You have created an Azure storage account.
+* You have created an Azure blob storage container.
+
+.Procedure
+
+. Create an Azure managed identity by running the following command:
++
+[source,terminal]
+----
+$ az identity create \
+  --name <identity_name> \ # <1>
+  --resource-group <resource_group> \ # <2>
+  --location <region> \ # <3>
+  --subscription <subscription_id> # <4>
+----
+<1> The name you have chosen for the managed identity.
+<2> The Azure resource group where you want the identity to be created.
+<3> The Azure region, which must be the same region as for the resource group.
+<4> The Azure subscription ID.
+
+. Create a federated identity credential for the {product-title} service account for use by all components of the {TempoShortName} except the Query Frontend. You can do this by running the following command:
++
+[source,terminal]
+----
+$ az identity federated-credential create \ # <1>
+  --name <credential_name> \ # <2>
+  --identity-name <identity_name> \
+  --resource-group <resource_group> \
+  --issuer <oidc_provider> \ # <3>
+  --subject <tempo_service_account_subject> \ # <4>
+  --audiences <audience> # <5>
+----
+<1> Federated identity credentials allow {product-title} service accounts to authenticate as an Azure managed identity without storing secrets or using an Azure service principal identity.
+<2> The name you have chosen for the federated credential.
+<3> The URL of the OpenID Connect (OIDC) provider for your cluster.
+<4> The service account subject for your cluster in the following format: `system:serviceaccount:<namespace>:tempo-<tempostack_instance_name>`.
+<5> The expected audience, which is to be used for validating the issued tokens for the federated identity credential. This is commonly set to `api://AzureADTokenExchange`.
++
+[TIP]
+====
+You can get the URL of the OpenID Connect (OIDC) issuer for your cluster by running the following command:
+----
+$ oc get authentication cluster -o json | jq -r .spec.serviceAccountIssuer
+----
+====
+
+. Create a federated identity credential for the {product-title} service account for use by the Query Frontend component of the {TempoShortName}. You can do this by running the following command:
++
+[source,terminal]
+----
+$ az identity federated-credential create \ # <1>
+  --name <credential_name>-frontend \ # <2>
+  --identity-name <identity_name> \
+  --resource-group <resource_group> \
+  --issuer <cluster_issuer> \
+  --subject <tempo_service_account_query_frontend_subject> \ # <3>
+  --audiences <audience> | jq
+----
+<1> Federated identity credentials allow {product-title} service accounts to authenticate as an Azure managed identity without storing secrets or using an Azure service principal identity.
+<2> The name you have chosen for the frontend federated identity credential.
+<3> The service account subject for your cluster in the following format: `system:serviceaccount:<namespace>:tempo-<tempostack_instance_name>`.
+
+. Assign the Storage Blob Data Contributor role to the Azure service principal identity of the created Azure managed identity. You can do this by running the following command:
++
+[source,terminal]
+----
+$ az role assignment create \
+  --assignee <assignee_name> \ # <1>
+  --role "Storage Blob Data Contributor" \
+  --scope "/subscriptions/<subscription_id>
+----
+<1> The Azure service principal identity of the Azure managed identity that you created in step 1.
++
+[TIP]
+====
+You can get the `<assignee_name>` value by running the following command:
+----
+$ az ad sp list --all --filter "servicePrincipalType eq 'ManagedIdentity'" | jq -r --arg idName <identity_name> '.[] | select(.displayName == $idName) | .appId'`
+----
+====
+
+. Fetch the client ID of the Azure managed identity that you created in step 1:
++
+[source,bash]
+----
+CLIENT_ID=$(az identity show \
+  --name <identity_name> \ # <1>
+  --resource-group <resource_group> \ # <2>
+  --query clientId \
+  -o tsv)
+----
+<1> Copy and paste the `<identity_name>` value from step 1.
+<2> Copy and paste the `<resource_group>` value from step 1.
+
+. Create an {product-title} secret for the Azure workload identity federation (WIF). You can do this by running the following command:
++
+[source,terminal]
+----
+$ oc create -n <tempo_namespace> secret generic azure-secret \
+  --from-literal=container=<azure_storage_azure_container> \ # <1>
+  --from-literal=account_name=<azure_storage_azure_accountname> \ # <2>
+  --from-literal=client_id=<client_id> \ # <3>
+  --from-literal=audience=<audience> \ # <4>
+  --from-literal=tenant_id=<tenant_id> # <5>
+----
+<1> The name of the Azure Blob Storage container.
+<2> The name of the Azure Storage account.
+<3> The client ID of the managed identity that you fetched in the previous step.
+<4> Optional: Defaults to `api://AzureADTokenExchange`.
+<5> Azure Tenant ID.
+
+. When the object storage secret is created, update the relevant custom resource of the {TempoShortName} instance as follows:
++
+.Example `TempoStack` custom resource
+[source,yaml]
+----
+apiVersion: tempo.grafana.com/v1alpha1
+kind: TempoStack
+metadata:
+  name: <name>
+  namespace: <namespace>
+spec:
+# ...
+  storage:
+    secret: # <1>
+      name: <secret_name>
+      type: azure
+# ...
+----
+<1> The secret that you created in the previous step. 
++
+.Example `TempoMonolithic` custom resource
+[source,yaml]
+----
+apiVersion: tempo.grafana.com/v1alpha1
+kind: TempoMonolithic
+metadata:
+  name: <name>
+  namespace: <namespace>
+spec:
+# ...
+  storage:
+    traces:
+      backend: azure
+      azure:
+        secret: <secret_name> # <1>
+# ...
+----
+<1> The secret that you created in the previous step.
