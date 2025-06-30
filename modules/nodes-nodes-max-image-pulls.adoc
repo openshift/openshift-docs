@@ -7,60 +7,127 @@
 
 = Configuring parallel container image pulls
 
-Pulling images always takes some time and what's worse is that image pulls are done serially by default. In other words, kubelet will send only one image pull request to the image service at a time. Other image pull requests have to wait until the one being processed is complete.
+To help control bandwidth issues, you can configure the number of workload images that can be pulled at the same time. 
 
-By default, requests for image pulls are immediately sent to the image service and multiple images can be pulled concurrently.
-Maximum parallel image pulls will help secure your node from overloading on image pulling
+By default, the cluster can pull images in parallel, which allows multiple workloads to pull images at the same time. Pulling multiple images in parallel can improve workload start up time, by allowing your workloads to pull needed images without waiting. Also, updates However, pulling too many images at once can use excessive network bandwidth and cause latency issues throughout your cluster.
 
-We introduced a new feature in kubelet that sets a limit on the number of parallel image pulls at the node level. This limit restricts the maximum number of images that can be pulled simultaneously. If there is an image pull request beyond this limit, it will be blocked until one of the ongoing image pulls finishes. Before enabling this feature, please ensure that your container runtime's image service can handle parallel image pulls effectively.
+You can configure the maximum number of images that can be pulled in parallel or force serial image pulling, which allows only one image to be pulled at a time. 
 
-To limit the number of simultaneous image pulls, you can configure the maxParallelImagePulls field in kubelet. By setting maxParallelImagePulls to a value of n, only n images will be pulled concurrently. Any additional image pulls beyond this limit will wait until at least one ongoing pull is complete.
+To control the number of images that can be pulled simultaneously, you can use a kubelet config to set the `maxParallelImagePulls` to specify a limit. Additional image pulls above this limit are held until one of the current pulls is complete.
 
-You can find more details in the associated KEP: Kubelet limit of Parallel Image Pulls (KEP-3673).
+To force serial image pulls, use a kubelet config to set `serializeImagePulls` field to `true`. 
 
-To enable parallel image pulls, set the serializeImagePulls field to false in the kubelet configuration. When serializeImagePulls is disabled
-Kubernetes v1.27
 .Prerequisites
 
-* You have a running {product-title} cluster that uses version 4.10 or later.
-
-* Your cluster is configured to use cgroup v2. Swap memory is not supported on nodes in clusters that use cgroup v1.
+* You have a running {product-title} cluster.
 
 * You are logged in to the cluster as a user with administrative privileges.
 
-* You have enabled the `TechPreviewNoUpgrade` feature set on the cluster (see _Nodes -> Working with clusters -> Enabling features using feature gates_).
-+
-[NOTE]
-====
-Enabling the `TechPreviewNoUpgrade` feature set cannot be undone and prevents minor version updates. These feature sets are not recommended on production clusters.
-====
-
 .Procedure
 
-. Apply a custom label to the machine config pool where you want to allow swap memory.
+. Apply a custom label to the machine config pool where you want to configure parallel pulls by running a command similar to the following.
 +
 [source,terminal]
 ----
-$ oc label machineconfigpool worker parallel-pulls=set
+$ oc label machineconfigpool <mcp_name> parallel-pulls=set
 ----
 
-. Create a custom resource (CR) to enable and configure swap settings.
+. Create a custom resource (CR) to enable and configure parallel image pulling.
 +
 [source,yaml]
 ----
 apiVersion: machineconfiguration.openshift.io/v1
 kind: KubeletConfig
 metadata:
-  name: swap-config
+  name: parallel-image-pulls
+# ...
 spec:
   machineConfigPoolSelector:
     matchLabels:
       parallel-pulls: set
   kubeletConfig:
-    serializeImagePulls: false
-    maxParallelImagePulls: 3
-#...
+    serializeImagePulls: false <1>
+    maxParallelImagePulls: 3 <2>
+# ...
 ----
-<1> Set to `false` to enable parallel image pulls. Set to `true` to disable swap memory use. The default is `false`.
-<2> Specify the maximum number of images that can be pulled simultaneously.
+<1> Set to `false` to enable parallel image pulls. Set to `true` to force serial image pulling. The default is `false`.
+<2> Specify the maximum number of images that can be pulled in parallel.
+
+. Create the new machine config by running a command similar to the following:
++
+[source,terminal]
+----
+$ oc create -f <file_name>.yaml
+----
+
+.Verification
+
+. Check the machine configs to see that a new one was added by running the following command:
++
+[source,terminal]
+----
+$ oc get MachineConfig
+----
++
+.Example output
++
+[source,terminal]
+----
+NAME                                                GENERATEDBYCONTROLLER                        IGNITIONVERSION   AGE
+00-master                                           70025364a114fc3067b2e82ce47fdb0149630e4b     3.5.0             133m
+00-worker                                           70025364a114fc3067b2e82ce47fdb0149630e4b     3.5.0             133m
+# ...
+99-parallel-generated-kubelet                       70025364a114fc3067b2e82ce47fdb0149630e4b     3.5.0             15s <1>
+# ...
+rendered-parallel-c634a80f644740974ceb40c054c79e50  70025364a114fc3067b2e82ce47fdb0149630e4b     3.5.0             10s <2>
+----
+<1> The new machine config. In this example, the machine config is for the `parallel` custom machine config pool. 
+<2> The new rendered machine config. In this example, the machine config is for the `parallel` custom machine config pool. 
+
+. Check to see that the nodes in the `parallel` machine config pool are being updated by running the following command:
++
+[source,terminal]
+----
+$ oc get machineconfigpool
+----
++
+.Example output
++
+[source,terminal]
+----
+NAME       CONFIG                                               UPDATED   UPDATING   DEGRADED   MACHINECOUNT   READYMACHINECOUNT   UPDATEDMACHINECOUNT   DEGRADEDMACHINECOUNT   AGE
+parallel   rendered-parallel-3904f0e69130d125b3b5ef0e981b1ce1   False     True       False      1              0                   0                     0                      65m
+master     rendered-master-7536834c197384f3734c348c1d957c18     True      False      False      3              3                   3                     0                      140m
+worker     rendered-worker-c634a80f644740974ceb40c054c79e50     True      False      False      2              2                   2                     0                      140m
+----
+
+. When the nodes are updated, check that the parallel pull maximum was configured:
+
+.. Open an `oc debug` session to a node by running a command similar to the following:
++
+[source,terminal]
+----
+$ oc debug node/<node_name>
+----
+
+.. Set `/host` as the root directory within the debug shell by running the following command:
++
+[source,terminal]
+----
+sh-5.1# chroot /host
+----
+
+.. Examine the `kubelet.conf` file by running the following command:
++
+[source,terminal]
+----
+sh-5.1# cat /etc/kubernetes/kubelet.conf | grep -i maxParallelImagePulls
+----
++
+.Example output
++
+[source,terminal]
+----
+maxParallelImagePulls: 3
+----
 
