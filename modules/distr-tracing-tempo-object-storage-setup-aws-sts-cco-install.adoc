@@ -1,0 +1,150 @@
+// Module included in the following assemblies:
+//
+//* observability/distr_tracing/distr-tracing-tempo-installing.adoc
+
+:_mod-docs-content-type: PROCEDURE
+[id="setting-up-amazon-s3-storage-with-security-token-service_{context}"]
+= Setting up the Amazon S3 storage with the Security Token Service
+
+You can set up the Amazon S3 storage with the Security Token Service (STS) and AWS Command Line Interface (AWS CLI). Optionally, you can also use the Cloud Credential Operator (CCO).
+
+:FeatureName: Using the {TempoShortName} with the Amazon S3 storage and STS
+include::snippets/technology-preview.adoc[leveloffset=+1]
+
+.Prerequisites
+
+* You have installed the latest version of the AWS CLI.
+* If you intend to use the CCO, you have installed and configured the CCO in your cluster.
+
+.Procedure
+
+. Create an AWS S3 bucket.
+
+. Create the following `trust.json` file for the AWS Identity and Access Management (AWS IAM) policy for the purpose of setting up a trust relationship between the AWS IAM role, which you will create in the next step, and the service account of either the `TempoStack` or `TempoMonolithic` instance:
++
+.`trust.json`
+[source,yaml]
+----
+{
+    "Version": "2012-10-17",
+    "Statement": [
+      {
+        "Effect": "Allow",
+        "Principal": {
+          "Federated": "arn:aws:iam::<aws_account_id>:oidc-provider/<oidc_provider>" # <1>
+        },
+        "Action": "sts:AssumeRoleWithWebIdentity",
+        "Condition": {
+          "StringEquals": {
+            "<oidc_provider>:sub": [
+              "system:serviceaccount:<openshift_project_for_tempo>:tempo-<tempo_custom_resource_name>" # <2>
+              "system:serviceaccount:<openshift_project_for_tempo>:tempo-<tempo_custom_resource_name>-query-frontend"
+           ]
+         }
+       }
+     }
+    ]
+}
+----
+<1> The OpenID Connect (OIDC) provider that you have configured on the {product-title}.
+<2> The namespace in which you intend to create either a `TempoStack` or `TempoMonolithic` instance. Replace `<tempo_custom_resource_name>` with the `metadata` name that you define in your `TempoStack` or `TempoMonolithic` custom resource.
++
+[TIP]
+====
+You can also get the value for the OIDC provider by running the following command:
+
+[source,terminal]
+----
+$ oc get authentication cluster -o json | jq -r '.spec.serviceAccountIssuer' | sed 's~http[s]*://~~g'
+----
+====
+
+. Create an AWS IAM role by attaching the created `trust.json` policy file. You can do this by running the following command:
++
+[source,terminal]
+----
+$ aws iam create-role \
+      --role-name "tempo-s3-access" \
+      --assume-role-policy-document "file:///tmp/trust.json" \
+      --query Role.Arn \
+      --output text
+----
+
+. Attach an AWS IAM policy to the created AWS IAM role. You can do this by running the following command:
++
+[source,terminal]
+----
+$ aws iam attach-role-policy \
+      --role-name "tempo-s3-access" \
+      --policy-arn "arn:aws:iam::aws:policy/AmazonS3FullAccess"
+----
+
+. If you are not using the CCO, skip this step. If you are using the CCO, configure the cloud provider environment for the {TempoOperator}. You can do this by running the following command:
++
+[source,terminal]
+----
+$ oc patch subscription <tempo_operator_sub> \ # <1>
+          -n <tempo_operator_namespace> \ # <2>
+          --type='merge' -p '{"spec": {"config": {"env": [{"name": "ROLEARN", "value": "'"<role_arn>"'"}]}}}' # <3>
+----
+<1> The name of the {TempoOperator} subscription.
+<2> The namespace of the {TempoOperator}.
+<3> The AWS STS requires adding the `ROLEARN` environment variable to the {TempoOperator} subcription. As the `<role_arn>` value, add the Amazon Resource Name (ARN) of the AWS IAM role that you created in step 3.
+
+. In the {product-title}, create an object storage secret with keys as follows:
++
+[source,yaml]
+----
+apiVersion: v1
+kind: Secret
+metadata:
+  name: <secret_name>
+stringData:
+  bucket: <s3_bucket_name>
+  region: <s3_region>
+  role_arn: <s3_role_arn>
+type: Opaque
+----
+
+. When the object storage secret is created, update the relevant custom resource of the {TempoShortName} instance as follows:
++
+.Example `TempoStack` custom resource
+[source,yaml]
+----
+apiVersion: tempo.grafana.com/v1alpha1
+kind: TempoStack
+metadata:
+  name: <name>
+  namespace: <namespace>
+spec:
+# ...
+  storage:
+    secret: # <1>
+      name: <secret_name>
+      type: s3
+      credentialMode: token-cco # <2>
+# ...
+----
+<1> The secret that you created in the previous step.
+<2> If you are not using the CCO, omit this line. If you are using the CCO, add this parameter with the `token-cco` value.
++
+.Example `TempoMonolithic` custom resource
+[source,yaml]
+----
+apiVersion: tempo.grafana.com/v1alpha1
+kind: TempoMonolithic
+metadata:
+  name: <name>
+  namespace: <namespace>
+spec:
+# ...
+  storage:
+    traces:
+      backend: s3
+      s3:
+        secret: <secret_name> # <1>
+        credentialMode: token-cco # <2>
+# ...
+----
+<1> The secret that you created in the previous step.
+<2> If you are not using the CCO, omit this line. If you are using the CCO, add this parameter with the `token-cco` value.
