@@ -1,0 +1,272 @@
+:_mod-docs-content-type: ASSEMBLY
+[id="cloud-experts-osd-limit-egress-ngfw"]
+= Tutorial: Limit egress with Google Cloud Next Generation Firewall
+include::_attributes/attributes-openshift-dedicated.adoc[]
+:context: cloud-experts-osd-limit-egress-ngfw
+
+toc::[]
+
+:fn-supported-versions: footnote:[Modifying these routes on {product-title} {cluster-manager} versions prior to 4.14 is not typically supported. However, if you have a cluster using version 4.13, you can request that Red Hat enables support for this feature on your cluster by link:https://access.redhat.com/support/cases/new[opening a support case].]
+:fn-term-component-routes: footnote:[We use the term "component routes" to refer to the OAuth, Console, and Downloads routes that are provided when OCM is first installed.]
+
+//Article text
+Use this guide to implement egress restrictions for {product-title} on {GCP} by using Google Cloud's Next Generation Firewall (NGFW). NGFW is a fully distributed firewall service that allows fully qualified domain name (FQDN) objects in firewall policy rules. This is necessary for many of the external endpoints that {product-title} relies on.
+
+[IMPORTANT]
+====
+The ability to restrict egress traffic using a firewall or other network device is only supported with {product-title} clusters deployed using Private Service Connect (PSC). Clusters that do not use PSC require a support exception to use this functionality. For additional assistance, please open a link:https://access.redhat.com/support/cases/?extIdCarryOver=true&sc_cid=701f2000001Css5AAC#/case/new/get-support?caseCreate=true[support case].
+====
+
+[id="prerequisites_{context}"]
+== Prerequisites
+* You have the Google Cloud Command Line Interface (`gcloud`) installed.
+* You are logged into the Google Cloud CLI and have selected the Google Cloud project where you plan to deploy {product-title}.
+* You have the minimum necessary permissions in Google Cloud, including:
+** `Compute Network Admin`
+** `DNS Administrator`
+* You have the following services enabled:
+** networksecurity.googleapis.com
+** networkservices.googleapis.com
+** servicenetworking.googleapis.com
+
+To enable these services, run the following commands in your terminal:
+
+[source,terminal]
+----
+gcloud services enable networksecurity.googleapis.com
+gcloud services enable networkservices.googleapis.com
+gcloud services enable servicenetworking.googleapis.com
+----
+
+[id="environment-setup_{context}"]
+== Setting up your environment
+
+In your terminal, configure the following environment variables:
+
+[source,terminal]
+----
+export project_id=$(gcloud config list --format="value(core.project)")
+export region=us-east1
+export prefix=osd-ngfw
+export service_cidr="172.30.0.0/16"
+export machine_cidr="10.0.0.0/22"
+export pod_cidr="10.128.0.0/14"
+----
+
+This example uses `us-east1` as the region to deploy into and the prefix `osd-ngfw` for the cluster's resources. The  default CIDR ranges are assigned for the service and pod networks. The machine CIDR is based on the subnet ranges that will be set later in this tutorial. Modify the parameters to meet your needs.
+
+[id="create-subnets_{context}"]
+== Creating the VPC and subnets
+
+Before you can deploy a Google Cloud NGFW, you must first create the Virtual Private Cloud (VPC) and subnets that you will use for {product-title}:
+
+. Create the VPC by running the following command:
++
+[source,terminal]
+----
+gcloud compute networks create ${prefix}-vpc --subnet-mode=custom
+----
++
+. Create the worker subnets by running the following command:
++
+[source,terminal]
+----
+gcloud compute networks subnets create ${prefix}-worker \
+    --range=10.0.2.0/23 \
+    --network=${prefix}-vpc \
+    --region=${region} \
+    --enable-private-ip-google-access
+----
++
+. Create the control plane subnets by running the following command:
++
+[source,terminal]
+----
+gcloud compute networks subnets create ${prefix}-control-plane \
+    --range=10.0.0.0/25 \
+    --network=${prefix}-vpc \
+    --region=${region} \
+    --enable-private-ip-google-access
+----
++
+. Create the PSC subnets by running the following command:
++
+[source,terminal]
+----
+gcloud compute networks subnets create ${prefix}-psc \
+    --network=${prefix}-vpc \
+    --region=${region} \
+    --stack-type=IPV4_ONLY \
+    --range=10.0.0.128/29 \
+    --purpose=PRIVATE_SERVICE_CONNECT
+
+----
++
+These examples use the subnet ranges of 10.0.2.0/23 for the worker subnet, 10.0.0.0/25 for the control plane subnet, and 10.0.0.128/29 for the PSC subnet. Modify the parameters to meet your needs. Ensure the parameter values are contained within the machine CIDR you set earlier in this tutorial.
+
+[id="deploy-policy_{context}"]
+== Deploying a global network firewall policy
+
+. Create a global network firewall policy by running the following command:
++
+[source,terminal]
+----
+gcloud compute network-firewall-policies create \
+    ${prefix} \
+    --description "OpenShift Dedicated Egress Firewall" \
+    --global
+----
++
+. Associate the newly created global network firewall policy to the VPC you created above by running the following command:
++
+[source,terminal]
+----
+gcloud compute network-firewall-policies associations create \
+    --firewall-policy ${prefix} \
+    --network ${prefix}-vpc \
+    --global-firewall-policy
+----
+
+[id="create-a-cloud-router_{context}"]
+== Creating a Cloud Router and a Cloud Network Address Translation gateway
+The Network Address Translation (NAT) gateway enables internet connectivity for your private VMs by masquerading all their traffic under a single public IP address. As the designated exit point, it translates their internal IPs for any outbound requests, such as fetching updates. This process effectively grants them access to the internet without ever exposing their private addresses.
+
+. Reserve an IP address for Cloud NAT by running the following command:
++
+
+[source,terminal]
+----
+gcloud compute addresses create ${prefix}-${region}-cloudnatip \
+    --region=${region}
+----
++
+. Store the IP address you created above in a variable by running the following command:
++
+[source,terminal]
+----
+export cloudnatip=$(gcloud compute addresses list --filter=name:${prefix}-${region}-cloudnatip --format="value(address)")
+----
++
+. Create a Cloud Router by running the following command:
++
+[source,terminal]
+----
+gcloud compute routers create ${prefix}-router \
+    --region=${region} \
+    --network=${prefix}-vpc
+----
++
+. Create a Cloud NAT by running the following command:
++
+[source,terminal]
+----
+gcloud compute routers nats create ${prefix}-cloudnat-${region} \
+    --router=${prefix}-router --router-region ${region} \
+    --nat-all-subnet-ip-ranges \
+    --nat-external-ip-pool=${prefix}-${region}-cloudnatip
+----
+
+
+[id="create-private-DNS_{context}"]
+== Creating private Domain Name System records for Private Google Access
+The private Domain Name System (DNS) zone optimizes how your resources connect to Google APIs by ensuring traffic never travels over the public internet. It functions by intercepting DNS requests for Google services and resolving them to private IP addresses, forcing the connection onto Google's internal network for a faster, more secure data exchange.
+
+. Create a private DNS zone for the googleapis.com domain by running the following command:
++
+[source,terminal]
+----
+gcloud dns managed-zones create ${prefix}-googleapis \
+    --visibility=private \
+    --networks=https://www.googleapis.com/compute/v1/projects/${project_id}/global/networks/${prefix}-vpc \
+    --description="Private Google Access" \
+    --dns-name=googleapis.com
+----
++
+. Begin a record set transaction by running the following command:
++
+[source,terminal]
+----
+gcloud dns record-sets transaction start \
+    --zone=${prefix}-googleapis
+----
++
+. Stage the DNS records for Google APIs under the googleapis.com domain by running the following commands:
++
+[source,terminal]
+----
+gcloud dns record-sets transaction add --name="*.googleapis.com." \
+    --type=CNAME restricted.googleapis.com. \
+    --zone=${prefix}-googleapis \
+    --ttl=300
+----
++
+[source,terminal]
+----
+gcloud dns record-sets transaction add 199.36.153.4 199.36.153.5 199.36.153.6 199.36.153.7 \
+    --name=restricted.googleapis.com. \
+    --type=A \
+    --zone=${prefix}-googleapis \
+    --ttl=300
+
+----
++
+. Apply the staged record set transaction you started above by running the following command:
++
+[source,terminal]
+----
+gcloud dns record-sets transaction execute \
+    --zone=$prefix-googleapis
+----
+
+[id="creating-firewall-rules_{context}"]
+== Creating the firewall rules
+
+. Create a blanket allow rule for private IP (RFC 1918) address space by running the following command:
++
+[source,terminal]
+----
+gcloud compute network-firewall-policies rules create 500 \
+    --description "Allow egress to private IP ranges" \
+    --action=allow \
+    --firewall-policy=${prefix} \
+    --global-firewall-policy \
+    --direction=EGRESS \
+    --layer4-configs all \
+    --dest-ip-ranges=10.0.0.0/8,172.16.0.0/12,192.168.0.0/16
+
+----
++
+
+. Create an allow rule for HTTPS (tcp/443) domains required for OSD by running the following command:
++
+[source,terminal]
+----
+gcloud compute network-firewall-policies rules create 600 \
+    --description "Allow egress to OpenShift Dedicated required domains (tcp/443)" \
+    --action=allow \
+    --firewall-policy=${prefix} \
+    --global-firewall-policy \
+    --direction=EGRESS \
+    --layer4-configs tcp:443 \
+    --dest-fqdns accounts.google.com,pull.q1w2.quay.rhcloud.com,http-inputs-osdsecuritylogs.splunkcloud.com,nosnch.in,api.deadmanssnitch.com,events.pagerduty.com,api.pagerduty.com,api.openshift.com,mirror.openshift.com,observatorium.api.openshift.com,observatorium-mst.api.openshift.com,console.redhat.com,infogw.api.openshift.com,api.access.redhat.com,cert-api.access.redhat.com,catalog.redhat.com,sso.redhat.com,registry.connect.redhat.com,registry.access.redhat.com,cdn01.quay.io,cdn02.quay.io,cdn03.quay.io,cdn04.quay.io,cdn05.quay.io,cdn06.quay.io,cdn.quay.io,quay.io,registry.redhat.io,quayio-production-s3.s3.amazonaws.com
+
+----
++
+
+[IMPORTANT]
+====
+If there is not a matching rule that allows the traffic, it will be blocked by the firewall. To allow access to other resources, such as internal networks or other external endpoints, create additional rules with a priority of less than 1000. For more information on how to create firewall rules, see  link:https://cloud.google.com/firewall/docs/use-network-firewall-policies[Use global network firewall policies and rules].
+====
+
+[id="creating-osd-gcp-cluster_{context}"]
+== Creating your cluster
+You are now ready to create your {product-title} on {GCP}  cluster. For more information, see xref:../osd_gcp_clusters/creating-a-gcp-cluster-with-workload-identity-federation.adoc#osd-creating-a-cluster-on-gcp-with-workload-identity-federation[Creating a cluster on GCP with Workload Identity Federation authentication].
+
+[id="deleting-osd-gcp-cluster_{context}"]
+== Deleting your cluster
+To delete your cluster, see xref:../osd_gcp_clusters/osd-deleting-a-cluster-gcp.adoc[Deleting an OpenShift Dedicated cluster on GCP].
+[IMPORTANT]
+====
+To prevent ongoing charges, after you delete your cluster you must manually delete the Google Cloud networking infrastructure you created as part of this tutorial. Deleting the cluster will not automatically remove these underlying resources.
+====
+
