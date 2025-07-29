@@ -1,0 +1,177 @@
+// Module included in the following assemblies:
+//
+// * edge_computing/ztp-migrate-clusterinstance.adoc
+
+:_mod-docs-content-type: PROCEDURE
+[id="ztp-clusterinstance-argocd-migrate_{context}"]
+= Migrating the cluster to ClusterInstance CRs using ArgoCD
+
+After you have prepared your Git repository with the new `ClusterInstance` custom resource (CR) and any associated resources, you can configure ArgoCD on the hub cluster.
+
+When you apply the ArgoCD application, the SiteConfig Operator reconciles the new `ClusterInstance` CRs against the existing cluster configuration. As the configuration is the same between the `SiteConfig` CR and the `ClusterInstance` CR, the target cluster seemlessly migrates to using the `ClusterInstance` CR.
+
+// is this seemless? Any reboots or downtime?
+
+//confusion about what happens to other managed clusters when you delete the ArgoCD application, are all managed clusters then "paused" from syncing while the migration is happening? 
+
+. Create the ArgoCD AppProject:
++
+.Example `AppProject.yaml` file
+[source,yaml]
+----
+apiVersion: argoproj.io/v1alpha1
+kind: AppProject
+metadata:
+  name: siteconfig-v2
+  namespace: openshift-gitops
+spec:
+  clusterResourceWhitelist: <1>
+    - group: ""
+      kind: Namespace
+  namespaceResourceWhitelist: <2>
+    - group: ""
+      kind: ConfigMap
+    - group: ""
+      kind: Secret
+    - group: siteconfig.open-cluster-management.io
+      kind: ClusterInstance
+  sourceRepos:
+    - '*'
+  destinations:
+    - namespace: '*'
+      server: '*'
+----
+<1> You must add the `Namespace` resource to the `clusterResourceWhitelist` specification to enable ArgoCD to manage this resource.
+<2> You must add the `ClusterInstance`, `ConfigMap`, and `Secret` resources to the `namespaceResourceWhitelist` specification to enable ArgoCD to manage these resources.
++
+[NOTE]
+====
+The SiteConfig Operator manages deployment objects, such as `AgentClusterInstall` and `BareMetalHost` resources, directly. You do not need to add these resources to the `namespaceResourceWhitelist` specification.
+====
+
+. Check existing ArgoCD permissions for the initial {ztp-first} deployment. You can re-use these permissions for the new ArgoCD instance:
+
+.. Check the `ClusterRoleBinding` permissions by running the following command:
++
+[source,bash]
+----
+$ oc get ClusterRoleBinding gitops-cluster -oyaml
+----
+// How does the user know where to get the gitops-cluster value?
++
+.Example output
++
+[source,yaml]
+----
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  creationTimestamp: "2023-11-14T19:09:34Z"
+  name: gitops-cluster
+  resourceVersion: "711..."
+  uid: c01a...
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: cluster-admin
+subjects:
+- kind: ServiceAccount
+  name: openshift-gitops-argocd-application-controller
+  namespace: openshift-gitops
+----
+
+.. Check the `ServiceAccount` permissions by running the following command:
++
+[source,bash]
+----
+oc -n openshift-gitops get ServiceAccount openshift-gitops-argocd-application-controller -oyaml
+----
++
+.Example output
+[source,yaml]
+----
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  creationTimestamp: "2023-11-14T18:40:59Z"
+  labels:
+    app.kubernetes.io/managed-by: openshift-gitops
+    app.kubernetes.io/name: argocd-application-controller
+    app.kubernetes.io/part-of: argocd
+  name: openshift-gitops-argocd-application-controller
+  namespace: openshift-gitops
+  ownerReferences:
+  - apiVersion: argoproj.io/v1alpha1
+    blockOwnerDeletion: true
+    controller: true
+    kind: ArgoCD
+    name: openshift-gitops
+    uid: 3c6d40...
+  resourceVersion: "236..."
+  uid: 160f9...
+----
+
+. Create and apply an ArgoCD application to trigger the migration of the target cluster to use the `ClusterInstance` CR:
+
+.. Configure access or the ArgoCD application to the updated Git repository by creating the `Application` resource:
++
+.Example `Application.yaml` file
+[source,yaml]
+----
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: clusters
+  namespace: openshift-gitops
+spec:
+  destination:
+    namespace: clusters-sub
+    server: https://kubernetes.default.svc
+  project: siteconfig-v2
+  source:
+    path: install/clusterinstance/migrate-clusters/sno <1>
+    repoURL: https://repo.example.com/repo.git <2>
+    targetRevision: main <3>
+  syncPolicy:
+    automated:
+      selfHeal: true
+----
+<1> The path to the directory in the Git repository that contains the `ClusterInstance` CRs and any associated resources.
+<2> Update the URL to point to the Git repository. The URL ends with `.git`.
+<3> The `targetRevision` indicates which Git repository branch to monitor.
++
+[WARNING]
+====
+Do not configure `syncPolicy.automated.prune: true` in the `Application` resource because this specification causes a full reinstall of the cluster when the SiteConfig Operator reconciles the `ClusterInstance` CR. 
+====
+
+.. Apply the ArgoCD `Application` resource by running the following command:
++
+[NOTE]
+====
+Applying the ArgoCD `Application` resource triggers the SiteConfig Operator to reconcile the `ClusterInstance` CRs in the target cluster.
+====
++
+[source,bash]
+----
+$ oc apply -f Application.yaml
+----
+
+.Verifcation
+
+. Check the provisioing status of the target cluster by running the following command:
++
+[source,bash]
+----
+oc -n <target_cluster> get clusterinstances <target_cluster> 
+----
+* Replace `<target_cluster>` with the name of the target cluster.
++
+.Example output
+[source,yaml]
+----
+NAME    PROVISIONSTATUS   PROVISIONDETAILS              AGE
+sno1    Completed         Provisioning completed        39s
+----
++
+* The `AGE` field shows that the cluster is new, however, the cluster was not redeployed. This indicates that the migration to the `ClusterInstance` CR was successful.
