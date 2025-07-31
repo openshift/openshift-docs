@@ -1,0 +1,115 @@
+// Module is included in the following assemblies:
+//
+// * securing_openshift_gitops/managing-secrets-securely-using-sscsid-with-gitops.adoc
+
+:_mod-docs-content-type: PROCEDURE
+[id="gitops-installing-the-vault-csi-provider-using-gitops_{context}"]
+= Installing the Vault CSI Provider using {gitops-shortname}
+
+Install the Vault CSI provider by deploying an Argo CD Application that uses HashiCorp's official Helm chart. This method follows {gitops-shortname} best practices by managing the installation declaratively through a version-controlled Argo CD Application resource.
+
+.Prerequisites
+
+* You are logged in to the OpenShift Container Platform cluster as an administrator.
+* You have access to the {OCP} web console.
+* The link:https://docs.openshift.com/container-platform/latest/nodes/pods/nodes-pods-secrets-store.html#persistent-storage-csi-secrets-store-driver-install_nodes-pods-secrets-store[SSCSI Driver Operator] is installed on your cluster.
+* You installed xref:../installing_gitops/installing-openshift-gitops.adoc#installing-openshift-gitops[{gitops-title}] on your {OCP} cluster.
+* You have a {gitops-shortname} repository ready to use the secrets.
+
+.Procedure
+
+. Creating the Argo CD Application resource for the Vault CSI Provider.
+
+.. Create an Argo CD Application resource to deploy the Vault CSI provider. Add this resource to your {gitops-shortname} repository, for example, `config/argocd/vault-secret-provider-app.yaml`:
++
+.Example `vault-secret-provider-app.yaml` file
+[source,yaml]
+----
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: vault-secret-provider-app
+  namespace: openshift-gitops
+spec:
+  destination:
+    namespace: vault-csi-provider
+    server: https://kubernetes.default.svc
+  project: default
+  source:
+    repoURL: https://helm.releases.hashicorp.com
+    chart: vault
+    targetRevision: 0.30.0
+    helm:
+      releaseName: vault
+      values: |
+        csi:
+          enabled: true
+        server:
+          enabled: true
+          dataStorage:
+             enabled: false
+        injector:
+          enabled: false
+  syncPolicy:
+    automated:
+      prune: true
+      selfHeal: true
+    syncOptions:
+    - CreateNamespace=true
+  ignoreDifferences:
+  - kind: DaemonSet
+    group: apps
+    jsonPointers:
+      - /spec/template/spec/containers/0/securityContext/privileged
+
+----
++
+[NOTE]
+====
+The `server.enabled: true` and `dataStorage.enabled: false` settings in the Helm values deploy a HashiCorp Vault server instance using ephemeral storage. This setup is suitable for development or testing environments. For production, you can enable `dataStorage` with a persistent volume (PV) or use an external Vault cluster and set `server.enabled` to `false`. If a Vault server is already deployed, you can set `server.enabled` to `false`.
+====
+
+. Apply the `vault-secret-provider-app.yaml` file from the {gitops-shortname} repository to your cluster:
++
+[source,terminal]
+----
+$ oc apply -f vault-secret-provider-app.yaml
+----
++
+After deploying the Vault CSI provider, the `vault-csi-provider` DaemonSet may fail to run. This issue occurs because {OCP} restricts privileged containers by default. In addition, the Vault CSI provider and the Secrets Store CSI Driver require access to `hostPath` mounts, which {OCP} blocks unless the pods run as privileged.
+
+.. To resolve permission issues in {OCP}:
+
+... Patch the `vault-csi-provider` DaemonSet to run its containers as privileged:
++
+[source,terminal]
+----
+$ oc patch daemonset vault-csi-provider -n vault-csi-provider --type=json --patch='[{"op":"add","path":"/spec/template/spec/containers/0/securityContext","value":{"privileged":true}}]
+----
+
+... Grant the Secrets Store CSI Driver service account access to the privileged Security Context Constraints (SCC) in {OCP}.
++
+[source,terminal]
+----
+$ oc adm policy add-scc-to-user privileged \ system:serviceaccount:openshift-cluster-csi-drivers:secrets-store-csi-driver-operator
+----
+
+... Grant the Vault CSI Provider service account access to the privileged Security Context Constraints (SCC) in {OCP}.
++
+[source,terminal]
+----
+$ oc adm policy add-scc-to-user privileged \
+system:serviceaccount:vault-csi-provider:vault-csi-provider
+----
++
+[NOTE]
+====
+If `server.enabled` is set to `true` in the Helm chart, the Vault server pods run with specific user IDs (UIDs) or group IDs (GIDs) that {OCP} blocks by default.
+====
+
+... Grant the Vault server service account the required Security Context Constraints (SCC) permissions.
++
+[source,terminal]
+----
+$ oc adm policy add-scc-to-user anyuid  system:serviceaccount:vault-csi-provider:vault
+----
