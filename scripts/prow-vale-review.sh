@@ -53,7 +53,15 @@ do
     sed -i 's/ifdef::.*/ifdef::temp-ifdef[]/; s/ifeval::.*/ifeval::["{temp-ifeval}" == "temp"]/; s/ifndef::.*/ifndef::temp-ifndef[]/; s/endif::.*/endif::[]/;' "$FILE"
 
     # Parse for vale errors
-    vale_json=$(vale --minAlertLevel=error --output=.vale/templates/bot-comment-output.tmpl --config="$INI" "$FILE" | jq)
+    # Allow suggestion and warning level alerts for AsciiDocDITA rules
+    if [[ "$FILE" == go/src/github.com/openshift/openshift-docs/.vale/styles/AsciiDocDITA/* ]]; then
+        vale_json=$(vale --minAlertLevel=suggestion --output=.vale/templates/bot-comment-output.tmpl --config="$INI" "$FILE" | jq)
+
+    # Restrict alerts to error level for all other packages
+    else
+        vale_json=$(vale --minAlertLevel=error --output=.vale/templates/bot-comment-output.tmpl --config="$INI" "$FILE" | jq)
+
+    fi
 
     # Check if there are Vale errors before processing the file further.
     if [[ "$vale_json" != "[]" ]]; then
