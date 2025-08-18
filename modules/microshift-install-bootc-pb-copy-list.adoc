@@ -1,0 +1,84 @@
+// Module included in the following assemblies:
+//
+// microshift_install_bootc/microshift-install-bootc-physically-bound.adoc
+
+:_mod-docs-content-type: PROCEDURE
+[id="microshift-install-bootc-pb-copy-list_{context}"]
+= Copying and listing images for building
+
+To start, you must add instructions to an existing Containerfile to copy the images you want and list them in an accessible place where you can keep track of the image names. The copy procedure runs every time {microshift-short} starts.
+
+[IMPORTANT]
+====
+You cannot use images in the `/usr/lib/containers/storage/` directory in place. For example, if you update the additional container store setting in `/etc/containers/storage.conf` to point to the `/usr/lib/containers/storage` directory, updates fail.
+====
+
+.Prerequisites
+
+* You have root access to the host.
+* You installed Podman.
+* You installed skopeo.
+* You have workload image references.
+* You have a Containerfile for building {microshift-short} images.
+
+.Procedure
+
+. Run the `podman build` command with `--secret id=pullsecret,src=/path/to/pull/secret.json` argument
++
+[source,terminal,subs="+quotes"]
+----
+$ podman build --secret id=pullsecret,src=/_<path/to/pull/secret>_.json <1>
+----
+<1> Specify the path to your pull secret.
+//Q: how do we share a pull secret with a container? in the pod spec or using oc secrets? preferred path?
+. Share the pull secret with the container to allow pulling of images during the container build procedure by running the following command:
++
+[source,terminal,subs="+quotes"]
+----
+$ oc secrets link default `_<pull_secret_name>_` --for=pull <1>
+----
+<1> Specify your `_<pull_secret_name>_`.
+
+. Add the instructions to physically embed the image at build time by adding the following to your Containerfile:
++
+[source,text]
+----
+ENV IMAGE_STORAGE_DIR=/usr/lib/containers/storage
+ENV IMAGE_LIST_FILE=${IMAGE_STORAGE_DIR}/image-list.txt
+
+RUN dnf install -y microshift-release-info
+RUN --mount=type=secret,id=pullsecret,dst=/run/secrets/pull-secret.json \
+    images="$(jq -r ".images[]" /usr/share/microshift/release/release-"$(uname -m)".json)" ; \
+    mkdir -p "${IMAGE_STORAGE_DIR}" ; \
+    for img in ${images} ; do \
+        sha="$(echo "${img}" | sha256sum | awk '{print $1}')" ; \
+        skopeo copy --all --preserve-digests \
+            --authfile /run/secrets/pull-secret.json \
+            "docker://${img}" "dir:$IMAGE_STORAGE_DIR/${sha}" ; \
+        echo "${img},${sha}" >> "${IMAGE_LIST_FILE}" ; \
+    done
+----
+The resulting image list file is saved at `/usr/lib/containers/storage/image-list.txt`.
+
+. Add a script and a systemd service to your Containerfile to copy the embedded images from the `/usr/lib/containers/storage/` directory to the local container storage at runtime by using the following example:
++
+[source,text]
+----
+RUN cat > /usr/bin/microshift-copy-images <<EOF
+#!/bin/bash
+set -eux -o pipefail
+while IFS="," read -r img sha ; do
+    skopeo copy --preserve-digests \
+        "dir:${IMAGE_STORAGE_DIR}/\${sha}" \
+        "containers-storage:\${img}"
+done < "${IMAGE_LIST_FILE}"
+EOF
+
+RUN chmod 755 /usr/bin/microshift-copy-images && \
+    mkdir -p /usr/lib/systemd/system/microshift.service.d
+
+RUN cat > /usr/lib/systemd/system/microshift.service.d/microshift-copy-images.conf <<EOF
+[Service]
+ExecStartPre=/usr/bin/microshift-copy-images
+EOF
+----
