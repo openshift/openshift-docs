@@ -1,0 +1,242 @@
+// Module included in the following assemblies:
+//
+// * edge_computing/ztp-migrate-clusterinstance.adoc
+
+:_mod-docs-content-type: PROCEDURE
+[id="ztp-migrating-sno-clusterinstance_{context}"]
+= Performing the migration from SiteConfig CR to ClusterInstance CR
+
+Migrate a {sno} cluster from using a `SiteConfig` CR to a `ClusterInstance` CR by transferring its Argo CD management to the new pipeline that will use the `ClusterInstance` CR.
+
+.Prerequisites
+
+* You have logged in to the hub cluster as a user with `cluster-admin` privileges.
+* You have set up the parallel Argo CD pipeline, including the Argo CD project and application, that will manage the cluster using the `ClusterInstance` CR.
+* The Argo CD application managing the original `SiteConfig` CR pipeline is configured with the sync policy `prune=false`. This setting ensures that resources remain intact after you remove the target cluster from this application.
+* You have access to the Git repository that contains your {sno} cluster configurations.
+* You have {rhacm-first} version 2.12 or later installed in the hub cluster.
+* The SiteConfig Operator is installed and running in the hub cluster.
+
+.Procedure
+
+. Mirror the  site-configs folder structure for the new directory that will contain the `ClusterInstance` CRs, for example:
++
+[source,text]
+----
+site-configs-v2/
+├── hub-1/ <1>
+│   └── extra-manifest/
+├── pre-reqs/
+│   ├── sno1/
+│   ├── sno2/
+│   └── sno3/
+├── reference-manifest/
+│   └── 4.18/
+├── resources/
+----
+<1> The `hub-1/` folder will contain the `ClusterInstance` CR for each cluster.
+
+. Remove the target cluster from the original Argo CD application by commenting out the resources in the related files in Git:
++
+[source,bash]
+----
+$ cat site-configs/kustomization.yaml
+----
++
+.Example updated `site-configs/kustomization.yaml` file
+[source,yaml]
+----
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+resources:
+   - pre-reqs/
+   #- resources/
+generators:
+   #- hub-1/sno1.yaml
+   - hub-1/sno2.yaml
+   - hub-1/sno3.yaml
+----
++
+[source,bash]
+----
+$ cat site-configs/pre-reqs/kustomization.yaml
+----
++
+.Example updated `site-configs/pre-reqs/kustomization.yaml` file
+[source,yaml]
+----
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+resources:
+  #- sno1/
+  - sno2/
+  - sno3/
+----
+
+. Commit the changes to the Git repository.
++
+[NOTE]
+====
+After you commit the changes, the original Argo CD application reports an `OutOfSync` sync status because the Argo CD application still attempts to monitor the status of the taget cluster's resources. However, because the sync policy is set to `prune=false`, the Argo CD application does not delete any resources.
+====
+
+. To ensure that the original Argo CD application no longer manages the cluster resources, you can remove the Argo CD application label from the resources by running the following command:
++
+[source,bash]
+----
+$ for cr in bmh,hfs,clusterdeployment,agentclusterinstall,infraenv,nmstateconfig,configmap,klusterletaddonconfig,secrets; do oc label $cr app.kubernetes.io/instance- --all -n sno1; done && oc label ns sno1 app.kubernetes.io/instance- && oc label managedclusters sno1 app.kubernetes.io/instance-
+----
++
+The Argo CD application label is removed from all resources in the `sno1` namespace and the sync status returns to `Synced`.
+
+. Create the `ClusterInstance` CR for the target cluster:
++
+[NOTE]
+====
+To generate the `ClusterInstance` CR and any extra manifest resources automatically using the SiteConfig conversion tool, see "Migrating SiteConfig CRs to ClusterInstance CRs with the siteconfig-converter tool". These steps describe the manual creation of the `ClusterInstance` and any extra manifest resources.
+====
++
+.Example `site-configs-v2/hub-1/sno1.yaml` file
+[source,yaml]
+----
+apiVersion: siteconfig.open-cluster-management.io/v1alpha1
+kind: ClusterInstance
+metadata:
+  name: "sno1"
+  namespace: "sno1"
+spec:
+  additionalNTPSources:
+    - "clock.corp.redhat.com"
+  baseDomain: "5g-deployment.lab"
+  clusterImageSetNameRef: "active-ocp-version"
+  clusterName: "sno1"
+  clusterNetwork:
+    - cidr: "10.128.0.0/14"
+      hostPrefix: 23
+  cpuPartitioningMode: AllNodes
+  extraLabels:
+    ManagedCluster:
+      common: "ocp418"
+      logicalGroup: "active"
+      group-du-sno: ""
+      du-site: "sno1"
+      du-zone: "europe"
+      hardware-type: "hw-type-platform-1"
+  holdInstallation: false
+  #extraManifestsRefs: <1>
+    #- name: ran-rds-418-manifests
+  installConfigOverrides:  "{\"capabilities\":{\"baselineCapabilitySet\": \"None\", \"additionalEnabledCapabilities\": [ \"OperatorLifecycleManager\", \"NodeTuning\", \"Ingress\" ] }}"
+  machineNetwork:
+    - cidr: "192.168.125.0/24"
+  networkType: "OVNKubernetes"
+  pullSecretRef:
+    name: "disconnected-registry-pull-secret"
+  serviceNetwork:
+    - cidr: "172.30.0.0/16"
+  sshPublicKey: "ssh-rsa .. REDACTED .."
+  templateRefs:
+    - name: ai-cluster-templates-v1 #This is the default agent based install template.
+      namespace: open-cluster-management
+  nodes:
+    - automatedCleaningMode: "disabled"
+      bmcAddress: "redfish-virtualmedia://192.168.125.1:9000/redfish/v1/Systems/local/sno1"
+      bmcCredentialsName:
+        name: "sno1-bmc-credentials"
+      bootMACAddress: "AA:AA:AA:AA:02:01"
+      bootMode: "UEFI"
+      hostName: "sno1.5g-deployment.lab"
+      nodeNetwork:
+        interfaces:
+          - name: "enp3s0"
+            macAddress: "AA:AA:AA:AA:02:01"
+        config:
+          interfaces:
+            - name: enp3s0
+              type: ethernet
+              state: up
+              ipv4:
+                enabled: true
+                dhcp: true
+              ipv6:
+                enabled: false
+      role: "master"
+      rootDeviceHints:
+        deviceName: "/dev/vda"
+      templateRefs:
+        - name: ai-node-templates-v1
+          namespace: open-cluster-management
+----
+<1> The `extraManifestsRefs` section is commented out. If you use additional manifests for your cluster, this approach prevents modification of the resources that are already deployed.
+
+. Copy the `extra-manifest/`, `pre-reqs/sno1/`, `reference-manifest/`, and optionally the `resources/` folders from the `site-configs/` directory into the new `site-configs-v2/` directory, for example:
++
+[source,text]
+----
+site-configs-v2/
+├── hub-1/
+│   ├── sno1.yaml <1>
+├── kustomization.yaml
+├── pre-reqs/
+│   ├── bmc-credentials.yaml
+│   ├── kustomization.yaml
+│   ├── namespace.yaml
+│   └── pull-secret.yaml
+├── reference-manifest/
+│   └── 4.18/
+└── resources/
+    ├── active-ocp-version.yaml
+    └── kustomization.yaml
+----
+<1> The `sno1.yaml` file now uses the `ClusterInstance` CR.
+
+. Add the target cluster to the new Argo CD application by uncommenting the resources in the related files in Git, for example:
++
+[source,bash]
+----
+$ cat site-configs-v2/kustomization.yaml 
+----
++
+.Example updated `site-configs-v2/kustomization.yaml` file
+[source,yaml]
+----
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+resources:
+  - resources/
+  - pre-reqs/
+  - hub-1/sno1.yaml
+----
++
+[source,bash]
+----
+$ cat  site-configs-v2/pre-reqs/kustomization.yaml 
+----
++
+.Example updated `site-configs-v2/pre-reqs/kustomization.yaml` file
+[source,yaml]
+----
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+resources:
+  - sno1/
+----
+
+. Commit the changes to the Git repository.
+
+.Verification
+
+. Verify that the `ClusterInstance` CR is successfully deployed and the provisioning status complete by running the following command:
++
+[source,bash]
+----
+$ oc get clusterinstance -A
+----
++
+.Example output
+[source,bash]
+----
+NAME                                                         PAUSED   PROVISIONSTATUS   PROVISIONDETAILS         AGE 
+clusterinstance.siteconfig.open-cluster-management.io/sno1            Completed         Provisioning completed   27s  
+----
+
+At this point, the new Argo CD application that uses the `ClusterInstance` CR is managing the `sno1` cluster. You can continue to migrate other clusters that remain in the original Argo CD application one at a time by repeating these steps.
