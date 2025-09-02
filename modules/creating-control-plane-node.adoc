@@ -1,0 +1,474 @@
+// Module included in the following assemblies:
+//
+// * post_installation_configuration/cluster-tasks.adoc
+
+:_mod-docs-content-type: PROCEDURE
+[id="creating-control-plane-node_{context}"]
+= Adding a control plane node to your cluster
+
+You can add control plane nodes to your cluster and then verify the healthiness of the nodes. The example in the procedure uses `node-5` as the new control plane node.
+
+.Prerequisites
+
+* You have installed a healthy cluster with at least three control plane nodes.
+* You have created a single control plane node that you intend to add to your cluster as a postinstalltion task.
+
+.Procedure
+
+. Retrieve pending Certificate Signing Requests (CSRs) for the new control plane node:
++
+[source,terminal]
+----
+$ oc get csr | grep Pending
+----
++
+.Example output
+[source,terminal]
+----
+csr-5sd59   8m19s   kubernetes.io/kube-apiserver-client-kubelet   system:serviceaccount:openshift-machine-config-operator:node-bootstrapper   <none>              Pending
+csr-xzqts   10s     kubernetes.io/kubelet-serving                 system:node:node-5                                                   <none>              Pending
+----
+
+. Approve all pending CSRs for the control plane node:
++
+[source,terminal]
+----
+$ oc get csr -o go-template='{{range .items}}{{if not .status}}{{.metadata.name}}{{"\n"}}{{end}}{{end}}' | xargs --no-run-if-empty oc adm certificate approve
+----
++
+[IMPORTANT]
+====
+You must approve the CSRs to complete the installation.
+====
+
+. Confirm that the control plane node is in the `Ready` status:
++
+[source,terminal]
+----
+$ oc get nodes
+----
++
+.Example output
+[source,terminal]
+----
+NAME       STATUS   ROLES    AGE     VERSION
+node-0   Ready    master   4h42m   v1.24.0+3882f8f
+node-1   Ready    master   4h27m   v1.24.0+3882f8f
+node-2   Ready    master   4h43m   v1.24.0+3882f8f
+node-3   Ready    worker   4h29m   v1.24.0+3882f8f
+node-4   Ready    worker   4h30m   v1.24.0+3882f8f
+node-5   Ready    master   105s    v1.24.0+3882f8f
+----
++
+[NOTE]
+====
+The `etcd` operator requires a `Machine` custom resource (CR) that references the control plane node when the cluster runs with a Machine API. The Machine API automatically activates when the cluster has three or more control plane nodes.
+====
+
+. Create the `BareMetalHost` and `Machine` CRs and link them to the `Node` CR of the control plane node.  
+
+.. Create the `BareMetalHost` CR with a unique `.metadata.name` value:
++
+[source,yaml]
+----
+apiVersion: metal3.io/v1alpha1
+kind: BareMetalHost
+metadata:
+  name: node-5
+  namespace: openshift-machine-api  
+spec:
+  automatedCleaningMode: metadata
+  bootMACAddress: 00:00:00:00:00:02
+  bootMode: UEFI
+  customDeploy:
+    method: install_coreos
+  externallyProvisioned: true
+  online: true
+  userData:
+    name: master-user-data-managed
+    namespace: openshift-machine-api
+----
+
+.. Apply the `BareMetalHost` CR:
++
+[source,terminal]
+----
+$ oc apply -f <filename> <1>
+----
+<1> Replace <filename> with the name of the `BareMetalHost` CR.
+
+.. Create the `Machine` CR by using the unique `.metadata.name` value:
++
+[source,yaml]
+----
+apiVersion: machine.openshift.io/v1beta1
+kind: Machine
+metadata:
+  annotations:
+    machine.openshift.io/instance-state: externally provisioned
+    metal3.io/BareMetalHost: openshift-machine-api/node-5
+  finalizers:
+  - machine.machine.openshift.io  
+  labels:
+    machine.openshift.io/cluster-api-cluster: <cluster_name> <1>
+    machine.openshift.io/cluster-api-machine-role: master
+    machine.openshift.io/cluster-api-machine-type: master
+  name: node-5
+  namespace: openshift-machine-api
+spec:
+  metadata: {}
+  providerSpec:
+    value:
+      apiVersion: baremetal.cluster.k8s.io/v1alpha1
+      customDeploy:
+        method: install_coreos
+      hostSelector: {}
+      image:
+        checksum: ""
+        url: ""
+      kind: BareMetalMachineProviderSpec
+      metadata:
+        creationTimestamp: null
+      userData:
+        name: master-user-data-managed
+----
+<1> Replace `<cluster_name>` with the name of the specific cluster, for example, `test-day2-1-6qv96`. 
++
+To get the cluster name, run the following command:
++
+[source,terminal]
+----
+$ oc get infrastructure cluster -o=jsonpath='{.status.infrastructureName}{"\n"}'
+----
++
+.. Apply the `Machine` CR:
++
+[source,terminal]
+----
+$ oc apply -f <filename> <1>
+----
+<1> Replace `<filename>` with the name of the `Machine` CR.
++
+.. Link `BareMetalHost`, `Machine`, and `Node` objects by running the `link-machine-and-node.sh` script:
++
+... Copy the `link-machine-and-node.sh` script below to a local machine: 
++
+[source,terminal]
+----
+#!/bin/bash
+
+# Credit goes to
+# https://bugzilla.redhat.com/show_bug.cgi?id=1801238.
+# This script will link Machine object
+# and Node object. This is needed
+# in order to have IP address of
+# the Node present in the status of the Machine.
+
+set -e
+
+machine="$1"
+node="$2"
+
+if [ -z "$machine" ] || [ -z "$node" ]; then
+    echo "Usage: $0 MACHINE NODE"
+    exit 1
+fi
+
+node_name=$(echo "${node}" | cut -f2 -d':')
+
+oc proxy &
+proxy_pid=$!
+function kill_proxy {
+    kill $proxy_pid
+}
+trap kill_proxy EXIT SIGINT
+
+HOST_PROXY_API_PATH="http://localhost:8001/apis/metal3.io/v1alpha1/namespaces/openshift-machine-api/baremetalhosts"
+
+function print_nics() {
+    local ips
+    local eob
+    declare -a ips
+
+    readarray -t ips < <(echo "${1}" \
+                         | jq '.[] | select(. | .type == "InternalIP") | .address' \
+                         | sed 's/"//g')
+
+    eob=','
+    for (( i=0; i<${#ips[@]}; i++ )); do
+        if [ $((i+1)) -eq ${#ips[@]} ]; then
+            eob=""
+        fi
+        cat <<- EOF
+          {
+            "ip": "${ips[$i]}",
+            "mac": "00:00:00:00:00:00",
+            "model": "unknown",
+            "speedGbps": 10,
+            "vlanId": 0,
+            "pxe": true,
+            "name": "eth1"
+          }${eob}
+EOF
+    done
+}
+
+function wait_for_json() {
+    local name
+    local url
+    local curl_opts
+    local timeout
+
+    local start_time
+    local curr_time
+    local time_diff
+
+    name="$1"
+    url="$2"
+    timeout="$3"
+    shift 3
+    curl_opts="$@"
+    echo -n "Waiting for $name to respond"
+    start_time=$(date +%s)
+    until curl -g -X GET "$url" "${curl_opts[@]}" 2> /dev/null | jq '.' 2> /dev/null > /dev/null; do
+        echo -n "."
+        curr_time=$(date +%s)
+        time_diff=$((curr_time - start_time))
+        if [[ $time_diff -gt $timeout ]]; then
+            printf '\nTimed out waiting for %s' "${name}"
+            return 1
+        fi
+        sleep 5
+    done
+    echo " Success!"
+    return 0
+}
+wait_for_json oc_proxy "${HOST_PROXY_API_PATH}" 10 -H "Accept: application/json" -H "Content-Type: application/json"
+
+addresses=$(oc get node -n openshift-machine-api "${node_name}" -o json | jq -c '.status.addresses')
+
+machine_data=$(oc get machines.machine.openshift.io -n openshift-machine-api -o json "${machine}")
+host=$(echo "$machine_data" | jq '.metadata.annotations["metal3.io/BareMetalHost"]' | cut -f2 -d/ | sed 's/"//g')
+
+if [ -z "$host" ]; then
+    echo "Machine $machine is not linked to a host yet." 1>&2
+    exit 1
+fi
+
+# The address structure on the host doesn't match the node, so extract
+# the values we want into separate variables so we can build the patch
+# we need.
+hostname=$(echo "${addresses}" | jq '.[] | select(. | .type == "Hostname") | .address' | sed 's/"//g')
+
+set +e
+read -r -d '' host_patch << EOF
+{
+  "status": {
+    "hardware": {
+      "hostname": "${hostname}",
+      "nics": [
+$(print_nics "${addresses}")
+      ],
+      "systemVendor": {
+        "manufacturer": "Red Hat",
+        "productName": "product name",
+        "serialNumber": ""
+      },
+      "firmware": {
+        "bios": {
+          "date": "04/01/2014",
+          "vendor": "SeaBIOS",
+          "version": "1.11.0-2.el7"
+        }
+      },
+      "ramMebibytes": 0,
+      "storage": [],
+      "cpu": {
+        "arch": "x86_64",
+        "model": "Intel(R) Xeon(R) CPU E5-2630 v4 @ 2.20GHz",
+        "clockMegahertz": 2199.998,
+        "count": 4,
+        "flags": []
+      }
+    }
+  }
+}
+EOF
+set -e
+
+echo "PATCHING HOST"
+echo "${host_patch}" | jq .
+
+curl -s \
+     -X PATCH \
+     "${HOST_PROXY_API_PATH}/${host}/status" \
+     -H "Content-type: application/merge-patch+json" \
+     -d "${host_patch}"
+
+oc get baremetalhost -n openshift-machine-api -o yaml "${host}"
+----
++
+... Make the script executable:
++
+[source,terminal]
+----
+$ chmod +x link-machine-and-node.sh
+----
++
+... Run the script:
++
+[source,terminal]
+----
+$ bash link-machine-and-node.sh node-5 node-5
+----
++
+[NOTE]
+====
+The first `node-5` instance represents the machine, and the second represents the node.
+====
+
+. Confirm members of `etcd` by executing into one of the pre-existing control plane nodes:
++
+.. Open a remote shell session to the control plane node:
++
+[source,terminal]
+----
+$ oc rsh -n openshift-etcd etcd-node-0
+----
++
+.. List `etcd` members:
++
+[source,terminal]
+----
+# etcdctl member list -w table
+----
++
+.Example output
+[source,terminal]
+----
++--------+---------+--------+--------------+--------------+---------+
+|   ID   |  STATUS |  NAME  |  PEER ADDRS  | CLIENT ADDRS | LEARNER |
++--------+---------+--------+--------------+--------------+---------+
+|76ae1d00| started |node-0  |192.168.111.24|192.168.111.24|  false  |
+|2c18942f| started |node-1  |192.168.111.26|192.168.111.26|  false  |
+|61e2a860| started |node-2  |192.168.111.25|192.168.111.25|  false  |
+|ead5f280| started |node-5  |192.168.111.28|192.168.111.28|  false  |
++--------+---------+--------+--------------+--------------+---------+
+----
+
+. Check the `etcd` operator configuration process until completion:
++
+[source,terminal]
+----
+$ oc get clusteroperator etcd
+----
++
+.Example output (upon completion)
+[source,terminal]
+----
+NAME   VERSION   AVAILABLE   PROGRESSING   DEGRADED   SINCE   MESSAGE
+etcd   4.11.5    True        False         False      5h54m
+----
+
+. Confirm `etcd` health by running the following commands:
++
+.. Open a remote shell session to the control plane node:
++
+[source,terminal]
+----
+$ oc rsh -n openshift-etcd etcd-node-0
+----
++
+.. Check endpoint health:
++
+[source,terminal]
+----
+# etcdctl endpoint health
+----
++
+.Example output
+[source,terminal]
+----
+192.168.111.24 is healthy: committed proposal: took = 10.383651ms
+192.168.111.26 is healthy: committed proposal: took = 11.297561ms
+192.168.111.25 is healthy: committed proposal: took = 13.892416ms
+192.168.111.28 is healthy: committed proposal: took = 11.870755ms
+----
+
+. Verify that all nodes are ready:
++
+[source,terminal]
+----
+$ oc get nodes
+----
++
+.Example output
+[source,terminal]
+----
+NAME      STATUS   ROLES    AGE     VERSION
+node-0    Ready    master   6h20m   v1.24.0+3882f8f
+node-1    Ready    master   6h20m   v1.24.0+3882f8f
+node-2    Ready    master   6h4m    v1.24.0+3882f8f
+node-3    Ready    worker   6h7m    v1.24.0+3882f8f
+node-4    Ready    worker   6h7m    v1.24.0+3882f8f
+node-5    Ready    master   99m     v1.24.0+3882f8f
+----
+
+. Verify that the cluster Operators are all available:
++
+[source,terminal]
+----
+$ oc get ClusterOperators
+----
++
+.Example output
+[source,terminal]
+----
+NAME                                      VERSION AVAILABLE PROGRESSING DEGRADED SINCE MSG
+authentication                            4.11.5  True      False       False    5h57m
+baremetal                                 4.11.5  True      False       False    6h19m
+cloud-controller-manager                  4.11.5  True      False       False    6h20m
+cloud-credential                          4.11.5  True      False       False    6h23m
+cluster-autoscaler                        4.11.5  True      False       False    6h18m
+config-operator                           4.11.5  True      False       False    6h19m
+console                                   4.11.5  True      False       False    6h4m
+csi-snapshot-controller                   4.11.5  True      False       False    6h19m
+dns                                       4.11.5  True      False       False    6h18m
+etcd                                      4.11.5  True      False       False    6h17m
+image-registry                            4.11.5  True      False       False    6h7m
+ingress                                   4.11.5  True      False       False    6h6m
+insights                                  4.11.5  True      False       False    6h12m
+kube-apiserver                            4.11.5  True      False       False    6h16m
+kube-controller-manager                   4.11.5  True      False       False    6h16m
+kube-scheduler                            4.11.5  True      False       False    6h16m
+kube-storage-version-migrator             4.11.5  True      False       False    6h19m
+machine-api                               4.11.5  True      False       False    6h15m
+machine-approver                          4.11.5  True      False       False    6h19m
+machine-config                            4.11.5  True      False       False    6h18m
+marketplace                               4.11.5  True      False       False    6h18m
+monitoring                                4.11.5  True      False       False    6h4m
+network                                   4.11.5  True      False       False    6h20m
+node-tuning                               4.11.5  True      False       False    6h18m
+openshift-apiserver                       4.11.5  True      False       False    6h8m
+openshift-controller-manager              4.11.5  True      False       False    6h7m
+openshift-samples                         4.11.5  True      False       False    6h12m
+operator-lifecycle-manager                4.11.5  True      False       False    6h18m
+operator-lifecycle-manager-catalog        4.11.5  True      False       False    6h19m
+operator-lifecycle-manager-pkgsvr         4.11.5  True      False       False    6h12m
+service-ca                                4.11.5  True      False       False    6h19m
+storage                                   4.11.5  True      False       False    6h19m
+----
+
+. Verify that the cluster version is correct:
++
+[source,terminal]
+----
+$ oc get ClusterVersion
+----
++
+.Example output
+[source,terminal,subs="attributes+"]]
+----
+NAME      VERSION   AVAILABLE   PROGRESSING   SINCE   STATUS
+version   {product-title}.5    True        False         5h57m   Cluster version is {product-title}.5
+----
