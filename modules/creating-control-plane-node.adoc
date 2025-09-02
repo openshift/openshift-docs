@@ -1,0 +1,380 @@
+// Module included in the following assemblies:
+//
+// * machine_management/control_plane_machines_management/cpmso-manually-scaling-control-planes.adoc
+
+:_mod-docs-content-type: PROCEDURE
+[id="creating-control-plane-node_{context}"]
+= Adding a control plane node to your cluster
+
+When installing a cluster on bare-metal infrastructure, you can manually scale up to 4 or 5 control plane nodes for your cluster. The example in the procedure uses `node-5` as the new control plane node. 
+
+.Prerequisites
+
+* You have installed a healthy cluster with at least three control plane nodes.
+* You have created a single control plane node that you intend to add to your cluster as a postinstalltion task.
+
+.Procedure
+
+. Retrieve pending Certificate Signing Requests (CSRs) for the new control plane node by entering the following command:
++
+[source,terminal]
+----
+$ oc get csr | grep Pending
+----
+
+. Approve all pending CSRs for the control plane node by entering the following command:
++
+[source,terminal]
+----
+$ oc get csr -o go-template='{{range .items}}{{if not .status}}{{.metadata.name}}{{"\n"}}{{end}}{{end}}' | xargs --no-run-if-empty oc adm certificate approve
+----
++
+[IMPORTANT]
+====
+You must approve the CSRs to complete the installation.
+====
+
+. Confirm that the control plane node is in the `Ready` status by entering the following command:
++
+[source,terminal]
+----
+$ oc get nodes
+----
++
+[NOTE]
+====
+On installer-provisioned infrastructure, the etcd Operator relies on the Machine API to manage the control plane and ensure etcd quorum. The Machine API then uses `Machine` CRs to represent and manage the underlying control plane nodes. 
+====
+
+. Create the `BareMetalHost` and `Machine` CRs and link them to the `Node` CR of the control plane node.  
++
+.. Create the `BareMetalHost` CR with a unique `.metadata.name` value as demonstrated in the following example:
++
+[source,yaml]
+----
+apiVersion: metal3.io/v1alpha1
+kind: BareMetalHost
+metadata:
+  name: node-5
+  namespace: openshift-machine-api  
+spec:
+  automatedCleaningMode: metadata
+  bootMACAddress: 00:00:00:00:00:02
+  bootMode: UEFI
+  customDeploy:
+    method: install_coreos
+  externallyProvisioned: true
+  online: true
+  userData:
+    name: master-user-data-managed
+    namespace: openshift-machine-api
+# ...
+----
++
+.. Apply the `BareMetalHost` CR by entering the following command:
++
+[source,terminal]
+----
+$ oc apply -f <filename> <1>
+----
+<1> Replace <filename> with the name of the `BareMetalHost` CR.
++
+.. Create the `Machine` CR by using the unique `.metadata.name` value as demonstrated in the following example:
++
+[source,yaml]
+----
+apiVersion: machine.openshift.io/v1beta1
+kind: Machine
+metadata:
+  annotations:
+    machine.openshift.io/instance-state: externally provisioned
+    metal3.io/BareMetalHost: openshift-machine-api/node-5
+  finalizers:
+  - machine.machine.openshift.io  
+  labels:
+    machine.openshift.io/cluster-api-cluster: <cluster_name> <1>
+    machine.openshift.io/cluster-api-machine-role: master
+    machine.openshift.io/cluster-api-machine-type: master
+  name: node-5
+  namespace: openshift-machine-api
+spec:
+  metadata: {}
+  providerSpec:
+    value:
+      apiVersion: baremetal.cluster.k8s.io/v1alpha1
+      customDeploy:
+        method: install_coreos
+      hostSelector: {}
+      image:
+        checksum: ""
+        url: ""
+      kind: BareMetalMachineProviderSpec
+      metadata:
+        creationTimestamp: null
+      userData:
+        name: master-user-data-managed
+# ...
+----
+<1> Replace `<cluster_name>` with the name of the specific cluster, for example, `test-day2-1-6qv96`. 
++
+.. Get the cluster name by running the following command:
++
+[source,terminal]
+----
+$ oc get infrastructure cluster -o=jsonpath='{.status.infrastructureName}{"\n"}'
+----
++
+.. Apply the `Machine` CR by entering the following command:
++
+[source,terminal]
+----
+$ oc apply -f <filename> <1>
+----
+<1> Replace `<filename>` with the name of the `Machine` CR.
++
+.. Link `BareMetalHost`, `Machine`, and `Node` objects by running the `link-machine-and-node.sh` script:
++
+... Copy the following `link-machine-and-node.sh` script to a local machine: 
++
+[source,text]
+----
+#!/bin/bash
+
+# Credit goes to
+# https://bugzilla.redhat.com/show_bug.cgi?id=1801238.
+# This script will link Machine object
+# and Node object. This is needed
+# in order to have IP address of
+# the Node present in the status of the Machine.
+
+set -e
+
+machine="$1"
+node="$2"
+
+if [ -z "$machine" ] || [ -z "$node" ]; then
+    echo "Usage: $0 MACHINE NODE"
+    exit 1
+fi
+
+node_name=$(echo "${node}" | cut -f2 -d':')
+
+oc proxy &
+proxy_pid=$!
+function kill_proxy {
+    kill $proxy_pid
+}
+trap kill_proxy EXIT SIGINT
+
+HOST_PROXY_API_PATH="http://localhost:8001/apis/metal3.io/v1alpha1/namespaces/openshift-machine-api/baremetalhosts"
+
+function print_nics() {
+    local ips
+    local eob
+    declare -a ips
+
+    readarray -t ips < <(echo "${1}" \
+                         | jq '.[] | select(. | .type == "InternalIP") | .address' \
+                         | sed 's/"//g')
+
+    eob=','
+    for (( i=0; i<${#ips[@]}; i++ )); do
+        if [ $((i+1)) -eq ${#ips[@]} ]; then
+            eob=""
+        fi
+        cat <<- EOF
+          {
+            "ip": "${ips[$i]}",
+            "mac": "00:00:00:00:00:00",
+            "model": "unknown",
+            "speedGbps": 10,
+            "vlanId": 0,
+            "pxe": true,
+            "name": "eth1"
+          }${eob}
+EOF
+    done
+}
+
+function wait_for_json() {
+    local name
+    local url
+    local curl_opts
+    local timeout
+
+    local start_time
+    local curr_time
+    local time_diff
+
+    name="$1"
+    url="$2"
+    timeout="$3"
+    shift 3
+    curl_opts="$@"
+    echo -n "Waiting for $name to respond"
+    start_time=$(date +%s)
+    until curl -g -X GET "$url" "${curl_opts[@]}" 2> /dev/null | jq '.' 2> /dev/null > /dev/null; do
+        echo -n "."
+        curr_time=$(date +%s)
+        time_diff=$((curr_time - start_time))
+        if [[ $time_diff -gt $timeout ]]; then
+            printf '\nTimed out waiting for %s' "${name}"
+            return 1
+        fi
+        sleep 5
+    done
+    echo " Success!"
+    return 0
+}
+wait_for_json oc_proxy "${HOST_PROXY_API_PATH}" 10 -H "Accept: application/json" -H "Content-Type: application/json"
+
+addresses=$(oc get node -n openshift-machine-api "${node_name}" -o json | jq -c '.status.addresses')
+
+machine_data=$(oc get machines.machine.openshift.io -n openshift-machine-api -o json "${machine}")
+host=$(echo "$machine_data" | jq '.metadata.annotations["metal3.io/BareMetalHost"]' | cut -f2 -d/ | sed 's/"//g')
+
+if [ -z "$host" ]; then
+    echo "Machine $machine is not linked to a host yet." 1>&2
+    exit 1
+fi
+
+# The address structure on the host doesn't match the node, so extract
+# the values we want into separate variables so we can build the patch
+# we need.
+hostname=$(echo "${addresses}" | jq '.[] | select(. | .type == "Hostname") | .address' | sed 's/"//g')
+
+set +e
+read -r -d '' host_patch << EOF
+{
+  "status": {
+    "hardware": {
+      "hostname": "${hostname}",
+      "nics": [
+$(print_nics "${addresses}")
+      ],
+      "systemVendor": {
+        "manufacturer": "Red Hat",
+        "productName": "product name",
+        "serialNumber": ""
+      },
+      "firmware": {
+        "bios": {
+          "date": "04/01/2014",
+          "vendor": "SeaBIOS",
+          "version": "1.11.0-2.el7"
+        }
+      },
+      "ramMebibytes": 0,
+      "storage": [],
+      "cpu": {
+        "arch": "x86_64",
+        "model": "Intel(R) Xeon(R) CPU E5-2630 v4 @ 2.20GHz",
+        "clockMegahertz": 2199.998,
+        "count": 4,
+        "flags": []
+      }
+    }
+  }
+}
+EOF
+set -e
+
+echo "PATCHING HOST"
+echo "${host_patch}" | jq .
+
+curl -s \
+     -X PATCH \
+     "${HOST_PROXY_API_PATH}/${host}/status" \
+     -H "Content-type: application/merge-patch+json" \
+     -d "${host_patch}"
+
+oc get baremetalhost -n openshift-machine-api -o yaml "${host}"
+----
++
+... Make the script executable by entering the following command:
++
+[source,terminal]
+----
+$ chmod +x link-machine-and-node.sh
+----
++
+... Run the script by entering the following command:
++
+[source,terminal]
+----
+$ bash link-machine-and-node.sh node-5 node-5
+----
++
+[NOTE]
+====
+The first `node-5` instance represents the machine, and the second instance represents the node.
+====
+
+.Verification
+
+. Confirm members of etcd by executing into one of the pre-existing control plane nodes:
++
+.. Open a remote shell session to the control plane node by entering the following command:
++
+[source,terminal]
+----
+$ oc rsh -n openshift-etcd etcd-node-0
+----
++
+.. List etcd members:
++
+[source,terminal]
+----
+# etcdctl member list -w table
+----
+
+. Check the etcd Operator configuration process until completion by entering the following command. Expected output shows `False` under the `PROGRESSING` column.
++
+[source,terminal]
+----
+$ oc get clusteroperator etcd
+----
+
+. Confirm etcd health by running the following commands:
++
+.. Open a remote shell session to the control plane node:
++
+[source,terminal]
+----
+$ oc rsh -n openshift-etcd etcd-node-0
+----
++
+.. Check endpoint health. Expected output shows `is healthy` for the endpoint.
++
+[source,terminal]
+----
+# etcdctl endpoint health
+----
+
+. Verify that all nodes are ready by entering the following command. The expected output shows the `Ready` status beside each node entry.
++
+[source,terminal]
+----
+$ oc get nodes
+----
+
+. Verify that the cluster Operators are all available by entering the following command. Expected output lists each Operator and shows the available status as `True` beside each listed Operator. 
++
+[source,terminal]
+----
+$ oc get ClusterOperators
+----
+
+. Verify that the cluster version is correct by entering the following command:
++
+[source,terminal]
+----
+$ oc get ClusterVersion
+----
++
+.Example output
+[source,terminal,subs="attributes+"]]
+----
+NAME      VERSION   AVAILABLE   PROGRESSING   SINCE   STATUS
+version   {product-title}.5    True        False         5h57m   Cluster version is {product-title}.5
+----
