@@ -1,0 +1,165 @@
+:_mod-docs-content-type: PROCEDURE
+[id="installation-manual-recovering-when-auto-recovery-is-unavail_{context}"]
+= Manually recovering from a disruption event when automated recovery is unavailable
+
+You might need to perform manual recovery steps if a disruption event prevents fencing from functioning correctly. In these cases, you can run commands directly on the control plane nodes to recover the cluster. There are four main recovery scenarios, which should be attempted in the following order:
+
+. Update fencing secrets:  Refresh BMC credentials if they are incorrect or outdated.
+. Recover a single-node failure: Restore functionality when only one control plane node is down.
+. Recover a complete node failure: Restore functionality when both control plane nodes are down.
+. Manual recovery of a node when all else fails: Perform recovery when fencing and automated recovery mechanisms have failed, or etcd is inconsistent.
+
+.Prerequisites
+
+* You have administrative access to the control plane nodes.
+* You can connect to the nodes by using SSH.
+
+.Procedure
+
+. Update the fencing secrets:
+
+.. Update the fencing secret while the Cluster API is available. Edit the username and password for the existing fencing secret for the control plane node by running the following commad:
++
+[source,terminal]
+----
+$ oc project openshift-etcd
+$ oc edit secret <node_name>-fencing
+----
+
+.. Update fencing secret when the Cluster API is unavailable. Run the following command on the affected node to update the fencing credentials in pacemaker:
++
+[source,terminal]
+----
+$ sudo pcs stonith update <node_name> username=<user_name> password=<password>
+----
++
+After the Cluster API recovers, update fencing secret again to sync the secret with the cluster.
++
+If the cluster recovers after updating the fencing secrets, no further action is required. If the issue persists, proceed to the next step.
+
+. Recover from a single-node failure:
+
+.. Gather initial diagnostics by running the following command:
++
+[source,terminal]
+----
+$ sudo pcs status --full
+$ sudo journalctl -u pacemaker | grep podman-etcd
+----
+
+.. Test fencing on the node by running the following command:
++
+[source,terminal]
+----
+$ sudo pcs stonith show <node_name>
+----
++
+If fencing is required but is not functioning, ensure the Redfish fencing endpoint is accessible and verify that the credentials are correct.
+
+.. If etcd is not starting despite fencing being operational, restore from a backup by running the following command:
++
+[source,terminal]
+----
+$ sudo cp -r /var/lib/etcd-backup/* /var/lib/etcd/
+$ sudo chown -R etcd:etcd /var/lib/etcd
+----
++
+If the recovery is successful, no further action is required. If the issue persists, proceed to the next step.
+
+. Recover from a complete node failure:
+
+.. Start both nodes by running the following command:
++
+[source,terminal]
+----
+$ sudo systemctl start kubelet
+$ sudo systemctl start pacemaker
+----
++
+Pacemaker detects both nodes and determines c-quorum.
+
+.. Check resource start order by running the following command:
++
+[source,terminal]
+----
+$ sudo pcs status --full
+----
+
+.. Confirm that kubelet starts on both nodes by running the following command:
++
+[source,terminal]
+----
+$ systemctl is-active kubelet
+----
+
+.. Inspect the pacemaker service journal if kubelet fails by running the following command:
++
+[source,terminal]
+----
+$ sudo journalctl -u pacemaker
+----
+
+.. Allow pacemaker to determine recovery by running the following command:
++
+[source,terminal]
+----
+$ sudo pcs resource cleanup
+----
++
+Pacemaker automatically identifies which nodes and resources can start. User action is not required.
+
+.. Handle out-of-sync etcd. 
++
+If one node has a more up-to-date etcd, Pacemaker attempts to fence the lagging node and start it as a learner. If this process stalls, verify the Redfish fencing endpoint and credentials by running the following command:
++
+[source,terminal]
+----
+$ sudo pcs stonith show <node_name>
+----
++
+If the recovery is successful, no further action is required. If the issue persists, perform manual recovery as described in the next step.
+
+. Manually recover from node failure:
+
+.. Identify the node with the most up-to-date etcd or restore it from backup by running the following command:
++
+[source,terminal]
+----
+$ ETCDCTL_API=3 etcdctl endpoint status --write-out=table
+----
+
+.. Manually isolate or power off the other node by running the following command:
++
+[source,terminal]
+----
+$ sudo pcs stonith fence <node_name>
+----
+
+.. Force pacemaker quorum unblock by running the following command:
++
+[source,terminal]
+----
+$ sudo pcs quorum unblock
+----
+
+.. Start podman-etcd manually on the affected node by running the following command:
++
+[source,terminal]
+----
+$ sudo OCF_RESKEY_CRM_meta_notify_start_resource='etcd' pcs resource debug-start etcd
+----
++
+When the degraded mode is active, start the second node and allow pacemaker to continue recovery. If manual recovery fails, collect a must-gather and SOS report and file a bug.
+
+.Verification
+
+* Verify fencing and node health by running the following command:
++
+[source,terminal]
+----
+$ sudo pcs status
+$ oc get nodes
+$ oc rsh -n openshift-etcd <etcd_pod> etcdctl member list -w table
+----
+
+
