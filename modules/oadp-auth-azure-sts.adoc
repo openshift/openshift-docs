@@ -1,0 +1,258 @@
+// Module included in the following assemblies:
+//
+// * backup_and_restore/application_backup_and_restore/installing/installing-oadp-azure.adoc
+
+:_mod-docs-content-type: PROCEDURE
+[id="oadp-auth-azure-STS_{context}"]
+= Using OADP with Azure Security Token Service authentication
+
+[role="_abstract"]
+You can use Microsoft Entra Workload ID to access Azure storage for {oadp-short} backup and restore operations. This approach uses the signed Kubernetes service account tokens of the OpenShift cluster. These token are automatically rotated every hour and exchanged with the Azure Active Directory (AD) access tokens, eliminating the need for long-term client secrets.
+
+To use the Azure Security Token Service (STS) configuration, you need the `credentialsMode` field set to `Manual` during cluster installation. This approach uses the Cloud Credential Operator (`ccoctl`) to set up the workload identity infrastructure, including the OpenID Connect (OIDC) provider, issuer configuration and user-assigned managed identities.
+
+
+.Prerequisites
+
+* You have an OpenShift cluster installed on Microsoft Azure with Microsoft Entra Workload ID configured.
+* You have the Azure CLI (`az`) installed and configured.
+* You have access to the OpenShift cluster as a user with `cluster-admin` privileges.
+* You have an Azure subscription with appropriate permissions.
+
+[NOTE]
+====
+If your OpenShift cluster was not originally installed with Microsoft Entra Workload ID, you can enable short-term credentials after installation. This post-installation configuration is supported specifically for Azure clusters.
+====
+
+
+.Procedure
+
+. If your cluster was installed with long-term credentials, you can switch to Microsoft Entra Workload ID authentication after installation.
++
+Update the cluster authentication configuration to enable token authentication:
++
+[source,terminal]
+----
+# Enable short-term credential support
+oc patch authentication.config.openshift.io cluster \
+    --type='merge' \
+    --patch='{"spec":{"type":"IntegratedOAuth","oauthMetadata":{"name":"oauth-openshift"}}}'
+
+# Verify the service account issuer is configured
+oc get authentication.config.openshift.io cluster -o jsonpath='{.spec.serviceAccountIssuer}'
+----
++
+This step is supported only for an Azure cluster.
+
+[IMPORTANT]
+====
+After enabling Microsoft Entra Workload ID on an existing Azure cluster, you must update all cluster components that use cloud credentials, including {oadp-short}, to use the new authentication method.
+====
+
+. Set the environment variables for your Azure STS configuration as shown in the following example:
++
+[source,terminal]
+----
+# Get cluster information
+export API_URL=$(oc whoami --show-server)
+export CLUSTER_NAME=$(echo "$API_URL" | sed 's|https://api\.||' | sed 's|\..*||')
+export CLUSTER_RESOURCE_GROUP="${CLUSTER_NAME}-rg"
+
+# Get Azure information
+export AZURE_SUBSCRIPTION_ID=$(az account show --query id -o tsv)
+export AZURE_TENANT_ID=$(az account show --query tenantId -o tsv)
+
+# Set names for resources
+export IDENTITY_NAME="velero"
+export APP_NAME="velero-${CLUSTER_NAME}"
+export STORAGE_ACCOUNT_NAME=$(echo "velero${CLUSTER_NAME}" | tr -d '-' | tr '[:upper:]' '[:lower:]' | cut -c1-24)
+export CONTAINER_NAME="velero"
+----
+
+. Create an Azure Managed Identity for {oadp-short} as shown in the following example:
++
+[source,terminal]
+----
+# Create managed identity
+az identity create \
+    --subscription "$AZURE_SUBSCRIPTION_ID" \
+    --resource-group "$CLUSTER_RESOURCE_GROUP" \
+    --name "$IDENTITY_NAME"
+
+# Get identity details
+export IDENTITY_CLIENT_ID=$(az identity show -g "$CLUSTER_RESOURCE_GROUP" -n "$IDENTITY_NAME" --query clientId -o tsv)
+export IDENTITY_PRINCIPAL_ID=$(az identity show -g "$CLUSTER_RESOURCE_GROUP" -n "$IDENTITY_NAME" --query principalId -o tsv)
+----
+
+. Grant the required Azure roles to the managed identity as shown in the following example:
++
+[source,terminal]
+----
+# Get subscription ID for role assignments
+export SUBSCRIPTION_ID=$(az account show --query id -o tsv)
+
+# Required roles for OADP operations
+REQUIRED_ROLES=(
+    "Contributor"
+    "Storage Blob Data Contributor"
+    "Disk Snapshot Contributor"
+)
+
+for role in "${REQUIRED_ROLES[@]}"; do
+    echo "Assigning role: $role"
+    az role assignment create \
+        --assignee "$IDENTITY_PRINCIPAL_ID" \
+        --role "$role" \
+        --scope "/subscriptions/$SUBSCRIPTION_ID"
+done
+----
+
+. Create an Azure Storage Account and a container as shown in the following example:
++
+[source,terminal]
+----
+# Create storage account
+az storage account create \
+    --name "$STORAGE_ACCOUNT_NAME" \
+    --resource-group "$CLUSTER_RESOURCE_GROUP" \
+    --location "$(az group show -n $CLUSTER_RESOURCE_GROUP --query location -o tsv)" \
+    --sku Standard_LRS \
+    --kind StorageV2
+
+# Create container for backups
+az storage container create \
+    --name "$CONTAINER_NAME" \
+    --account-name "$STORAGE_ACCOUNT_NAME" \
+    --auth-mode login
+----
+
+. Get the OIDC issuer URL from your OpenShift cluster as shown in the following example:
++
+[source, terminal]
+----
+export SERVICE_ACCOUNT_ISSUER=$(oc get authentication.config.openshift.io cluster -o json | jq -r .spec.serviceAccountIssuer)
+echo "OIDC Issuer: $SERVICE_ACCOUNT_ISSUER"
+----
+
+. Configure Microsoft Entra Workload ID Federation as shown in the following example:
++
+[source, terminal]
+----
+# Create federated identity credential for Velero service account
+az identity federated-credential create \
+    --name "velero-federated-credential" \
+    --identity-name "$IDENTITY_NAME" \
+    --resource-group "$CLUSTER_RESOURCE_GROUP" \
+    --issuer "$SERVICE_ACCOUNT_ISSUER" \
+    --subject "system:serviceaccount:openshift-adp:velero"
+
+# Create federated identity credential for OADP controller manager
+az identity federated-credential create \
+    --name "oadp-controller-federated-credential" \
+    --identity-name "$IDENTITY_NAME" \
+    --resource-group "$CLUSTER_RESOURCE_GROUP" \
+    --issuer "$SERVICE_ACCOUNT_ISSUER" \
+    --subject "system:serviceaccount:openshift-adp:openshift-adp-controller-manager"
+----
+
+. Create the OADP namespace if it does not already exist by running the following command:
++
+[source, terminal]
+----
+oc create namespace openshift-adp
+----
+
+. Annotate the Velero and {oadp-short} service accounts to use Microsoft Entra Workload ID as shown in the following example:
++
+[source, terminal]
+----
+oc annotate serviceaccount velero -n openshift-adp \
+    azure.workload.identity/client-id="$IDENTITY_CLIENT_ID" --overwrite
+
+oc annotate serviceaccount openshift-adp-controller-manager -n openshift-adp \
+    azure.workload.identity/client-id="$IDENTITY_CLIENT_ID" --overwrite
+----
+
+. Create the `DataProtectionApplication` (DPA) custom resource (CR) and configure the Azure STS details as shown in the following example:
++
+[source, terminal]
+----
+cat <<EOF | oc apply -f -
+apiVersion: oadp.openshift.io/v1alpha1
+kind: DataProtectionApplication
+metadata:
+  name: dpa-azure-workload-id
+  namespace: openshift-adp
+spec:
+  configuration:
+    velero:
+      defaultPlugins:
+        - azure
+        - openshift
+        - csi
+  backupLocations:
+    - name: default
+      velero:
+        provider: azure
+        default: true
+        credential:
+          name: cloud-credentials-azure
+          key: azurekey
+        config:
+          resourceGroup: ${CLUSTER_RESOURCE_GROUP}
+          storageAccount: ${STORAGE_ACCOUNT_NAME}
+        objectStorage:
+          bucket: ${CONTAINER_NAME}
+          prefix: velero
+  snapshotLocations:
+    - name: default
+      velero:
+        provider: azure
+        credential:
+          name: cloud-credentials-azure
+          key: azurekey
+        config:
+          resourceGroup: ${CLUSTER_RESOURCE_GROUP}
+          subscriptionId: ${AZURE_SUBSCRIPTION_ID}
+EOF
+----
+
+.Verification
+
+. Verify that the OADP operator pods are running:
++
+[source, terminal]
+----
+oc get pods -n openshift-adp
+----
+
+. Verify that the Velero service accounts have the correct annotations:
++
+[source, terminal]
+----
+oc get sa velero -n openshift-adp -o yaml | grep -A5 annotations
+oc get sa openshift-adp-controller-manager -n openshift-adp -o yaml | grep -A5 annotations
+----
+
+. Verify the Azure role assignments:
++
+[source, terminal]
+----
+az role assignment list --assignee ${IDENTITY_PRINCIPAL_ID} --all --query "[].roleDefinitionName" -o tsv
+----
+
+. Verify Microsoft Entra Workload ID authentication:
++
+[source, terminal]
+----
+# Check Velero pod environment variables
+VELERO_POD=$(oc get pods -n openshift-adp -l app.kubernetes.io/name=velero -o jsonpath='{.items[0].metadata.name}')
+
+# Check AZURE_CLIENT_ID environment variable
+oc get pod ${VELERO_POD} -n openshift-adp -o jsonpath='{.spec.containers[0].env[?(@.name=="AZURE_CLIENT_ID")]}'
+
+# Check AZURE_FEDERATED_TOKEN_FILE environment variable
+oc get pod ${VELERO_POD} -n openshift-adp -o jsonpath='{.spec.containers[0].env[?(@.name=="AZURE_FEDERATED_TOKEN_FILE")]}'
+----
+
+. Additionally, create a backup of an application and verify the backup is stored successfully in Azure storage.
