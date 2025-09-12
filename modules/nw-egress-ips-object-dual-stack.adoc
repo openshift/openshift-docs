@@ -1,0 +1,134 @@
+// Module included in the following assemblies:
+//
+// * networking/ovn_kubernetes_network_provider/assigning-egress-ips-ovn.adoc
+
+:_mod-docs-content-type: PROCEDURE
+[id="nw-egress-ips-object-dual-stack_{context}"]
+= Configuring dual-stack networking for an EgressIP object
+
+For a cluster configured for dual-stack networking, you can apply dual-stack networking to a single `EgressIP` object.
+
+[IMPORTANT]
+====
+Applying dual-stack networking to two `EgressIP` objects, where one object assigns IPv4 address to pods and the other object assigns IPv6 address to pods, impacts address-type assignments to pods. 
+====
+
+The example in the procedure uses two compute nodes, `appworker` and `gateway`, where each node references the deployed `EgressIP` object. Workloads get deployed on `appworker` nodes and no taints exist on these nodes. The `gateway` nodes have a taint and handle traffic though either the primary network or the secondary network interface.
+
+.Procedure
+
+. Create a `MachineConfig` custom resource (CR) for your gateway compute nodes to handle traffic for an `EgressIP` object. The following example CR defines a virtual local area network (VLAN) interface with dual-stack IP addresses and specific routes handle traffic for an `EgressIP` object:
++
+[source,yaml]
+----
+apiVersion: machineconfiguration.openshift.io/v1
+kind: MachineConfig
+metadata:
+  labels:
+    machineconfiguration.openshift.io/role: gateway <1>
+  name: 99-worker-egress-networking
+# ...
+routes:
+    config:
+    - destination: 0.0.0.0/0 <2>
+      metric: 999
+      next-hop-address: 192.168.118.1
+      next-hop-interface: vlan94 <3>
+      table-id: 254
+    - destination: ::/0
+      metric: 999
+      next-hop-address: 2600:52:7:94::1 <4>
+      next-hop-interface: vlan94
+      table-id: 254
+# ...
+----
+<1> The label assigned to the `gateway` nodes that must handle traffic for an `EgressIP` object.
+<2> The default route for the VLAN interface to direct outbound traffic to a specific next-hop router.
+<3> Designates a VLAN interface as the next-hop interface.
+<4> Sets a default route destination, so that all outbound IPv4 and IPv6 traffic gets directed to a specific next-hop router.
+
+. Create the `MachineConfigPool` custom resource (CR) for the gateway nodes. The configuration applies a `k8s.ovn.org/egress-assignable` label and `NoSchedule` taint to the nodes.
++
+[source,yaml]
+----
+apiVersion: machineconfiguration.openshift.io/v1
+kind: MachineConfigPool
+metadata:
+  name: gateway
+spec:
+  machineConfigSelector:
+    matchLabels:
+      machineconfiguration.openshift.io/role: gateway <1>
+  nodeSelector:
+    matchLabels:
+      machineconfiguration.openshift.io/role: gateway <2>
+  paused: false
+  maxUnavailable: 1
+  minReadySeconds: 0
+  taints:
+    - effect: NoSchedule <3>
+      key: k8s.ovn.org/egress-assignable
+      value: 'true'
+  labels:
+    - key: k8s.ovn.org/egress-assignable <4>
+      value: 'true'
+----
+<1> Tells the Machine Config Operator (MCO) what `MachineConfig` CR to target.
+<2> Tells the MCO what nodes belong to the `MachineConfigPool` CR based on the `machineconfiguration.openshift.io/role: gateway` label.
+<3> Applies a taint to the `gateway` nodes, where the `NoSchedule` effect prevents a schedular from adding pods to these nodes unless the pod matches a toleration.
+<4> Adds a key-value pair to the metadata of the nodes, so that the MCO can find and manage the nodes.
+
+// What about a MachineConfig and `MachineConfigPool` custom resources (CRs) for `appworker`?
+
+. Create an `EgressIP` object and configure IPv4 and IPv6 addresses for the object. The following example `EgressIP` object uses selectors to identify which pods use the specified egress addresses for their outbound traffic:
++
+[source,yaml]
+----
+kind: EgressIP
+metadata:
+  name: egressip-dual-vlan94
+spec:
+  egressIPs:
+    - 192.168.118.30
+    - 2600:52:7:94::30
+  namespaceSelector:
+    matchLabels:
+      env: qa
+  podSelector:
+    matchLabels:
+      egressip: ds  
+# ...
+----
+
+. Create a `Pod` manifest file to test and validate your `EgressIP` object. The pod serves as a client workload that sends outbound traffic to verify that your `EgressIP` policy works as expected. 
++
+[source,yaml]
+----
+apiVersion: v1
+kind: Pod
+metadata:
+  name: fedora-egressip-pod-ds
+  namespace: test
+  labels: <1>
+    egressip: ds
+    egressipv4v6: ipv4v6
+spec:
+  containers:
+  - name: fedora-curl
+    image: quay.io/yogananth_subramanian/fedora-tools:latest
+    command: ["/bin/bash", "-c", "sleep infinity"]
+# ...
+  nodeSelector: <2>
+    node-role.kubernetes.io/appworker: "" 
+# ...
+----
+<1> Set custom identifiers so that the `EgressIP` object can use these labels to apply egress IP address to target pods.
+<2> Schedules pods on a application compute node, `appworker`. 
+
+. Run a `curl` request from inside a pod to an external server. This action verifies that outbound traffic correctly uses an address that you specified in an `EgressIP` object:
++
+[source,yaml]
+----
+curl <ipv_address> <1>
+----
+<1> Depending on the `EgressIP` object, enter an IPv4 or IPv6 address.
