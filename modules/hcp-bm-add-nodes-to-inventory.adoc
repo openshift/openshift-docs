@@ -1,0 +1,317 @@
+// Module included in the following assemblies:
+//
+// * hosted_control_planes/hcp-deploy/hcp-deploy-bm.adoc
+
+
+:_mod-docs-content-type: PROCEDURE
+[id="hcp-bm-add-nodes-to-inventory_{context}"]
+= Creating an InfraEnv resource and adding nodes
+
+On {hcp}, the control-plane components run as pods on the management cluster while the data plane runs on dedicated nodes. You can use the Assisted Service to boot your hardware with a discovery ISO that adds your hardware to a hardware inventory. Later, when you create a hosted cluster, the hardware from the inventory is used to provision the data-plane nodes. The object that is used to get the discovery ISO is an `InfraEnv` resource. You need to create a `BareMetalHost` object that configures the cluster to boot the bare-metal node from the discovery ISO.
+
+.Procedure
+
+. Create a namespace to store your hardware inventory by entering the following command:
++
+[source,terminal]
+----
+$ oc --kubeconfig ~/<directory_example>/mgmt-kubeconfig create \
+  namespace <namespace_example>
+----
++
+where:
++
+<directory_example>:: Is the name of the directory where the `kubeconfig` file for the management cluster is saved.
+<namespace_example>:: Is the name of the namespace that you are creating; for example, `hardware-inventory`.
++
+.Example output
+[source,terminal]
+----
+namespace/hardware-inventory created
+----
+
+. Copy the pull secret of the management cluster by entering the following command:
++
+[source,terminal]
+----
+$ oc --kubeconfig ~/<directory_example>/mgmt-kubeconfig \
+  -n openshift-config get secret pull-secret -o yaml \
+  | grep -vE "uid|resourceVersion|creationTimestamp|namespace" \
+  | sed "s/openshift-config/<namespace_example>/g" \
+  | oc --kubeconfig ~/<directory_example>/mgmt-kubeconfig \
+  -n <namespace> apply -f -
+----
++
+where:
++
+<directory_example>:: Is the name of the directory where the `kubeconfig` file for the management cluster is saved.
+<namespace_example>:: Is the name of the namespace that you are creating; for example, `hardware-inventory`.
++
+.Example output
+[source,terminal]
+----
+secret/pull-secret created
+----
+
+. Create the `InfraEnv` resource by adding the following content to a YAML file:
++
+[source,yaml]
+----
+apiVersion: agent-install.openshift.io/v1beta1
+kind: InfraEnv
+metadata:
+  name: hosted
+  namespace: <namespace_example>
+spec:
+  additionalNTPSources:
+  - <ip_address>
+  pullSecretRef:
+    name: pull-secret
+  sshAuthorizedKey: <ssh_public_key>
+# ...
+----
+
+. Apply the changes to the YAML file by entering the following command:
++
+[source,terminal]
+----
+$ oc apply -f <infraenv_config>.yaml
+----
++
+Replace `<infraenv_config>` with the name of your file.
+
+. Verify that the `InfraEnv` resource was created by entering the following command:
++
+[source,terminal]
+----
+$ oc --kubeconfig ~/<directory_example>/mgmt-kubeconfig \
+  -n <namespace_example> get infraenv hosted
+----
+
+. Add bare-metal hosts by following one of two methods:
+
+** If you do not use the Metal3 Operator, obtain the discovery ISO from the `InfraEnv` resource and boot the hosts manually by completing the following steps:
+
+.. Download the live ISO by entering the following commands:
++
+[source,terminal]
+----
+$ oc get infraenv -A
+----
++
+[source,terminal]
+----
+$ oc get infraenv <namespace_example> -o jsonpath='{.status.isoDownloadURL}' -n <namespace_example> <iso_url>
+----
+
+.. Boot the ISO. The node communicates with the Assisted Service and registers as an agent in the same namespace as the `InfraEnv` resource.
+
+.. For each agent, set the installation disk ID and hostname, and approve it to indicate that the agent is ready for use. Enter the following commands:
++
+[source,terminal]
+----
+$ oc -n <hosted_control_plane_namespace> get agents
+----
++
+.Example output
+[source,terminal]
+----
+NAME                                   CLUSTER   APPROVED   ROLE          STAGE
+86f7ac75-4fc4-4b36-8130-40fa12602218                        auto-assign
+e57a637f-745b-496e-971d-1abbf03341ba                        auto-assign
+----
++
+[source,terminal]
+----
+$ oc -n <hosted_control_plane_namespace> \
+  patch agent 86f7ac75-4fc4-4b36-8130-40fa12602218 \
+  -p '{"spec":{"installation_disk_id":"/dev/sda","approved":true,"hostname":"worker-0.example.krnl.es"}}' \
+  --type merge
+----
++
+[source,terminal]
+----
+$ oc -n <hosted_control_plane_namespace> \
+  patch agent 23d0c614-2caa-43f5-b7d3-0b3564688baa -p \
+  '{"spec":{"installation_disk_id":"/dev/sda","approved":true,"hostname":"worker-1.example.krnl.es"}}' \
+  --type merge
+----
++
+[source,terminal]
+----
+$ oc -n <hosted_control_plane_namespace> get agents
+----
++
+.Example output
+[source,terminal]
+----
+NAME                                   CLUSTER   APPROVED   ROLE          STAGE
+86f7ac75-4fc4-4b36-8130-40fa12602218             true       auto-assign
+e57a637f-745b-496e-971d-1abbf03341ba             true       auto-assign
+----
+
+** If you use the Metal3 Operator, you can automate the bare-metal host registration by creating the following objects:
+
+.. Create a YAML file and add the following content to it:
++
+[source,yaml]
+----
+apiVersion: v1
+kind: Secret
+metadata:
+  name: hosted-worker0-bmc-secret
+  namespace: <namespace_example>
+data:
+  password: <password>
+  username: <username>
+type: Opaque
+---
+apiVersion: v1
+kind: Secret
+metadata:
+  name: hosted-worker1-bmc-secret
+  namespace: <namespace_example>
+data:
+  password: <password>
+  username: <username>
+type: Opaque
+---
+apiVersion: v1
+kind: Secret
+metadata:
+  name: hosted-worker2-bmc-secret
+  namespace: <namespace_example>
+data:
+  password: <password>
+  username: <username>
+type: Opaque
+---
+apiVersion: metal3.io/v1alpha1
+kind: BareMetalHost
+metadata:
+  name: hosted-worker0
+  namespace: <namespace_example>
+  labels:
+    infraenvs.agent-install.openshift.io: hosted
+  annotations:
+    inspect.metal3.io: disabled
+    bmac.agent-install.openshift.io/hostname: hosted-worker0
+spec:
+  automatedCleaningMode: disabled
+  bmc:
+    disableCertificateVerification: True
+    address: <bmc_address>
+    credentialsName: hosted-worker0-bmc-secret
+  bootMACAddress: aa:aa:aa:aa:02:01
+  online: true
+---
+apiVersion: metal3.io/v1alpha1
+kind: BareMetalHost
+metadata:
+  name: hosted-worker1
+  namespace: <namespace_example>
+  labels:
+    infraenvs.agent-install.openshift.io: hosted
+  annotations:
+    inspect.metal3.io: disabled
+    bmac.agent-install.openshift.io/hostname: hosted-worker1
+spec:
+  automatedCleaningMode: disabled
+  bmc:
+    disableCertificateVerification: True
+    address: <bmc_address>
+    credentialsName: hosted-worker1-bmc-secret
+  bootMACAddress: aa:aa:aa:aa:02:02
+  online: true
+---
+apiVersion: metal3.io/v1alpha1
+kind: BareMetalHost
+metadata:
+  name: hosted-worker2
+  namespace: <namespace_example>
+  labels:
+    infraenvs.agent-install.openshift.io: hosted
+  annotations:
+    inspect.metal3.io: disabled
+    bmac.agent-install.openshift.io/hostname: hosted-worker2
+spec:
+  automatedCleaningMode: disabled
+  bmc:
+    disableCertificateVerification: True
+    address: <bmc_address>
+    credentialsName: hosted-worker2-bmc-secret
+  bootMACAddress: aa:aa:aa:aa:02:03
+  online: true
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: capi-provider-role
+  namespace: <namespace_example>
+rules:
+- apiGroups:
+  - agent-install.openshift.io
+  resources:
+  - agents
+  verbs:
+  - '*'
+----
++
+where:
++
+<namespace_example>:: Is the your namespace.
+<password>:: Is the password for your secret.
+<username>:: Is the user name for your secret.
+<bmc_address>:: Is the BMC address for the `BareMetalHost` object.
++
+[NOTE]
+====
+When you apply this YAML file, the following objects are created: 
+
+* Secrets with credentials for the Baseboard Management Controller (BMCs)
+* The `BareMetalHost` objects
+* A role for the HyperShift Operator to be able to manage the agents
+
+Notice how the `InfraEnv` resource is referenced in the `BareMetalHost` objects by using the `infraenvs.agent-install.openshift.io: hosted` custom label. This ensures that the nodes are booted with the ISO generated.
+====
+
+.. Apply the changes to the YAML file by entering the following command:
++
+[source,terminal]
+----
+$ oc apply -f <bare_metal_host_config>.yaml
+----
++
+Replace `<bare_metal_host_config>` with the name of your file.
+
+. Enter the following command, and then wait a few minutes for the `BareMetalHost` objects to move to the `Provisioning` state:
++
+[source,terminal]
+----
+$ oc --kubeconfig ~/<directory_example>/mgmt-kubeconfig -n <namespace_example> get bmh
+----
++
+.Example output
+[source,terminal]
+----
+NAME             STATE          CONSUMER   ONLINE   ERROR   AGE
+hosted-worker0   provisioning              true             106s
+hosted-worker1   provisioning              true             106s
+hosted-worker2   provisioning              true             106s
+----
+
+. Enter the following command to verify that nodes are booting and showing up as agents. This process can take a few minutes, and you might need to enter the command more than once.
++
+[source,terminal]
+----
+$ oc --kubeconfig ~/<directory_example>/mgmt-kubeconfig -n <namespace_example> get agent
+----
++
+.Example output
+[source,terminal]
+----
+NAME                                   CLUSTER   APPROVED   ROLE          STAGE
+aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaa0201             true       auto-assign
+aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaa0202             true       auto-assign
+aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaa0203             true       auto-assign
+----
