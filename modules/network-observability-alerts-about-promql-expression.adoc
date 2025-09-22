@@ -1,0 +1,152 @@
+// Module included in the following assemblies:
+//
+// * network_observability/network-observability-alerts.adoc
+
+:_mod-docs-content-type: REFERENCE
+[id="network-observability-alerts-about-promql-expression_{context}"]
+= About the PromQL expression for alerts
+
+[role="_abstract"]
+Learn about the base query for Prometheus Query Language (`PromQL`), and how to customize it so you can configure network observability alerts for your specific needs.
+
+The alerting API in the network observability `FlowCollector` custom resource (`CR`) is mapped to the Prometheus Operator API, generating a `PrometheusRule`. You can see the `PrometheusRule` in the default `netobserv` namespace by running the following command:
+
+[source,terminal]
+----
+$ oc get prometheusrules -n netobserv -oyaml
+----
+
+[id="example-example-query-alert-for-surge-in-incoming-traffic_{context}"]
+== An example query for an alert in a surge of incoming traffic
+
+This example provides the base `PromQL` query pattern for an alert about a surge in incoming traffic:
+
+[source,promql]
+----
+sum(rate(netobserv_workload_ingress_bytes_total{SrcK8S_Namespace="openshift-ingress"}[30m])) by (DstK8S_Namespace)
+----
+
+This query calculates the byte rate coming from the `openshift-ingress` namespace to any of your workloads' namespaces over the past 30 minutes.
+
+You can customize the query, including retaining only some rates, running the query for specific time periods, and setting a final threshold.
+
+Filtering noise:: Appending `> 1000` to this query retains only the rates observed that are greater than `1 KB/s`, which eliminates noise from low-bandwidth consumers.
++
+`(sum(rate(netobserv_workload_ingress_bytes_total{SrcK8S_Namespace="openshift-ingress"}[30m])) by (DstK8S_Namespace) > 1000)`
++
+The byte rate is relative to the sampling interval defined in the `FlowCollector` custom resource (`CR`) configuration. If the sampling interval is `1:100`, the actual traffic might be approximately 100 times higher than the reported metrics.
+
+Time comparison:: You can run the same query for a particular period of time using the `offset` modifier. For example, a query for one day earlier can be run using `offset 1d`, and a query for five hours ago can be run using `offset 5h`.
++
+`sum(rate(netobserv_workload_ingress_bytes_total{SrcK8S_Namespace="openshift-ingress"}[30m] offset 1d)) by (DstK8S_Namespace))`
++
+You can use the formula `100 * (<query now> - <query from the previous day>) / <query from the previous day>` to calculate the percentage of increase compared to the previous day. This value can be negative if the byte rate today is lower than the previous day.
+
+Final threshold:: You can apply a final threshold to filter increases that are lower than the desired percentage. For example, `> 100` eliminates increases that are lower than 100%.
+
+Together, the complete expression for the `PrometheusRule` looks like the following:
+
+[source,promql]
+----
+...
+      expr: |-
+        (100 *
+          (
+            (sum(rate(netobserv_workload_ingress_bytes_total{SrcK8S_Namespace="openshift-ingress"}[30m])) by (DstK8S_Namespace) > 1000)
+            - sum(rate(netobserv_workload_ingress_bytes_total{SrcK8S_Namespace="openshift-ingress"}[30m] offset 1d)) by (DstK8S_Namespace)
+          )
+          / sum(rate(netobserv_workload_ingress_bytes_total{SrcK8S_Namespace="openshift-ingress"}[30m] offset 1d)) by (DstK8S_Namespace))
+        > 100
+----
+
+[id="alert-metadata-fields_{context}"]
+== Alert metadata fields
+
+The Network Observability Operator uses components from other {product-title} features, such as the monitoring stack, to enhance visibility into network traffic. For more information, see: "Monitoring stack architecture".
+
+Some metadata must be configured for the alert definitions. This metadata is used by Prometheus and the `Alertmanager` service from the monitoring stack, or by the *Network Health* dashboard.
+
+The following example shows an `AlertingRule` resource with the configured metadata:
+
+[source,yaml]
+----
+apiVersion: monitoring.openshift.io/v1
+kind: AlertingRule
+metadata:
+  name: netobserv-alerts
+  namespace: openshift-monitoring
+spec:
+  groups:
+  - name: NetObservAlerts
+    rules:
+    - alert: NetObservIncomingBandwidth
+      annotations:
+        netobserv_io_network_health: '{"namespaceLabels":["DstK8S_Namespace"],"threshold":"100","unit":"%","upperBound":"500"}'
+        message: |-
+          NetObserv is detecting a surge of incoming traffic: current traffic to {{ $labels.DstK8S_Namespace }} has increased by more than 100% since yesterday.
+        summary: "Surge in incoming traffic"
+      expr: |-
+        (100 *
+          (
+            (sum(rate(netobserv_workload_ingress_bytes_total{SrcK8S_Namespace="openshift-ingress"}[30m])) by (DstK8S_Namespace) > 1000)
+            - sum(rate(netobserv_workload_ingress_bytes_total{SrcK8S_Namespace="openshift-ingress"}[30m] offset 1d)) by (DstK8S_Namespace)
+          )
+          / sum(rate(netobserv_workload_ingress_bytes_total{SrcK8S_Namespace="openshift-ingress"}[30m] offset 1d)) by (DstK8S_Namespace))
+        > 100
+      for: 1m
+      labels:
+        app: netobserv
+        netobserv: "true"
+        severity: warning
+----
+
+where:
+
+`spec.groups.rules.alert.labels.netobserv`::
+Specifies the alert for the *Network Health* dashboard to detect when set to `true`.
+`spec.groups.rules.alert.labels.severity`::
+Specifies the severity of the alert. The following values are valid: `critical`, `warning`, or `info`.
+
+You can leverage the output labels from the defined `PromQL` expression in the `message` annotation. In the example, since results are grouped per `DstK8S_Namespace`, the expression `{{ $labels.DstK8S_Namespace }}` is used in the message text.
+
+The `netobserv_io_network_health` annotation is optional, and controls how the alert is rendered on the *Network Health* page.
+
+The `netobserv_io_network_health` annotation is a JSON string consisting of the following fields:
+
+.Fields for the netobserv_io_network_health annotation
+[cols="2,2,6",options="header"]
+|===
+| Field
+| Type
+| Description
+
+| `namespaceLabels`
+| List of strings
+| One or more labels that hold namespaces. When provided, the alert appears under the *Namespaces* tab.
+
+| `nodeLabels`
+| List of strings
+| One or more labels that hold node names. When provided, the alert appears under the *Nodes* tab.
+
+| `threshold`
+| String
+| The alert threshold, expected to match the threshold defined in the `PromQL` expression.
+
+| `unit`
+| String
+| The data unit, used only for display purposes.
+
+| `upperBound`
+| String
+| An upper bound value used to compute the score on a closed scale. Metric values exceeding this bound are clamped.
+
+| `links`
+| List of objects
+| A list of links to display contextually with the alert. Each link requires a `name` (display name) and `url`.
+
+| `trafficLinkFilter`
+| String
+| An additional filter to inject into the URL for the *Network Traffic* page.
+|===
+
+The `namespaceLabels` and `nodeLabels` are mutually exclusive. If neither is provided, the alert appears under the *Global* tab.
