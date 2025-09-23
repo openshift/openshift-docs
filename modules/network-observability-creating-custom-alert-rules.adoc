@@ -1,0 +1,138 @@
+// Module included in the following assemblies:
+//
+// * network_observability/network-observability-alerts.adoc
+
+:_mod-docs-content-type: PROCEDURE
+[id="network-observability-creating-custom-alert-rules_{context}"]
+= Creating custom alert rules
+
+[role="_abstract"]
+This procedure helps you create a custom `AlertingRule` resource for network observability. While network observability provides a flexible configuration API for managing alerts, you might need to create your own alert rules from scratch for more advanced use cases. This process requires familiarity with the Prometheus Query Language (PromQL) and allows you to define custom alert triggers based on specific network traffic metrics, such as a surge in incoming traffic.
+
+.Prerequisites
+
+* You are familiar with PromQL.
+* You a cluster administrator.
+* You have the Network Observability Operator installed.
+
+.Procedure
+
+. Create a YAML file named `custom-alert.yaml`. This example creates an alert that triggers if the current ingress traffic from `openshift-ingress` to a namespace has more than doubled (a 100% increase) compared to the previous day.
++
+[source,yaml]
+----
+apiVersion: monitoring.openshift.io/v1
+kind: AlertingRule
+metadata:
+  name: netobserv-alerts
+  namespace: openshift-monitoring
+spec:
+  groups:
+  - name: NetObservAlerts
+    rules:
+    - alert: NetObservIncomingBandwidth
+      annotations:
+        message: |-
+          NetObserv is detecting a surge of incoming traffic: current traffic to {{ $labels.DstK8S_Namespace }} has increased by more than 100% since yesterday.
+        summary: "Surge in incoming traffic"
+      expr: |-
+        (100 *
+          (
+            (sum(rate(netobserv_namespace_ingress_bytes_total{SrcK8S_Namespace="openshift-ingress"}[30m])) by (DstK8S_Namespace) > 1000)
+            - sum(rate(netobserv_namespace_ingress_bytes_total{SrcK8S_Namespace="openshift-ingress"}[30m] offset 1d)) by (DstK8S_Namespace)
+          )
+          / sum(rate(netobserv_namespace_ingress_bytes_total{SrcK8S_Namespace="openshift-ingress"}[30m] offset 1d)) by (DstK8S_Namespace))
+        > 100
+      for: 1m
+      labels:
+        app: netobserv
+        severity: warning
+----
++
+[NOTE]
+====
+The `expr` field contains the PromQL expression. The base query `sum(rate(netobserv_namespace_ingress_bytes_total{SrcK8S_Namespace="openshift-ingress"}[30m]))` calculates the average bytes per second over a 30-minute window. Appending `> 1000` filters out low-traffic results to reduce noise. `offset 1d` runs the same query from 24 hours ago, allowing for a day-over-day comparison. The final `> 100` ensures the alert only fires for an increase of more than 100%. Depending on your configuration, you might need to use `netobserv_workload_ingress_bytes_total` instead of `netobserv_namespace_ingress_bytes_total`.
+====
+
+. Apply the custom alert rule by running the following command:
++
+[source,terminal]
+----
+$ kubectl apply -f custom-alert.yaml
+----
+
+.Verification
+
+* Verify that the `PrometheusRule` resource was created in the `netobserv` namespace by running the following command:
++
+[source,terminal]
+----
+$ kubectl get prometheusrules -n netobserv -oyaml
+----
++
+The output should include the `netobserv-alerts` rule you just created, confirming that the resource was generated correctly.
+
+
+////
+:_mod-docs-content-type: PROCEDURE
+[id="network-observability-creating-custom-alert-rules_{context}"]
+= Creating custom alert rules
+
+This alerting API in the NetObserv `FlowCollector` is a simple mapping to the Prometheus operator API, which generates a `PrometheusRule` resource. You can view this resource in the `netobserv` namespace (by default) by running the following command:
+
+[source,terminal]
+----
+$ kubectl get prometheusrules -n netobserv -oyaml
+----
+
+The preceding sections explain how you can customize the opinionated alerts. However, if you feel limited by the configuration API, you can create your own `AlertingRule` resources from scratch. This requires you to be familiar with PromQL.
+
+Here is an example to alert when the current ingress traffic exceeds the traffic from the previous day by more than twice.
+
+[source,yaml]
+----
+apiVersion: monitoring.openshift.io/v1
+kind: AlertingRule
+metadata:
+  name: netobserv-alerts
+  namespace: openshift-monitoring
+spec:
+  groups:
+  - name: NetObservAlerts
+    rules:
+    - alert: NetObservIncomingBandwidth
+      annotations:
+        message: |-
+          NetObserv is detecting a surge of incoming traffic: current traffic to {{ $labels.DstK8S_Namespace }} has increased by more than 100% since yesterday.
+        summary: "Surge in incoming traffic"
+      expr: |-
+        (100 *
+          (
+            (sum(rate(netobserv_namespace_ingress_bytes_total{SrcK8S_Namespace="openshift-ingress"}[30m])) by (DstK8S_Namespace) > 1000)
+            - sum(rate(netobserv_namespace_ingress_bytes_total{SrcK8S_Namespace="openshift-ingress"}[30m] offset 1d)) by (DstK8S_Namespace)
+          )
+          / sum(rate(netobserv_namespace_ingress_bytes_total{SrcK8S_Namespace="openshift-ingress"}[30m] offset 1d)) by (DstK8S_Namespace))
+        > 100
+      for: 1m
+      labels:
+        app: netobserv
+        severity: warning
+----
+
+[id="network-observability-promql-breakdown_{context}"]
+== Breaking down the PromQL expression
+
+The base query pattern is as follows:
+
+`sum(rate(netobserv_namespace_ingress_bytes_total{SrcK8S_Namespace="openshift-ingress"}[30m])) by (DstK8S_Namespace)`
+
+This is the bytes rate coming from "openshift-ingress" to any of your workload's namespaces over the last 30 minutes. Note that, depending on your configuration, you may need to use `netobserv_workload_ingress_bytes_total` instead of `netobserv_namespace_ingress_bytes_total`.
+
+Appending `> 1000` to this query keeps only the rates observed that are greater than `1 KB/s`, which eliminates noise from low-bandwidth consumers. `1 KB/s` is still not a lot, so you might want to increase it. Note that the bytes rate is relative to the sampling ratio defined in the `FlowCollector` agent configuration. If you have a sampling ratio of 1:100, the actual traffic might be approximately 100 times higher than what is reported by the metrics.
+
+In the following parts of the PromQL, you can see `offset 1d`. This is to run the same query, but one day earlier. You can change that according to your needs. For instance, `offset 5h` will be five hours ago.
+
+This gives you the formula `100 * (<query now> - <query yesterday>) / <query yesterday>`, which is the percentage of increase compared to the previous day. This value can be negative if the bytes rate today is lower than yesterday.
+
+Finally, the last part, `> 100`, eliminates increases that are lower than 100%, so you don't get alerted by them.
+////
