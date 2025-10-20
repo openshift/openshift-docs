@@ -50,8 +50,8 @@ fi
 
 # Assign default variables
 : ${PRODUCT_NAME:="OpenShift Container Platform"}
-: ${VERSION:="4.16"}
-: ${DISTRO:="openshift-enterprise"}
+: ${VERSION:="main"}
+: ${DISTRO:="openshift-power-monitoring"}
 
 # Allow podman or docker
 if hash podman 2>/dev/null; then
@@ -81,7 +81,7 @@ if [[ "$TEST" == "--preview" || "$TEST" == "-p" ]] && [[ -z "$DISTRO" ]]; then
     # Clean output folder
     rm -rf ./_preview
     echo ""
-    echo "🚧 Building with openshift-enterprise distro..."
+    echo "🚧 Building with openshift-power-monitoring distro..."
     $CONTAINER_ENGINE run --rm -it -v "$(pwd)":${CONTAINER_WORKDIR}${SELINUX_LABEL} $CONTAINER_IMAGE asciibinder build -d "$DISTRO"
 
 elif [[ "$TEST" == "--preview" || "$TEST" == "-p" ]] && [[ -n "$DISTRO" ]]; then
