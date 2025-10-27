@@ -2,19 +2,28 @@
 // * service-mesh-docs-main/gateways/ossm-getting-traffic-into-a-mesh.adoc
 
 :_mod-docs-content-type: PROCEDURE
-[id="ossm-exposing-a-service-by-using-the-kubernetes-gateway-api_{context}"]
-= Exposing a service by using the {k8s} Gateway API in sidecar mode
+[id="ossm-exposing-a-service-by-using-the-kubernetes-gateway-api-in-ambient-mode_{context}"]
+= Exposing a service by using the {k8s} Gateway API in ambient mode
 
 [role="_abstract"]
-You can use the {k8s} Gateway API to create `Gateway` and `HTTPRoute` resources and deploy a gateway. The resources configure the gateway to expose a service in the mesh to traffic outside the mesh.
+You can use the {k8s} Gateway API to create `Gateway` and `HTTPRoute` resources and deploy a gateway in ambient mode. The resources configure the gateway to expose a service in the mesh to traffic outside the mesh.
 
 .Prerequisites
 
 * You are logged in to the {ocp-product-title} web console as a user with the `cluster-admin` role.
 
-* You installed the {SMProductName} Operator.
+* You have installed the {SMProductName} Operator.
 
 * You have deployed the `{istio}` resource.
+
+* You use the {k8s}-native Gateway API resources.
+
+* You are either using the {istio} ambient mode or planning on migrating to the ambient mode.
+
+[NOTE]
+====
+When using ambient mode (`istio.io/dataplane-mode=ambient`), it is recommended to use the {k8s} Gateway API for ingress configuration, as {istio} `Gateway` and `VirtualService` resources are not fully compatible with ambient mode.
+====
 
 .Procedure 
 
@@ -25,20 +34,11 @@ You can use the {k8s} Gateway API to create `Gateway` and `HTTPRoute` resources 
 $ oc create namespace httpbin 
 ----
 
-. When using sidecar injection instead of ambient mode, you must enable the sidecar injection in the namespace:
-
-.. For the `InPlace` upgrade strategy, run the following command:
+. Apply the label for ambient mode by running the following command:
 +
 [source,terminal]
 ----
-$ oc label namespace httpbin istio-injection=enabled
-----
-
-.. For the `RevisionBased` upgrade strategy, run the following command:
-+
-[source,terminal]
-----
-$ oc label namespace httpbin istio.io/rev=<revision-name>
+$ oc label namespace httpbin istio.io/dataplane-mode=ambient
 ----
 
 . Deploy a sample service named `httpbin` by running the following command:
@@ -48,7 +48,50 @@ $ oc label namespace httpbin istio.io/rev=<revision-name>
 $ oc apply -n httpbin -f https://raw.githubusercontent.com/openshift-service-mesh/istio/refs/heads/master/samples/httpbin/httpbin.yaml
 ----
 
-. Create a YAML file named `httpbin-gw.yaml` that defines a {k8s} Gateway resource, similar to the following example:
+. Deploy a waypoint proxy by creating a YAML file named `httpbin-waypoint.yaml`, similar to the following example:
++
+[source,yaml]
+----
+apiVersion: gateway.networking.k8s.io/v1
+kind: Gateway
+metadata:
+  name: httpbin-waypoint
+  namespace: httpbin
+  labels:
+    istio.io/waypoint-for: service
+spec:
+  gatewayClassName: istio-waypoint
+  listeners:
+  - name: mesh
+    port: 15008
+    protocol: HBONE
+
+----
+
+. Apply the YAML file by running the following command:
++
+[source,terminal]
+----
+$ oc apply -f httpbin-waypoint.yaml
+----
+
+. Enable ingress waypoint routing on the `httpbin` service by running the following command:
++
+[source,terminal]
+----
+$ oc label service httpbin -n httpbin istio.io/ingress-use-waypoint=true
+----
++
+The label ensures that traffic from the ingress gateway routes through the waypoint proxy and the L7 policies configured on the waypoint proxy are applied to the ingress traffic, before it reaches the `httpbin` service.
+
+. Apply the waypoint label to the namespace so that all the services inside the namespace routes through the waypoint, by running the following command:
++
+[source,terminal]
+----
+$ oc label ns httpbin istio.io/use-waypoint=httpbin-waypoint
+----
+
+. Create a YAML file named `httpbin-gw.yaml` that defines a {k8s} Gateway resource. This resource configures gateway proxies to expose port 80 (HTTP) for the host, `httpbin.example.com`.
 +
 [source,yaml]
 ----
@@ -69,9 +112,6 @@ spec:
         from: All
 ----
 `"httpbin.example.com"`:: Specifies the virtual hostname that clients use when attempting to access a mesh service on the associated port.
-
-+
-The `HTTPRoute` resource specifies the rules that route traffic from the gateway proxy to the `httpbin` service.
 
 . Apply the YAML file by running the following command:
 +
@@ -96,13 +136,6 @@ spec:
   hostnames:
   - "httpbin.example.com"
   rules:
-  - matches:
-    - path:
-        type: PathPrefix
-        value: /status
-    - path:
-        type: PathPrefix
-        value: /headers
   - backendRefs:
     - name: httpbin
       port: 8000
@@ -121,11 +154,53 @@ The `HTTPRoute` resource specifies the rules that route traffic from the gateway
 $ oc apply -f httpbin-ingress-hr.yaml
 ----
 
-. Ensure that the Gateway API service is ready, and that an address is allocated to the service, by running the following command:
+. Create a YAML file named `httpbin-waypoint-hr.yaml` that defines an `HTTPRoute` resource for the waypoint proxy.
++
+[source,yaml]
+----
+apiVersion: gateway.networking.k8s.io/v1
+kind: HTTPRoute
+metadata:
+  name: httpbin-waypoint-route
+  namespace: httpbin
+spec:
+  parentRefs:
+  - name: httpbin-waypoint
+    namespace: httpbin
+  rules:
+  - matches:
+    - path:
+        type: PathPrefix
+        value: /status
+    - path:
+        type: PathPrefix
+        value: /headers
+    backendRefs:
+    - name: httpbin
+      port: 8000
+
+----
+* `spec.parentRefs` binds the `HTTPROUTE` resource to the waypoint Gateway resource. It configures L7 routing rules that the waypoint will enforce.
+
+* `spec.rules.backendRefs` routes the matching traffic to the `httpbin` service by defining a `backendRefs` that includes the name and port of the `httpbin` service.
+
+. Apply the YAML file by running the following command:
 +
 [source,terminal]
 ----
-$ oc wait --for=condition=programmed gtw httpbin-gateway -n httpbin
+$ oc apply -f httpbin-waypoint-hr.yaml
+----
+
+[NOTE]
+====
+In this example use case, traffic from the ingress gateway flows through the waypoint proxy because of the `istio.io/ingress-use-waypoint=true` label. The `HTTPRoute` resource then applies path-based routing policies before the traffic reaches the httpbin service.
+====
+
+. Ensure that the waypoint proxy is ready by running the following command:
++
+[source,terminal]
+----
+$ oc wait --for=condition=programmed gtw httpbin-waypoint -n httpbin
 ----
 
 .Verification
@@ -141,7 +216,14 @@ $ oc create namespace curl
 +
 [source,terminal]
 ----
-$ oc apply -n curl -f https://raw.githubusercontent.com/openshift-service-mesh/istio/refs/heads/master/samples/curl/curl.yaml
+$ oc apply -n curl
+----
+
+. Apply the label for ambient mode to the `curl` namespace by running the following command:
++
+[source,terminal]
+----
+$ oc label namespace curl istio.io/dataplane-mode=ambient
 ----
 
 . Set a `CURL_POD` variable with the name of the `curl` pod by running the following command:
