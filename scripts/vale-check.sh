@@ -9,9 +9,10 @@
 #   assembly:   Checks a single assembly file AND its included modules.
 #
 # FLAGS:
-#   --cqa:      Uses a temporary config with AsciiDocDITA rules enabled.
-#   --repo:     (Default) Uses the standard .vale.ini in the repository.
-#   --help, -h: Shows this help message.
+#   --cqa:               Uses a temporary config with all AsciiDocDITA rules enabled.
+#   --rule <Style.Rule>: Checks for only one specific rule (e.g., AsciiDocDITA.RelatedLinks).
+#   --repo:              (Default) Uses the standard .vale.ini in the repository.
+#   --help, -h:          Shows this help message.
 #
 # REQUIREMENTS:
 #   - bash 3.2+
@@ -19,8 +20,6 @@
 #   - vale
 
 # --- Version Check ---
-# We check for Bash 3+ and rely on the read loop's
-# compatibility back to Bash 3.2 (e.g., default macOS).
 if [ "${BASH_VERSINFO[0]}" -lt 3 ]; then
   echo "Error: This script requires bash 3.2 or higher." >&2
   echo "Current version: $BASH_VERSION" >&2
@@ -31,13 +30,12 @@ fi
 set -u  # Treat unset variables as errors
 set +e  # Don't exit script if vale finds errors
 
-# Use an array for Vale CLI arguments to avoid quoting/word-splitting pitfalls
 VALE_ARGS=()
 ORIGINAL_VALE_INI=".vale.ini"
 
 # --- Help Function ---
 show_help() {
-  echo "Usage: $0 <scope> [path] [--cqa|--repo]"
+  echo "Usage: $0 <scope> [path] [--cqa|--repo] [--rule <Rule.Name>]"
   echo ""
   echo "A unified script to run Vale with different scopes and configurations."
   echo ""
@@ -47,51 +45,55 @@ show_help() {
   echo "  assembly    Checks a single assembly file AND its included modules."
   echo ""
   echo "FLAGS:"
-  echo "  --cqa       Uses a temporary config with AsciiDocDITA rules enabled."
-  echo "  --repo      (Default) Uses the standard .vale.ini in the repository."
-  echo "  --help, -h  Shows this help message."
+  echo "  --cqa         Uses a temporary config with AsciiDocDITA rules enabled."
+  echo "  --repo        (Default) Uses the standard .vale.ini in the repository."
+  echo "  --rule <Style.Rule> Checks for only one specific rule (e.g., AsciiDocDITA.RelatedLinks)."
+  echo "  --help, -h    Shows this help message."
   echo ""
   echo "EXAMPLES:"
   echo "  $0 pr"
   echo "  $0 pr --cqa"
   echo "  $0 dir extensions/"
   echo "  $0 assembly extensions/my-assembly.adoc --cqa"
+  echo "  $0 dir extensions/ --rule AsciiDocDITA.RelatedLinks"
 }
 
-# --- Config Function ---
-# Sets VALE_ARGS based on the --cqa flag.
-setup_vale_config() {
+# --- Setup Vale config and rule filtering ---
+setup_vale_config_and_rule() {
   local use_cqa=$1
+  local single_rule=$2
+  local base_ini="$ORIGINAL_VALE_INI"
+  local style_to_add=""
+
+  if [ -n "$single_rule" ]; then
+    style_to_add="${single_rule%%.*}"  # Extract style from rule
+  fi
+
   if [ "$use_cqa" -eq 1 ]; then
-    if [ ! -f "$ORIGINAL_VALE_INI" ]; then
-      echo "Error: $ORIGINAL_VALE_INI not found in current directory." >&2
-      exit 1
-    fi
-
-    local TEMP_VALE_INI
-    # Create the temp file in the CURRENT directory (./) so that
-    # relative paths in the config (like StylesPath) resolve correctly.
     TEMP_VALE_INI=$(mktemp ./.vale.ini.temp.XXXXXX)
-    
-    if [ -z "$TEMP_VALE_INI" ]; then
-      echo "Error: Could not create temporary config file." >&2
-      exit 1
-    fi
-
-    sed 's/^\(BasedOnStyles = .*\)$/\1, AsciiDocDITA/' "$ORIGINAL_VALE_INI" > "$TEMP_VALE_INI"
-    
-    # Capture the actual path now, so cleanup works even after local scope ends.
+    sed 's/^\(BasedOnStyles = .*\)$/\1, AsciiDocDITA/' "$base_ini" > "$TEMP_VALE_INI"
     trap "rm -f '$TEMP_VALE_INI'" EXIT INT TERM
-
     VALE_ARGS=(--config "$TEMP_VALE_INI")
-    echo "Using temporary CQA config ($TEMP_VALE_INI)..."
+
+  elif [ -n "$style_to_add" ]; then
+    if ! grep -q "BasedOnStyles.*$style_to_add" "$base_ini"; then
+      TEMP_VALE_INI=$(mktemp ./.vale.ini.temp.XXXXXX)
+      sed "s/^\(BasedOnStyles = .*\)$/\1, $style_to_add/" "$base_ini" > "$TEMP_VALE_INI"
+      trap "rm -f '$TEMP_VALE_INI'" EXIT INT TERM
+      VALE_ARGS=(--config "$TEMP_VALE_INI")
+    else
+      VALE_ARGS=()
+    fi
   else
     VALE_ARGS=()
-    echo "Using default .vale.ini config..."
+  fi
+
+  if [ -n "$single_rule" ]; then
+    VALE_ARGS+=(--filter=".Name=='$single_rule'")
   fi
 }
 
-# --- Scope Function: pr ---
+# --- Scope: pr ---
 run_vale_pr() {
   echo "Checking all changed files on this branch..."
 
@@ -123,14 +125,14 @@ run_vale_pr() {
   fi
 
   echo "Running Vale..."
-  
+
   local output
   output=$( (
     set -o pipefail
     git diff -z --name-only --diff-filter=d "$MERGE_BASE" HEAD \
       | xargs -0 vale --output CLI --minAlertLevel=suggestion --no-exit "${VALE_ARGS[@]}"
   ) )
-  
+
   if [ -z "$output" ]; then
     echo "✅ No issues found in changed files."
   else
@@ -138,7 +140,7 @@ run_vale_pr() {
   fi
 }
 
-# --- Scope Function: assembly ---
+# --- Scope: assembly ---
 run_vale_assembly() {
   local assembly_file=$1
   if [ ! -f "$assembly_file" ]; then
@@ -148,9 +150,8 @@ run_vale_assembly() {
 
   echo "--- Linting Assembly: $assembly_file ---"
   local assembly_output
-  # Use --output CLI for cleaner, grouped results
   assembly_output=$(vale --output CLI "${VALE_ARGS[@]}" "$assembly_file")
-  
+
   if [ -z "$assembly_output" ]; then
     echo "✅ No issues found."
   else
@@ -169,16 +170,15 @@ run_vale_assembly() {
 
   local FILTERED_MODULES
   FILTERED_MODULES=$(printf '%s\n' "$MODULES" | grep -v -E '(^|/)_' || true)
-  
+
   if [ -z "$FILTERED_MODULES" ]; then
     echo "All modules are partials (skipped)."
     return
   fi
 
   local modules_output
-  # Use --output CLI for cleaner, grouped results
   modules_output=$(printf '%s\n' "$FILTERED_MODULES" | xargs vale --output CLI "${VALE_ARGS[@]}")
-  
+
   if [ -z "$modules_output" ]; then
     echo "✅ No issues found in modules."
   else
@@ -186,7 +186,7 @@ run_vale_assembly() {
   fi
 }
 
-# --- Scope Function: dir (replaces 'assemblies') ---
+# --- Scope: dir ---
 run_vale_dir() {
   local scan_dir=$1
   if [ ! -d "$scan_dir" ]; then
@@ -197,7 +197,6 @@ run_vale_dir() {
   echo "Scanning $scan_dir for assemblies..."
 
   local -a ASSEMBLIES
-  # Use the universally compatible while-read loop
   while IFS= read -r line; do
     ASSEMBLIES+=("$line")
   done < <(find "$scan_dir" \
@@ -220,8 +219,7 @@ run_vale_dir() {
   done
 }
 
-# --- Main Script Logic ---
-
+# --- Main ---
 if ! command -v vale >/dev/null 2>&1; then
   echo "Error: vale is not installed or not in PATH." >&2
   echo "Please install vale: https://vale.sh/docs/vale-cli/installation/" >&2
@@ -229,6 +227,7 @@ if ! command -v vale >/dev/null 2>&1; then
 fi
 
 USE_CQA=0
+SINGLE_RULE=""
 SCOPE=""
 ARGS=()
 
@@ -236,6 +235,20 @@ while [[ "$#" -gt 0 ]]; do
   case "$1" in
     --cqa) USE_CQA=1; shift ;;
     --repo) USE_CQA=0; shift ;;
+    --rule=*)
+      SINGLE_RULE="${1#*=}"
+      shift
+      ;;
+    --rule)
+      if [[ -n "$2" && "${2:0:1}" != "-" ]]; then
+        SINGLE_RULE="$2"
+        shift 2
+      else
+        echo "Error: --rule requires a <Rule.Name> argument." >&2
+        show_help
+        exit 1
+      fi
+      ;;
     --help|-h) show_help; exit 0 ;;
     -*) echo "Error: Unknown flag $1"; show_help; exit 1 ;;
     *)
@@ -255,7 +268,7 @@ if [ -z "$SCOPE" ]; then
   exit 1
 fi
 
-setup_vale_config "$USE_CQA"
+setup_vale_config_and_rule "$USE_CQA" "$SINGLE_RULE"
 
 case "$SCOPE" in
   pr)
