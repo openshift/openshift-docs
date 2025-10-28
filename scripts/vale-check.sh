@@ -30,6 +30,17 @@ set +e
 
 VALE_ARGS=()
 ORIGINAL_VALE_INI=".vale.ini"
+TEMP_FILES=()
+
+# Cleanup function for temp files
+cleanup_temp_files() {
+  for temp_file in "${TEMP_FILES[@]}"; do
+    [ -f "$temp_file" ] && rm -f "$temp_file"
+  done
+}
+
+# Set trap once for all cleanup
+trap cleanup_temp_files EXIT INT TERM
 
 show_help() {
   echo "Usage: $0 <scope> [path] [--cqa|--repo] [--rule <Rule.Name>]"
@@ -63,16 +74,18 @@ setup_vale_config_and_rule() {
   fi
 
   if [ "$use_cqa" -eq 1 ]; then
-    TEMP_VALE_INI=$(mktemp ./.vale.ini.temp.XXXXXX)
+    # Cross-platform temp file creation
+    TEMP_VALE_INI=$(mktemp "${TMPDIR:-.}/.vale.ini.temp.XXXXXX" 2>/dev/null || mktemp -t .vale.ini.temp)
+    TEMP_FILES+=("$TEMP_VALE_INI")
     sed 's/^\(BasedOnStyles = .*\)$/\1, AsciiDocDITA/' "$base_ini" > "$TEMP_VALE_INI"
-    trap "rm -f '$TEMP_VALE_INI'" EXIT INT TERM
     VALE_ARGS=(--config "$TEMP_VALE_INI")
 
   elif [ -n "$style_to_add" ]; then
     if ! grep -q "BasedOnStyles.*$style_to_add" "$base_ini"; then
-      TEMP_VALE_INI=$(mktemp ./.vale.ini.temp.XXXXXX)
+      # Cross-platform temp file creation
+      TEMP_VALE_INI=$(mktemp "${TMPDIR:-.}/.vale.ini.temp.XXXXXX" 2>/dev/null || mktemp -t .vale.ini.temp)
+      TEMP_FILES+=("$TEMP_VALE_INI")
       sed "s/^\(BasedOnStyles = .*\)$/\1, $style_to_add/" "$base_ini" > "$TEMP_VALE_INI"
-      trap "rm -f '$TEMP_VALE_INI'" EXIT INT TERM
       VALE_ARGS=(--config "$TEMP_VALE_INI")
     else
       VALE_ARGS=()
@@ -117,11 +130,18 @@ run_vale_pr() {
   echo "Running Vale..."
 
   local output
-  output=$(
-    set -o pipefail
-    git diff -z --name-only --diff-filter=d "$base" HEAD \
-      | xargs -0 vale --output CLI --minAlertLevel=suggestion --no-exit "${VALE_ARGS[@]}"
-  )
+  local changed_files
+  changed_files=$(git diff -z --name-only --diff-filter=d "$base" HEAD)
+
+  if [ -z "$changed_files" ]; then
+    output=""
+  else
+    output=$(
+      set -o pipefail
+      printf '%s' "$changed_files" \
+        | xargs -0 vale --output CLI --minAlertLevel=suggestion --no-exit "${VALE_ARGS[@]}" 2>/dev/null || true
+    )
+  fi
 
   if [ -z "$output" ]; then
     echo "✅ No issues found."
@@ -171,8 +191,8 @@ run_vale_assembly() {
   local missing_files=()
   local abs_modules=()
   while IFS= read -r module_path; do
-    clean_path="${module_path#./}"
-    full_path="$repo_root/$clean_path"
+    local clean_path="${module_path#./}"
+    local full_path="$repo_root/$clean_path"
     if [ ! -f "$full_path" ]; then
       missing_files+=("$full_path")
     else
@@ -194,7 +214,11 @@ run_vale_assembly() {
   fi
 
   local modules_output
-  modules_output=$(printf '%s\n' "${abs_modules[@]}" | xargs vale --output CLI "${VALE_ARGS[@]}")
+  if [ ${#abs_modules[@]} -gt 0 ]; then
+    modules_output=$(printf '%s\n' "${abs_modules[@]}" | xargs vale --output CLI "${VALE_ARGS[@]}" 2>/dev/null || true)
+  else
+    modules_output=""
+  fi
 
   if [ -z "$modules_output" ]; then
     echo "✅ No issues found in modules."
@@ -213,12 +237,15 @@ run_vale_dir() {
   echo "Scanning $scan_dir for assemblies..."
 
   local -a assemblies=()
-  while IFS= read -r line; do
-    assemblies+=("$line")
-  done < <(find "$scan_dir" \
-    \( -type d -name "_*" -prune \) \
-    -o \
-    \( -type f -name "*.adoc" -exec grep -lq "^include::.*modules/" {} \; -print \))
+  # Find .adoc files, exclude directories starting with _, then grep for assemblies
+  local adoc_files
+  adoc_files=$(find "$scan_dir" -type f -name "*.adoc" ! -path "*/_*" -print0 2>/dev/null)
+
+  if [ -n "$adoc_files" ]; then
+    while IFS= read -r line; do
+      [ -n "$line" ] && assemblies+=("$line")
+    done < <(printf '%s' "$adoc_files" | xargs -0 grep -l "^include::.*modules/" 2>/dev/null || true)
+  fi
 
   if [ ${#assemblies[@]} -eq 0 ]; then
     echo "No assembly files found."
@@ -236,9 +263,27 @@ run_vale_dir() {
   done
 }
 
+# Check required dependencies
 if ! command -v vale >/dev/null 2>&1; then
   echo "Error: vale is not installed or not in PATH." >&2
   echo "Install: https://vale.sh/docs/vale-cli/installation/" >&2
+  exit 1
+fi
+
+if ! command -v git >/dev/null 2>&1; then
+  echo "Error: git is not installed or not in PATH." >&2
+  exit 1
+fi
+
+if ! command -v awk >/dev/null 2>&1; then
+  echo "Error: awk is not installed or not in PATH." >&2
+  exit 1
+fi
+
+# Validate .vale.ini exists
+if [ ! -f "$ORIGINAL_VALE_INI" ]; then
+  echo "Error: Configuration file '$ORIGINAL_VALE_INI' not found." >&2
+  echo "Please run this script from the repository root." >&2
   exit 1
 fi
 
