@@ -10,7 +10,9 @@
 #
 # FLAGS:
 #   --cqa:               Uses a temporary config with all AsciiDocDITA rules enabled.
+#   --style <StyleName>: Enables a specific style package (e.g., AsciiDocDITA, RedHat).
 #   --rule <Style.Rule>: Checks for only one specific rule (e.g., AsciiDocDITA.RelatedLinks).
+#   --level <level>:     Filter output by severity: 'error', 'warning', or 'all' (default: all).
 #   --repo:              (Default) Uses the standard .vale.ini in the repository.
 #   --help, -h:          Shows this help message.
 #
@@ -43,7 +45,7 @@ cleanup_temp_files() {
 trap cleanup_temp_files EXIT INT TERM
 
 show_help() {
-  echo "Usage: $0 <scope> [path] [--cqa|--repo] [--rule <Rule.Name>]"
+  echo "Usage: $0 <scope> [path] [flags]"
   echo ""
   echo "SCOPES:"
   echo "  pr          Checks all changed .adoc files on current branch"
@@ -51,36 +53,40 @@ show_help() {
   echo "  assembly    Checks one assembly file and its modules"
   echo ""
   echo "FLAGS:"
-  echo "  --cqa         Use temporary config with AsciiDocDITA style enabled"
-  echo "  --repo        Use repository .vale.ini config (default)"
-  echo "  --rule <Rule.Name>    Run only one specific Vale rule"
-  echo "  --help, -h    Show this help message"
+  echo "  --cqa                 Use temporary config with AsciiDocDITA style enabled"
+  echo "  --style <StyleName>   Enable a specific style package (e.g., AsciiDocDITA, RedHat)"
+  echo "  --rule <Rule.Name>    Run only one specific Vale rule (e.g., AsciiDocDITA.RelatedLinks)"
+  echo "  --level <level>       Filter output: 'error', 'warning', or 'all' (default: all)"
+  echo "  --repo                Use repository .vale.ini config (default)"
+  echo "  --help, -h            Show this help message"
   echo ""
   echo "EXAMPLES:"
   echo "  $0 pr"
   echo "  $0 pr --cqa"
-  echo "  $0 dir extensions/"
+  echo "  $0 pr --level error"
+  echo "  $0 dir extensions/ --style RedHat"
   echo "  $0 assembly path/to/file.adoc --rule AsciiDocDITA.RelatedLinks"
+  echo "  $0 pr --style AsciiDocDITA --level warning"
 }
 
 setup_vale_config_and_rule() {
   local use_cqa=$1
   local single_rule=$2
+  local custom_style=$3
   local base_ini="$ORIGINAL_VALE_INI"
   local style_to_add=""
 
-  if [ -n "$single_rule" ]; then
+  # Determine which style to add
+  if [ "$use_cqa" -eq 1 ]; then
+    style_to_add="AsciiDocDITA"
+  elif [ -n "$custom_style" ]; then
+    style_to_add="$custom_style"
+  elif [ -n "$single_rule" ]; then
     style_to_add="${single_rule%%.*}"
   fi
 
-  if [ "$use_cqa" -eq 1 ]; then
-    # Create temp file in repo root so Vale can find styles/ and config/ directories
-    TEMP_VALE_INI=$(mktemp .vale.ini.temp.XXXXXX)
-    TEMP_FILES+=("$TEMP_VALE_INI")
-    sed 's/^\(BasedOnStyles = .*\)$/\1, AsciiDocDITA/' "$base_ini" > "$TEMP_VALE_INI"
-    VALE_ARGS=(--config "$TEMP_VALE_INI")
-
-  elif [ -n "$style_to_add" ]; then
+  # Create temp config if we need to add a style
+  if [ -n "$style_to_add" ]; then
     if ! grep -q "BasedOnStyles.*$style_to_add" "$base_ini"; then
       # Create temp file in repo root so Vale can find styles/ and config/ directories
       TEMP_VALE_INI=$(mktemp .vale.ini.temp.XXXXXX)
@@ -94,6 +100,7 @@ setup_vale_config_and_rule() {
     VALE_ARGS=()
   fi
 
+  # Add rule filter if specified
   if [ -n "$single_rule" ]; then
     VALE_ARGS+=(--filter=".Name=='$single_rule'")
   fi
@@ -139,7 +146,7 @@ run_vale_pr() {
     output=$(
       set -o pipefail
       printf '%s' "$changed_files" \
-        | xargs -0 vale --output CLI --minAlertLevel=suggestion --no-exit "${VALE_ARGS[@]}" 2>/dev/null || true
+        | xargs -0 vale --output CLI --minAlertLevel="$ALERT_LEVEL" --no-exit "${VALE_ARGS[@]}" 2>/dev/null || true
     )
   fi
 
@@ -159,7 +166,7 @@ run_vale_assembly() {
 
   echo "--- Linting Assembly: $assembly_file ---"
   local assembly_output
-  assembly_output=$(vale --output CLI "${VALE_ARGS[@]}" "$assembly_file")
+  assembly_output=$(vale --output CLI --minAlertLevel="$ALERT_LEVEL" "${VALE_ARGS[@]}" "$assembly_file")
 
   if [ -z "$assembly_output" ]; then
     echo "✅ No issues found."
@@ -215,7 +222,7 @@ run_vale_assembly() {
 
   local modules_output
   if [ ${#abs_modules[@]} -gt 0 ]; then
-    modules_output=$(printf '%s\n' "${abs_modules[@]}" | xargs vale --output CLI "${VALE_ARGS[@]}" 2>/dev/null || true)
+    modules_output=$(printf '%s\n' "${abs_modules[@]}" | xargs vale --output CLI --minAlertLevel="$ALERT_LEVEL" "${VALE_ARGS[@]}" 2>/dev/null || true)
   else
     modules_output=""
   fi
@@ -289,6 +296,8 @@ fi
 
 USE_CQA=0
 SINGLE_RULE=""
+STYLE_TO_ADD=""
+ALERT_LEVEL="suggestion"
 SCOPE=""
 ARGS=()
 
@@ -306,6 +315,34 @@ while [[ "$#" -gt 0 ]]; do
         shift 2
       else
         echo "Error: --rule requires <Rule.Name>." >&2
+        show_help
+        exit 1
+      fi
+      ;;
+    --style=*)
+      STYLE_TO_ADD="${1#*=}"
+      shift
+      ;;
+    --style)
+      if [[ -n "$2" && "${2:0:1}" != "-" ]]; then
+        STYLE_TO_ADD="$2"
+        shift 2
+      else
+        echo "Error: --style requires <StyleName>." >&2
+        show_help
+        exit 1
+      fi
+      ;;
+    --level=*)
+      ALERT_LEVEL="${1#*=}"
+      shift
+      ;;
+    --level)
+      if [[ -n "$2" && "${2:0:1}" != "-" ]]; then
+        ALERT_LEVEL="$2"
+        shift 2
+      else
+        echo "Error: --level requires error|warning|all." >&2
         show_help
         exit 1
       fi
@@ -329,7 +366,16 @@ if [ -z "$SCOPE" ]; then
   exit 1
 fi
 
-setup_vale_config_and_rule "$USE_CQA" "$SINGLE_RULE"
+# Validate and normalize alert level
+case "$ALERT_LEVEL" in
+  error) ALERT_LEVEL="error" ;;
+  warning) ALERT_LEVEL="warning" ;;
+  all) ALERT_LEVEL="suggestion" ;;
+  suggestion) ALERT_LEVEL="suggestion" ;;
+  *) echo "Error: --level must be 'error', 'warning', or 'all'." >&2; exit 1 ;;
+esac
+
+setup_vale_config_and_rule "$USE_CQA" "$SINGLE_RULE" "$STYLE_TO_ADD"
 
 case "$SCOPE" in
   pr)
