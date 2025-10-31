@@ -74,16 +74,16 @@ setup_vale_config_and_rule() {
   fi
 
   if [ "$use_cqa" -eq 1 ]; then
-    # Cross-platform temp file creation
-    TEMP_VALE_INI=$(mktemp "${TMPDIR:-.}/.vale.ini.temp.XXXXXX" 2>/dev/null || mktemp -t .vale.ini.temp)
+    # Create temp file in repo root so Vale can find styles/ and config/ directories
+    TEMP_VALE_INI=$(mktemp .vale.ini.temp.XXXXXX)
     TEMP_FILES+=("$TEMP_VALE_INI")
     sed 's/^\(BasedOnStyles = .*\)$/\1, AsciiDocDITA/' "$base_ini" > "$TEMP_VALE_INI"
     VALE_ARGS=(--config "$TEMP_VALE_INI")
 
   elif [ -n "$style_to_add" ]; then
     if ! grep -q "BasedOnStyles.*$style_to_add" "$base_ini"; then
-      # Cross-platform temp file creation
-      TEMP_VALE_INI=$(mktemp "${TMPDIR:-.}/.vale.ini.temp.XXXXXX" 2>/dev/null || mktemp -t .vale.ini.temp)
+      # Create temp file in repo root so Vale can find styles/ and config/ directories
+      TEMP_VALE_INI=$(mktemp .vale.ini.temp.XXXXXX)
       TEMP_FILES+=("$TEMP_VALE_INI")
       sed "s/^\(BasedOnStyles = .*\)$/\1, $style_to_add/" "$base_ini" > "$TEMP_VALE_INI"
       VALE_ARGS=(--config "$TEMP_VALE_INI")
