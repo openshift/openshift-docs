@@ -393,7 +393,7 @@ run_vale_assembly() {
   fi
 
   local modules_output
-  modules_output=$(printf '%s\n' "${abs_modules[@]}" | xargs run_vale)
+  modules_output=$(run_vale "${abs_modules[@]}")
   display_output "$modules_output" "modules"
 }
 
@@ -417,16 +417,13 @@ run_vale_dir() {
   echo "Scanning $scan_dir for assemblies..."
 
   # Find all .adoc files, excluding paths with underscore directories (partials)
-  local adoc_files
-  adoc_files=$(find "$scan_dir" -type f -name "*.adoc" ! -path "*/_*" -print0 2>/dev/null)
-
-  # Filter for assemblies (files containing "include::.*modules/")
+  # Then filter for assemblies (files containing "include::.*modules/")
   local -a assemblies=()
-  if [ -n "$adoc_files" ]; then
-    while IFS= read -r line; do
-      [ -n "$line" ] && assemblies+=("$line")
-    done < <(printf '%s' "$adoc_files" | xargs -0 grep -l "^include::.*modules/" 2>/dev/null || true)
-  fi
+  while IFS= read -r -d '' file; do
+    if grep -q "^include::.*modules/" "$file" 2>/dev/null; then
+      assemblies+=("$file")
+    fi
+  done < <(find "$scan_dir" -type f -name "*.adoc" ! -path "*/_*" -print0 2>/dev/null)
 
   # Check if any assemblies were found
   if [ ${#assemblies[@]} -eq 0 ]; then
