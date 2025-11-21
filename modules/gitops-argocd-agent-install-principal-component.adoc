@@ -1,0 +1,326 @@
+// Module included in the following assembly:
+//
+// * argocd-agent-installation/gitops-argocd-agent-install-principal-component.adoc
+
+:_mod-docs-content-type: PROCEDURE
+[id="gitops-argocd-agent-install-principal-component_{context}"]
+= Installing the Principal component
+
+You can install the Principal component on the hub cluster by using the Argo CD custom resource (CR) to manage communication with connected Agent components. Deploy the Principal component on the hub cluster, provide details of principal resources to create required secrets, and then restart the Principal component.
+
+.Procedure
+
+. Deploy the Argo CD instance with the Principal component enabled.
+The following example shows the configuration for enabling the Principal component in the Argo CD CR:
++
+[source,yaml]
+----
+apiVersion: argoproj.io/v1beta1
+kind: ArgoCD
+metadata:
+  name: openshift-gitops 
+   # Name of the instance
+spec:
+  # Disable the main controller on the hub
+  controller:
+    enabled: false
+
+  # Argo CD Agent configuration
+  argoCDAgent:
+    # Enable the Principal component
+    principal:
+      enabled: true
+
+      # Authentication method: mTLS with certificate CN extraction
+      auth: "mtls:CN=([^,]+)"
+      logLevel: "info"
+
+      # Namespace management configuration
+      namespace:
+        allowedNamespaces:
+          - "*"
+
+      # TLS configuration for secure communication
+      tls:
+        insecureGenerate: false   
+
+      # JWT configuration for token-based authentication
+      jwt:
+        insecureGenerate: false
+
+  # Application source namespaces
+  sourceNamespaces:
+    - "agent-managed"
+    - "agent-autonomous"
+----
++
+[NOTE]
+====
+* The namespace names specified in sourceNamespaces must exactly match the corresponding Agent names. If they do not match, the Principal cannot deploy or monitor applications on the spoke cluster in managed mode, or monitor applications on the spoke cluster in autonomous mode. 
+
+* The Argo CD CR must be installed as a `cluster-scoped` Argo CD instance. See the Additional Resources section for how to install a `cluster-scoped` Argo CD instance.
+====
+
+.. Apply the Argo CD resource to the hub cluster:
++
+[source,terminal]
+----
+$ oc apply -f argocd.yaml -n "<PRINCIPAL_NAMESPACE>" --context "<PRINCIPAL_CONTEXT>"
+----
++
+[NOTE]
+====
+At this stage, Argo CD pods start successfully, but the Principal pod remains in a `Running` (not Ready) state because the required secrets have not yet been created. Secrets must be created later because some configurations, such as the principal hostname and resource proxy service names, are available only after the Operator enables the Principal component.
+====
+
+.. Verify Argo CD instance deployment. 
+Check the pods in the Principal namespace by running the following command.
++
+[source,terminal]
+----
+$ oc get pod -n "<PRINCIPAL_NAMESPACE>" --context "<PRINCIPAL_CONTEXT>"
+----
++
+As a result, the following output is displayed:
++
+[source,terminal]
+----
+NAME                                               READY  STATUS 
+openshift-gitops-agent-principal-xxxxxxxxx-xxxxx   0/1    Running
+openshift-gitops-redis-xxxxxxxxx-xxxxx             1/1    Running
+openshift-gitops-repo-server-xxxxxxxxx-xxxxx       1/1    Running
+openshift-gitops-server-xxxxxxxxx-xxxxx            1/1    Running
+----
+
+.. Verify the services created by the operator by running the following command:
++
+[source,terminal]
+----
+$ oc get svc -n "<PRINCIPAL_NAMESPACE>" --context "<PRINCIPAL_CONTEXT>"
+----
++
+As a result, the following output is displayed:
++
+[source,terminal]
+----
+NAME                                            TYPE      PORT(S)
+openshift-gitops-agent-principal                ClusterIP 443/TCP
+openshift-gitops-agent-principal-healthz        ClusterIP 8030/TCP
+openshift-gitops-agent-principal-metrics        ClusterIP 9000/TCP
+openshift-gitops-agent-principal-redisproxy     ClusterIP 6379/TCP
+openshift-gitops-agent-principal-resource-proxy ClusterIP 9090/TCP
+----
+
+.. By default, the Operator creates a route for the Principal, which will be used to access Principal services. Verify the default route for the Principal component by running the following command:
++
+[source,terminal]
+----
+$ oc get route -n "<PRINCIPAL_NAMESPACE>" --context "<PRINCIPAL_CONTEXT>"
+----
++
+As a result, the following output is displayed:
++
+[source,terminal]
+----
+NAME                               HOST/PORT
+openshift-gitops-agent-principal   <HOST_NAME>
+----
+
+.. If you want to disable the route or use a `LoadBalancer` service, update the following section in the Argo CD resource:
++
+[source,yaml]
+----
+kind: ArgoCD
+spec:
+  # (...)
+  argocdAgent:
+    principal:
+      server:
+        service:
+          type: LoadBalancer        
+        route:
+          enabled: false
+----
+
+. Create the required namespaces.
+You must create one namespace for each Agent that you plan to connect to the Principal. The namespace names must match the Agent names. Run the following commands:
++
+[source,terminal]
+----
+$ oc create namespace agent-managed
+$ oc create namespace agent-autonomous
+----
++
+Each Agent requires a dedicated namespace because Argo CD Agent architecture uses a *namespace-to-agent* mapping model.  
+For managed Agents, the Principal sends applications only to those created in the corresponding Agent namespace on the hub cluster. Similarly, for autonomous Agents, applications are created in the respective Agent namespace at the hub.
+
+. Ensure that the `AppProject` resource used for your Argo CD Applications on the hub includes all Agent namespaces under the `spec.sourceNamespaces` field, for example:
++
+[source,yaml]
+----
+spec:
+  sourceNamespaces:
+  - "agent-managed"
+  - "agent-autonomous"
+----
++
+If you modify the `AppProject`, restart the Argo CD pods to apply the changes.
+
+. Create Required Secrets.
+The principal component uses a Public Key Infrastructure (PKI) to secure all communications.
++
+[NOTE]
+====
+The CLI-generated PKI is intended for development and testing purposes only. For production environments, use certificates issued by your organization's PKI or a trusted certificate authority.
+====
+
+.. Initialize the PKI
+
+... To initialize the Certificate Authority (CA) that signs other certificates, run the following command:
++
+[source,terminal]
+----
+$ argocd-agentctl pki init \
+--principal-namespace "<PRINCIPAL_NAMESPACE>" \
+--principal-context "<PRINCIPAL_CONTEXT>"
+----
++
+where:
+
+`<principal-namespace>`:: Specifies the namespace where the Principal component is installed.
+`<principal-context>`:: Specifies the context of the Principal component.
++
+This command generates a self-signed CA certificate and private key, and creates the `argocd-agent-ca` secret that contains the CA credentials. The CA is valid for signing certificates and includes a default expiration period.
+
+... To generate the server certificate for the Principal's gRPC service, run the following command:
++
+[source,terminal]
+----
+$ argocd-agentctl pki issue principal \
+    --principal-namespace "<PRINCIPAL_NAMESPACE>" \
+    --principal-context "<PRINCIPAL_CONTEXT>" \
+    --dns "<PRINCIPAL_DNS_NAME>"
+----
++
+where:
+
+`<ip>`:: Specifies the comma-separated list of IP addresses where the Principal component is accessible.
+`<dns>`:: Specifies the hostname of the Principal service. Agents use this value to connect to the Principal's gRPC service. This should match the `spec.host` value of the Principal's route, or `status.loadBalancer.ingress.hostname` when the Principal service is of type `LoadBalancer`.
+`<u>`, `<upsert>`:: Updates the existing certificate if one already exists.
+`<principal-namespace>`:: Specifies the namespace where the Principal component is installed.
+`<principal-context>`:: Specifies the context of the Principal component.
++
+This command issues a TLS certificate for the Principal to enable secure gRPC communication between the Principal and Agent components. It also creates the `argocd-agent-principal-tls` secret that contains the generated certificate and key.
+
+... The resource proxy enables Argo CD to access live resources on remote clusters through the Principal component. It requires its own certificate for mutual TLS (mTLS) authentication. To generate the server certificate for the resource proxy service, run the following command:
++
+[source,terminal]
+----
+$ argocd-agentctl pki issue resource-proxy \
+    --principal-namespace "<PRINCIPAL_NAMESPACE>" \
+    --principal-context "<PRINCIPAL_CONTEXT>" \
+    --dns "<RESOURCE_PROXY_DNS>"
+----
++
+where:
+
+`<ip>`:: Specifies the comma-separated list of IP addresses for the resource proxy that are reachable by the Argo CD API server.
+`<dns>`:: Specifies the service name for the `resource-proxy` in the hub cluster, for example, `(ArgoCD instance name)-agent-principal-resource-proxy`. Argo CD uses this service to connect to the `resource-proxy`. Because the Argo CD and the `resource-proxy` run in the same cluster, Argo CD can connect using the service name directly.
+`<u>`, `<upsert>`:: Updates the existing certificate if one already exists.
+`<principal-namespace>`:: Specifies the namespace where the Principal component is installed.
+`<principal-context>`:: Specifies the context of the Principal component.
++
+This command creates the `argocd-agent-resource-proxy-tls` secret that contains the TLS certificate for the resource proxy component. The certificate includes the required Subject Alternative Names (SANs) for the resource proxy service and is signed by the same Certificate Authority (CA) that was created during PKI initialization.
+
+... You can create the JSON Web Token (JWT) signing key that the Principal component uses to sign authentication tokens. To generate the RSA private key, run the following command:
++
+[source,terminal]
+----
+$ argocd-agentctl jwt create-key \
+    --principal-namespace "<PRINCIPAL_NAMESPACE>" \
+    --principal-context "<PRINCIPAL_CONTEXT>"
+----
++
+where:
+
+`<u>`, `<upsert>`:: Updates the existing JWT key if one already exists.
+`<principal-namespace>`:: Specifies the namespace where the Principal component is installed.
+`<principal-context>`:: Specifies the context of the Principal component.
++
+This command generates a 4096-bit RSA private key in the `PKCS#8 PEM` format and stores it in the `argocd-agent-jwt` secret.
+
+... After you generate all required certificates and keys, verify that the corresponding secrets are created in the Principal namespace by running the following command:
++
+[source,terminal]
+----
+$ oc get secrets -n "<PRINCIPAL_NAMESPACE>" --context "<PRINCIPAL_CONTEXT>" | grep agent
+----
++
+As a result, the following output is displayed:
++
+[source,terminal]
+----
+NAME                               TYPE
+argocd-agent-ca                    kubernetes.io/tls
+argocd-agent-principal-tls         kubernetes.io/tls
+argocd-agent-resource-proxy-tls    kubernetes.io/tls
+argocd-agent-jwt                   Opaque
+----
+
+... Run the following command to verify that all the required secrets are created before deploying the Principal component.
++
+[source,terminal]
+----
+$ oc get pod -n "<PRINCIPAL_NAMESPACE>" --context "<PRINCIPAL_CONTEXT>"
+----
++
+As a result, the following output is displayed:
++
+[source,terminal]
+----
+NAME                                               READY  STATUS 
+openshift-gitops-agent-principal-xxxxxxxxx-xxxxx   1/1    Running
+openshift-gitops-redis-xxxxxxxxx-xxxxx             1/1    Running
+openshift-gitops-repo-server-xxxxxxxxx-xxxxx       1/1    Running
+openshift-gitops-server-xxxxxxxxx-xxxxx            1/1    Running
+----
+
+. Principal component starts successfully when all the required secrets are created. After the required secrets are created, verify that the Principal component is enabled by running the following command.
++
+[source,terminal]
+----
+$ oc get pod -n "<PRINCIPAL_NAMESPACE>" --context "<PRINCIPAL_CONTEXT>"
+----
++
+As a result, the following output is displayed:
++
+[source,terminal]
+----
+NAME                                               READY  STATUS 
+openshift-gitops-agent-principal-xxxxxxxxx-xxxxx   1/1    Running
+openshift-gitops-redis-xxxxxxxxx-xxxxx             1/1    Running
+openshift-gitops-repo-server-xxxxxxxxx-xxxxx       1/1    Running
+openshift-gitops-server-xxxxxxxxx-xxxxx            1/1    Running
+----
+
+.. Check the pod logs in the Principal namespace by running the following command:
++
+[source,terminal]
+----
+$ oc logs "<PRINCIPAL_POD>" -n "<PRINCIPAL_NAMESPACE>" --context "<PRINCIPAL_CONTEXT>"
+----
++
+As a result, the following messages are displayed in the pod logs.
++
+[source,terminal]
+----
+level=info msg="Starting metrics server on http://0.0.0.0:8000/metrics"
+level=info msg="Redis proxy started on 0.0.0.0:6379"
+level=info msg="Resource proxy started"
+level=info msg="Namespace informer synced and ready"
+level=info msg="Starting healthz server on :8003"
+----
+
+.Verification
+
+Ensure that all Principal pods show a `Running` status and that the corresponding services and route are created. The Principal component is now ready to communicate securely with the Agent components on workload clusters. For more information on metrics exposed by the Principal component, see link:https://argocd-agent.readthedocs.io/latest/operations/metrics/#principal-metrics[Principal metrics, Argo CD upstream documentation].
