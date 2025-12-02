@@ -1,7 +1,6 @@
 // Module included in the following assemblies:
 //
 // * hosted_control_planes/hcp-deploy/hcp-deploy-bm.adoc
-// * hosted_control_planes/hcp-deploy/hcp-deploy-ibm-z.adoc
 // * hosted_control_planes/hcp-deploy/hcp-deploy-ibm-power.adoc
 
 :_mod-docs-content-type: PROCEDURE
@@ -21,6 +20,27 @@ On bare-metal infrastructure, you can create or import a hosted cluster. After y
 - For best security and management practices, create a hosted cluster separate from other hosted clusters. 
 
 - Verify that you have a default storage class configured for your cluster. Otherwise, you might see pending persistent volume claims (PVCs).
+
+- By default when you use the `hcp create cluster agent` command, the command creates a hosted cluster with configured node ports. The preferred publishing strategy for hosted clusters on bare metal exposes services through a load balancer. If you create a hosted cluster by using the web console or by using {rh-rhacm-title}, to set a publishing strategy for a service besides the Kubernetes API server, you must manually specify the `servicePublishingStrategy` information in the `HostedCluster` custom resource.
+
+- Ensure that you meet the requirements described in "Requirements for {hcp} on bare metal", which includes requirements related to infrastructure, firewalls, ports, and services. For example, those requirements describe how to add the appropriate zone labels to the bare-metal hosts in your management cluster, as shown in the following example commands:
++
+[source,terminal]
+----
+$ oc label node [compute-node-1] topology.kubernetes.io/zone=zone1
+----
++
+[source,terminal]
+----
+$ oc label node [compute-node-2] topology.kubernetes.io/zone=zone2 
+----
++
+[source,terminal] 
+----
+$ oc label node [compute-node-3] topology.kubernetes.io/zone=zone3
+----
+
+- Ensure that you have added bare-metal nodes to a hardware inventory.
 
 .Procedure
 
@@ -67,6 +87,39 @@ $ hcp create cluster agent \
 <11> Specify the node pool replica count, such as `3`. You must specify the replica count as `0` or greater to create the same number of replicas. Otherwise, you do not create node pools.
 <12> After the `--ssh-key` flag, specify the path to the SSH key, such as `user/.ssh/id_rsa`.
 
+. Configure the service publishing strategy. By default, hosted clusters use the `NodePort` service publishing strategy because node ports are always available without additional infrastructure. However, you can configure the service publishing strategy to use a load balancer.
+
+** If you are using the default `NodePort` strategy, configure the DNS to point to the hosted cluster compute nodes, not the management cluster nodes. For more information, see "DNS configurations on bare metal".
+
+** For production environments, use the `LoadBalancer` strategy because this strategy provides certificate handling and automatic DNS resolution. The following example demonstrates changing the service publishing `LoadBalancer` strategy in your hosted cluster configuration file:
++
+[source,yaml]
+----
+# ...
+spec:
+  services:
+  - service: APIServer
+    servicePublishingStrategy:
+      type: LoadBalancer #<1>
+  - service: Ignition
+    servicePublishingStrategy:
+      type: Route
+  - service: Konnectivity
+    servicePublishingStrategy:
+      type: Route
+  - service: OAuthServer
+    servicePublishingStrategy:
+      type: Route
+  - service: OIDC
+    servicePublishingStrategy:
+      type: Route
+  sshKey:
+    name: <ssh_key>
+# ...
+----
++
+<1> Specify `LoadBalancer` as the API Server type. For all other services, specify `Route` as the type.
+
 . Apply the changes to the hosted cluster configuration file by entering the following command:
 +
 [source,terminal]
@@ -98,6 +151,183 @@ $ oc get pods -n <hosted_cluster_namespace>
 ----
 
 . Confirm that the hosted cluster is ready. The status of `Available: True` indicates the readiness of the cluster and the node pool status shows `AllMachinesReady: True`. These statuses indicate the healthiness of all cluster Operators.
+
+. Install MetalLB in the hosted cluster:
++
+.. Extract the `kubeconfig` file from the hosted cluster and set the environment variable for hosted cluster access by entering the following commands:
++
+[source,terminal]
+----
+$ oc get secret \
+  <hosted_cluster_namespace>-admin-kubeconfig \
+  -n <hosted_cluster_namespace> \
+  -o jsonpath='{.data.kubeconfig}' \
+  | base64 -d > \
+  kubeconfig-<hosted_cluster_namespace>.yaml
+----
++
+[source,terminal]
+----
+$ export KUBECONFIG="/path/to/kubeconfig-<hosted_cluster_namespace>.yaml"
+----
++
+.. Install the MetalLB Operator by creating the `install-metallb-operator.yaml` file:
++
+[source,yaml]
+----
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: metallb-system
+---
+apiVersion: operators.coreos.com/v1
+kind: OperatorGroup
+metadata:
+  name: metallb-operator
+  namespace: metallb-system
+---
+apiVersion: operators.coreos.com/v1alpha1
+kind: Subscription
+metadata:
+  name: metallb-operator
+  namespace: metallb-system
+spec:
+  channel: "stable"
+  name: metallb-operator
+  source: redhat-operators
+  sourceNamespace: openshift-marketplace
+  installPlanApproval: Automatic
+# ...
+----
++
+.. Apply the file by entering the following command:
++
+[source,terminal]
+----
+$ oc apply -f install-metallb-operator.yaml
+----
++
+.. Configure the MetalLB IP address pool by creating the `deploy-metallb-ipaddresspool.yaml` file:
++
+[source,yaml]
+----
+apiVersion: metallb.io/v1beta1
+kind: IPAddressPool
+metadata:
+  name: metallb
+  namespace: metallb-system
+spec:
+  autoAssign: true
+  addresses:
+  - 10.11.176.71-10.11.176.75
+---
+apiVersion: metallb.io/v1beta1
+kind: L2Advertisement
+metadata:
+  name: l2advertisement
+  namespace: metallb-system
+spec:
+  ipAddressPools:
+  - metallb
+# ...
+----
++
+.. Apply the configuration by entering the following command:
++
+[source,terminal]
+----
+$ oc apply -f deploy-metallb-ipaddresspool.yaml
+----
++
+.. Verify the installation of MetalLB by checking the Operator status, the IP address pool, and the `L2Advertisement` resource by entering the following commands:
++
+[source,terminal]
+----
+$ oc get pods -n metallb-system
+----
++
+[source,terminal]
+----
+$ oc get ipaddresspool -n metallb-system
+----
++
+[source,terminal]
+----
+$ oc get l2advertisement -n metallb-system
+----
+
+. Configure the load balancer for ingress:
++
+.. Create the `ingress-loadbalancer.yaml` file:
++
+[source,yaml]
+----
+apiVersion: v1
+kind: Service
+metadata:
+  annotations:
+    metallb.universe.tf/address-pool: metallb 
+  name: metallb-ingress
+  namespace: openshift-ingress
+spec:
+  ports:
+    - name: http
+      protocol: TCP
+      port: 80
+      targetPort: 80
+    - name: https
+      protocol: TCP
+      port: 443
+      targetPort: 443
+  selector:
+    ingresscontroller.operator.openshift.io/deployment-ingresscontroller: default
+  type: LoadBalancer
+# ...
+----
++
+.. Apply the configuration by entering the following command:
++
+[source,terminal]
+----
+$ oc apply -f ingress-loadbalancer.yaml
+----
++
+.. Verify that the load balancer service works as expected by entering the following command:
++
+[source,terminal]
+----
+$ oc get svc metallb-ingress -n openshift-ingress
+----
++
+.Example output
++
+[source,text]
+----
+NAME              TYPE           CLUSTER-IP       EXTERNAL-IP    PORT(S)                      AGE
+metallb-ingress   LoadBalancer   172.31.127.129   10.11.176.71   80:30961/TCP,443:32090/TCP   16h
+----
+
+. Configure the DNS to work with the load balancer:
++
+.. Configure the DNS for the `apps` domain by pointing the `*.apps.<hosted_cluster_namespace>.<base_domain>` wildcard DNS record to the load balancer IP address.
++
+.. Verify the DNS resolution by entering the following command:
++
+[source,terminal]
+----
+$ nslookup console-openshift-console.apps.<hosted_cluster_namespace>.<base_domain> <load_balancer_ip_address>
+----
++
+.Example output
++
+[source,text]
+----
+Server:         10.11.176.1
+Address:        10.11.176.1#53
+
+Name:   console-openshift-console.apps.my-hosted-cluster.sample-base-domain.com
+Address: 10.11.176.71
+----
 
 .Verification
 
