@@ -4,7 +4,7 @@
 
 :_mod-docs-content-type: PROCEDURE
 [id="configuring-gnss-to-ntp-failover_{context}"]
-= Configuring GNSS to NTP failover
+= Creating a PTP Grandmaster Configuration with GNSS Failover
 
 This procedure configures a T-GM (Telecom Grandmaster) clock that uses an Intel E810 Westport Channel NIC as the PTP grandmaster clock with GNSS to NTP failover capabilities.
 
@@ -20,22 +20,255 @@ This procedure configures a T-GM (Telecom Grandmaster) clock that uses an Intel 
 
 .Procedure
 
-. Retrieve the existing `PtpConfig` profile by running the following command:
+. Verify the PTP Operator installation by running the following command:
 +
 [source,terminal]
 ----
-$ oc get PtpConfig grandmaster -n openshift-ptp -o yaml > ptpconfig_failover_amendment.yaml
+$ oc get pods -n openshift-ptp -o wide
+----
++
+The output is similar to the following listing the PTP Operator pod and the `linuxptp-daemon` pods:
++
+[source,terminal]
+----
+NAME                            READY   STATUS    RESTARTS   AGE
+linuxptp-daemon-xxxxx           2/2     Running   0          XXm
+ptp-operator-xxxxxxxxxx-xxxxx   1/1     Running   0          XXm
 ----
 
-* grandmaster: Replace with the actual name of your existing PtpConfig resource.
-*
+. Check which network interfaces support hardware timestamping by running the following command:
++
+[source,terminal]
+----
+$ oc get NodePtpDevice -n openshift-ptp -o yaml
+----
++
+The output is similar to the following:
++
+[source,terminal]
+----
+apiVersion: v1
+items:
+- apiVersion: ptp.openshift.io/v1
+  kind: NodePtpDevice
+  metadata:
+    name: mysno-sno.demo.lab
+    namespace: openshift-ptp
+  status:
+    devices:
+    - name: enp2s0
+    - name: enp3s0
+----
+* `enp2s0` and `enp3s0` are PTP-capable interfaces
 
-. Edit the `ptpconfig_failover_amendment.yaml` file.
+. The PTP profile uses node labels for matching. Check your Machine Config Pool (MCP) to find the node labels. Run the following command:
++
+[source,terminal]
+----
+$ oc get mcp
+----
++
+The output is similar to the following:
++
+[source,terminal]
+----
+NAME            CONFIG             UPDATED   UPDATING   DEGRADED   MACHINECOUNT   READYCOUNT
+master         master-xxxxx      True      False      False      3              3
+worker         worker-xxxxx      True      False      False      5              5
+----
+* In this example, the MCP name is `worker`.
 
-.. Before
+. Create a `PtpConfig` custom resource (CR) that configures the T-GM clock with GNSS to NTP failover. Save the following YAML configuration to a file named `ptp-config-gnss-ntp-failover.yaml`, replacing `<MCP-NAME>` with the name of your Machine Config Pool from the previous step.
++
+[source,yaml]
+----
+apiVersion: ptp.openshift.io/v1
+kind: PtpConfig
+metadata:
+  name: gnss-grandmaster-failover
+  namespace: openshift-ptp
+spec:
+  profile:
+    - name: "gnss-grandmaster-failover"
+
+      # --- PTP GRANDMASTER CONFIGURATION ---
+      ptp4lOpts: "-2 --summary_interval -4"
+      phc2sysOpts: -r -u 0 -m -N 8 -R 16 -s enp2s0 -n 24
+      ptpSchedulingPolicy: SCHED_FIFO
+      ptpSchedulingPriority: 10
+      ptpSettings:
+        logReduce: "true"
+
+      # --- FAILOVER CONFIGURATION ---
+
+      # Holdover time: 2400 seconds (40 minutes)
+      ts2phcOpts: "--ts2phc.holdover 2400"
+
+      # Configure Chronyd (Secondary Time Source)
+      chronydOpts: "-dd"
+      chronydConf: |
+        server clock1.rdu2.redhat.com iburst
+        makestep 1.0 -1
+        pidfile /var/run/chronyd.pid
+
+      plugins:
+        # Enable the NTP Failover Plugin
+        ntpfailover:
+          enabled: true
+          gnssFailover: true
+
+      # --- GNSS (ts2phc) CONFIGURATION (Primary Source) ---
+      ts2phcConf: |
+        [nmea]
+        ts2phc.master 1
+        [global]
+        use_syslog 0
+        verbose 1
+        logging_level 7
+        ts2phc.pulsewidth 100000000
+        ts2phc.nmea_serialport /dev/ttyGNSS0
+        [enp2s0]
+        ts2phc.extts_polarity rising
+        ts2phc.extts_correction 0
+
+      # --- PTP4L CONFIGURATION (Grandmaster Role) ---
+      ptp4lConf: |
+        [enp2s0]
+        masterOnly 1
+        [global]
+        twoStepFlag 1
+        priority1 128
+        priority2 128
+        domainNumber 24
+        clockClass 6
+        time_stamping hardware
+        logSyncInterval -4
+        summary_interval -4
+        use_syslog 1
+
+  recommend:
+    - profile: "gnss-grandmaster-failover"
+      priority: 4
+      match:
+        - nodeLabel: "node-role.kubernetes.io/master"
+        - nodeLabel: "node-role.kubernetes.io/<MCP-NAME>"
+----
++
+PTP4L Options:
++
+-2: Use PTP version 2
+--summary_interval -4: Log summary every 2^(-4) = 0.0625 seconds
++
+PHC2SYS Options:
++
+-r: Synchronize system clock from PTP hardware clock
+-u 0: Update rate multiplier
+-m: Print messages to stdout
+-N 8: Domain number for ptp4l
+-R 16: Update rate
+-s enp2s0: Source interface
+-n 24: Domain number
++
+Failover Configuration:
++
+ts2phcOpts: 40-minute holdover before switching to NTP
+chronydConf: NTP server configuration for failover
+ntpfailover plugin: Enables automatic GNSS-to-NTP switching
++
+GNSS Configuration:
++
+ts2phc.nmea_serialport: Serial port for GNSS receiver
+ts2phc.extts_polarity rising: 1PPS signal on rising edge
+Note: The PTP operator converts /dev/ttyGNSS0 to /gpsd/data internally
++
+PTP4L Configuration:
++
+masterOnly 1: Interface acts only as PTP master
+clockClass 6: GPS-synchronized quality level
+domainNumber 24: PTP domain
+time_stamping hardware: Use hardware timestamps
+
+. Apply the `PtpConfig` CR by running the following command:
++
+[source,terminal]
+----
+$ oc apply -f ptp-config-gnss-ntp-failover.yaml
+----
++
+The output is similar to the following:
++
+[source,terminal]
+----
+ptpconfig.ptp.openshift.io/gnss-grandmaster-failover created
+----
 
 .Verification
 
+. The PTP daemon checks for profile updates every 30 seconds. Wait approximately 30 seconds, then verify by running the following command:
++
+[source,terminal]
+----
+$ oc get ptpconfig -n openshift-ptp
+----
++
+The output is similar to the following:
++
+[source,terminal]
+----
+NAME                           AGE
+gnss-grandmaster-failover      2m
+----
+
+. Check the NodePtpDevice to see if the profile is applied by running the following command:
++
+[source,terminal]
+----
+$ oc describe nodeptpdevice mysno-sno.demo.lab -n openshift-ptp
+----
+
+. Check if the profile is being loaded by monitoring the deamon logs:
++
+[source,terminal]
+----
+oc logs -n openshift-ptp linuxptp-daemon-plvmq -c linuxptp-daemon-container --tail=100
+----
++
+Success indicators in the logs are:
++
+* `load profiles` - Profile is being loaded
+* `in applyNodePTPProfiles` - Profile is being applied
+* No `ptp profile doesn't exist for node` errors
+----
+
+. Check `chronyd` status to verify NTP is running as the secondary time source by running the following command:
++
+[source,terminal]
+----
+oc logs -n openshift-ptp linuxptp-daemon-plvmq -c linuxptp-daemon-container | grep chronyd
+----
++
+The output is similar to the following:
++
+[source,terminal]
+----
+chronyd version 4.5 starting
+Added source ID#0000000001 (clock1.rdu2.redhat.com)
+----
+
+. Check GNSS/gpsd by running the following command:
++
+[source,terminal]
+----
+oc logs -n openshift-ptp linuxptp-daemon-plvmq -c linuxptp-daemon-container | grep gpsd
+----
++
+The output shows the following when GNSS is functioning correctly:
+* gpsd starting successfully
+* No "No such file or directory" errors
+
+
+
+.
 . Check that the `PtpConfig` profile is applied to the node.
 
 .. Get the list of pods in the `openshift-ptp` namespace by running the following command:
