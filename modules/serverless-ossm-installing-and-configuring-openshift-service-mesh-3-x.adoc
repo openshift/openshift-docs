@@ -1,0 +1,240 @@
+:_mod-docs-content-type: PROCEDURE
+[id="serverless-ossm-installing-and-configuring-openshift-service-mesh-3-x_{context}"]
+= Installing and configuring {SMProductShortName} 3.x
+
+[role="_abstract"]
+You can integrate {SMProductShortName} 3.x with {ServerlessProductShortName} by installing and configuring the required Istio components, gateways, and Knative Serving resources. Once these resources are configured, you can deploy the Knative Serving instance with Istio to ensure that your serverless workloads run within the {SMProductShortName} environment. 
+
+.Procedure
+
+. Create an `Istio` resource in the `istio-system` namespace with the following configuration:
++
+[source,yaml]
+----
+apiVersion: sailoperator.io/v1
+kind: Istio
+metadata:
+  name: default
+spec:
+  values:
+    meshConfig:
+      defaultConfig:
+        terminationDrainDuration: 35s
+  updateStrategy:
+    inactiveRevisionDeletionGracePeriodSeconds: 30
+    type: InPlace
+  namespace: istio-system
+  version: v1.26-latest
+----
+
+. Create a project called `istio-system` by running the following command:
++
+[source,terminal]
+----
+$ oc new-project istio-system
+----
+
+. Apply the `Istio` custom resource (CR) by running the following command:
++
+[source,terminal]
+----
+$ oc apply -f istio.yaml
+----
+
+. Create an `IstioCNI` resource in the `istio-cni` namespace with the following configuration:
++
+[source,yaml]
+----
+apiVersion: sailoperator.io/v1
+kind: IstioCNI
+metadata:
+  name: default
+spec:
+  namespace: istio-cni
+  version: v1.26-latest
+----
+
+. Create a project called `istio-cni` by running the following command:
++
+[source,terminal]
+----
+$ oc new-project istio-cni
+----
+
+. Apply the `IstioCNI` CR by running the following command:
++
+[source,terminal]
+----
+$ oc apply -f istio-cni.yaml
+----
+
+. Create a file named `gateway-deploy.yaml` with the following configuration:
++
+[source,yaml]
+----
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: knative-istio-ingressgateway
+  namespace: knative-serving-ingress
+spec:
+  selector:
+    matchLabels:
+      knative: ingressgateway
+  template:
+    metadata:
+      annotations:
+        inject.istio.io/templates: gateway
+      labels:
+        knative: ingressgateway
+        sidecar.istio.io/inject: "true"
+    spec:
+      containers:
+        - name: istio-proxy
+          image: auto
+
+---
+# Set up roles to allow reading credentials for TLS
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: istio-ingressgateway-sds
+  namespace: knative-serving-ingress
+rules:
+  - apiGroups: [""]
+    resources: ["secrets"]
+    verbs: ["get", "watch", "list"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: istio-ingressgateway-sds
+  namespace: knative-serving-ingress
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: istio-ingressgateway-sds
+subjects:
+  - kind: ServiceAccount
+    name: default
+----
++
+* `spec.template.metadata.annotations.inject.istio.io/templates` specifies the gateway injection template rather than the default sidecar template.
+* `spec.template.metadata.labels.knative` defines a unique label for the gateway. This is required to ensure Gateways can select this workload.
+* `spec.template.metadata.labels.sidecar.istio.io/inject` enables gateway injection.
+* `spec.template.spec.containers.image` ensures that the image automatically updates each time the pod starts.
+
+. Apply the resource by running the following command:
++
+[source,terminal]
+----
+$ oc apply -f gateway-deploy.yaml
+----
+
+. Create gateway resources for the Knative Serving component by creating a file named `serving-gateways.yaml` with the following configuration:
++
+[source,yaml]
+----
+###########################################################
+# cluster external
+###########################################################
+apiVersion: v1
+kind: Service
+metadata:
+  name: knative-istio-ingressgateway
+  namespace: knative-serving-ingress
+spec:
+  type: ClusterIP
+  selector:
+    knative: ingressgateway
+  ports:
+    - name: http2
+      port: 80
+      targetPort: 8080
+    - name: https
+      port: 443
+      targetPort: 8443
+---
+apiVersion: networking.istio.io/v1beta1
+kind: Gateway
+metadata:
+  name: knative-ingress-gateway
+  namespace: knative-serving
+spec:
+  selector:
+    knative: ingressgateway
+  servers:
+    - hosts:
+        - '*'
+      port:
+        name: https
+        number: 443
+        protocol: HTTPS
+      tls:
+        credentialName: wildcard-certs
+        mode: SIMPLE
+---
+###########################################################
+# cluster local
+###########################################################
+apiVersion: v1
+kind: Service
+metadata:
+  labels:
+    experimental.istio.io/disable-gateway-port-translation: "true"
+  name: knative-local-gateway
+  namespace: knative-serving-ingress
+spec:
+  ports:
+    - name: http2
+      port: 80
+      protocol: TCP
+      targetPort: 8081
+  selector:
+    knative: ingressgateway
+  type: ClusterIP
+---
+apiVersion: networking.istio.io/v1beta1
+kind: Gateway
+metadata:
+  name: knative-local-gateway
+  namespace: knative-serving
+spec:
+  selector:
+    knative: ingressgateway
+  servers:
+    - hosts:
+        - '*'
+      port:
+        name: http
+        number: 8081
+        protocol: HTTP
+----
+
+. Apply the resource by running the following command:
++
+[source,terminal]
+----
+$ oc apply -f serving-gateways.yaml
+----
+
+. Create a `PeerAuthentication` resource in the `istio-system` namespace to enforce mTLS across the mesh with the following configuration:
++
+[source,yaml]
+----
+apiVersion: security.istio.io/v1
+kind: PeerAuthentication
+metadata:
+  name: mesh-mtls
+  namespace: istio-system
+spec:
+  mtls:
+    mode: STRICT
+----
+
+. Apply the resource by running the following command:
++
+[source,terminal]
+----
+$ oc apply -f peerauth.yaml
+----
