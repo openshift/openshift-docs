@@ -43,7 +43,7 @@ ptp-operator-75c77dbf86-xm9kl   1/1     Running   0          20m   10.129.0.45  
 * `ptp-operator-*`: The PTP Operator pod (one instance in the cluster)
 * `linuxptp-daemon-*`: The linuxptp daemon pods. A daemon pod runs on each node that matches the PtpConfig profile. Each daemon pod should show `2/2` in the READY column, indicating both containers (`linuxptp-daemon-container` and `kube-rbac-proxy`) are running.
 +
-NOTE: The number of `linuxptp-daemon` pods depends on how many nodes match the PtpConfig profile. In this example, all 5 worker nodes have PTP-capable network interfaces. For Single Node OpenShift (SNO) clusters, you will see only one `linuxptp-daemon` pod.
+NOTE: The number of `linuxptp-daemon` pods is determined by the node labels defined in the `PtpOperatorConfig` which controls the DaemonSet deployment. The PtpConfig profile matching, as shown in Step 4, only determines which specific PTP settings are applied on the running daemons. In this example, the operator's configuration targets all 5 worker nodes. For Single Node OpenShift (SNO) clusters, you will see only one `linuxptp-daemon` pod, as the configuration targets only the master node which acts as the worker.
 
 . Check which network interfaces support hardware timestamping by running the following command:
 +
@@ -56,56 +56,76 @@ The output is similar to the following:
 +
 [source,terminal]
 ----
-apiVersion: v1
-items:
-- apiVersion: ptp.openshift.io/v1
-  kind: NodePtpDevice
-  metadata:
-    name: worker-0.cluster.local
-    namespace: openshift-ptp
-  status:
-    devices:
-    - name: ens7f0
-    - name: ens7f1
-- apiVersion: ptp.openshift.io/v1
-  kind: NodePtpDevice
-  metadata:
-    name: worker-1.cluster.local
-    namespace: openshift-ptp
-  status:
-    devices:
-    - name: ens7f0
-    - name: ens7f1
-- apiVersion: ptp.openshift.io/v1
-  kind: NodePtpDevice
-  metadata:
-    name: worker-2.cluster.local
-    namespace: openshift-ptp
-  status:
-    devices:
-    - name: ens7f0
-    - name: ens7f1
-- apiVersion: ptp.openshift.io/v1
-  kind: NodePtpDevice
-  metadata:
-    name: worker-3.cluster.local
-    namespace: openshift-ptp
-  status:
-    devices:
-    - name: ens7f0
-    - name: ens7f1
-- apiVersion: ptp.openshift.io/v1
-  kind: NodePtpDevice
-  metadata:
-    name: worker-4.cluster.local
-    namespace: openshift-ptp
-  status:
-    devices:
-    - name: ens7f0
-    - name: ens7f1
-kind: List
+apiVersion: ptp.openshift.io/v1
+kind: PtpConfig
 metadata:
-  resourceVersion: ""
+  name: gnss-grandmaster-failover
+  namespace: openshift-ptp
+spec:
+  profile:
+    - name: "gnss-grandmaster-failover"
+
+      # --- PTP GRANDMASTER CONFIGURATION ---
+      ptp4lOpts: "-2 --summary_interval -4"
+      phc2sysOpts: -r -u 0 -m -N 8 -R 16 -s ens7f0 -n 24
+      ptpSchedulingPolicy: SCHED_FIFO
+      ptpSchedulingPriority: 10
+      ptpSettings:
+        logReduce: "true"
+
+      # --- FAILOVER CONFIGURATION ---
+
+      # ts2phc holdover time: 2400 seconds (40 minutes) before switching to NTP
+      ts2phcOpts: "--ts2phc.holdover 2400"
+
+      # Configure Chronyd (Secondary Time Source)
+      chronydOpts: "-dd"
+      chronydConf: |
+        server clock1.rdu2.redhat.com iburst
+        makestep 1.0 -1
+        pidfile /var/run/chronyd.pid
+
+      plugins:
+        # Enable the NTP Failover Plugin
+        ntpfailover:
+          enabled: true
+          gnssFailover: true
+
+      # --- GNSS (ts2phc) CONFIGURATION (Primary Source) ---
+      ts2phcConf: |
+        [nmea]
+        ts2phc.master 1
+        [global]
+        use_syslog 0
+        verbose 1
+        logging_level 7
+        ts2phc.pulsewidth 100000000
+        # Serial port for GNSS receiver
+        ts2phc.nmea_serialport /dev/ttyGNSS0
+        [ens7f0]
+        ts2phc.extts_polarity rising
+        ts2phc.extts_correction 0
+
+      # --- PTP4L CONFIGURATION (Grandmaster Role) ---
+      ptp4lConf: |
+        [ens7f0]
+        masterOnly 1
+        [global]
+        twoStepFlag 1
+        priority1 128
+        priority2 128
+        domainNumber 24
+        clockClass 6
+        time_stamping hardware
+        logSyncInterval -4
+        summary_interval -4
+        use_syslog 1
+
+  recommend:
+    - profile: "gnss-grandmaster-failover"
+      priority: 4
+      match:
+        - nodeLabel: "node-role.kubernetes.io/<MCP-name>"
 ----
 +
 * `ens7f0` and `ens7f1` are PTP-capable interfaces (Intel E810 NIC ports)
