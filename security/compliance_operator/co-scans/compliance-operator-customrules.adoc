@@ -1,0 +1,408 @@
+:_mod-docs-content-type: ASSEMBLY
+[id="compliance-operator-customrules"]
+= Defining CustomRules using the Compliance Operator
+include::_attributes/common-attributes.adoc[]
+:context: compliance-customrules
+
+toc::[]
+
+[role="_abstract"]
+
+OpenShift Compliance Operator includes a `CustomRule` Custom Resource Definition (CRD) that can create custom compliance checks using Common Expression Language (CEL). This allows Compliance Operator users to create custom scan rules that may not be provided by standardized security profiles. An example shows how to use a `CustomRule` to enforce security checks for `ClusterLogForwarder` resources, ensuring that log data is transmitted securely.
+
+====
+[NOTE]
+Defining `CustomRule` resources with Compliance Operator is currently in TECH PREVIEW status. This means the feature is not currently supported by OpenShift Technical Support for production environments. Test `CustomRule` resources only in non-production environments.
+====
+
+== Prerequisites
+
+* {product-title} 4.14 or later
+* OpenShift Compliance Operator installed
+* Red Hat OpenShift Logging Operator installed (if using `ClusterLogForwarder`)
+* Cluster administrator privileges (cluster-admin role)
+
+== Problem description
+
+`ClusterLogForwarder` resources define where cluster logs are forwarded. Using insecure protocols (HTTP, TCP, UDP) exposes sensitive log data to security risks including Man-in-the-Middle (MitM) attacks, data tampering, and credential exposure.
+
+== Rules to validate
+
+This example `CustomRule` validates that all `ClusterLogForwarder` outputs use secure protocols.
+
+* HTTP/Elasticsearch/Loki/Splunk/OTLP must use `https://`
+* AzureMonitor, GoogleCloudLogging, LokiStack: no URL fields to validate
+* Kafka must use `tls://` (not `tcp://`)
+* Syslog must use `tls://` (not `tcp://` or `udp://`)
+* S3 and CloudWatch custom endpoints must use `https://`
+* TLS certificate verification must not be disabled (`insecureSkipVerify`)
+
+====
+[NOTE]
+The `kind:` must be `CustomRule` and the `scannerType:` must be `CEL`
+====
+
+== Procedure
+
+. Create a file containing the `CustomRule` named `clusterlogforwarder-secure-endpoints.yaml:`
++
+[source,yaml]
+----
+apiVersion: compliance.openshift.io/v1alpha1
+kind: CustomRule
+metadata:
+  name: clusterlogforwarder-secure-endpoints
+  namespace: openshift-compliance
+spec:
+  title: "ClusterLogForwarder Must Use Secure Endpoints"
+  id: clusterlogforwarder_secure_endpoints
+  description: |-
+    ClusterLogForwarder outputs must use secure protocols to protect log data
+    in transit. Insecure protocols like HTTP or unencrypted TCP/UDP expose 
+    sensitive data to interception and tampering.
+
+    This rule requires at least one ClusterLogForwarder in openshift-logging
+    namespace and validates per-output-type URL locations:
+    - HTTP/Elasticsearch/Loki/Splunk/OTLP must use https://
+    - Kafka must use tls:// (for URL and all brokers)
+    - Syslog must use tls://
+    - CloudWatch custom URL (if set) must use https://
+    - AzureMonitor/GoogleCloudLogging/LokiStack have no URL fields (secure by design)
+    - TLS verification bypass (insecureSkipVerify) is not allowed
+  failureReason: |-
+    One or more outputs use insecure endpoints or disable TLS verification.
+    Require HTTPS/TLS for URL-based outputs, use tls:// for Kafka/Syslog,
+    ensure custom CloudWatch endpoints use secure protocols,
+    and do not set tls.insecureSkipVerify=true.
+  severity: High
+  checkType: Platform
+  scannerType: CEL
+  inputs:
+    - name: clusterLogForwarderList
+      kubernetesInputSpec:
+        apiVersion: observability.openshift.io/v1
+        resource: clusterlogforwarders
+  expression: |
+    clusterLogForwarderList.items.size() > 0 &&
+    clusterLogForwarderList.items.all(clf,
+      !has(clf.spec.outputs) ||
+      clf.spec.outputs.all(output,
+        // Do not allow explicit TLS verification bypass
+        (!has(output.tls) || !has(output.tls.insecureSkipVerify) || output.tls.insecureSkipVerify == false) &&
+        (
+          // AzureMonitor, GoogleCloudLogging, LokiStack: no URL fields to validate
+          output.type == 'azureMonitor' ||
+          output.type == 'googleCloudLogging' ||
+          output.type == 'lokiStack' ||
+          // CloudWatch: custom URL must be https
+          (output.type == 'cloudwatch' &&
+            (!has(output.cloudwatch) ||
+             !has(output.cloudwatch.url) ||
+             output.cloudwatch.url == '' ||
+             output.cloudwatch.url.startsWith('https://'))
+          ) ||
+          // HTTP: must be https; proxyURL must be https
+          (output.type == 'http' && has(output.http) &&
+            output.http.url.startsWith('https://') &&
+            (!has(output.http.proxyURL) || 
+             output.http.proxyURL == '' || 
+             output.http.proxyURL.startsWith('https://'))
+          ) ||
+          // Elasticsearch: https
+          (output.type == 'elasticsearch' && has(output.elasticsearch) &&
+            output.elasticsearch.url.startsWith('https://')
+          ) ||
+          // Loki: https
+          (output.type == 'loki' && has(output.loki) &&
+            output.loki.url.startsWith('https://')
+          ) ||
+          // Splunk: https
+          (output.type == 'splunk' && has(output.splunk) &&
+            output.splunk.url.startsWith('https://')
+          ) ||
+          // OTLP: https
+          (output.type == 'otlp' && has(output.otlp) &&
+            output.otlp.url.startsWith('https://')
+          ) ||
+          // Kafka: require TLS for URL and all brokers
+          (output.type == 'kafka' && has(output.kafka) &&
+            (!has(output.kafka.url) || 
+             output.kafka.url == '' || 
+             output.kafka.url.startsWith('tls://')) &&
+            (!has(output.kafka.brokers) || 
+             output.kafka.brokers.all(b, b.startsWith('tls://')))
+          ) ||
+          // Syslog: require tls://
+          (output.type == 'syslog' && has(output.syslog) &&
+            output.syslog.url.startsWith('tls://')
+          )
+        )
+      )
+    )
+----
+
+. Apply the `CustomRule`:
++
+[source,terminal]
+----
+$ oc apply -f clusterlogforwarder-secure-endpoints.yaml
+
+customrule.compliance.openshift.io/clusterlogforwarder-secure-endpoints created
+----
+
+. Create a `TailoredProfile` file named `logging-security-profile.yaml`:
++
+[source,yaml]
+----
+apiVersion: compliance.openshift.io/v1alpha1
+kind: TailoredProfile
+metadata:
+  name: logging-security-checks
+  namespace: openshift-compliance
+spec:
+  title: "Logging Infrastructure Security Checks"
+  description: "Validates secure log forwarding endpoints"
+  enableRules:
+    - kind: CustomRule
+      name: clusterlogforwarder-secure-endpoints
+      rationale: |-
+        Ensures all log forwarding uses encrypted transport protocols.
+----
+
+. Apply the `TailoredProfile`:
++
+[source,terminal]
+----
+$ oc apply -f logging-security-profile.yaml
+
+tailoredprofile.compliance.openshift.io/logging-security-checks created
+----
+
+. Verify it's ready:
++
+[source,terminal]
+----
+$ oc get tailoredprofile logging-security-checks -n openshift-compliance
+
+NAME                       STATE
+logging-security-checks    READY
+----
+
+. Create a `ScanSettingBinding` file named `logging-security-scan.yaml`:
++
+[source,yaml]
+----
+apiVersion: compliance.openshift.io/v1alpha1
+kind: ScanSettingBinding
+metadata:
+  name: logging-security-scan
+  namespace: openshift-compliance
+profiles:
+  - apiGroup: compliance.openshift.io/v1alpha1
+    kind: TailoredProfile
+    name: logging-security-checks
+settingsRef:
+  apiGroup: compliance.openshift.io/v1alpha1
+  kind: ScanSetting
+  name: default
+----
+
+. Apply the `ScanSettingBinding`:
++
+[source,terminal]
+----
+$ oc apply -f logging-security-scan.yaml
+
+scansettingbinding.compliance.openshift.io/logging-security-scan created
+----
+
+====
+[NOTE]
+Applying the `ScanSettingBinding` automatically triggers a compliance scan.
+====
+
+== Wait for the scan to complete:
++
+[source,terminal]
+----
+$ oc get compliancescan -n openshift-compliance
+
+NAME                      PHASE   RESULT
+logging-security-checks   DONE    NON-COMPLIANT
+----
+
+Check the results:
++
+[source,terminal]
+----
+$ oc get compliancecheckresults -n openshift-compliance
+
+NAME                                                           STATUS   SEVERITY
+logging-security-checks-clusterlogforwarder-secure-endpoints   FAIL     High
+----
+
+If you have identified non-compliant resources, here is an example to remediate the results:
+
+List all `ClusterLogForwarder` resources:
++
+[source,terminal]
+----
+$ oc get clusterlogforwarders.observability.openshift.io -A
+----
+
+Examine non-compliant resources:
++
+[source,terminal]
+----
+$ oc get clusterlogforwarder <name> -n <namespace> -o yaml
+----
+
+== Common issues and fixes
+
+. HTTP instead of HTTPS
++
+[source,terminal]
+----
+# INSECURE ❌
+outputs:
+  - name: my-loki
+    type: loki
+    loki:
+      url: http://loki.example.com
+
+# SECURE ✅
+outputs:
+  - name: my-loki
+    type: loki
+    loki:
+      url: https://loki.example.com
+----
+
+. Kafka using TCP
++
+[source,terminal]
+----
+# INSECURE ❌
+kafka:
+  url: tcp://kafka.example.com:9092
+
+# SECURE ✅
+kafka:
+  url: tls://kafka.example.com:9093
+----
+
+. TLS Verification Disabled
++
+[source,terminal]
+----
+# INSECURE ❌
+tls:
+  insecureSkipVerify: true
+
+# SECURE ✅
+tls:
+  insecureSkipVerify: false
+# Or simply remove the tls section entirely (defaults to secure)
+----
+
+. Edit and fix the resources:
++
+[source,terminal]
+----
+$ oc edit clusterlogforwarder <name> -n <namespace>
+----
+
+. After solving the issue, run the scan again. Trigger a rescan by recreating the `ScanSettingBinding`:
++
+[source,terminal]
+----
+$ oc delete scansettingbinding logging-security-scan -n openshift-compliance
+$ oc apply -f logging-security-scan.yaml
+----
+
+. Verify compliance:
++
+[source,terminal]
+----
+$ oc get compliancescan logging-security-checks -n openshift-compliance
+
+NAME                      PHASE   RESULT
+logging-security-checks   DONE    COMPLIANT
+
+$ oc get compliancecheckresults -n openshift-compliance
+
+NAME                                                           STATUS   SEVERITY
+logging-security-checks-clusterlogforwarder-secure-endpoints   PASS     High
+----
+
+. To use Kustomize for deployment, create a `Kustomization.yaml` file:
++
+[source,yaml]
+----
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+namespace: openshift-compliance
+resources:
+  - clusterlogforwarder-secure-endpoints.yaml
+  - logging-security-profile.yaml
+  - logging-security-scan.yaml
+----
+
+. Deploy all resources at once:
++
+[source,terminal]
+----
+$ oc apply -k .
+
+customrule.compliance.openshift.io/clusterlogforwarder-secure-endpoints created
+
+tailoredprofile.compliance.openshift.io/logging-security-checks created
+
+scansettingbinding.compliance.openshift.io/logging-security-scan created
+----
+
+== Troubleshooting
+
+. Scan stays in RUNNING state. Check scanner pod logs:
++
+[source,terminal]
+----
+$ oc get pods -n openshift-compliance -l compliance-scan=logging-security-checks
+
+$ oc logs -n openshift-compliance <scanner-pod-name>
+----
+
+. All resources show as PASS but some should FAIL. Verify the API version matches your logging operator version:
++
+[source,terminal]
+----
+$ oc api-resources | grep clusterlogforwarder
+----
+
+If you are using an older version with `logging.openshift.io/v1`, update the `kubernetesInputSpec` in the `CustomRule`.
+
+== Cleaning up
+
+. Remove all resources:
++
+[source,terminal]
+----
+$ oc delete scansettingbinding logging-security-scan -n openshift-compliance
+
+$ oc delete tailoredprofile logging-security-checks -n openshift-compliance
+
+$ oc delete customrule clusterlogforwarder-secure-endpoints -n openshift-compliance
+----
+
+. Alternatively, if you are using Kustomize:
++
+[source,terminal]
+----
+$ oc delete -k .
+----
+
+[role="_additional-resources"]
+[id="additional-resources_{context}"]
+== Additional resources
+link:https://kubernetes.io/docs/reference/using-api/cel/[Common Expression Language in Kubernetes]
+
