@@ -1,0 +1,397 @@
+// Module included in the following assemblies:
+//
+// * disaster_recovery/scenario-2-manually-restoring-cluster-etcd-backup.adoc
+// * post_installation_configuration/cluster-tasks.adoc
+// * etcd/etcd-backup-restore/etcd-disaster-recovery.adoc
+
+
+:_mod-docs-content-type: PROCEDURE
+[id="manually-restoring-cluster-etcd-backup_{context}"]
+= Restoring a cluster manually from an etcd backup
+
+The restore procedure described in the section "Restoring to a previous cluster state": 
+
+* Requires the complete recreation of 2 control plane nodes, which might be a complex procedure for clusters installed with the UPI installation method, since an UPI installation does not create any `Machine` or `ControlPlaneMachineset` for the control plane nodes.
+
+* Uses the script /usr/local/bin/cluster-restore.sh, which starts a new single-member etcd cluster and then scales it to three members. 
+
+In contrast, this procedure:
+
+* Does not require recreating any control plane nodes.
+* Directly starts a three-member etcd cluster.
+
+If the cluster uses a `MachineSet` for the control plane, it is suggested to use the "Restoring to a previous cluster state" for a simpler etcd recovery procedure.
+
+When you restore your cluster, you must use an etcd backup that was taken from the same z-stream release. For example, an {product-title} 4.7.2 cluster must use an etcd backup that was taken from 4.7.2.
+
+.Prerequisites
+
+* Access to the cluster as a user with the `cluster-admin` role; for example, the `kubeadmin` user.
+* SSH access to _all_ control plane hosts, with a host user allowed to become `root`; for example, the default `core` host user.
+* A backup directory containing both a previous etcd snapshot and the resources for the static pods from the same backup. The file names in the directory must be in the following formats: `snapshot_<datetimestamp>.db` and `static_kuberesources_<datetimestamp>.tar.gz`.
+
+.Procedure
+
+. Use SSH to connect to each of the control plane nodes.
++
+The Kubernetes API server becomes inaccessible after the restore process starts, so you cannot access the control plane nodes. For this reason, it is recommended to use a SSH connection for each control plane host you are accessing in a separate terminal.
++
+[IMPORTANT]
+====
+If you do not complete this step, you will not be able to access the control plane hosts to complete the restore procedure, and you will be unable to recover your cluster from this state.
+====
+
+. Copy the etcd backup directory to each control plane host.
++
+This procedure assumes that you copied the `backup` directory containing the etcd snapshot and the resources for the static pods to the `/home/core/assets` directory of each control plane host. You might need to create such `assets` folder if it does not exist yet.
+
+. Stop the static pods on all the control plane nodes; one host at a time.
++
+.. Move the existing Kubernetes API Server static pod manifest out of the kubelet manifest directory.
++
+[source,terminal]
+----
+$ mkdir -p /root/manifests-backup
+----
++
+[source,terminal]
+----
+$ mv /etc/kubernetes/manifests/kube-apiserver-pod.yaml /root/manifests-backup/
+----
++
+.. Verify that the Kubernetes API Server containers have stopped with the command:
++
+[source,terminal]
+----
+$ crictl ps | grep kube-apiserver | grep -E -v "operator|guard"
+----
++
+The output of this command should be empty. If it is not empty, wait a few minutes and check again.
++
+.. If the Kubernetes API Server containers are still running, terminate them manually with the following command:
++
+[source,terminal]
+----
+$ crictl stop <container_id>
+----
++
+.. Repeat the same steps for `kube-controller-manager-pod.yaml`, `kube-scheduler-pod.yaml` and **finally** `etcd-pod.yaml`.
++
+... Stop the `kube-controller-manager` pod with the following command:
++
+[source,terminal]
+----
+$ mv /etc/kubernetes/manifests/kube-controller-manager-pod.yaml /root/manifests-backup/
+----
++
+... Check if the containers are stopped using the following command:
++
+[source,terminal]
+----
+$ crictl ps | grep kube-controller-manager | grep -E -v "operator|guard"
+----
++
+... Stop the `kube-scheduler` pod using the following command:
++
+[source,terminal]
+----
+$ mv /etc/kubernetes/manifests/kube-scheduler-pod.yaml /root/manifests-backup/
+----
++
+... Check if the containers are stopped using the following command:
++
+[source,terminal]
+----
+$ crictl ps | grep kube-scheduler | grep -E -v "operator|guard"
+----
++
+... Stop the `etcd` pod using the following command:
++
+[source,terminal]
+----
+$ mv /etc/kubernetes/manifests/etcd-pod.yaml /root/manifests-backup/
+----
++
+... Check if the containers are stopped using the following command:
++
+[source,terminal]
+----
+$ crictl ps | grep etcd | grep -E -v "operator|guard"
+----
+
+. On each control plane host, save the current `etcd` data, by moving it into the `backup` folder:
++
+[source,terminal]
+----
+$ mkdir /home/core/assets/old-member-data
+----
++
+[source,terminal]
+----
+$ mv /var/lib/etcd/member /home/core/assets/old-member-data
+----
++
+This data will be useful in case the `etcd` backup restore does not work and the `etcd` cluster must be restored to the current state.
+
+. Find the correct etcd parameters for each control plane host.
++
+.. The value for `<ETCD_NAME>` is unique for the each control plane host, and it is equal to the value of the `ETCD_NAME` variable in the manifest `/etc/kubernetes/static-pod-resources/etcd-certs/configmaps/restore-etcd-pod/pod.yaml` file in the specific control plane host. It can be found with the command:
++
+[source,terminal]
+----
+RESTORE_ETCD_POD_YAML="/etc/kubernetes/static-pod-resources/etcd-certs/configmaps/restore-etcd-pod/pod.yaml"
+cat $RESTORE_ETCD_POD_YAML | \
+  grep -A 1 $(cat $RESTORE_ETCD_POD_YAML | grep 'export ETCD_NAME' | grep -Eo 'NODE_.+_ETCD_NAME') | \
+  grep -Po '(?<=value: ").+(?=")'
+----
++
+.. The value for `<UUID>` can be generated in a control plane host with the command:
++
+[source,terminal]
+----
+$ uuidgen
+----
++
+[NOTE]
+==== 
+The value for `<UUID>` must be generated only once. After generating `UUID` on one control plane host, do not generate it again on the others. The same `UUID` will be used in the next steps on all control plane hosts.
+====
++
+.. The value for `ETCD_NODE_PEER_URL` should be set like the following example:
++
+[source,terminal,subs="attributes+"]
+----
+https://<IP_CURRENT_HOST>:2380
+----
++
+The correct IP can be found from the `<ETCD_NAME>` of the specific control plane host, with the command:
++
+[source,terminal]
+----
+$ echo <ETCD_NAME> | \
+  sed -E 's/[.-]/_/g' | \
+  xargs -I {} grep {} /etc/kubernetes/static-pod-resources/etcd-certs/configmaps/etcd-scripts/etcd.env | \
+  grep "IP" | grep -Po '(?<=").+(?=")'
+----
++
+.. The value for `<ETCD_INITIAL_CLUSTER>` should be set like the following, where `<ETCD_NAME_n>` is the `<ETCD_NAME>` of each control plane host. 
++
+[NOTE]
+====
+The port used must be 2380 and not 2379. The port 2379 is used for etcd database management and is configured directly in etcd start command in container.
+====
++
+.Example output
+[source,terminal,subs="attributes+"]
+----
+<ETCD_NAME_0>=<ETCD_NODE_PEER_URL_0>,<ETCD_NAME_1>=<ETCD_NODE_PEER_URL_1>,<ETCD_NAME_2>=<ETCD_NODE_PEER_URL_2> <1>
+----
+<1> Specifies the `ETCD_NODE_PEER_URL` values from each control plane host.
++
+The `<ETCD_INITIAL_CLUSTER>` value remains same across all control plane hosts. The same value is required in the next steps on every control plane host.
+
+. Regenerate the etcd database from the backup. 
++
+Such operation must be executed on each control plane host.
++
+.. Copy the `etcd` backup to `/var/lib/etcd` directory with the command:
++
+[source,terminal,subs="attributes+"]
+----
+$ cp /home/core/assets/backup/<snapshot_yyyy-mm-dd_hhmmss>.db /var/lib/etcd
+----
++
+.. Identify the correct `etcdctl` image before proceeding. Use the following command to retrieve the image from the backup of the pod manifest:
++
+[source,terminal,subs="attributes+"]
+----
+$ jq -r '.spec.containers[]|select(.name=="etcdctl")|.image' /root/manifests-backup/etcd-pod.yaml
+----
++
+[source,terminal]
+----
+$ podman run --rm -it --entrypoint="/bin/bash" -v /var/lib/etcd:/var/lib/etcd:z <image-hash>
+----
++
+.. Check that the version of the `etcdctl` tool is the version of the `etcd` server where the backup was created:
++
+[source,terminal]
+----
+$ etcdctl version
+----
++
+.. Run the following command to regenerate the `etcd` database, using the correct values for the current host: 
++
+[source,terminal]
+----
+$ ETCDCTL_API=3 /usr/bin/etcdctl snapshot restore /var/lib/etcd/<snapshot_yyyy-mm-dd_hhmmss>.db \
+  --name "<ETCD_NAME>" \
+  --initial-cluster="<ETCD_INITIAL_CLUSTER>" \
+  --initial-cluster-token "openshift-etcd-<UUID>" \
+  --initial-advertise-peer-urls "<ETCD_NODE_PEER_URL>" \
+  --data-dir="/var/lib/etcd/restore-<UUID>" \
+  --skip-hash-check=true
+----
++
+[NOTE]
+====
+The quotes are mandatory when regenerating the `etcd` database.
+====
+
+. Record the values printed in the `added member` logs; for example:
++
+.Example output
+----
+2022-06-28T19:52:43Z    info    membership/cluster.go:421   added member    {"cluster-id": "c5996b7c11c30d6b", "local-member-id": "0", "added-peer-id": "56cd73b614699e7", "added-peer-peer-urls": ["https://10.0.91.5:2380"], "added-peer-is-learner": false}
+2022-06-28T19:52:43Z    info    membership/cluster.go:421   added member    {"cluster-id": "c5996b7c11c30d6b", "local-member-id": "0", "added-peer-id": "1f63d01b31bb9a9e", "added-peer-peer-urls": ["https://10.0.90.221:2380"], "added-peer-is-learner": false}
+2022-06-28T19:52:43Z    info    membership/cluster.go:421   added member    {"cluster-id": "c5996b7c11c30d6b", "local-member-id": "0", "added-peer-id": "fdc2725b3b70127c", "added-peer-peer-urls": ["https://10.0.94.214:2380"], "added-peer-is-learner": false}
+----
++
+.. Exit from the container.
++
+.. Repeat these steps on the other control plane hosts, checking that the values printed in the `added member` logs are the same for all control plane hosts.
+
+. Move the regenerated `etcd` database to the default location. 
++
+Such operation must be executed on each control plane host.
++
+.. Move the regenerated database (the `member` folder created by the previous `etcdctl snapshot restore` command) to the default etcd location `/var/lib/etcd`:
++
+[source,terminal]
+----
+$ mv /var/lib/etcd/restore-<UUID>/member /var/lib/etcd
+----
++
+.. Restore the SELinux context for `/var/lib/etcd/member` folder on `/var/lib/etcd` directory:
++
+[source,terminal]
+----
+$ restorecon -vR /var/lib/etcd/
+----
++
+.. Remove the leftover files and directories:
++
+[source,terminal]
+----
+$ rm -rf /var/lib/etcd/restore-<UUID>
+----
++
+[source,terminal]
+----
+$ rm /var/lib/etcd/<snapshot_yyyy-mm-dd_hhmmss>.db
+----
++
+[IMPORTANT]
+====
+When you are finished the `/var/lib/etcd` directory must contain only the folder `member`.
+====
++
+.. Repeat these steps on the other control plane hosts.
+
+. Restart the etcd cluster.
++
+.. The following steps must be executed on all control plane hosts, but **one host at a time**.
++
+.. Move the `etcd` static pod manifest back to the kubelet manifest directory, in order to make kubelet start the related containers :
++
+[source,terminal]
+----
+$ mv /root/manifests-backup/etcd-pod.yaml /etc/kubernetes/manifests
+----
++
+.. Verify that all the `etcd` containers have started:
++
+[source,terminal]
+----
+$ crictl ps | grep etcd | grep -v operator
+----
++
+.Example output
+[source,terminal]
+----
+38c814767ad983       f79db5a8799fd2c08960ad9ee22f784b9fbe23babe008e8a3bf68323f004c840                                                         28 seconds ago       Running             etcd-health-monitor                   2                   fe4b9c3d6483c
+e1646b15207c6       9d28c15860870e85c91d0e36b45f7a6edd3da757b113ec4abb4507df88b17f06                                                         About a minute ago   Running             etcd-metrics                          0                   fe4b9c3d6483c
+08ba29b1f58a7       9d28c15860870e85c91d0e36b45f7a6edd3da757b113ec4abb4507df88b17f06                                                         About a minute ago   Running             etcd                                  0                   fe4b9c3d6483c
+2ddc9eda16f53       9d28c15860870e85c91d0e36b45f7a6edd3da757b113ec4abb4507df88b17f06                                                         About a minute ago   Running             etcdctl    
+----
++
+If the output of this command is empty, wait a few minutes and check again.
+
+. Check the status of the `etcd` cluster.
++
+.. On any of the control plane hosts, check the status of the `etcd` cluster with the following command:
++
+[source,terminal]
+----
+$ crictl exec -it $(crictl ps | grep etcdctl | awk '{print $1}') etcdctl endpoint status -w table
+----
++
+.Example output
+[source,terminal]
+----
++--------------------------+------------------+---------+---------+-----------+------------+-----------+------------+--------------------+--------+
+|         ENDPOINT         |        ID        | VERSION | DB SIZE | IS LEADER | IS LEARNER | RAFT TERM | RAFT INDEX | RAFT APPLIED INDEX | ERRORS |
++--------------------------+------------------+---------+---------+-----------+------------+-----------+------------+--------------------+--------+
+| https://10.0.89.133:2379 | 682e4a83a0cec6c0 |   3.5.0 |   67 MB |      true |      false |         2 |        218 |                218 |        |
+|  https://10.0.92.74:2379 | 450bcf6999538512 |   3.5.0 |   67 MB |     false |      false |         2 |        218 |                218 |        |
+| https://10.0.93.129:2379 | 358efa9c1d91c3d6 |   3.5.0 |   67 MB |     false |      false |         2 |        218 |                218 |        |
++--------------------------+------------------+---------+---------+-----------+------------+-----------+------------+--------------------+--------+
+----
+
+. Restart the other static pods.
++
+The following steps must be executed on all control plane hosts, but one host at a time.
++
+.. Move the Kubernetes API Server static pod manifest back to the kubelet manifest directory to make kubelet start the related containers with the command:
++
+[source,terminal]
+----
+$ mv /root/manifests-backup/kube-apiserver-pod.yaml /etc/kubernetes/manifests
+----
++
+.. Verify that all the Kubernetes API Server containers have started:
++
+[source,terminal]
+----
+$ crictl ps | grep kube-apiserver | grep -v operator
+----
++
+[NOTE]
+====
+if the output of the following command is empty, wait a few minutes and check again.
+====
++
+.. Repeat the same steps for `kube-controller-manager-pod.yaml` and `kube-scheduler-pod.yaml` files.
++
+... Restart the kubelets in all nodes using the following command:
++
+[source,terminal]
+----
+$ systemctl restart kubelet
+----
++
+... Start the remaining control plane pods using the following command:
++
+[source,terminal]
+----
+$ mv /root/manifests-backup/kube-* /etc/kubernetes/manifests/
+----
++
+... Check if the `kube-apiserver`, `kube-scheduler` and `kube-controller-manager` pods start correctly:
++
+[source,terminal]
+----
+$ crictl ps | grep -E 'kube-(apiserver|scheduler|controller-manager)' | grep -v -E 'operator|guard'
+----
++
+... Wipe the OVN databases using the following commands:
++
+[source,terminal]
+----
+for NODE in  $(oc get node -o name | sed 's:node/::g')
+do 
+  oc debug node/${NODE} -- chroot /host /bin/bash -c  'rm -f /var/lib/ovn-ic/etc/ovn*.db && systemctl restart ovs-vswitchd ovsdb-server'
+  oc -n openshift-ovn-kubernetes delete pod -l app=ovnkube-node --field-selector=spec.nodeName=${NODE} --wait
+  oc -n openshift-ovn-kubernetes wait pod -l app=ovnkube-node --field-selector=spec.nodeName=${NODE} --for condition=ContainersReady --timeout=600s
+done
+----

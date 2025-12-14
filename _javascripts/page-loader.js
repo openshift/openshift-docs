@@ -3,15 +3,34 @@ let newVersion = "";
 let currentVersion = "";
 let fileRequested = "";
 
+// Get the base URL dynamically
+function getBaseUrl() {
+  const path = window.location.pathname;
+  const pathParts = path.split('/').filter(part => part.length > 0);
+
+  // Check if we're in the openshift-docs subdirectory for github pages
+  if (pathParts.length > 0 && pathParts[0] === 'openshift-docs') {
+    return `${window.location.protocol}//${window.location.host}/openshift-docs/`;
+  }
+
+  // If not in the openshift-docs subdirectory, use the root
+  return `${window.location.protocol}//${window.location.host}/`;
+}
+
+const baseUrl = getBaseUrl();
+
+// Use relative paths in the mappings
 const urlMappings = {
-  "openshift-acs": "https://docs.openshift.com/acs/",
-  "openshift-builds": "https://docs.openshift.com/builds/",
-  "openshift-enterprise": "https://docs.openshift.com/container-platform/",
-  "openshift-gitops": "https://docs.openshift.com/gitops/",
-  "openshift-origin": "https://docs.okd.io/",
-  "openshift-pipelines": "https://docs.openshift.com/pipelines/",
-  "openshift-serverless": "https://docs.openshift.com/serverless/",
-  "openshift-telco": "https://docs.openshift.com/container-platform-telco/",
+  "openshift-acs": "acs/",
+  "openshift-builds": "builds/",
+  "openshift-enterprise": "container-platform/",
+  "openshift-gitops": "gitops/",
+  "openshift-lightspeed": "lightspeed/",
+  "openshift-origin": "",
+  "openshift-pipelines": "pipelines/",
+  "openshift-serverless": "serverless/",
+  "openshift-telco": "container-platform-telco/",
+  "openshift-logging": "logging/",
 };
 
 function versionSelector(list) {
@@ -22,14 +41,27 @@ function versionSelector(list) {
   if (dk === "openshift-origin") {
     currentVersion = window.location.pathname.split("/")[1];
   } else {
-    currentVersion = window.location.pathname.split("/")[2];
+    const path = window.location.pathname;
+    const pathParts = path.split('/').filter(part => part.length > 0);
+
+    // Check if we're in the openshift-docs subdirectory for github pages
+    if (pathParts.length > 0 && pathParts[0] === 'openshift-docs') {
+      currentVersion = pathParts[2];
+    } else {
+      // If not in the openshift-docs subdirectory
+      currentVersion = pathParts[1];
+    }
+
   }
 
-  let baseUrl = urlMappings[dk];
+  // Get the correct URL path from the urlMappings and prepend the base URL
+  let productPath = urlMappings[dk];
+  let fullBaseUrl = baseUrl + productPath;
+
 
   //Handle special OCP case
   if (["3.0", "3.1", "3.2"].includes(newVersion) && dk === "openshift-enterprise") {
-    baseUrl = "https://docs.openshift.com/enterprise/";
+    fullBaseUrl = "https://docs.openshift.com/enterprise/";
   }
 
   if ((dk === "openshift-enterprise" || dk === "openshift-origin") && currentVersion.charAt(0) !== newVersion.charAt(0)){
@@ -39,7 +71,7 @@ function versionSelector(list) {
     fileRequested = window.location.pathname.substring(versionIndex);
   }
 
-  newLink = `${baseUrl}${newVersion}${fileRequested}`;
+  newLink = `${fullBaseUrl}${newVersion}${fileRequested}`;
 
   // without doing async loads, there is no way to know if the path actually
   // exists - so we will just have to load

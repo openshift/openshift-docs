@@ -1,0 +1,147 @@
+// Module included in the following assemblies:
+//
+//* observability/distr_tracing/distr-tracing-tempo-installing.adoc
+
+:_mod-docs-content-type: PROCEDURE
+[id="setting-up-google-cloud-storage-with-security-token-service_{context}"]
+= Setting up the {gcp-full} storage with the Security Token Service
+
+You can set up the {gcp-full} Storage (GCS) with the Security Token Service (STS) by using the {gcp-full} CLI.
+
+:FeatureName: Using the {TempoShortName} with the GCS and STS
+include::snippets/technology-preview.adoc[leveloffset=+1]
+
+.Prerequisites
+
+* You have installed the latest version of the {gcp-full} CLI.
+
+.Procedure
+
+. Create a GCS bucket on the {gcp-first}.
+
+. Create or reuse a service account with Google's Identity and Access Management (IAM):
++
+[source,bash]
+----
+SERVICE_ACCOUNT_EMAIL=$(gcloud iam service-accounts create <iam_service_account_name> \ # <1>
+    --display-name="Tempo Account" \
+    --project <project_id>  \ # <2>
+    --format='value(email)' \ 
+    --quiet)
+----
+<1> The name of the service account on the {gcp-short}.
+<2> The project ID of the service account on the {gcp-short}.
+
+. Bind the required {gcp-short} roles to the created service account at the project level. You can do this by running the following command:
++
+[source,terminal]
+----
+$ gcloud projects add-iam-policy-binding <project_id> \
+    --member "serviceAccount:$SERVICE_ACCOUNT_EMAIL" \
+    --role "roles/storage.objectAdmin"
+----
+
+. Retrieve the `POOL_ID` value of the {gcp-full} Workload Identity Pool that is associated with the cluster. How you can retrieve this value depends on your environment, so the following command is only an example:
++
+[source,terminal]
+----
+$ OIDC_ISSUER=$(oc get authentication.config cluster -o jsonpath='{.spec.serviceAccountIssuer}') \
+&&
+  POOL_ID=$(echo "$OIDC_ISSUER" | awk -F'/' '{print $NF}' | sed 's/-oidc$//')
+----
+
+.  Add the IAM policy bindings. You can do this by running the following commands:
++
+[source,terminal]
+----
+$ gcloud iam service-accounts add-iam-policy-binding "$SERVICE_ACCOUNT_EMAIL" \ # <1>
+  --role="roles/iam.workloadIdentityUser" \
+  --member="principal://iam.googleapis.com/projects/<project_number>/locations/global/workloadIdentityPools/<pool_id>/subject/system:serviceaccount:<tempo_namespace>:tempo-<tempo_name>" \
+  --project=<project_id> \
+  --quiet \
+&&
+  gcloud iam service-accounts add-iam-policy-binding "$SERVICE_ACCOUNT_EMAIL" \
+  --role="roles/iam.workloadIdentityUser" \
+  --member="principal://iam.googleapis.com/projects/<project_number>/locations/global/workloadIdentityPools/<pool_id>/subject/system:serviceaccount:<tempo_namespace>:tempo-<tempo_name>-query-frontend" \
+  --project=<project_id> \
+  --quiet
+&&
+  gcloud storage buckets add-iam-policy-binding "gs://$BUCKET_NAME" \
+  --role="roles/storage.admin" \
+  --member="serviceAccount:$SERVICE_ACCOUNT_EMAIL" \
+  --condition=None
+----
+<1> The `$SERVICE_ACCOUNT_EMAIL` is the output of the command in step 2.
+
+. Create a credential file for the `key.json` key of the storage secret for use by the `TempoStack` custom resource. You can do this by running the following command:
++
+[source,terminal]
+----
+$ gcloud iam workload-identity-pools create-cred-config \
+    "projects/<project_number>/locations/global/workloadIdentityPools/<pool_id>/providers/<provider_id>" \
+    --service-account="$SERVICE_ACCOUNT_EMAIL" \
+    --credential-source-file=/var/run/secrets/storage/serviceaccount/token \ # <1>
+    --credential-source-type=text \
+    --output-file=<output_file_path> # <2>
+----
+<1> The `credential-source-file` parameter must always point to the `/var/run/secrets/storage/serviceaccount/token` path because the Operator mounts the token from this path.
+<2> The path for saving the output file.
+
+. Get the correct audience by running the following command:
++
+[source,terminal]
+----
+$ gcloud iam workload-identity-pools providers describe "$PROVIDER_NAME" --format='value(oidc.allowedAudiences[0])'
+----
+
+. Create a storage secret for the {TempoShortName} by running the following command.
++
+[source,terminal]
+----
+$ oc -n <tempo_namespace> create secret generic gcs-secret \
+  --from-literal=bucketname="<bucket_name>" \ # <1>
+  --from-literal=audience="<audience>" \      # <2>
+  --from-file=key.json=<output_file_path>    # <3>
+----
+<1> The bucket name of the {gcp-full} Storage.
+<2> The audience that you got in the previous step.
+<3> The credential file that you created in step 6.
+
+. When the object storage secret is created, update the relevant custom resource of the {TempoShortName} instance as follows:
++
+.Example `TempoStack` custom resource
+[source,yaml]
+----
+apiVersion: tempo.grafana.com/v1alpha1
+kind: TempoStack
+metadata:
+  name: <name>
+  namespace: <namespace>
+spec:
+# ...
+  storage:
+    secret: # <1>
+      name: <secret_name>
+      type: gcs
+# ...
+----
+<1> The secret that you created in the previous step.
++
+.Example `TempoMonolithic` custom resource
+[source,yaml]
+----
+apiVersion: tempo.grafana.com/v1alpha1
+kind: TempoMonolithic
+metadata:
+  name: <name>
+  namespace: <namespace>
+spec:
+# ...
+  storage:
+    traces:
+      backend: gcs
+      gcs:
+        secret: <secret_name> # <1>
+# ...
+----
+<1> The secret that you created in the previous step.

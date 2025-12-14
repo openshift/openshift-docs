@@ -1,0 +1,123 @@
+// Module included in the following assemblies:
+//
+// microshift_install_bootc/microshift-install-bootc-image.adoc
+
+:_mod-docs-content-type: PROCEDURE
+[id="microshift-install-bootc-build-image_{context}"]
+= Building the bootc image
+
+Build your {op-system-base-full} that contains {microshift-short} as a bootable container image by using a Containerfile.
+
+.Prerequisites
+
+* A {op-system-base} {op-system-version} host with an active Red{nbsp}Hat subscription for building {microshift-short} bootc images and running containers.
+* You logged into the {op-system-base} {op-system-version} host by using the user credentials that have `sudo` permissions.
+* The `rhocp` and `fast-datapath` repositories are accessible in the host subscription. The repositories do not necessarily need to be enabled on the host.
+* You have a remote registry such as link:https://quay.io[{quay}] for storing and accessing bootc images.
+* You used the `dnf install -y container-tools` command to install the `container-tools` meta-package on the host. The meta-package contains all container tools, such as Podman, Buildah, and Skopeo for additional support and troubleshooting. These tools are required for obtaining assistance from Red{nbsp}Hat Support when you are building and installing the image.
+
+.Procedure
+
+. Create a Containerfile that includes the following instructions:
++
+.Example Containerfile for {op-system-base} image mode
+[source,text,subs="attributes+"]
+----
+FROM registry.redhat.io/rhel{op-system-version-major}/rhel-bootc:{op-system-version}
+
+ARG USHIFT_VER={product-version}
+RUN dnf config-manager \
+        --set-enabled rhocp-${USHIFT_VER}-for-rhel-{op-system-version-major}-$(uname -m)-rpms \
+        --set-enabled fast-datapath-for-rhel-{op-system-version-major}-$(uname -m)-rpms
+RUN dnf install -y firewalld microshift && \
+    systemctl enable microshift && \
+    dnf clean all
+
+# Create a default 'redhat' user with the specified password.
+# Add it to the 'wheel' group to allow for running sudo commands.
+ARG USER_PASSWD
+RUN if [ -z "${USER_PASSWD}" ] ; then \
+        echo USER_PASSWD is a mandatory build argument && exit 1 ; \
+    fi
+RUN useradd -m -d /var/home/redhat -G wheel redhat && \
+    echo "redhat:${USER_PASSWD}" | chpasswd
+
+# Mandatory firewall configuration
+RUN firewall-offline-cmd --zone=public --add-port=22/tcp && \
+    firewall-offline-cmd --zone=trusted --add-source=10.42.0.0/16 && \
+    firewall-offline-cmd --zone=trusted --add-source=169.254.169.1
+
+# Create a systemd unit to recursively make the root filesystem subtree
+# shared as required by OVN images
+RUN cat > /etc/systemd/system/microshift-make-rshared.service <<'EOF'
+[Unit]
+Description=Make root filesystem shared
+Before=microshift.service
+ConditionVirtualization=container
+[Service]
+Type=oneshot
+ExecStart=/usr/bin/mount --make-rshared /
+[Install]
+WantedBy=multi-user.target
+EOF
+RUN systemctl enable microshift-make-rshared.service
+----
+[IMPORTANT]
+====
+Podman uses the host subscription information and repositories inside the container when building the container image. If the `rhocp` and `fast-datapath` repositories are not available on the host, the build fails.
+====
+
+. Set the `PULL_SECRET` environment variable:
++
+[source,terminal]
+----
+$ PULL_SECRET=~/.pull-secret.json
+----
+
+. Configure the `USER_PASSWD` environment variable:
++
+[source,terminal,subs="+quotes"]
+----
+$ USER_PASSWD=_<redhat_user_password>_ <1>
+----
+<1> Replace _<redhat_user_password>_ with your password.
+
+. Configure the `IMAGE_NAME` environment variable:
++
+[source,terminal,subs="attributes+"]
+----
+$ IMAGE_NAME=microshift-{product-version}-bootc
+----
+
+. Create a local bootc image by running the following image build command:
++
+[source,terminal,subs="+quotes"]
+----
+$ sudo podman build --authfile "${PULL_SECRET}" -t "${IMAGE_NAME}" \
+    --build-arg USER_PASSWD="${USER_PASSWD}" \
+    -f Containerfile
+----
++
+[IMPORTANT]
+====
+How secrets are used during the image build:
+
+* The podman `--authfile` argument is required to pull the base `rhel-bootc:{op-system-version}` image from the `registry.redhat.io` registry.
+* The build `USER_PASSWD` argument is used to set a password for the `redhat` user.
+====
+
+.Verification
+
+. Verify that the local {microshift-short} bootc image was created by running the following command:
++
+[source,terminal]
+----
+$ sudo podman images "${IMAGE_NAME}"
+----
++
+.Example output
+[source,text,subs="attributes+"]
+----
+REPOSITORY                       TAG         IMAGE ID      CREATED        SIZE
+localhost/microshift-{product-version}-bootc  latest      193425283c00  2 minutes ago  2.31 GB
+----
