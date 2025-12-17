@@ -131,6 +131,7 @@ do
                 if (( LINE_NUMBER >= diff_start_line && LINE_NUMBER <= diff_start_line + added_lines )); then
 
                     post_review_comment "$BODY" "$FILENAME" "$LINE_NUMBER"
+                    sleep 1  # Pause between POST requests to avoid limiting
                     
                     break  # Exit the loop since the alert is within the diff, move on to the next JSON object
                 else
