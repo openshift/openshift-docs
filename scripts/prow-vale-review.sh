@@ -99,6 +99,13 @@ do
         FILENAME=$(echo "$object" | jq -r '.path')
         LINE_NUMBER=$(echo "$object" | jq -r '.line')
         
+        # Line 1 errors are file-level issues. Always post these!
+        if [[ "$LINE_NUMBER" -eq 1 ]]; then
+            post_review_comment "$BODY" "$FILENAME" "$LINE_NUMBER"
+            sleep 1
+            continue
+        fi
+        
         # Check the unified file diff for the alert and file
         file_diff=$(git diff --unified=0 --stat --diff-filter=AM HEAD~1 HEAD "${FILENAME}" ':(exclude)_unused_topics/*')
         
