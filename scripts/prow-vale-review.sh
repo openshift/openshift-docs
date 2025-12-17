@@ -23,7 +23,18 @@ function post_review_comment {
     BODY=$1
     FILENAME=$2
     echo "Sending review comment curl request..."
-    curl -L -X POST -H "Accept: application/vnd.github+json" -H "Authorization: Bearer $GITHUB_AUTH_TOKEN" -H "X-GitHub-Api-Version: 2022-11-28" https://api.github.com/repos/openshift/openshift-docs/pulls/$PULL_NUMBER/comments -d '{"body":"'"$BODY"'","commit_id":"'"$COMMIT_ID"'","path":"'"$FILENAME"'","line":'"$LINE_NUMBER"',"side":"RIGHT"}'
+    # Use jq to excruciatingly craft JSON payload
+    # jq -n because we're constructing from scratch per https://jqlang.org/manual/
+    # --arg for string, --argjson for integer
+    # body constructed from https://docs.github.com/en/rest/pulls/comments?apiVersion=2022-11-28#create-a-review-comment-for-a-pull-request
+    payload=$(jq -n \
+        --arg body "$BODY" \
+        --arg commit_id "$COMMIT_ID" \
+        --arg path "$FILENAME" \
+        --argjson line "$LINE_NUMBER" \
+        '{body: $body, commit_id: $commit_id, path: $path, line: $line, side: "RIGHT"}')
+    echo "DEBUG payload:" "$payload"
+    curl -L -X POST -H "Accept: application/vnd.github+json" -H "Authorization: Bearer $GITHUB_AUTH_TOKEN" -H "X-GitHub-Api-Version: 2022-11-28" https://api.github.com/repos/openshift/openshift-docs/pulls/$PULL_NUMBER/comments -d "$payload"
 }
 
 function get_vale_errors {
