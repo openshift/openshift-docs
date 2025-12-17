@@ -60,7 +60,11 @@ do
     fi
 
     # Update conditional markup in place
-    sed -i 's/ifdef::.*/ifdef::temp-ifdef[]/; s/ifeval::.*/ifeval::["{temp-ifeval}" == "temp"]/; s/ifndef::.*/ifndef::temp-ifndef[]/; s/endif::.*/endif::[]/;' "$FILE"
+    if [[ "$OSTYPE" == "darwin"* ]]; then
+        sed -i '' 's/ifdef::.*/ifdef::temp-ifdef[]/; s/ifeval::.*/ifeval::["{temp-ifeval}" == "temp"]/; s/ifndef::.*/ifndef::temp-ifndef[]/; s/endif::.*/endif::[]/;' "$FILE"
+    else
+        sed -i 's/ifdef::.*/ifdef::temp-ifdef[]/; s/ifeval::.*/ifeval::["{temp-ifeval}" == "temp"]/; s/ifndef::.*/ifndef::temp-ifndef[]/; s/endif::.*/endif::[]/;' "$FILE"
+    fi
 
     # Parse for vale errors
     vale_json=$(vale --minAlertLevel=error --output=.vale/templates/bot-comment-output.tmpl --config="$INI" "$FILE" | jq)
@@ -113,13 +117,21 @@ do
 
                 # Check if there is a comma in the number pairing before @@
                 if [[ $line =~ \+.*\,.*\ @@ ]]; then
-                    # There are comma separated numbers before closing @@. Grab the number before the comma as the diff_start_line, after the comma is the added_lines. 
-                    added_lines=$(echo "$line" | grep -oP '\d+\s+@@' | grep -oP '\d+')
+                    # There are comma separated numbers before closing @@. Grab the number before the comma as the diff_start_line, after the comma is the added_lines.
+                    if [[ "$OSTYPE" == "darwin"* ]]; then
+                        added_lines=$(echo "$line" | grep -oE '[0-9]+[[:space:]]+@@' | grep -oE '[0-9]+')
+                    else
+                        added_lines=$(echo "$line" | grep -oP '\d+\s+@@' | grep -oP '\d+')
+                    fi
                     diff_start_line=$(echo "$line" | awk -F'+' '{print $2}' | awk -F',' '{print $1}')
                 else
                     # There are no comma seperated numbers. Consider the number after the plus as diff_start_line with no added lines - this means there's a modification on a single line
                     added_lines=0
-                    diff_start_line=$(echo "$line" | grep -oP '\+\d+\s+@@' | grep -oP '\d+')
+                    if [[ "$OSTYPE" == "darwin"* ]]; then
+                        diff_start_line=$(echo "$line" | grep -oE '\+[0-9]+[[:space:]]+@@' | grep -oE '[0-9]+')
+                    else
+                        diff_start_line=$(echo "$line" | grep -oP '\+\d+\s+@@' | grep -oP '\d+')
+                    fi
                 fi
 
                 # If the last_number is 0, disregard the hunk and move to the next hunk as zero lines were modified (deletions only)
