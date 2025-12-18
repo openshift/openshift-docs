@@ -17,22 +17,35 @@ fi
 
 FILES=$(git diff --name-only HEAD~1 HEAD --diff-filter=d "*.adoc" ':(exclude)_unused_topics/*' ':(exclude)rest_api/*' ':(exclude)microshift_rest_api/*' ':(exclude)modules/virt-runbook-*' ':(exclude)modules/oc-by-example-content.adoc' ':(exclude)modules/oc-adm-by-example-content.adoc' ':(exclude)monitoring/config-map-reference-for-the-cluster-monitoring-operator.adoc' ':(exclude)modules/microshift-oc-adm-by-example-content.adoc' ':(exclude)modules/microshift-oc-by-example-content.adoc')
 
-function post_review_comment {
 
+function post_review_comment {
     LINE_NUMBER=$3
     BODY=$1
     FILENAME=$2
-    echo "Sending review comment curl request..."
+    SUBJECT_TYPE=${4:-"line"}  # Default to "line", but will use "file" for file-level comments
     # Use jq to excruciatingly craft JSON payload
     # jq -n because we're constructing from scratch per https://jqlang.org/manual/
     # --arg for string, --argjson for integer
     # body constructed from https://docs.github.com/en/rest/pulls/comments?apiVersion=2022-11-28#create-a-review-comment-for-a-pull-request
-    payload=$(jq -n \
-        --arg body "$BODY" \
-        --arg commit_id "$COMMIT_ID" \
-        --arg path "$FILENAME" \
-        --argjson line "$LINE_NUMBER" \
-        '{body: $body, commit_id: $commit_id, path: $path, line: $line, side: "RIGHT"}')
+    
+    echo "Sending review comment curl request..."
+    if [[ "$SUBJECT_TYPE" == "file" ]]; then
+        # File-level comment - no diff to apply to 
+        payload=$(jq -n \
+            --arg body "$BODY" \
+            --arg commit_id "$COMMIT_ID" \
+            --arg path "$FILENAME" \
+            '{body: $body, commit_id: $commit_id, path: $path, subject_type: "file"}')
+    else
+        # Line-level comment
+        payload=$(jq -n \
+            --arg body "$BODY" \
+            --arg commit_id "$COMMIT_ID" \
+            --arg path "$FILENAME" \
+            --argjson line "$LINE_NUMBER" \
+            '{body: $body, commit_id: $commit_id, path: $path, line: $line, side: "RIGHT"}')
+    fi
+    
     echo "DEBUG payload:" "$payload"
     curl -L -X POST -H "Accept: application/vnd.github+json" -H "Authorization: Bearer $GITHUB_AUTH_TOKEN" -H "X-GitHub-Api-Version: 2022-11-28" https://api.github.com/repos/openshift/openshift-docs/pulls/$PULL_NUMBER/comments -d "$payload"
 }
@@ -103,9 +116,9 @@ do
         FILENAME=$(echo "$object" | jq -r '.path')
         LINE_NUMBER=$(echo "$object" | jq -r '.line')
         
-        # Line 1 errors are file-level issues. Always post these!
+        # Line 1 errors from Vale likely to be file-level issues - post as file-level comment
         if [[ "$LINE_NUMBER" -eq 1 ]]; then
-            post_review_comment "$BODY" "$FILENAME" "$LINE_NUMBER"
+            post_review_comment "$BODY" "$FILENAME" "" "file"
             sleep 1
             continue
         fi
@@ -163,4 +176,3 @@ do
     done
 
 done
-
