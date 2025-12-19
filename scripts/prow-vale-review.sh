@@ -55,11 +55,24 @@ function get_vale_errors {
     local vale_json="$1"
     local pull_comments_json="$2"
 
+    # Create temp files to avoid shell argument size limits
+    # Hopefully fixes arg size error...
+    local vale_file=$(mktemp)
+    local comments_file=$(mktemp)
+    echo "$vale_json" > "$vale_file"
+    echo "$pull_comments_json" > "$comments_file"
+    
     # jq map and filter to retain only Vale alerts that don't already have a corresponding review comment on the PR
-    updated_vale_json=$(jq -n --argjson vale "$vale_json" --argjson comments "$pull_comments_json" '$vale | map(select(. as $v | $comments | any(.path == $v.path and .line == $v.line and .body == $v.body) | not))' | jq)
-
+    # read json from temp files
+    updated_vale_json=$(jq -n \
+        --slurpfile vale "$vale_file" \
+        --slurpfile comments "$comments_file" \
+        '$vale[0] | map(select(. as $v | $comments[0] | any(.path == $v.path and .line == $v.line and .body == $v.body) | not))')
+    
+    # clean up
+    rm -f "$vale_file" "$comments_file"
+    
     export updated_vale_json
-
 }
 
 # Run vale with the custom template on updated files and determine if a review comment should be posted
@@ -87,7 +100,7 @@ do
         echo "Vale errors found in the file..."
 
         #Check if Vale review comments already exist in the PR
-        pull_comments_json=$(curl -L -H "Accept: application/vnd.github+json" -H "Authorization: Bearer $GITHUB_AUTH_TOKEN" -H "X-GitHub-Api-Version: 2022-11-28" https://api.github.com/repos/openshift/openshift-docs/pulls/$PULL_NUMBER/comments | jq)
+        pull_comments_json=$(curl -L -H "Accept: application/vnd.github+json" -H "Authorization: Bearer $GITHUB_AUTH_TOKEN" -H "X-GitHub-Api-Version: 2022-11-28" "https://api.github.com/repos/openshift/openshift-docs/pulls/$PULL_NUMBER/comments?per_page=100" | jq)
 
         # If there are existing comments in the response, compare with Vale errors, otherwise proceed with existing Vale errors
         if [[ "$pull_comments_json" != "[]" ]]; then
