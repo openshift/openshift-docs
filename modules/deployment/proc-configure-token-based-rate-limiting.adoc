@@ -1,0 +1,113 @@
+[id="proc-configure-token-based-rate-limiting_{context}"]
+= Configure token-based rate limiting with TokenRateLimitPolicy
+
+{prodnamefull} provides the `TokenRateLimitPolicy` custom resource to enforce rate limits based on token consumption rather than the number of requests. This policy extends the Envoy Rate Limit Service (RLS) protocol with automatic token usage extraction. It is particularly useful for protecting Large Language Model (LLM) APIs, where the cost and resource usage correlate more closely with the number of tokens processed.
+
+Unlike the standard `RateLimitPolicy` which counts requests, `TokenRateLimitPolicy` counts tokens by extracting usage metrics in the body of the AI inference API call, allowing for finer-grained control over API usage based on actual workload.
+
+== How token rate limiting works
+
+The `TokenRateLimitPolicy` tracks cumulative token usage per client. Before forwarding a request, it checks if the client has already exceeded their limit from previous usage. After the upstream responds, it extracts the actual token cost and updates the client's counter.
+
+The flow is as follows:
+
+. On an incoming request, the gateway evaluates the matching rules and predicates from the `TokenRateLimitPolicy` resources.
+. If the request matches, the gateway prepares the necessary rate limit descriptors and monitors the response.
+. After receiving the response, the gateway extracts the `usage.total_tokens` field from the JSON response body.
+. The gateway then sends a `RateLimitRequest` to Limitador, including the actual token count as a `hits_addend`.
+. Limitador tracks the cumulative token usage and responds to the gateway with `OK` or `OVER_LIMIT`.
+
+== Key features and use cases
+
+* Enforces limits based on token usage by extracting the `usage.total_tokens` field from an OpenAI-style inference JSON response body.
+* Suitable for consumption-based APIs such as LLMs where the cost is tied to token counts.
+* Allows defining different limits based on criteria such as user identity, API endpoints, or HTTP methods.
+* Works with `AuthPolicy` to apply specific limits to authenticated users or groups.
+* Inherits functionalities from `RateLimitPolicy`, including defining multiple limits with different durations and using Redis for shared counters in multi-cluster environments.
+
+== Integrating with AuthPolicy
+
+You can combine `TokenRateLimitPolicy` with `AuthPolicy` to apply token limits based on authenticated user identity.
+When an `AuthPolicy` successfully authenticates a request, it injects identity information which can then be used by the `TokenRateLimitPolicy` to select the appropriate limit.
+
+For example, you can define different token limits for users belonging to 'free-tier' versus 'premium-tier' groups, identified using claims in a JWT validated by `AuthPolicy`.
+
+== Configure token-based rate limiting for LLM APIs
+
+This guide shows how to configure `TokenRateLimitPolicy` to protect a hypothetical LLM API deployed on OpenShift Container Platform, integrated with `AuthPolicy` for user-specific limits.
+
+.Prerequisites
+
+* {prodname} is installed on your OpenShift Container Platform cluster.
+* A Gateway and an `HTTPRoute` are configured to expose your service.
+* An `AuthPolicy` is configured for authentication (for example, using API keys or OIDC).
+* Redis is configured for Limitador if running in a multi-cluster setup or requiring persistent counters.
+* Your upstream service is configured to return an OpenAI-compatible JSON response containing a `usage.total_tokens` field in the response body.
+
+.Procedure
+
+. Create a `TokenRateLimitPolicy` resource. This example defines two limits: one for free users on a 10,000 tokens per day request limit, and one for pro users with a 100,000 tokens per day request limit.
++
+[source,yaml]
+----
+apiVersion: kuadrant.io/v1alpha1
+kind: TokenRateLimitPolicy
+metadata:
+  name: llm-protection
+spec:
+  targetRef:
+    group: gateway.networking.k8s.io
+    kind: Gateway
+    name: ai-gateway
+  limits:
+    free-users:
+      rates:
+        - limit: 10000 # 10k tokens per day for free tier
+          window: 24h
+      when:
+        - predicate: request.path == "/v1/chat/completions" # Inference traffic only
+        - predicate: |
+            auth.identity.groups.split(",").exists(g, g == "free")
+      counters:
+        - expression: auth.identity.userid
+    pro-users:
+      rates:
+        - limit: 100000 # 200 tokens per minute for pro users
+          window: 24h
+      when:
+        - predicate: request.path == "/v1/chat/completions" # Inference traffic only
+        - predicate: |
+            auth.identity.groups.split(",").exists(g, g == "pro")
+      counters:
+        - expression: auth.identity.userid
+
+----
+
+. Apply the policy:
++
+[source,bash]
+----
+oc apply -f your-tokenratelimitpolicy.yaml -n my-api-namespace
+----
+
+. Check the status of the policy to ensure it has been accepted and enforced on the target `HTTPRoute`. Look for conditions with `type: Accepted` and `type: Enforced` with `status: "True"`.
++
+[source,bash]
+----
+oc get tokenratelimitpolicy llm-protection -n my-api-namespace -o jsonpath='{.status.conditions}'
+----
+
+. Send requests to your API endpoint, including the required authentication details.
++
+[source,bash]
+----
+curl -H "Authorization: <auth-details>" \
+     -d '{"model": "gpt-4", "messages": [{"role": "user", "content": "Hello"}]}' \
+     <your-api-endpoint>
+----
+
+.Verification
+
+* Ensure your upstream service responds with an OpenAI-compatible JSON body containing the `usage.total_tokens` field.
+* Requests made when the client is within their token limits should receive a `200 OK` response or other success status and their token counter will be updated.
+* Requests made when the client has already exceeded their token limits should receive a `429 Too Many Requests` response.
