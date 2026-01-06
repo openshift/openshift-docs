@@ -1,0 +1,232 @@
+[id="rhcl_app_developer-workflow_{context}"]
+= {prodname} application developer workflow
+
+This section of the walkthrough shows how as an application developer you can override your existing Gateway-level policies to configure your application-level routing, authentication, and rate limiting requirements. 
+
+
+.Prerequisites
+
+* Your {prodname} environment is set up and policies are configured as described in xref:rhcl_platform_engineer-workflow_{context}[].
+
+
+== Step 1 - Deploy the toystore app
+
+.Procedure
+
+. Create the namespace for your application as follows, if it does not already exist: 
++
+[,bash]
+----
+kubectl create ns ${devNS}
+----
+
+. Deploy the `toystore` application to your developer namespace as follows, if it has not already been deployed:
++
+[,bash]
+----
+kubectl apply -f https://raw.githubusercontent.com/Kuadrant/Kuadrant-operator/main/examples/toystore/toystore.yaml -n ${devNS}
+----
+
+== Step 2 - Set up the HTTPRoute for your API
+
+.Procedure
+
+. Enter the following command to define an HTTP route for your Toystore application API: 
++
+[,bash]
+----
+kubectl apply -f - <<EOF
+apiVersion: gateway.networking.k8s.io/v1
+kind: HTTPRoute
+metadata:
+  name: toystore
+  labels:
+    deployment: toystore
+    service: toystore
+spec:
+  parentRefs:
+  - name: ${gatewayName}
+    namespace: ${gatewayNS}
+  hostnames:
+  - "api.${rootDomain}"
+  rules:
+  - matches:
+    - method: GET
+      path:
+        type: PathPrefix
+        value: "/cars"
+    - method: GET
+      path:
+        type: PathPrefix
+        value: "/dolls"
+    backendRefs:
+    - name: toystore
+      port: 80
+  - matches:
+    - path:
+        type: PathPrefix
+        value: "/admin"
+    backendRefs:
+    - name: toystore
+      port: 80
+EOF
+----
++
+With this `HTTPRoute` in place, the service that you deployed is now exposed by the Gateway. 
+
+. You can access your API endpoint over HTTPS as follows:
++
+[,sh]
+----
+export INGRESS_HOST=$(kubectl get gtw ${gatewayName} -o jsonpath='{.status.addresses[0].value}' -n api-gateway)
+
+curl --resolve api.${rootDomain}:443:${INGRESS_HOST} "https://api.${rootDomain}/cars"
+----
+
+
+== Step 3 - Override the Gateway's deny-all AuthPolicy
+
+Next, you will allow authenticated access to the Toystore API. You can do this by defining an `AuthPolicy` that targets the `HTTPRoute` resource created in the previous step.
+
+NOTE: Any new HTTPRoutes will still be affected by the existing Gateway-level policy. Because you want users to now access this API, you must override that Gateway policy. For simplicity, you can use API keys to authenticate the requests, but other options such as OpenID Connect are also available.
+
+.Procedure
+
+. Define API keys for *bob* and *alice* users as follows:
++
+[,sh]
+----
+kubectl apply -f - <<EOF
+apiVersion: v1
+kind: Secret
+metadata:
+  name: bob-key
+  labels:
+    authorino.kuadrant.io/managed-by: authorino
+    app: toystore
+  annotations:
+    secret.kuadrant.io/user-id: bob
+stringData:
+  api_key: IAMBOB
+type: Opaque
+---
+apiVersion: v1
+kind: Secret
+metadata:
+  name: alice-key
+  labels:
+    authorino.kuadrant.io/managed-by: authorino
+    app: toystore
+  annotations:
+    secret.kuadrant.io/user-id: alice
+stringData:
+  api_key: IAMALICE
+type: Opaque
+EOF
+----
+
+. Override the `AuthPolicy` to start accepting the API keys as follows:
++
+[,sh]
+----
+kubectl apply -f - <<EOF
+apiVersion: kuadrant.io/v1
+kind: AuthPolicy
+metadata:
+  name: toystore
+spec:
+  targetRef:
+    group: gateway.networking.k8s.io
+    kind: HTTPRoute
+    name: toystore
+  rules:
+    authentication:
+      "api-key-users":
+        apiKey:
+          selector:
+            matchLabels:
+              app: toystore
+        credentials:
+          authorizationHeader:
+            prefix: APIKEY
+    response:
+      success:
+        filters:
+          "identity":
+            json:
+              properties:
+                "userid":
+                  selector: auth.identity.metadata.annotations.secret\.kuadrant\.io/user-id
+EOF
+----
+
+== Step 4 - Override the Gateway's RateLimitPolicy
+
+The configured Gateway limits provide a good set of limits for the general case. However, as the developer of the Toystore API, you might want to only allow a certain number of requests for specific users, and a general limit for all other users.
+
+.Procedure
+
+. Enter the following command to set rate limits for specific users:
++
+[,sh]
+----
+kubectl apply -f - <<EOF
+apiVersion: kuadrant.io/v1
+kind: RateLimitPolicy
+metadata:
+  name: toystore
+spec:
+  targetRef:
+    group: gateway.networking.k8s.io
+    kind: HTTPRoute
+    name: toystore
+  limits:
+    "general-user":
+      rates:
+      - limit: 1
+        duration: 3
+        unit: second
+      counters:
+      - metadata.filter_metadata.envoy\.filters\.http\.ext_authz.identity.userid
+      when:
+      - selector: metadata.filter_metadata.envoy\.filters\.http\.ext_authz.identity.userid
+        operator: neq
+        value: bob
+    "bob-limit":
+      rates:
+      - limit: 2
+        duration: 3
+        unit: second
+      when:
+      - selector: metadata.filter_metadata.envoy\.filters\.http\.ext_authz.identity.userid
+        operator: eq
+        value: bob
+EOF
+----
++
+NOTE: It might take a few minutes for the `RateLimitPolicy` to be applied, depending on your cluster.
++
+As another example, you could give *bob* twice as many requests to use compared to all other users.
+
+. To test your new setup, send requests as *alice* as follows:
++
+[,sh]
+----
+while :; do curl --resolve api.${rootDomain}:443:${INGRESS_HOST} --write-out '%{http_code}\n' --silent --output /dev/null -H 'Authorization: APIKEY IAMALICE' "https://api.${rootDomain}/cars" | grep -E --color "\b(429)\b|$"; sleep 1; done
+----
+
+. Send requests as *bob* as follows:
++
+[,sh]
+----
+while :; do curl --resolve api.${rootDomain}:443:${INGRESS_HOST} --write-out '%{http_code}\n' --silent --output /dev/null -H 'Authorization: APIKEY IAMBOB' "https://api.${rootDomain}/cars" | grep -E --color "\b(429)\b|$"; sleep 1; done
+----
++
+NOTE: If you set up a DNS provider and configured a `DNSPolicy` as described in the platform engineer workflow, you can omit the `+--resolve api.${rootDomain}:443:${INGRESS_HOST}+` flag. For example, for alice as follows:
++
+[,sh]
+----
+while :; do curl --write-out '%{http_code}\n' --silent --output /dev/null -H 'Authorization: APIKEY IAMALICE' "https://api.${rootDomain}/cars" | grep -E --color "\b(429)\b|$"; sleep 1; done
+----
++
+NOTE: If you followed through this guide on more than one cluster, the DNS record for the `HTTPRoute` hostname will have multiple IP addresses. This means that requests will be made in a round-robin pattern across clusters because your DNS provider sends different responses to lookups.

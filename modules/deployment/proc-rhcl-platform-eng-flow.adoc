@@ -1,0 +1,468 @@
+[id="rhcl_platform_engineer-workflow_{context}"]
+= {prodname} platform engineer workflow
+
+This section of the walkthrough shows how as a platform engineer you can deploy a Gateway that provides secure communication and is protected and ready for use by application development teams. It also shows how to use this Gateway in multiple clusters in different geographic regions.
+
+.Prerequisites
+
+* See xref:rhcl-deploy-prerequisites_{context}[].
+
+
+NOTE: In multicluster environments, you must perform the following steps in each cluster individually, unless specifically excluded.
+
+== Step 1 - Set your environment variables
+
+.Procedure
+
+* Set the following environment variables, which are used for convenience in this guide:
++
+[,bash]
+----
+export zid=change-to-your-DNS-zone-ID
+export rootDomain=demo.example.com
+export gatewayNS=api-gateway
+export gatewayName=external
+export devNS=toystore
+export AWS_ACCESS_KEY_ID=xxxx
+export AWS_SECRET_ACCESS_KEY=xxxx
+export AWS_REGION=us-east-1
+export clusterIssuerName=lets-encrypt
+export EMAIL=foo@example.com
+----
++
+In this example, `zid` is your hosted zone ID displayed in the AWS Route 53 console. `rootDomain` is the top-level AWS Route 53 domain name that you will use for {prodname}.
++
+NOTE: This guide uses environment variables for convenience only. If you know the environment variable values, you can set up the required `.yaml` files in way that suits your needs.
+
+
+== Step 2 - Set up a DNS provider secret
+
+The DNS provider supplies a credential to access the DNS zones that {prodname} can use to set up DNS configuration. You must ensure that this credential has access to only the zones that you want managed.
+
+NOTE: You must apply the following `Secret` resources to each cluster. If you are adding an additional cluster, add them to the new cluster.
+
+.Procedure
+
+. If your Gateway namespace does not already exist, create it as follows:
++
+[,bash]
+----
+kubectl create ns ${gatewayNS}
+----
+
+. If the secret for your DNS provider credentials was not already created when installing {prodname}, create this secret in your Gateway namespace as follows:
++
+[,bash]
+----
+kubectl -n ${gatewayNS} create secret generic aws-credentials \
+  --type=kuadrant.io/aws \
+  --from-literal=AWS_ACCESS_KEY_ID=$AWS_ACCESS_KEY_ID \
+  --from-literal=AWS_SECRET_ACCESS_KEY=$AWS_SECRET_ACCESS_KEY
+----
+
+. Before adding a TLS issuer, you must also create the credentials secret in the `cert-manager` namespace as follows:
++
+[,bash]
+----
+kubectl -n cert-manager create secret generic aws-credentials \
+  --type=kuadrant.io/aws \
+  --from-literal=AWS_ACCESS_KEY_ID=$AWS_ACCESS_KEY_ID \
+  --from-literal=AWS_SECRET_ACCESS_KEY=$AWS_SECRET_ACCESS_KEY
+----
+
+== Step 3 - Add a TLS issuer
+
+To secure communication to the Gateways, you will define a TLS issuer for TLS certificates. This example uses Let's Encrypt, but you can use any certificate issuer supported by `cert-manager`.
+
+.Procedure
+
+. Enter the following command to define a TLS issuer. This example uses Let's Encrypt, which you must also apply to all clusters:
++
+[,bash]
+----
+kubectl apply -f - <<EOF
+apiVersion: cert-manager.io/v1
+kind: ClusterIssuer
+metadata:
+  name: ${clusterIssuerName}
+spec:
+  acme:
+    email: ${EMAIL}
+    privateKeySecretRef:
+      name: le-secret
+    server: https://acme-v02.api.letsencrypt.org/directory
+    solvers:
+      - dns01:
+          route53:
+            hostedZoneID: ${zid}
+            region: ${AWS_REGION}
+            accessKeyIDSecretRef:
+              key: AWS_ACCESS_KEY_ID
+              name: aws-credentials
+            secretAccessKeySecretRef:
+              key: AWS_SECRET_ACCESS_KEY
+              name: aws-credentials
+EOF
+----
+
+. Wait for the `ClusterIssuer` to become ready as follows:
++
+[,bash]
+----
+kubectl wait clusterissuer/${clusterIssuerName} --for=condition=ready=true
+----
+
+== Step 4 - Set up a Gateway
+
+For {prodname} to balance traffic using DNS across two or more clusters, you must define a Gateway with a shared host. You will define this by using an HTTPS listener with a wildcard hostname based on the root domain. As mentioned earlier, you must apply these resources to all clusters.
+
+NOTE: For now, the Gateway is set to accept an `HTTPRoute` from the same namespace only. This allows you to restrict who can use the Gateway until it is ready for general use.
+
+
+.Procedure
+
+. Enter the following command to create the Gateway:
++
+[,bash]
+----
+kubectl apply -f - <<EOF
+apiVersion: gateway.networking.k8s.io/v1
+kind: Gateway
+metadata:
+  name: ${gatewayName}
+  namespace: ${gatewayNS}
+  labels:
+    kuadrant.io/gateway: "true"
+spec:
+    gatewayClassName: istio
+    listeners:
+    - allowedRoutes:
+        namespaces:
+          from: Same
+      hostname: "*.${rootDomain}"
+      name: api
+      port: 443
+      protocol: HTTPS
+      tls:
+        certificateRefs:
+        - group: ""
+          kind: Secret
+          name: api-${gatewayName}-tls
+        mode: Terminate
+EOF
+----
+
+. Check the status of your Gateway as follows:
++
+[,bash]
+----
+kubectl get gateway ${gatewayName} -n ${gatewayNS} -o=jsonpath='{.status.conditions[?(@.type=="Accepted")].message}'
+kubectl get gateway ${gatewayName} -n ${gatewayNS} -o=jsonpath='{.status.conditions[?(@.type=="Programmed")].message}'
+----
++
+Your Gateway should be accepted and programmed, which means valid and assigned an external address. 
+
+. However, if you check your HTTPS listener status as follows, you will see that it is not yet programmed or ready to accept traffic due to bad TLS configuration:
++
+[,bash]
+----
+kubectl get gateway ${gatewayName} -n ${gatewayNS} -o=jsonpath='{.status.listeners[0].conditions[?(@.type=="Programmed")].message}'
+----
++
+{prodname} can help with this by using a TLSPolicy, which is described in the next step.
+
+
+=== Optional: Configure metrics to be scraped from the Gateway instance
+
+If you have Prometheus set up in your cluster, you can configure a `PodMonitor` to scrape metrics directly from the Gateway pod. This configuration is required for metrics such as `istio_requests_total`. You must add the following configuration in the namespace where the Gateway is running:
+
+[,bash]
+----
+kubectl apply -f - <<EOF
+apiVersion: monitoring.coreos.com/v1
+kind: PodMonitor
+metadata:
+  name: istio-proxies-monitor
+  namespace: ${gatewayNS}
+spec:
+  selector:
+    matchExpressions:
+      - key: istio-prometheus-ignore
+        operator: DoesNotExist
+  podMetricsEndpoints:
+    - path: /stats/prometheus
+      interval: 30s
+      relabelings:
+        - action: keep
+          sourceLabels: ["__meta_kubernetes_pod_container_name"]
+          regex: "istio-proxy"
+        - action: keep
+          sourceLabels:
+            ["__meta_kubernetes_pod_annotationpresent_prometheus_io_scrape"]
+        - action: replace
+          regex: (\d+);(([A-Fa-f0-9]{1,4}::?){1,7}[A-Fa-f0-9]{1,4})
+          replacement: "[\$2]:\$1"
+          sourceLabels:
+            [
+              "__meta_kubernetes_pod_annotation_prometheus_io_port",
+              "__meta_kubernetes_pod_ip",
+            ]
+          targetLabel: "__address__"
+        - action: replace
+          regex: (\d+);((([0-9]+?)(\.|$)){4})
+          replacement: "\$2:\$1"
+          sourceLabels:
+            [
+              "__meta_kubernetes_pod_annotation_prometheus_io_port",
+              "__meta_kubernetes_pod_ip",
+            ]
+          targetLabel: "__address__"
+        - action: labeldrop
+          regex: "__meta_kubernetes_pod_label_(.+)"
+        - sourceLabels: ["__meta_kubernetes_namespace"]
+          action: replace
+          targetLabel: namespace
+        - sourceLabels: ["__meta_kubernetes_pod_name"]
+          action: replace
+          targetLabel: pod_name
+EOF
+----
+
+For more information on configuring metrics, see the {LinkRHCLObserve}[{NameRHCLObserve}].
+
+== Step 5 - Configure your Gateway policies and HTTP route
+
+While your Gateway is now deployed, it has no exposed endpoints and your HTTPS listener is not programmed. Next, you can set up a `TLSPolicy` that leverages your `CertificateIssuer` to set up your HTTPS listener certificates.
+
+You will define an `AuthPolicy` that will set up a default HTTP `403` response for any unprotected endpoints, as well as a `RateLimitPolicy` that will set up a default artificially low global limit to further protect any endpoints exposed by this Gateway.
+
+You will also define a `DNSPolicy` with a load balancing strategy, and an `HTTPRoute` for your Gateway to communicate with your backend application API.
+
+=== Set the TLS policy
+
+.Procedure
+
+. Set the `TLSPolicy` for your Gateway as follows:
++
+[,bash]
+----
+kubectl apply -f - <<EOF
+apiVersion: kuadrant.io/v1
+kind: TLSPolicy
+metadata:
+  name: ${gatewayName}-tls
+  namespace: ${gatewayNS}
+spec:
+  targetRef:
+    name: ${gatewayName}
+    group: gateway.networking.k8s.io
+    kind: Gateway
+  issuerRef:
+    group: cert-manager.io
+    kind: ClusterIssuer
+    name: ${clusterIssuerName}
+EOF
+----
+
+. Check that your TLS policy was accepted by the controller as follows:
++
+[,bash]
+----
+kubectl get tlspolicy ${gatewayName}-tls -n ${gatewayNS} -o=jsonpath='{.status.conditions[?(@.type=="Accepted")].message}'
+----
+
+=== Set the Auth policy
+
+.Procedure
+
+. Set a default, deny-all `AuthPolicy` for your Gateway as follows:
++
+[,bash]
+----
+kubectl apply -f - <<EOF
+apiVersion: kuadrant.io/v1
+kind: AuthPolicy
+metadata:
+  name: ${gatewayName}-auth
+  namespace: ${gatewayNS}
+spec:
+  targetRef:
+    group: gateway.networking.k8s.io
+    kind: Gateway
+    name: ${gatewayName}
+  defaults:
+    rules:
+      authorization:
+        "deny":
+          opa:
+            rego: "allow = false"
+EOF
+----
+
+. Check that your auth policy was accepted by the controller as follows:
++
+[,bash]
+----
+kubectl get authpolicy ${gatewayName}-auth -n ${gatewayNS} -o=jsonpath='{.status.conditions[?(@.type=="Accepted")].message}'
+----
+
+=== Set the rate limit policy
+
+.Procedure
+
+. Set the default `RateLimitPolicy` for your Gateway as follows:
++
+[,bash]
+----
+kubectl apply -f  - <<EOF
+apiVersion: kuadrant.io/v1
+kind: RateLimitPolicy
+metadata:
+  name: ${gatewayName}-rlp
+  namespace: ${gatewayNS}
+spec:
+  targetRef:
+    group: gateway.networking.k8s.io
+    kind: Gateway
+    name: ${gatewayName}
+  defaults:
+    limits:
+      "low-limit":
+        rates:
+        - limit: 2
+          window: 10s
+EOF
+----
++
+NOTE: It might take a few minutes for the `RateLimitPolicy` to be applied depending on your cluster. The limit in this example is artificially low to show it working easily. 
+
+. To check your rate limits have been accepted, enter the following command:
++
+[,bash]
+----
+kubectl get ratelimitpolicy ${gatewayName}-rlp -n ${gatewayNS} -o=jsonpath='{.status.conditions[?(@.type=="Accepted")].message}'
+----
+
+=== Set the DNS policy
+
+.Procedure
+
+. Set the `DNSPolicy` for your Gateway as follows:
++
+[,bash]
+----
+kubectl apply -f - <<EOF
+apiVersion: kuadrant.io/v1
+kind: DNSPolicy
+metadata:
+  name: ${gatewayName}-dnspolicy
+  namespace: ${gatewayNS}
+spec:
+  targetRef:
+    name: ${gatewayName}
+    group: gateway.networking.k8s.io
+    kind: Gateway
+  providerRefs:
+    - name: aws-credentials
+  loadBalancing:
+    weight: 120
+    geo: EU
+    defaultGeo: true
+EOF
+----
++
+NOTE:  The `DNSPolicy` will use the DNS Provider `Secret` that you defined earlier. The `geo` in this example is `EU`, but you can change this to suit your requirements. 
+
+. Check that your `DNSPolicy` has been accepted as follows:
++
+[,bash]
+----
+kubectl get dnspolicy ${gatewayName}-dnspolicy -n ${gatewayNS} -o=jsonpath='{.status.conditions[?(@.type=="Accepted")].message}'
+----
+
+=== Create an HTTP route
+
+NOTE: For test purposes, this section assumes that the toystore application is deployed. For more information, see xref:rhcl_app_developer-workflow_{context}[].
+
+.Procedure
+
+. Create an `HTTPRoute` to test your Gateway as follows:
++
+[,bash]
+----
+kubectl apply -f - <<EOF
+apiVersion: gateway.networking.k8s.io/v1
+kind: HTTPRoute
+metadata:
+  name: test
+  namespace: ${gatewayNS}
+  labels:
+    service: toystore  
+spec:
+  parentRefs:
+  - name: ${gatewayName}
+    namespace: ${gatewayNS}
+  hostnames:
+  - "test.${rootDomain}"
+  rules:
+  - backendRefs:
+    - name: toystore
+      port: 80
+EOF
+----
+
+. Check your Gateway policies are enforced as follows:
++
+[,bash]
+----
+kubectl get dnspolicy ${gatewayName}-dnspolicy -n ${gatewayNS} -o=jsonpath='{.status.conditions[?(@.type=="Enforced")].message}'
+kubectl get authpolicy ${gatewayName}-auth -n ${gatewayNS} -o=jsonpath='{.status.conditions[?(@.type=="Enforced")].message}'
+kubectl get ratelimitpolicy ${gatewayName}-rlp -n ${gatewayNS} -o=jsonpath='{.status.conditions[?(@.type=="Enforced")].message}'
+----
+
+. Check your HTTPS listener is ready as follows:
++
+----
+kubectl get gateway ${gatewayName} -n ${gatewayNS} -o=jsonpath='{.status.listeners[0].conditions[?(@.type=="Programmed")].message}'
+----
+
+
+== Step 6 - Test connectivity and deny all auth
+
+You can use `curl` to test your endpoint connectivity and auth.  
+
+.Procedure
+
+* Enter the following command:
++
+[,bash]
+----
+curl -w "%{http_code}" https://$(kubectl get httproute test -n ${gatewayNS} -o=jsonpath='{.spec.hostnames[0]}')
+----
++
+You should see an HTTP `403` response.
+
+== Step 7 - Open up the Gateway for other namespaces
+
+Because you have configured the Gateway, secured it with {prodname} policies, and tested it, you can now open it up for use by other teams in other namespaces.
+
+.Procedure
+
+* Enter the following command:
++
+[,bash]
+----
+kubectl patch gateway ${gatewayName} -n ${gatewayNS} --type='json' -p='[{"op": "replace", "path": "/spec/listeners/0/allowedRoutes/namespaces/from", "value":"All"}]'
+----
+
+== Step 8 - Extend the Gateway to multiple clusters and configure geo-based routing
+
+.Procedure
+
+. To distribute this Gateway across multiple clusters, repeat this setup process for each cluster. 
++
+By default, this will implement a round-robin DNS strategy to distribute traffic evenly across the different clusters. Setting up your Gateways to serve clients based on their geographic location is straightforward with your current configuration.
+
+. Assuming that you have deployed Gateway instances across multiple clusters as per this guide, the next step involves updating the DNS controller with the geographic regions of the visible Gateways.
++
+For instance, if you have one cluster in North America and another in the EU, you can direct traffic to these Gateways based on their location by configuring the appropriate policy. For your North American cluster, you can create a DNSPolicy and set the `loadBalancing:geo` field to `US`. 
