@@ -1,0 +1,341 @@
+:_mod-docs-content-type: ASSEMBLY
+include::_attributes/common-attributes.adoc[]
+include::_attributes/attributes-openshift-dedicated.adoc[]
+[id="virt-install-ibm-cloud-bm-nodes"]
+= Installing {VirtProductName} on IBM Cloud bare metal nodes
+:context: virt-install-ibm-cloud-bm-nodes
+
+toc::[]
+
+[role="_abstract"]
+
+Install {VirtProductName} on IBM Cloud bare metal nodes using Assisted Installer. The {VirtProductName} cluster in the IBM Cloud environment consists of 6 bare metal nodes; 3 master nodes and 3 worker nodes. All nodes are connected to a private network. An additional virtual machine is required for bootstrapping operations and acting as a Samba server, DHCP server, network gateway, and load balancer. DNS "A" records must be created for the cluster name and subdomains for external access.
+
+.Prerequisites
+
+* An account in IBM Cloud with permissions to order and operate bare metal nodes.
+* An IBM Cloud SSL VPN user, to access the SuperMicro IPMI interface of a node.
+
+== Configuring IBM Cloud for the new cluster
+
+. Create a new virtual server instance in IBM Cloud at link:https://cloud.ibm.com/gen1/infrastructure/provision/vs to be the Bastion server. This instance is used to run the installation and provide environment services. This virtual server instance has the following properties:
+
+* Type of virtual server: Public
+* Operating system: CentOS
+* Your public SSH RSA key
++
+All other properties should remain their default values.
+
+. Note the private VLAN and subnet the virtual server instance was assigned to at link:https://cloud.ibm.com/classic/network/vlans.
+
+. Provision 6 bare metal nodes in IBM Cloud at link:https://cloud.ibm.com/gen1/infrastructure/provision/bm. Use the following values when provisioning the nodes:
+
+* Domain: A subdomain you can add records to.
+* Quantity: 6
+* Location: The same location as the virtual server instance.
+* Storage disks: RAID 1
+* Network Interface: Private
+* Private VLAN: The same as noted for the virtual server instance.
+
+. Confirm all nodes are provisioned and ready at link:https://cloud.ibm.com/gen1/infrastructure/devices.
+
+. Rename all master nodes as `master0-<domain-name>`, `master1-<domain-name>`, and `master2-<domain-name>`. Replace `<domain-name>` with the domain used when provisioning the nodes.
+
+. Rename all worker nodes as `worker0-<domain-name>`, `worker1-<domain-name>`, and `worker2-<domain-name>`. Replace `<domain-name>` with the domain used when provisioning the nodes.
+
+. Configure the Bastion virtual server instance as a default network gateway.
+
+. Edit `/etc/dhcp/dhcpd.conf` on the Bastion virtual server instance to configure DHCP. The following is an example of this configuration:
++
+----
+# Set DNS name and DNS server's IP address or hostname
+option domain-name  "bm.ibm.cluster.example.com";
+option domain-name-servers  8.8.8.8;
+
+# Declare DHCP Server
+authoritative;
+
+# The default DHCP lease time
+default-lease-time 600;
+
+# Set the maximum lease time
+max-lease-time 7200;
+
+# Set Network address, subnet mask and gateway
+
+subnet 10.60.128.0 netmask 255.255.255.192 {
+  # Range of IP addresses to allocate
+  range dynamic-bootp 10.60.128.10 10.60.128.35;
+  # Provide broadcast address
+  option broadcast-address 10.60.128.63;
+  # Set default gateway
+  option routers 10.60.128.38;
+----
++
+[NOTE]
+====
+Replace the example values with values applicable to your network configuration.
+====
+
+. Restart DHCP on the Bastion virtual server instance:
++
+----
+$ systemctl restart dhcpd
+----
+
+. Enable IP forwarding on the Bastion virtual server instance:
++
+----
+$ sysctl -w net.ipv4.ip_forward=1
+----
+
+. Verify IP forwarding is enabled on the Bastion virtual server instance:
++
+----
+$ sysctl -p /etc/sysctl.conf
+----
+
+. Restart the network service on the Bastion virtual server instance:
++
+----
+$ service network restart
+----
+
+. Verify if `firewalld` is enabled on the Bastion virtual server instance:
++
+----
+$ firewall-cmd --state
+----
+
+. If the `firewalld` service is not enabled on the Bastion virtual server instance, enable and start the service:
++
+----
+$ systemctl enable firewalld
+$ systemctl start firewalld
+----
+
+. Add network address translation (NAT) rules to the `firewalld` service:
++
+----
+$ firewall-cmd --add-masquerade --permanent
+$ firewall-cmd --reload
+----
+
+== Create the new cluster using Assisted Installer
+
+. Log in to the Assisted Installer service.
+
+. Create a new cluster. The new cluster has the following properties:
+
+* Cluster name : The name used to identify the cluster under the base domain.
+* Base domain : The domain used to provision the bare metal nodes in ????.
+
+. Click Next.
+
+. Click Generate Discovery ISO.
+
+. Provide your public SSH RSA key when prompted. and provide your SSH RSA public key.
+
+. Copy and save the generated `wget` command for the ISO file. This will be used later to connect to the cluster nodes.
+
+. Install Samba server on the Bastion virtual server instance:
++
+----
+$ dnf install samba
+----
+
+. Enable Samba server on the Bastion virtual server instance:
++
+----
+$ systemctl enable smb --now
+----
+
+. Configure NAT rules for the Samba server:
++
+----
+$ firewall-cmd --permanent --zone=FedoraWorkstation --add-service=samba
+$ firewall-cmd --reload
+----
+Open firewall rules :
+Raw
+
+Create a password for the root user :
+Raw
+sudo smbpasswd -a root
+Create a share directory :
+Raw
+mkdir share
+cd share/
+On the share directory, download the ISO file from the assisted installer using the wget command from step 8.
+Use the following configuration for /etc/samba/smb.conf :
+Raw
+# See smb.conf.example for a more detailed config file or
+# read the smb.conf manpage.
+# Run 'testparm' to verify the config is correct after
+# you modified it.
+
+[global]
+      log level = 3
+          workgroup = SAMBA
+          security = user
+
+          passdb backend = tdbsam
+
+          printing = cups
+          printcap name = cups
+          load printers = yes
+          cups options = raw
+
+      server min protocol = NT1
+      ntlm auth = yes
+
+[share]
+      comment = ISO Files
+      path = /root/share
+      browseable = yes
+      public = no
+      read only = no
+      directory mode = 0555
+      valid users = root
+Restart SMB service and verify it is running and active :
+Raw
+systemctl restart smb
+systemctl status smb
+Set Up SSL VPN Access to IBM Cloud
+Follow the instructions : https://cloud.ibm.com/docs/iaas-vpn?topic=iaas-vpn-getting-started
+Download MotionPro SSL VPN client
+Connect to the relevant IBM Cloud endpoint : https://www.ibm.com/cloud/vpn-access
+Connect using the following command : sudo MotionPro --host ${VPN_ENDPOINT} --user ${SSL_VPN_USERNAME} --passwd ${SSL_VPN_PASSWORD}
+NOTE : Once connected to IBM Cloud SSL VPN, you’ll lose access to Red Hat network (because the same VPNs use a private address scope of 10.0.0.0/8).
+Open IPMI console for each of the Bare metal servers.
+IP address and credentials for the IPMI can be found under "Remote management" section for each server.
+For each bare metal server, on the IPMI console, open the page for mounting ISO file :
+Virtual Media -> CD-ROM Image
+Share host : the private IP of the Bastion machine
+Path to image : \share\${ISO_FILENAME}
+User : root
+Password : the password you’ve set in step 9.
+Click Save and Mount
+Verify that one of the slots has an iso mounted.
+Restart all bare metal servers :
+Remote Control -> Power Control -> Reset Server -> Perform Action
+Go back to the Assisted Installer page.
+It is possible at this point to select if "OpenShift Virtualization" and/or "OpenShift Container Storage" need to be deployed on the resulting cluster. To add them to the deployment, simply click the checkbox(es).
+The hosts should start appearing at the table.
+Select role for each host - 3 masters (control plane) and 3 worker nodes.
+Wait for all nodes to become ready and click "Next"
+On the next page, select "Cluster Managed Networking" and select the checkbox to get API VIP and Ingress VIP from DHCP (or statically set them), then click "Install".
+At some point, the AI UI will ask you to disconnect the media from the CD-ROM. Go back to the IPMI console of each server, Virtual Media -> CD-ROM Image, and click on "Unmount". Then, reboot the server.
+Wait for the installation to be completed, download the kubeconfig file and save the kubeadmin password.
+HAProxy :
+
+On the Bastion machine, install and configure haproxy to receive requests from the Internet and forward them to the API and Ingress VIPs of the cluster internally.
+Use the following configuration (please replace the IP addresses to match your environment) :
+Raw
+#---------------------------------------------------------------------
+# Example configuration for a possible web application.  See the
+# full configuration options online.
+#
+#   https://www.haproxy.org/download/1.8/doc/configuration.txt
+#
+#---------------------------------------------------------------------
+
+#---------------------------------------------------------------------
+# Global settings
+#---------------------------------------------------------------------
+global
+  # to have these messages end up in /var/log/haproxy.log you will
+  # need to:
+  #
+  # 1) configure syslog to accept network log events.  This is done
+  # by adding the '-r' option to the SYSLOGD_OPTIONS in
+  # /etc/sysconfig/syslog
+  #
+  # 2) configure local2 events to go to the /var/log/haproxy.log
+  #   file. A line like the following can be added to
+  #   /etc/sysconfig/syslog
+  #
+  # local2.*                    /var/log/haproxy.log
+  #
+  log       127.0.0.1 local2
+
+  chroot    /var/lib/haproxy
+  pidfile   /var/run/haproxy.pid
+  maxconn   4000
+  user      haproxy
+  group     haproxy
+  daemon
+
+  # turn on stats unix socket
+  stats socket /var/lib/haproxy/stats
+
+  # utilize system-wide crypto-policies
+  #ssl-default-bind-ciphers PROFILE=SYSTEM
+  #ssl-default-server-ciphers PROFILE=SYSTEM
+
+#---------------------------------------------------------------------
+# common defaults that all the 'listen' and 'backend' sections will
+# use if not designated in their block
+#---------------------------------------------------------------------
+defaults
+  mode                  tcp
+  log                   global
+  option                httplog
+  option                dontlognull
+  option http-server-close
+  option forwardfor     except 127.0.0.0/8
+  option                redispatch
+  retries               3
+  timeout http-request  10s
+  timeout queue         1m
+  timeout connect       10s
+  timeout client        1m
+  timeout server        1m
+  timeout http-keep-alive 10s
+  timeout check         10s
+  maxconn               3000
+#---------------------------------------------------------------------
+# main frontend which proxys to the backends
+#---------------------------------------------------------------------
+
+frontend api
+  bind 108.168.136.75:6443
+  default_backend controlplaneapi
+
+frontend apiinternal
+  bind 108.168.136.75:22623
+  default_backend controlplaneapiinternal
+
+frontend secure
+  bind 108.168.136.75:443
+  default_backend secure
+
+frontend insecure
+  bind 108.168.136.75:80
+  default_backend insecure
+
+#---------------------------------------------------------------------
+# static backend
+#---------------------------------------------------------------------
+
+backend controlplaneapi
+  balance source
+  server api 10.60.128.30:6443 check
+
+backend controlplaneapiinternal
+  balance source
+  server api 10.60.128.30:22623 check
+
+backend secure
+  balance source
+  server ingress 10.60.128.34:443 check
+
+backend insecure
+  balance source
+  server ingress 10.60.128.34:80 check
+DNS
+Configure two A records for the subdomain, to be publicly available over the Internet :
+Raw
+<public ip of bastion> api.<cluster_name>.<cluster_domain>
+<public ip of bastion> *.apps..<cluster_name>.<cluster_domain>
+Now you can reach the cluster using the kubeconfig and the console link in the assisted installer final page.
