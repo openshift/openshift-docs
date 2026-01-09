@@ -1,0 +1,235 @@
+// Module included in the following assemblies:
+//
+// * scalability_and_performance/low_latency_tuning/cnf-tuning-low-latency-nodes-with-perf-profile.adoc
+
+:_mod-docs-content-type: PROCEDURE
+[id="cnf-enabling-cpu-isolation-for-executed-processes_{context}"]
+= Enabling CPU isolation for executed processes
+
+[role="_abstract"]
+The Node Tuning Operator (NTO) automatically enables the `ExecCPUAffinity` feature when a PerformanceProfile is applied to a node. This feature is recommended for high-performance telco workloads.
+
+.Prerequisites
+
+* You have access to an {product-title} cluster using an account with `cluster-admin` permissions
+* You enabled C-states and operating system controlled P-states in the BIOS
+* You collected a `must-gather` archive from the cluster to provide to the Performance Profile Creator
+
+.Procedure
+
+. Apply a PerformanceProfile to generate the necessary `RuntimeClass`. Use the Performance Profile Creator (PPC) to generate a profile with modern power management and real-time settings as follows:
+
+.. Generate a `PerformanceProfile` with the `per-pod-power-management` argument set to `true`:
++
+[source,terminal,subs="attributes+"]
+----
+$ podman run --entrypoint performance-profile-creator -v <path_to_must_gather>:/must-gather:z \
+registry.redhat.io/openshift4/ose-cluster-node-tuning-rhel9-operator:v{product-version} \
+--must-gather-dir-path /must-gather \
+--mcp-name=worker-cnf \
+--reserved-cpu-count=4 \
+--rt-kernel=true \
+--per-pod-power-management=true \
+--power-consumption-mode=low-latency > my-performance-profile.yaml
+----
++
+An example `PerformanceProfile` with appropriate `workloadHints` and `additionalKernelArgs` is shown below:
++
+[source,yaml]
+----
+apiVersion: performance.openshift.io/v2
+kind: PerformanceProfile
+metadata:
+  name: performance
+spec:
+  cpu:
+    isolated: 1,3
+    reserved: 0,2
+  machineConfigPoolSelector:
+    machineconfiguration.openshift.io/role: worker-cnf
+  net:
+    userLevelNetworking: false
+  nodeSelector:
+    node-role.kubernetes.io/worker-cnf: ""
+  numa:
+    topologyPolicy: restricted
+  realTimeKernel:
+    enabled: true
+  workloadHints:
+    highPowerConsumption: false
+    perPodPowerManagement: true
+    realTime: true
+----
+
+.. Apply the PerformanceProfile to the cluster by running the following command:
++
+[source,terminal,subs="attributes+"]
+----
+$ oc apply -f my-performance-profile.yaml
+----
++
+[NOTE]
+====
+After applying the PerformanceProfile, the affected worker nodes update with the new configuration. This process includes draining workloads, applying machine configuration changes, and rebooting each node. Monitor the MachineConfigPool status until all nodes are updated and ready before proceeding.
+====
+
+. Create a namespace for testing the performance configuration by running the following command:
++
+[source,terminal]
+----
+$ oc create namespace performance-addon-operators-testing
+----
+
+. Deploy a `Guaranteed` QoS pod that requests whole integer CPUs and uses the generated `RuntimeClass`.
+
+.. Retrieve the `RuntimeClass` created by the PerformanceProfile by running the following command:
++
+[source,terminal,subs="attributes+"]
+----
+$ oc get performanceprofile performance -o=jsonpath='{.status.runtimeClass}{"\n"}'
+----
++
+Example output is shown below:
++
+[source,terminal]
+----
+performance-performance
+----
+
+.. Create a pod definition that uses the retrieved `RuntimeClass` and requests whole integer CPUs. An example pod definition is shown below:
++
+[source,yaml,subs="attributes+"]
+----
+apiVersion: v1
+kind: Pod
+metadata:
+  name: test
+  namespace: performance-addon-operators-testing
+  annotations:
+    cpu-load-balancing.crio.io: "disable"
+spec:
+  runtimeClassName: performance-performance
+  containers:
+  - name: test
+    image: "quay.io/openshift-kni/cnf-tests:{product-version}"
+    command: ["sleep", "10h"]
+    resources:
+      requests:
+        cpu: "2"
+        memory: "256Mi"
+      limits:
+        cpu: "2"
+        memory: "256Mi"
+----
++
+[NOTE]
+====
+The CPU request must be a whole integer and, when Simultaneous Multithreading (SMT) is enabled, must be a multiple of the threads per core (typically 2). Ensure your cluster has sufficient isolated CPU capacity available. The `cpu-load-balancing.crio.io` annotation must be added to disable CPU load balancing for the container, ensuring that processes within the container are pinned to specific CPUs.
+====
+
+.. Save the pod definition to a file named `my-pod.yaml` by running the following command:
++
+[source,terminal]
+----
+$ cat <<EOF > my-pod.yaml
+apiVersion: v1
+kind: Pod
+metadata:
+  name: test
+  namespace: performance-addon-operators-testing
+  annotations:
+    cpu-load-balancing.crio.io: "disable"
+spec:
+  runtimeClassName: performance-performance
+  containers:
+  - name: test
+    image: "quay.io/openshift-kni/cnf-tests:{product-version}"
+    command: ["sleep", "10h"]
+    resources:
+      requests:
+        cpu: "2"
+        memory: "256Mi"
+      limits:
+        cpu: "2"
+        memory: "256Mi"
+EOF
+----
+
+.. Apply the pod definition by running the following command:
++
+[source,terminal,subs="attributes+"]
+----
+$ oc apply -f my-pod.yaml
+----
+
+. Verify that the pod is running by executing the following command:
++
+[source,terminal,subs="attributes+"]
+----
+$ oc get pod -n performance-addon-operators-testing test
+----
++
+Wait until the pod status shows `Running` before proceeding to the verification steps.
+
+.Verification
+
+. Confirm `Guaranteed` QoS by running the following command that verifies the pod is correctly categorized to ensure it receives exclusive CPUs:
++
+[source,terminal,subs="attributes+"]
+----
+$ oc get pod -n performance-addon-operators-testing test -o jsonpath='{.status.qosClass}{"\n"}'
+----
++
+Example output is shown below:
++
+[source,terminal]
+----
+Guaranteed
+----
+
+. Verify `exec` process pinning as follows:
+
+.. Identify the allowed CPUs for the Pod by running the following command:
++
+[source,terminal,subs="attributes+"]
+----
+$ oc exec -n performance-addon-operators-testing test -- cat /sys/fs/cgroup/cpuset.cpus.effective
+----
++
+Example output is shown below:
++
+[source,terminal]
+----
+4-5,0-3
+----
+
+.. Start an exec process in the Pod by running the following command:
++
+[source,terminal,subs="attributes+"]
+----
+$ oc exec -n performance-addon-operators-testing test -- sleep 3600 &
+----
+
+.. Log in to the worker node where the pod is running and find the PID of the sleep 3600 process by running the following command:
++
+[source,terminal]
+----
+$ ps -ef | grep "sleep 3600"
+----
++
+Example output is shown below:
++
+[source,terminal]
+----
+1001     12345 12340  0 12:00 ? 00:00:00 sleep 3600
+----
+
+.. Check the CPU affinity of the exec process by running the following command, replacing `<PID>` with the PID identified in the previous step:
++
+[source,terminal,subs="attributes+"]
+----
+$ taskset -pc <PID>
+----
++
+The command should return only the first CPU (e.g., 2). Because `cpu-load-balancing.crio.io` is disabled, the process will remain pinned to that single core.
+
