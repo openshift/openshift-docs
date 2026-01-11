@@ -1,0 +1,134 @@
+// Module included in the following assemblies:
+//
+// * nodes/nodes-nodes-resources-configuring.adoc
+
+:_mod-docs-content-type: PROCEDURE
+[id="nodes-nodes-resources-configuring-compressible_{context}"]
+= Configuring compressible resources for system components
+
+{product-title} supports correctly applying CPU resource allocation to system components through compressible resource reservation. This feature addresses a long standing issue where `system-reserved` CPU allocation calculations result in incorrect CPU shares/weights being applied to the system cgroup slice, particularly on systems with large numbers of CPUs.
+
+[IMPORTANT]
+====
+The `system-reserved-compressible` feature is not enabled by default in {product-title}. You must manually configure it using a `KubeletConfig` custom resource (CR). This feature is available starting from {product-title} 4.19.
+====
+
+== Understanding the system-reserved CPU allocation calculation issue
+
+When configuring `system-reserved` resources, the CPU allocation calculations for cgroup shares (cgroups v1) and weights (cgroups v2) do not correctly reflect the specified CPU reservation values. This results in system services not receiving the intended CPU allocation. The problem becomes more pronounced on systems with large numbers of CPUs.
+
+For example, on a node with 128 CPU cores, when specifying `system-reserved=cpu=4` (4 cores):
+
+**Without `system-reserved-compressible` (standard behavior):**
+
+* Kubepods cgroup weight: 4,844 (calculated in two steps for cgroups v2 from `128 - 4 = 124` cores available to kubepods:
+  - First: CPU shares = `(124000 milliCPU * 1024) / 1000 = 126,976`  
+  - Then: CPU weight = `1 + ((126976 - 2) * 9999) / 262142 = 4,844` 
+* System cgroup weight: 100 (default minimum weight)
+* User cgroup weight: 100 (default weight)
+* Total weight: 4,844 + 100 + 100 = 5,044
+* System slice proportion: 100 ÷ 5,044 = 0.01982
+* Effective CPU allocation for system: 0.01982 × 128 = 2.537668517 cores
+* **Result: System services receive only ~2.54 cores instead of the intended 4 cores**
+
+**With `system-reserved-compressible`:**
+
+* Kubepods cgroup weight: 4,844 (same as above)
+* System cgroup weight: 153 (calculated proportionally to reserved amount)
+* User cgroup weight: 100 (default weight)
+* Total weight: 4,844 + 153 + 100 = 5,097
+* System slice proportion: 153 ÷ 5,097 = 0.03002
+* Effective CPU allocation for system: 0.03002 × 128 = 3.842260153 cores
+* **Result: System services receive ~3.84 cores, much closer to the intended 4 cores**
+
+**Why this discrepancy occurs:**
+
+The issue stems from the default minimum cgroup weight of 100 assigned to the system cgroup in standard `system-reserved` configurations. This fixed weight doesn't scale with the actual CPU reservation amount, leading to disproportionate resource allocation, especially on high CPU count systems where the kubepods cgroup receives significantly higher weights.
+
+The `system-reserved-compressible` feature solves this by correctly setting the system cgroup weight proportional to the actual reserved CPU amount (changing from the fixed weight of 100 to 153 for 4 cores reserved), ensuring that the specified CPU reservations are more accurately reflected in the cgroup configuration.
+
+== When to use compressible resource reservation
+
+Consider using `system-reserved-compressible` when:
+
+* You have identified CPU allocation discrepancies when using standard `system-reserved` configurations, especially on nodes with high CPU counts
+* You want to ensure accurate CPU allocation for system services as specified in your resource reservations
+* You need to fix the CPU shares/weights calculation issue that affects the basic `system-reserved` CPU allocation
+* You want to apply only CPU limits without memory restrictions to avoid potential OOM issues with critical services
+* You need precise control over CPU resource allocation between system services and workload pods
+
+
+== Configuring system-reserved compressible resource reservation
+
+To enable the `system-reserved-compressible` feature, you must create a `KubeletConfig` CR that includes the appropriate cgroup settings and `enforceNodeAllocatable` configuration.
+
+.Prerequisites
+
+* Obtain the label associated with the static `MachineConfigPool` CRD for the type of node you want to configure.
+
+.Procedure
+
+. Create a `KubeletConfig` CR that enables compressible resource allocation:
++
+[source,yaml]
+----
+apiVersion: machineconfiguration.openshift.io/v1
+kind: KubeletConfig
+metadata:
+  name: system-reserved-compressible
+spec:
+  machineConfigPoolSelector:
+    matchLabels:
+      pools.operator.machineconfiguration.openshift.io/worker: ""
+  kubeletConfig:
+    systemReservedCgroup: "/system.slice" <1>
+    enforceNodeAllocatable:
+      - pods
+      - system-reserved-compressible <2>
+    systemReserved: <3>
+      cpu: "4"
+      memory: "8Gi"
+----
+<1> Specifies the cgroup path for system reserved resources.
+<2> Enables the compressible resource allocation feature for system services.
+<3> Defines the CPU and memory resources to reserve. Note that memory limits are still specified but only CPU limits are enforced on the system slice.
+
+. Apply the configuration:
++
+[source,terminal]
+----
+$ oc create -f <config-file-name>.yaml
+----
+
+. Verify the configuration is applied:
++
+[source,terminal]
+----
+$ oc get kubeletconfig
+----
+
+
+== Monitoring and troubleshooting
+
+After enabling `system-reserved-compressible`, monitor your system services:
+
+* Check CPU usage of system services: `systemctl status <service>`
+* Verify system cgroup CPU allocation: `cat /sys/fs/cgroup/cpu/system.slice/cpu.shares` (cgroups v1) or `cat /sys/fs/cgroup/system.slice/cpu.weight` (cgroups v2)
+* Monitor for CPU throttling events in system logs
+* Use `oc adm top nodes` to monitor node resource utilization
+
+If you experience issues:
+
+* Reduce the CPU reservation values if system services are being throttled too aggressively
+* Ensure your `systemReserved` values are appropriate for your workload
+* Monitor pod scheduling and ensure sufficient resources remain for workload pods
+* Consider disabling the feature if memory management becomes problematic
+* Verify that the specified cgroup paths exist and are correctly configured
+
+[role="_additional-resources"]
+== Additional resources
+
+* Creating a KubeletConfig CR to edit kubelet parameters
+* link:https://kubernetes.io/docs/tasks/administer-cluster/reserve-compute-resources/[Reserving compute resources for system daemons] (Kubernetes documentation)
+* link:https://github.com/kubernetes/kubernetes/issues/72881[Kubernetes issue about system-reserved behavior]
+* link:https://github.com/kubernetes/kubernetes/pull/125982[Kubernetes pull request introducing compressible resource allocation]
