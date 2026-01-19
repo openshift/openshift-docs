@@ -1,0 +1,368 @@
+// Module included in the following assemblies:
+//
+// * virt/virtual_machines/creating_vm/virt-configuring-ibm-secure-execution-vms-ibm-z.adoc
+
+:_mod-docs-content-type: PROCEDURE
+[id="virt-creating-bootable-encrypted-ibm-secure-execution-vm-image-ibm-z_{context}"]
+= Creating a bootable and encrypted {ibm-title} Secure Execution VM image on {ibm-z-title} and {ibm-linuxone-title}
+
+[role="_abstract"]
+You can create a bootable and encrypted {ibm-title} Secure Execution VM image for {op-system-base-full} on {ibm-z-title} and {ibm-linuxone-title}.
+
+.Prerequisites
+
+* You are using an {ibm-name} Secure Execution enabled VM image.
+
+.Procedure
+
+. On a trusted instance, create the `install.ks` kickstart file in the `/var/lib/libvirt/image/` directory with the following content:
++
+[source,terminal]
+----
+[trusted instance ~]
+text
+lang en_US.UTF-8
+keyboard us 
+network --bootproto=dhcp 
+rootpw --plaintext <password>
+timezone <>
+firewall --enabled
+selinux --enforcing
+bootloader --location=mbr
+reboot   
+
+# Wipe and partition the disk
+clearpart --all --initlabel 
+zerombr  
+
+# /boot gets encrypted on post reboot
+part /boot --fstype ext4 --size=512 --label=boot  
+# Root (/) is LUKS-encrypted 
+part / --fstype xfs --size=3000 --pbkdf=pbkdf2 --encrypted --passphrase <passphrase>
+# SE (/se) Non Encrypted for encrypted boot image.
+part /se --fstype xfs --size=512 --label=se
+#Packages
+%packages
+@core
+dracut
+s390-tools
+%end 
+----
+
+. Create the VM with the {op-system-base} image by running the following command:
++
+[source,terminal]
+----
+[trusted instance ~]$ qemu-img create -f qcow2 <path to qcow2 image> <size>G
+----
+
+. Run the `virt-install` command with the following parameters:
++
+[source,terminal]
+----
+[trusted instance ~]virt-install 
+    --name <guest_vm_name> \
+    --memory 4096 --vcpus 2 \
+    --disk path=<path_to_qcow2_image>,format=qcow2,bus=virtio,cache=none \ 
+    --location <path_to_os>  \
+    --initrd-inject=<path_to_kickstart_file> \ 
+    --extra-args="inst.ks=file:/<kickstart_file_name> console=ttyS0 \ 
+    --inst.text inst.noninteractive" \
+    --os-variant=<os_variant> \ 
+    --launchSecurity type=s390-pv \ 
+    --graphics none 
+----
+
+. Run the `virsh start` command to access the system console. 
+
+. Run the `sudo -s` command to achieve root user privileges.
+
+. Generate keyfiles for the root and the boot partition by running the following commands: 
++
+[source,terminal]
+----
+[secure guest ~]$ mkdir -p /etc/luks
+----
++
+[source,terminal]
+----
+[secure guest ~]$ chmod 700 /etc/luks
+----
++
+[source,terminal]
+----
+[secure guest ~]$ dd if=/dev/urandom of=/etc/luks/root_keyfile.bin bs=1024 count=4
+----
++
+[source,terminal]
+----
+[secure guest ~]$ dd if=/dev/urandom of=/etc/luks/boot_keyfile.bin bs=1024 count=4
+----
++
+[source,terminal]
+----
+[secure guest ~]$ cryptsetup luksAddkey <root_partition_device> /etc/luks/root_keyfile.bin --pbkdf pbkdf2
+----
+
+. Obtain the LUKS device name and UUID by running the following command:
++
+[source,terminal]
+----
+$ lsblk -f
+----
+
+. Rename the existing fstab file to `/etc/fstab_bak`. 
+
+. Create new crypttab and fstab files similar to the following examples: 
++
+Crypttab example output:
++
+[source,screen]
+----
+luks device name   UUID                                       KEYFILE 			      OPTIONS
+root 		       UUID=9cb04587-a670-458a-97eb-52fc0f4008ae  /etc/luks/keyfile.bin   luks
+----
++
+Fstab example output:
++
+[source,screen]
+----
+/dev/mapper/root /          xfs	  defaults 0 1
+----
+
+. Add the SE boot filesystem entry into the `/etc/fstab` file by running the following command:
++
+[source,terminal]
+----
+[secure guest ~]$ grep ‘/se’ /etc/fstab_bak >> /etc/fstab
+----
+
+. Add entries to the `initramfs` by running the following commands:
++
+[source,terminal]
+----
+[secure guest ~]$ cat > /etc/dracut.conf.d/10-lukskey.conf <<'EOF' 
+    install_items+=" /etc/luks/root_keyfile.bin /etc/luks/boot_keyfile.bin "  
+    EOF 
+----
++
+[source,terminal]
+----
+[secure guest ~]$ dracut -f --regenerate-all
+----
+
+. Verify that the key files are present in `initramfs` by running the following command:
++
+[source,terminal]
+----
+[secure guest ~]$ lsinitrd /boot/initramfs-$(uname-r) | grep -i luks
+----
+
+. LUKS Encrypt the `/boot` volume.
+
+.. Change into the boot directory by running the following command:
++
+[source,terminal]
+----
+[secure guest ~]$ cd /boot
+---- 
+
+.. Backup the existing boot volume content by running the following commands:
++
+[source,terminal]
+----
+[secure guest /boot ~]$ tar -cf /root/boot_backup.tar
+----
++
+[source,terminal]
+----
+[secure guest /boot ~]$ cd
+----
++
+[source,terminal]
+----
+[secure guest ~]$ umount /boot
+----
+
+.. Encrypt the boot volume by running the following commands:
++
+[source,terminal]
+----
+[secure guest ~]$ cryptsetup -q luksFormat <boot_partition> --key-file /etc/luks/boot_keyfile.bin
+----
++
+[source,terminal]
+----
+[secure guest ~]$ cryptsetup luksOpen <boot_partition> boot -–key-file /etc/luks/boot_keyfile.bin
+----
+
+.. Create the file system by running the following command:
++
+[source,terminal]
+----
+[secure guest ~]$ mke2fs –t ext4 /dev/mapper/boot
+----
+
+.. Obtain the boot UUID by running the following command:
++
+[source,terminal]
+----
+[secure guest ~]$ blkid –s UUID  -o value <boot_partition>
+----
+
+.. Add the boot partition with the key file to `/etc/crypttab` by running the following command:
++
+[source,terminal]
+----
+[secure guest ~]$ echo “boot <UUID> /etc/luks/boot_keyfile.bin luks” >>  /etc/crypttab
+---- 
+
+.. Add the mount entry to the fstab file by running the following command:
++
+[source,terminal]
+----
+[secure guest ~]$ echo “/dev/mapper/boot  /boot ext4 defaults 1 2” >> /etc/fstab
+---- 
+
+.. Mount the boot volume by running the following command:
++
+[source,terminal]
+----
+[secure guest ~]$ mount /dev/mapper/boot /boot
+----
+
+.. Change into the boot directory by running the following command:
++
+[source,terminal]
+----
+[secure guest ~]$ cd /boot
+---- 
+
+.. Restore the boot backup file by running the following command:
++
+[source,terminal]
+----
+[secure guest /boot~]$ tar -xvf /root/boot_backup.tar
+---- 
+
+. Set up SSH key login for the local user and disable password login and root login. 
+
+. Security hardening the VM.
+
+.. To disable login on consoles by disabling serial and virtual TTYs, run the following commands:
++
+[source,terminal]
+----
+[secure guest ~]$ mkdir -p /etc/systemd/system/serial-getty@.service.d
+---- 
++
+[source,terminal]
+----
+[secure guest ~]$ echo -e "[Unit]\nConditionKernelCommandLine=allowlocallogin" | tee /etc/systemd/system/serial-getty@.service.d/disable.conf 
+---- 
++
+[source,terminal]
+----
+[secure guest ~]$ mkdir -p /etc/systemd/system/autovt@.service.d
+---- 
++
+[source,terminal]
+----
+[secure guest ~]$ echo -e "[Unit]\nConditionKernelCommandLine=allowlocallogin" | tee /etc/systemd/system/autovt@.service.d/disable.conf
+----
+
+.. Disable debug, emergency, and rescue shells by running the following commands:
++
+[source,terminal]
+----
+[secure guest ~]$ systemctl mask emergency.service
+---- 
++
+[source,terminal]
+----
+[secure guest ~]$ systemctl mask emergency.target 
+---- 
++
+[source,terminal]
+----
+[secure guest ~]$ systemctl mask rescue.service
+---- 
++
+[source,terminal]
+----
+[secure guest ~]$ systemctl mask rescue.target 
+----
+
+.. Disable the `virtio-rng` device by running the following command:
++
+[source,terminal]
+----
+[secure guest ~]$ echo "blacklist virtio-rng" | tee /etc/modprobe.d/virtio-rng.conf
+----
+
+. Enable {ibm-title} Secure Execution for the guest.
+
+.. Copy the current command line to a file by running the following command:
++
+[source,terminal]
+----
+[secure guest ~]$ cat /proc/cmdline > parmfile
+----
+
+.. Append the following parameters to the `parmfile`:
++
+[source,terminal]
+----
+loglevel=0 systemd.show_status=0 panic=0 crashkernel=196M swiotlb=262144
+----
+
+.. Generate the {ibm-title} SEL image on the `/se` partition by running the following command:
++
+[source,terminal]
+----
+[secure guest ~]$ genprotimg -i <image> \
+                             -r <ramdisk> \
+                             -p <parmfile> \
+                             -k </path/to/host-key-doc.crt> \
+                             --cert <ibm_signkey>  \
+                             -o /se/secure-linux.img
+
+----
++
+where:
+
+`<image>`:: Specifies the original guest kernel image.
+`<ramdisk>`:: Specifies the original initial RAM file system.
+`<parmfile>`:: Specifies the file that contains the kernel parameters.
+`</path/to/host-key-doc.crt>`:: Specifies the public host key document.
+`<ibm_signkey>`:: Specifies the {ibm-z-name} signing-key certificate and the DigiCert intermediate certificate for the verification of the host key documents.
+
+.. Update the boot configuration by running the following command:
++
+[source,terminal]
+----
+[secure guest ~]$ zipl -i /se/secure-linux.img -t /se
+----
+
+.. Reboot the VM by running the following command:
++
+[source,terminal]
+----
+[secure guest ~]$ reboot
+----
+
+.. Verify that the guest VM is secure by running the following command:
++
+[source,terminal]
+----
+[secure guest ~]$ cat /sys/firmware/uv/prot_virt_guest
+----
++
+Example output:
++
+[source,terminal]
+----
+1
+----
++
+The value of this attribute is 1 for Linux instances that detect their environment as consistent with that of a secure host. For other instances, the value is 0.
