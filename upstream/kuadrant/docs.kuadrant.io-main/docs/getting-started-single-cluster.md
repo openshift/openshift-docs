@@ -1,8 +1,8 @@
 ## Kuadrant Getting Started - Single Cluster
 
-## Overview 
+## Overview
 
-In this quick start, we will cover: 
+In this quick start, we will cover:
 - setup of Kuadrant in a singe local kind cluster
 
 ### Prerequisites
@@ -46,7 +46,7 @@ If you want to make use of the Kuadrant `DNSPolicy` you should setup the followi
 
 >Alternatively, to set defaults, add the above environment variables to your `.zshrc` or `.bash_profile`.
 
-### Set the release you want to use 
+### Set the release you want to use
 
 ```bash
 export KUADRANT_REF=0.7.1
@@ -69,7 +69,7 @@ To ensure that any DNS records are removed, you should remove any `DNSPolicy` an
 
 ### What's Next
 
-The next step is to setup and use the policies provided by Kuadrant. 
+The next step is to setup and use the policies provided by Kuadrant.
 
 [Secure, Protect and Connect your Gateway](kuadrant-operator/doc/user-guides/secure-protect-connect.md)
 
