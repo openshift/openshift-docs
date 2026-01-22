@@ -1,0 +1,162 @@
+// Module included in the following assemblies:
+//
+// * scalability_and_performance/optimization/optimizing-cpu-usage.adoc
+
+:_mod-docs-content-type: PROCEDURE
+[id="enabling-encapsulation_{context}"]
+= Configuring mount namespace encapsulation
+
+You can configure mount namespace encapsulation so that a cluster runs with less resource overhead.
+
+[NOTE]
+====
+Mount namespace encapsulation is a Technology Preview feature and it is disabled by default. To use it, you must enable the feature manually.
+====
+
+.Prerequisites
+
+* You have installed the OpenShift CLI (`oc`).
+
+* You have logged in as a user with `cluster-admin` privileges.
+
+.Procedure
+
+. Create a file called `mount_namespace_config.yaml` with the following YAML:
++
+[source,yaml]
+----
+apiVersion: machineconfiguration.openshift.io/v1
+kind: MachineConfig
+metadata:
+  labels:
+    machineconfiguration.openshift.io/role: master
+  name: 99-kubens-master
+spec:
+  config:
+    ignition:
+      version: 3.2.0
+    systemd:
+      units:
+      - enabled: true
+        name: kubens.service
+---
+apiVersion: machineconfiguration.openshift.io/v1
+kind: MachineConfig
+metadata:
+  labels:
+    machineconfiguration.openshift.io/role: worker
+  name: 99-kubens-worker
+spec:
+  config:
+    ignition:
+      version: 3.2.0
+    systemd:
+      units:
+      - enabled: true
+        name: kubens.service
+----
+
+. Apply the mount namespace `MachineConfig` CR by running the following command:
++
+[source,terminal]
+----
+$ oc apply -f mount_namespace_config.yaml
+----
++
+.Example output
+[source,terminal]
+----
+machineconfig.machineconfiguration.openshift.io/99-kubens-master created
+machineconfig.machineconfiguration.openshift.io/99-kubens-worker created
+----
+
+. The `MachineConfig` CR can take up to 30 minutes to finish being applied in the cluster. You can check the status of the `MachineConfig` CR by running the following command:
++
+[source,terminal]
+----
+$ oc get mcp
+----
++
+.Example output
+[source,terminal]
+----
+NAME     CONFIG                                             UPDATED   UPDATING   DEGRADED   MACHINECOUNT   READYMACHINECOUNT   UPDATEDMACHINECOUNT   DEGRADEDMACHINECOUNT   AGE
+master   rendered-master-03d4bc4befb0f4ed3566a2c8f7636751   False     True       False      3              0                   0                     0                      45m
+worker   rendered-worker-10577f6ab0117ed1825f8af2ac687ddf   False     True       False      3              1                   1
+----
+
+. Wait for the `MachineConfig` CR to be applied successfully across all control plane and worker nodes after running the following command:
++
+[source,terminal]
+----
+$ oc wait --for=condition=Updated mcp --all --timeout=30m
+----
++
+.Example output
+[source,terminal]
+----
+machineconfigpool.machineconfiguration.openshift.io/master condition met
+machineconfigpool.machineconfiguration.openshift.io/worker condition met
+----
+
+.Verification
+
+To verify encapsulation for a cluster host, run the following commands:
+
+. Open a debug shell to the cluster host:
++
+[source,terminal]
+----
+$ oc debug node/<node_name>
+----
+
+. Open a `chroot` session:
++
+[source,terminal]
+----
+sh-4.4# chroot /host
+----
+
+. Check the systemd mount namespace:
++
+[source,terminal]
+----
+sh-4.4# readlink /proc/1/ns/mnt
+----
++
+.Example output
+[source,terminal]
+----
+mnt:[4026531953]
+----
+
+. Check kubelet mount namespace:
++
+[source,terminal]
+----
+sh-4.4# readlink /proc/$(pgrep kubelet)/ns/mnt
+----
++
+.Example output
+[source,terminal]
+----
+mnt:[4026531840]
+----
+
+. Check the CRI-O mount namespace:
++
+[source,terminal]
+----
+sh-4.4# readlink /proc/$(pgrep crio)/ns/mnt
+----
++
+.Example output
+[source,terminal]
+----
+mnt:[4026531840]
+----
+
+These commands return the mount namespaces associated with systemd, kubelet, and the container runtime. In {product-title}, the container runtime is CRI-O.
+
+Encapsulation is in effect if systemd is in a different mount namespace to kubelet and CRI-O as in the above example.
+Encapsulation is not in effect if all three processes are in the same mount namespace.

@@ -1,0 +1,126 @@
+// Module included in the following assemblies:
+//
+// * hosted_control_planes/hypershift-openstack.adoc
+
+:_mod-docs-content-type: PROCEDURE
+[id="hosted-clusters-openstack-prepare-etcd_{context}"]
+= Preparing the management cluster for etcd local storage
+
+In a Hosted Control Plane (HCP) deployment on {rh-openstack-first}, you can improve etcd performance by using local ephemeral storage that is provisioned with the TopoLVM CSI driver instead of relying on the default Cinder-based Persistent Volume Claims (PVCs).
+
+.Prerequisites
+
+* You have access to a management cluster with HyperShift installed.
+* You can create and manage {rh-openstack} flavors and machine sets.
+* You have the `oc` and `openstack` CLI tools installed and configured.
+* You are familiar with TopoLVM and Logical Volume Manager (LVM) storage concepts.
+* You installed the {lvms} Operator on the management cluster. For more information, see "Installing {lvms}
+ by using the CLI" in the Storage section of the {product-title} documentation.
+
+.Procedure
+
+. Create a Nova flavor with an additional ephemeral disk by using the `openstack` CLI. For example:
++
+[source,terminal]
+----
+$ openstack flavor create \
+  --id auto \
+  --ram 8192 \
+  --disk 0 \
+  --ephemeral 100 \
+  --vcpus 4 \
+  --public \
+  hcp-etcd-ephemeral
+----
++
+[NOTE]
+====
+Nova automatically attaches the ephemeral disk to the instance and formats it as `vfat` when a server is created with
+ that flavor.
+====
+// Yes, that is the title.
+. Create a compute machine set that uses the new flavor. For more information, see "Creating a compute machine set
+on OpenStack" in the {product-title} documentation.
+
+. Scale the machine set to meet your requirements. If clusters are deployed for high availability, a minimum of 3 workers must be deployed so the pods can be distributed accordingly.
+
+. Label the new worker nodes to identify them for etcd use. For example:
++
+[source,terminal]
+----
+$ oc label node <node_name> hypershift-capable=true
+----
++
+This label is arbitrary; you can update it later.
+
+. In a file called `lvmcluster.yaml`, create the following `LVMCluster` custom resource to the local storage
+configuration for etcd:
++
+[source,yaml]
+----
+apiVersion: lvm.topolvm.io/v1alpha1
+kind: LVMCluster
+metadata:
+  name: etcd-hcp
+  namespace: openshift-storage
+spec:
+  storage:
+    deviceClasses:
+    - name: etcd-class
+      default: true
+      nodeSelector:
+         nodeSelectorTerms:
+         - matchExpressions:
+           - key: hypershift-capable
+            operator: In
+            values:
+            - "true"
+      deviceSelector:
+        forceWipeDevicesAndDestroyAllData: true
+        paths:
+        - /dev/vdb
+----
++
+In this example resource:
++
+* The ephemeral disk location is `/dev/vdb`, which is the case in most situations. Verify that this location is true in your case, and note that symlinks are not supported.
+* The parameter `forceWipeDevicesAndDestroyAllData` is set to a `True` value because the default Nova ephemeral disk
+comes formatted in VFAT.
+
+. Apply the `LVMCluster` resource by running the following command:
++
+[source,terminal]
+----
+oc apply -f lvmcluster.yaml
+----
+
+. Verify the `LVMCluster` resource by running the following command:
++
+[source,terminal]
+----
+$ oc get lvmcluster -A
+----
++
+.Example output
+[source,terminal]
+----
+NAMESPACE           NAME    STATUS
+openshift-storage   etcd-hcp   Ready
+----
+
+. Verify the `StorageClass` resource by running the following command:
++
+[source,terminal]
+----
+$ oc get storageclass
+----
++
+.Example output
+[source,terminal]
+----
+NAME                    PROVISIONER               RECLAIMPOLICY   VOLUMEBINDINGMODE     ALLOWVOLUMEEXPANSION   AGE
+lvms-etcd-class         topolvm.io                Delete          WaitForFirstConsumer  true                   23m
+standard-csi (default)  cinder.csi.openstack.org  Delete          WaitForFirstConsumer  true                   56m
+----
+
+You can now deploy a hosted cluster with a performant etcd configuration. The deployment process is described in "Creating a hosted cluster on OpenStack".

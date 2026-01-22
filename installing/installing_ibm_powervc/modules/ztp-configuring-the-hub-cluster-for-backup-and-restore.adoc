@@ -1,0 +1,177 @@
+// Module included in the following assemblies:
+//
+// * scalability_and_performance/ztp_far_edge/ztp-preparing-the-hub-cluster.adoc
+
+:_mod-docs-content-type: PROCEDURE
+[id="ztp-configuring-the-hub-cluster-for-backup-and-restore_{context}"]
+= Configuring the hub cluster for backup and restore
+
+You can use {ztp} to configure a set of policies to back up `BareMetalHost` resources.
+This allows you to recover data from a failed hub cluster and deploy a replacement cluster using {rh-rhacm-first}.
+
+.Prerequisites
+
+* You have installed the OpenShift CLI (`oc`).
+
+* You have logged in as a user with `cluster-admin` privileges.
+
+.Procedure
+
+. Create a policy to add the `cluster.open-cluster-management.io/backup=cluster-activation` label to all `BareMetalHost` resources that have the `infraenvs.agent-install.openshift.io` label.
+Save the policy as `BareMetalHostBackupPolicy.yaml`.
++
+The following example adds the `cluster.open-cluster-management.io/backup` label to all `BareMetalHost` resources that have the `infraenvs.agent-install.openshift.io` label:
++
+.Example Policy
+[source,yaml]
+----
+apiVersion: policy.open-cluster-management.io/v1
+kind: Policy
+metadata:
+  name: bmh-cluster-activation-label
+  annotations:
+    policy.open-cluster-management.io/description: Policy used to add the cluster.open-cluster-management.io/backup=cluster-activation label to all BareMetalHost resources
+spec:
+  disabled: false
+  policy-templates:
+    - objectDefinition:
+        apiVersion: policy.open-cluster-management.io/v1
+        kind: ConfigurationPolicy
+        metadata:
+          name: set-bmh-backup-label
+        spec:
+          object-templates-raw: |
+            {{- /* Set cluster-activation label on all BMH resources */ -}}
+            {{- $infra_label := "infraenvs.agent-install.openshift.io" }}
+            {{- range $bmh := (lookup "metal3.io/v1alpha1" "BareMetalHost" "" "" $infra_label).items }}
+                - complianceType: musthave
+                  objectDefinition:
+                    kind: BareMetalHost
+                    apiVersion: metal3.io/v1alpha1
+                    metadata:
+                      name: {{ $bmh.metadata.name }}
+                      namespace: {{ $bmh.metadata.namespace }}
+                      labels:
+                        cluster.open-cluster-management.io/backup: cluster-activation <1>
+            {{- end }}
+          remediationAction: enforce
+          severity: high
+---
+apiVersion: cluster.open-cluster-management.io/v1beta1
+kind: Placement
+metadata:
+  name: bmh-cluster-activation-label-pr
+spec:
+  predicates:
+    - requiredClusterSelector:
+        labelSelector:
+          matchExpressions:
+            - key: name
+              operator: In
+              values:
+                - local-cluster
+---
+apiVersion: policy.open-cluster-management.io/v1
+kind: PlacementBinding
+metadata:
+  name: bmh-cluster-activation-label-binding
+placementRef:
+  name: bmh-cluster-activation-label-pr
+  apiGroup: cluster.open-cluster-management.io
+  kind: Placement
+subjects:
+  - name: bmh-cluster-activation-label
+    apiGroup: policy.open-cluster-management.io
+    kind: Policy
+---
+apiVersion: cluster.open-cluster-management.io/v1beta2
+kind: ManagedClusterSetBinding
+metadata:
+  name: default
+  namespace: default
+spec:
+  clusterSet: default
+----
+<1> If you apply the `cluster.open-cluster-management.io/backup: cluster-activation` label to `BareMetalHost` resources, the {rh-rhacm} cluster backs up those resources.
+You can restore the `BareMetalHost` resources if the active cluster becomes unavailable, when restoring the hub activation resources.
+
+. Apply the policy by running the following command:
++
+[source,terminal]
+----
+$ oc apply -f BareMetalHostBackupPolicy.yaml
+----
+
+.Verification
+
+. Find all `BareMetalHost` resources with the label `infraenvs.agent-install.openshift.io`  by running the following command:
++
+[source,terminal]
+----
+$ oc get BareMetalHost -A -l infraenvs.agent-install.openshift.io
+----
++
+.Example output
+[source,yaml]
+----
+NAMESPACE      NAME             STATE   CONSUMER   ONLINE   ERROR   AGE
+baremetal-ns   baremetal-name                      false            50s
+----
+
+. Verify that the policy has applied the label `cluster.open-cluster-management.io/backup=cluster-activation` to all these resources, by running the following command:
++
+[source,terminal]
+----
+$ oc get BareMetalHost -A -l infraenvs.agent-install.openshift.io,cluster.open-cluster-management.io/backup=cluster-activation
+----
++
+.Example output
+[source,yaml]
+----
+NAMESPACE      NAME             STATE   CONSUMER   ONLINE   ERROR   AGE
+baremetal-ns   baremetal-name                      false            50s
+----
++
+The output must show the same list as in the previous step, which listed all `BareMetalHost` resources with the label `infraenvs.agent-install.openshift.io`.
+This confirms that all the `BareMetalHost` resources with the `infraenvs.agent-install.openshift.io` label also have the `cluster.open-cluster-management.io/backup: cluster-activation` label.
++
+The following example shows a `BareMetalHost` resource with the `infraenvs.agent-install.openshift.io` label.
+The resource must also have the `cluster.open-cluster-management.io/backup: cluster-activation` label, which was added by the policy created in step 1.
++
+[source,yaml]
+----
+apiVersion: metal3.io/v1alpha1
+kind: BareMetalHost
+metadata:
+  labels:
+    cluster.open-cluster-management.io/backup: cluster-activation
+    infraenvs.agent-install.openshift.io: value
+  name: baremetal-name
+  namespace: baremetal-ns
+----
+
+You can now use {rh-rhacm-title} to restore a managed cluster.
+
+[IMPORTANT]
+====
+When you restore `BareMetalHosts` resources as part of restoring the cluster activation data, you must restore the `BareMetalHosts` status.
+The following {rh-rhacm} `Restore` resource example restores activation resources, including `BareMetalHosts`, and also restores the status for the `BareMetalHosts` resources:
+[source,yaml]
+----
+apiVersion: cluster.open-cluster-management.io/v1beta1
+kind: Restore
+metadata:
+  name: restore-acm-bmh
+  namespace: open-cluster-management-backup
+spec:
+  cleanupBeforeRestore: CleanupRestored
+  veleroManagedClustersBackupName: latest <1>
+  veleroCredentialsBackupName: latest
+  veleroResourcesBackupName: latest
+  restoreStatus:
+    includedResources:
+      - BareMetalHosts<2>
+----
+====
+<1> Set `veleroManagedClustersBackupName: latest` to restore activation resources.
+<2> Restores the status for `BareMetalHosts` resources.

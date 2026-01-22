@@ -1,0 +1,302 @@
+// Module included in the following assemblies:
+//
+// * hosted_control_planes/hcp-disaster-recovery-oadp.adoc
+
+:_mod-docs-content-type: PROCEDURE
+[id="hcp-dr-oadp-restore-new-mgmt_{context}"]
+= Restoring a hosted cluster into a new management cluster by using {oadp-short}
+
+You can restore the hosted cluster into a new management cluster by creating the `Restore` custom resource (CR).
+
+* If you are using an in-place update, the `InfraEnv` resource does not need spare nodes. Instead, you need to re-provision the worker nodes from the new management cluster.
+* If you are using a replace update, you need some spare nodes for the `InfraEnv` resource to deploy the worker nodes.
+
+.Prerequisites
+
+* You configured the new management cluster to use {oadp-first}. The new management cluster must have the same Data Protection Application (DPA) as the management cluster that you backed up from so that the `Restore` CR can access the backup storage.
+* You configured the networking settings of the new management cluster to resolve the DNS of the hosted cluster.
+
+** The DNS of the host must resolve to the IP of both the new management cluster and the hosted cluster.
+** The hosted cluster must resolve to the IP of the new management cluster. 
+
+To monitor and observe the backup process, see "Observing the backup and restore process".
+
+[IMPORTANT]
+====
+Complete the following steps on the new management cluster that you are restoring the hosted cluster to, not on the management cluster that you created the backup from.
+====
+
+.Procedure
+
+. Create a YAML file that defines the `Restore` CR:
++
+.Example `restore-hosted-cluster.yaml` file
+[source,yaml]
+----
+apiVersion: velero.io/v1
+kind: Restore
+metadata:
+  name: <restore_resource_name> # <1>
+  namespace: openshift-adp
+spec:
+  includedNamespaces: # <2>
+  - <hosted_cluster_namespace> # <3>
+  - <hosted_control_plane_namespace> # <4>
+  - <agent_namespace> # <5>
+  backupName: <backup_resource_name> # <6>
+  cleanupBeforeRestore: CleanupRestored
+  veleroManagedClustersBackupName: <managed_cluster_name> # <7>
+  veleroCredentialsBackupName: <credentials_backup_name>
+  veleroResourcesBackupName: <resources_backup_name>
+  restorePVs: true # <8>
+  preserveNodePorts: true
+  existingResourcePolicy: update # <9>
+  excludedResources:
+  - pod
+  - nodes
+  - events
+  - events.events.k8s.io
+  - backups.velero.io
+  - restores.velero.io
+  - resticrepositories.velero.io
+  - pv
+  - pvc
+----
+<1> Replace `<restore_resource_name>` with the name of your `Restore` resource.
+<2> Selects specific namespaces to back up objects from them. You must include your hosted cluster namespace and the hosted control plane namespace.
+<3> Replace `<hosted_cluster_namespace>` with the name of the hosted cluster namespace, for example, `clusters`.
+<4> Replace `<hosted_control_plane_namespace>` with the name of the hosted control plane namespace, for example, `clusters-hosted`.
+<5> Replace `<agent_namespace>` with the namespace where your `Agent`, `BMH`, and `InfraEnv` CRs are located, for example, `agents`.
+<6> Replace `<backup_resource_name>` with the name of your `Backup` resource.
+<7> You can omit this field if you are not using {rh-rhacm-title}.
+<8> Initiates the recovery of persistent volumes (PVs) and its pods.
+<9> Ensures that the existing objects are overwritten with the backed up content.
+
+. Apply the `Restore` CR by running the following command:
++
+[source,terminal]
+----
+$ oc --kubeconfig <restore_management_kubeconfig> apply -f restore-hosted-cluster.yaml
+----
+
+. Verify that the value of the `status.phase` is `Completed` by running the following command:
++
+[source,terminal]
+----
+$ oc --kubeconfig <restore_management_kubeconfig> \
+  get restore.velero.io <restore_resource_name> \
+  -n openshift-adp -o jsonpath='{.status.phase}'
+----
+
+. Verify that all CRs are restored by running the following commands:
++
+[source,terminal]
+----
+$ oc --kubeconfig <restore_management_kubeconfig> get infraenv -n <agent_namespace>
+----
++
+[source,terminal]
+----
+$ oc --kubeconfig <restore_management_kubeconfig> get agent -n <agent_namespace>
+----
++
+[source,terminal]
+----
+$  oc --kubeconfig <restore_management_kubeconfig> get bmh -n <agent_namespace>
+----
++
+[source,terminal]
+----
+$ oc --kubeconfig <restore_management_kubeconfig> get hostedcluster -n <hosted_cluster_namespace>
+----
++
+[source,terminal]
+----
+$ oc --kubeconfig <restore_management_kubeconfig> get nodepool -n <hosted_cluster_namespace>
+----
++
+[source,terminal]
+----
+$ oc --kubeconfig <restore_management_kubeconfig> get agentmachine -n <hosted_controlplane_namespace>
+----
++
+[source,terminal]
+----
+$ oc --kubeconfig <restore_management_kubeconfig> get agentcluster -n <hosted_controlplane_namespace>
+----
+
+. If you plan to use the new management cluster as your main management cluster going forward, complete the following steps. Otherwise, if you plan to use the management cluster that you backed up from as your main management cluster, complete steps 5 - 8 in "Restoring a hosted cluster into the same management cluster by using {oadp-short}".
+
+.. Remove the Cluster API deployment from the management cluster that you backed up from by running the following command:
++
+[source,terminal]
+----
+$ oc --kubeconfig <backup_management_kubeconfig> delete deploy cluster-api \
+  -n <hosted_control_plane_namespace>
+----
++
+Because only one Cluster API can access a cluster at a time, this step ensures that the Cluster API for the new management cluster functions correctly.
+
+.. After the restore process is complete, start the reconciliation of the `HostedCluster` and `NodePool` resources that you paused during backing up of the control plane workload:
+
+... Start the reconciliation of the `HostedCluster` resource by running the following command:
++
+[source,terminal]
+----
+$ oc --kubeconfig <restore_management_kubeconfig> \
+  patch hostedcluster -n <hosted_cluster_namespace> <hosted_cluster_name> \
+  --type json \
+  -p '[{"op": "replace", "path": "/spec/pausedUntil", "value": "false"}]'
+----
+
+... Start the reconciliation of the `NodePool` resource by running the following command:
++
+[source,terminal]
+----
+$ oc --kubeconfig <restore_management_kubeconfig> \
+  patch nodepool -n <hosted_cluster_namespace> <node_pool_name> \
+  --type json \
+  -p '[{"op": "replace", "path": "/spec/pausedUntil", "value": "false"}]'
+----
+
+... Verify that the hosted cluster is reporting that the hosted control plane is available by running the following command:
++
+[source,terminal]
+----
+$ oc --kubeconfig <restore_management_kubeconfig> get hostedcluster
+----
+
+... Verify that the hosted cluster is reporting that the cluster operators are available by running the following command:
++
+[source,terminal]
+----
+$ oc get co --kubeconfig <hosted_cluster_kubeconfig>
+----
+
+.. Start the reconciliation of the Agent provider resources that you paused during backing up of the control plane workload:
+
+... Start the reconciliation of the `AgentCluster` resource by running the following command:
++
+[source,terminal]
+----
+$ oc --kubeconfig <restore_management_kubeconfig> \
+  annotate agentcluster -n <hosted_control_plane_namespace>  \
+  cluster.x-k8s.io/paused- --overwrite=true --all
+----
+
+... Start the reconciliation of the `AgentMachine` resource by running the following command:
++
+[source,terminal]
+----
+$ oc --kubeconfig <restore_management_kubeconfig> \
+  annotate agentmachine -n <hosted_control_plane_namespace>  \
+  cluster.x-k8s.io/paused- --overwrite=true --all
+----
+
+... Start the reconciliation of the `Cluster` resource by running the following command:
++
+[source,terminal]
+----
+$ oc --kubeconfig <restore_management_kubeconfig> \
+  annotate cluster -n <hosted_control_plane_namespace> \
+  cluster.x-k8s.io/paused- --overwrite=true --all
+----
+
+.. Verify that the node pool is working as expected by running the following command:
++
+[source,terminal]
+----
+$ oc --kubeconfig <restore_management_kubeconfig> \
+  get nodepool -n <hosted_cluster_namespace> 
+----
++
+.Example output
+[source,terminal]
+----
+NAME       CLUSTER    DESIRED NODES   CURRENT NODES   AUTOSCALING   AUTOREPAIR   VERSION   UPDATINGVERSION   UPDATINGCONFIG   MESSAGE
+hosted-0   hosted-0   3               3               False         False        4.17.11   False             False
+----
+
+.. Optional: To ensure that no conflicts exist and that the new management cluster has continued functionality, remove the `HostedCluster` resources from the backup management cluster by completing the following steps:
+
+... In the management cluster that you backed up from, in the `ClusterDeployment` resource, set the `spec.preserveOnDelete` parameter to `true` by running the following command:
++
+[source,terminal]
+----
+$ oc --kubeconfig <backup_management_kubeconfig> patch \
+  -n <hosted_control_plane_namespace> \
+  ClusterDeployment/<hosted_cluster_name> -p \
+  '{"spec":{"preserveOnDelete":'true'}}' \
+  --type=merge
+----
++
+This step ensures that the hosts are not deprovisioned.
+
+... Delete the machines by running the following commands:
++
+[source,terminal]
+----
+$ oc --kubeconfig <backup_management_kubeconfig> patch \
+  <machine_name> -n <hosted_control_plane_namespace> -p \
+  '[{"op":"remove","path":"/metadata/finalizers"}]' \
+  --type=merge
+----
++
+[source,terminal]
+----
+$ oc --kubeconfig <backup_management_kubeconfig> \
+  delete machine <machine_name> \
+  -n <hosted_control_plane_namespace>
+----
+
+... Delete the `AgentCluster` and `Cluster` resources by running the following commands:
++
+[source,terminal]
+----
+$ oc --kubeconfig <backup_management_kubeconfig> \
+  delete agentcluster <hosted_cluster_name> \
+  -n <hosted_control_plane_namespace>
+----
++
+[source,terminal]
+----
+$ oc --kubeconfig <backup_management_kubeconfig> \
+  patch cluster <cluster_name> \
+  -n <hosted_control_plane_namespace> \
+  -p '[{"op":"remove","path":"/metadata/finalizers"}]' \
+  --type=json
+----
++
+[source,terminal]
+----
+$ oc --kubeconfig <backup_management_kubeconfig> \
+  delete cluster <cluster_name> \
+  -n <hosted_control_plane_namespace> 
+----
+
+... If you use {rh-rhacm-title}, delete the managed cluster by running the following commands:
++
+[source,terminal]
+----
+$ oc --kubeconfig <backup_management_kubeconfig> \
+  patch managedcluster <hosted_cluster_name> \
+  -n <hosted_cluster_namespace> \
+  -p '[{"op":"remove","path":"/metadata/finalizers"}]' \
+  --type=json
+----
++
+[source,terminal]
+----
+$ oc --kubeconfig <backup_management_kubeconfig> \
+  delete managedcluster <hosted_cluster_name> \
+  -n <hosted_cluster_namespace>
+----
+
+... Delete the `HostedCluster` resource by running the following command:
++
+[source,terminal]
+----
+$ oc --kubeconfig <backup_management_kubeconfig> \
+  delete hostedcluster \
+  -n <hosted_cluster_namespace> <hosted_cluster_name>
+----

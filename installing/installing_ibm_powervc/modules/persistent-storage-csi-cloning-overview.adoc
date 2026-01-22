@@ -1,0 +1,26 @@
+// Module included in the following assemblies:
+//
+// * storage/container_storage_interface/persistent-storage-csi-cloning.adoc
+
+:_mod-docs-content-type: CONCEPT
+[id="persistent-storage-csi-cloning-overview_{context}"]
+= Overview of CSI volume cloning
+
+A Container Storage Interface (CSI) volume clone is a duplicate of an existing persistent volume at a particular point in time.
+
+Volume cloning is similar to volume snapshots, although it is more efficient. For example, a cluster administrator can duplicate a cluster volume by creating another instance of the existing cluster volume.
+
+Cloning creates an exact duplicate of the specified volume on the back-end device, rather than creating a new empty volume. After dynamic provisioning, you can use a volume clone just as you would use any standard volume.
+
+No new API objects are required for cloning. The existing `dataSource` field in the `PersistentVolumeClaim` object is expanded so that it can accept the name of an existing PersistentVolumeClaim in the same namespace.
+
+== Support limitations
+
+By default, {product-title} supports CSI volume cloning with these limitations:
+
+* The destination persistent volume claim (PVC) must exist in the same namespace as the source PVC.
+* Cloning is supported with a different Storage Class.
+** Destination volume can be the same for a different storage class as the source.
+** You can use the default storage class and omit `storageClassName` in the `spec`.
+* Support is only available for CSI drivers. In-tree and FlexVolumes are not supported.
+* CSI drivers might not have implemented the volume cloning functionality. For details, see the CSI driver documentation.

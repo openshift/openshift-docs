@@ -1,0 +1,15 @@
+// Module included in the following assembly:
+//
+// * gitops/gitops-release-notes.adoc
+
+:_mod-docs-content-type: REFERENCE
+
+[id="gitops-release-notes-1-5-9_{context}"]
+= Release notes for {gitops-title} 1.5.9
+
+{gitops-title} 1.5.9 is now available on {product-title} 4.8, 4.9, 4.10, and 4.11.
+
+[id="fixed-issues-1-5-9_{context}"]
+== Fixed issues
+
+* Before this update, all versions of Argo CD v1.8.2 and later were vulnerable to an improper authorization bug. As a result, Argo CD would accept tokens for users who might not be authorized to access the cluster. This issue is now fixed. link:https://bugzilla.redhat.com/show_bug.cgi?id=2160492[CVE-2023-22482]

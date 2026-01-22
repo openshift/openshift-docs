@@ -1,0 +1,87 @@
+// Module included in the following assemblies:
+//
+// * serverless/develop/serverless-kafka-developer.adoc
+
+:_mod-docs-content-type: PROCEDURE
+[id="serverless-kafka-source-yaml_{context}"]
+= Creating an Apache Kafka event source by using YAML
+
+Creating Knative resources by using YAML files uses a declarative API, which enables you to describe applications declaratively and in a reproducible manner. To create a Kafka source by using YAML, you must create a YAML file that defines a `KafkaSource` object, then apply it by using the `oc apply` command.
+
+.Prerequisites
+
+* The {ServerlessOperatorName}, Knative Eventing, and the `KnativeKafka` custom resource are installed on your cluster.
+* You have created a project or have access to a project with the appropriate roles and permissions to create applications and other workloads in {product-title}.
+* You have access to a Red Hat AMQ Streams (Kafka) cluster that produces the Kafka messages you want to import.
+* Install the OpenShift CLI (`oc`).
+
+.Procedure
+
+. Create a `KafkaSource` object as a YAML file:
++
+[source,yaml]
+----
+apiVersion: sources.knative.dev/v1beta1
+kind: KafkaSource
+metadata:
+  name: <source_name>
+spec:
+  consumerGroup: <group_name> <1>
+  bootstrapServers:
+  - <list_of_bootstrap_servers>
+  topics:
+  - <list_of_topics> <2>
+  sink:
+  - <list_of_sinks> <3>
+----
+<1> A consumer group is a group of consumers that use the same group ID, and consume data from a topic.
+<2> A topic provides a destination for the storage of data. Each topic is split into one or more partitions.
+<3> A sink specifies where events are sent to from a source.
++
+[IMPORTANT]
+====
+Only the `v1beta1` version of the API for `KafkaSource` objects on {ServerlessProductName} is supported. Do not use the `v1alpha1` version of this API, as this version is now deprecated.
+====
++
+.Example `KafkaSource` object
+[source,yaml]
+----
+apiVersion: sources.knative.dev/v1beta1
+kind: KafkaSource
+metadata:
+  name: kafka-source
+spec:
+  consumerGroup: knative-group
+  bootstrapServers:
+  - my-cluster-kafka-bootstrap.kafka:9092
+  topics:
+  - knative-demo-topic
+  sink:
+    ref:
+      apiVersion: serving.knative.dev/v1
+      kind: Service
+      name: event-display
+----
+
+. Apply the `KafkaSource` YAML file:
++
+[source,terminal]
+----
+$ oc apply -f <filename>
+----
+
+.Verification
+
+* Verify that the Kafka event source was created by entering the following command:
++
+[source,terminal]
+----
+$ oc get pods
+----
++
+.Example output
+[source,terminal]
+----
+NAME                                    READY     STATUS    RESTARTS   AGE
+kafkasource-kafka-source-5ca0248f-...   1/1       Running   0          13m
+----

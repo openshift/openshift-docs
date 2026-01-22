@@ -1,0 +1,166 @@
+// Module included in the following assemblies:
+//
+// * scalability_and_performance/what-huge-pages-do-and-how-they-are-consumed-by-apps.adoc
+// * post_installation_configuration/node-tasks.adoc
+
+:_mod-docs-content-type: PROCEDURE
+[id="configuring-huge-pages_{context}"]
+= Configuring huge pages at boot time
+
+Nodes must pre-allocate huge pages used in an {product-title} cluster. There are two ways of reserving huge pages: at boot time and at run time. Reserving at boot time increases the possibility of success because the memory has not yet been significantly fragmented. The Node Tuning Operator currently supports boot time allocation of huge pages on specific nodes.
+
+.Procedure
+
+To minimize node reboots, the order of the steps below needs to be followed:
+
+. Label all nodes that need the same huge pages setting by a label.
++
+[source,terminal]
+----
+$ oc label node <node_using_hugepages> node-role.kubernetes.io/worker-hp=
+----
+
+. Create a file with the following content and name it `hugepages-tuned-boottime.yaml`:
++
+[source,yaml]
+----
+apiVersion: tuned.openshift.io/v1
+kind: Tuned
+metadata:
+  name: hugepages <1>
+  namespace: openshift-cluster-node-tuning-operator
+spec:
+  profile: <2>
+  - data: |
+      [main]
+      summary=Boot time configuration for hugepages
+      include=openshift-node
+      [bootloader]
+      cmdline_openshift_node_hugepages=hugepagesz=2M hugepages=50 <3>
+    name: openshift-node-hugepages
+
+  recommend:
+  - machineConfigLabels: <4>
+      machineconfiguration.openshift.io/role: "worker-hp"
+    priority: 30
+    profile: openshift-node-hugepages
+----
+<1> Set the `name` of the Tuned resource to `hugepages`.
+<2> Set the `profile` section to allocate huge pages.
+<3> Note the order of parameters is important as some platforms support huge pages of various sizes.
+<4> Enable machine config pool based matching.
+
+. Create the Tuned `hugepages` object
++
+[source,terminal]
+----
+$ oc create -f hugepages-tuned-boottime.yaml
+----
+
+. Create a file with the following content and name it `hugepages-mcp.yaml`:
++
+[source,yaml]
+----
+apiVersion: machineconfiguration.openshift.io/v1
+kind: MachineConfigPool
+metadata:
+  name: worker-hp
+  labels:
+    worker-hp: ""
+spec:
+  machineConfigSelector:
+    matchExpressions:
+      - {key: machineconfiguration.openshift.io/role, operator: In, values: [worker,worker-hp]}
+  nodeSelector:
+    matchLabels:
+      node-role.kubernetes.io/worker-hp: ""
+----
+
+. Create the machine config pool:
++
+[source,terminal]
+----
+$ oc create -f hugepages-mcp.yaml
+----
+
+Given enough non-fragmented memory, all the nodes in the `worker-hp` machine config pool should now have 50 2Mi huge pages allocated.
+
+[source,terminal]
+----
+$ oc get node <node_using_hugepages> -o jsonpath="{.status.allocatable.hugepages-2Mi}"
+100Mi
+----
+
+ifndef::openshift-origin[]
+[NOTE]
+====
+The TuneD bootloader plugin only supports {op-system-first} worker nodes.
+====
+endif::openshift-origin[]
+
+////
+For run-time allocation, kubelet changes are needed, see BZ1819719.
+== At run time
+
+.Procedure
+
+. Label the node so that the Node Tuning Operator knows on which node to apply the tuned profile, which describes how many huge pages should be allocated:
++
+[source,terminal]
+----
+$ oc label node <node_using_hugepages> hugepages=true
+----
+
+. Create a file with the following content and name it `hugepages-tuned-runtime.yaml`:
++
+[source,yaml]
+----
+apiVersion: tuned.openshift.io/v1
+kind: Tuned
+metadata:
+  name: hugepages <1>
+  namespace: openshift-cluster-node-tuning-operator
+spec:
+  profile: <2>
+  - data: |
+      [main]
+      summary=Run time configuration for hugepages
+      include=openshift-node
+      [vm]
+      transparent_hugepages=never
+      [sysfs]
+      /sys/devices/system/node/node0/hugepages/hugepages-2048kB/nr_hugepages=50
+    name: node-hugepages
+
+  recommend:
+  - match: <3>
+    - label: hugepages
+    priority: 30
+    profile: node-hugepages
+----
+<1> Set the `name` of the Tuned resource to `hugepages`.
+<2> Set the `profile` section to allocate huge pages.
+<3> Set the `match` section to associate the profile to nodes with the `hugepages` label.
+
+. Create the custom `hugepages` tuned profile by using the `hugepages-tuned-runtime.yaml` file:
++
+[source,terminal]
+----
+$ oc create -f hugepages-tuned-runtime.yaml
+----
+
+. After creating the profile, the Operator applies the new profile to the correct
+node and allocates huge pages. Check the logs of a tuned pod on a node using
+huge pages to verify:
++
+[source,terminal]
+----
+$ oc logs <tuned_pod_on_node_using_hugepages> \
+    -n openshift-cluster-node-tuning-operator | grep 'applied$' | tail -n1
+----
++
+----
+2019-08-08 07:20:41,286 INFO     tuned.daemon.daemon: static tuning from profile 'node-hugepages' applied
+----
+
+////

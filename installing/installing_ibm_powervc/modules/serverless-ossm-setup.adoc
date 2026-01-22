@@ -1,0 +1,237 @@
+// Module included in the following assemblies:
+//
+// * /serverless/integrations/serverless-ossm-setup.adoc
+
+:_mod-docs-content-type: PROCEDURE
+[id="serverless-ossm-setup_{context}"]
+= Integrating {SMProductShortName} with {ServerlessProductName}
+
+You can integrate {SMProductShortName} with {ServerlessProductName} without using Kourier as the default ingress. To do this, do not install the Knative Serving component before completing the following procedure. There are additional steps required when creating the `KnativeServing` custom resource definition (CRD) to integrate Knative Serving with {SMProductShortName}, which are not covered in the general Knative Serving installation procedure. This procedure might be useful if you want to integrate {SMProductShortName} as the default and only ingress for your {ServerlessProductName} installation.
+
+.Prerequisites
+
+ifdef::openshift-enterprise[]
+* You have access to an {product-title} account with cluster administrator access.
+endif::[]
+
+ifdef::openshift-dedicated,openshift-rosa[]
+* You have access to an {product-title} account with cluster or dedicated administrator access.
+endif::[]
+
+* You have created a project or have access to a project with the appropriate roles and permissions to create applications and other workloads in {product-title}.
+
+* Install the {SMProductName} Operator and create a `ServiceMeshControlPlane` resource in the `istio-system` namespace. If you want to use mTLS functionality, you must also set the `spec.security.dataPlane.mtls` field for the `ServiceMeshControlPlane` resource to `true`.
++
+[IMPORTANT]
+====
+Using {ServerlessProductName} with {SMProductShortName} is only supported with {SMProductName} version 2.0.5 or later.
+====
+
+* Install the {ServerlessOperatorName}.
+
+* Install the OpenShift CLI (`oc`).
+
+.Procedure
+
+. Add the namespaces that you would like to integrate with {SMProductShortName} to the `ServiceMeshMemberRoll` object as members:
++
+[source,yaml]
+----
+apiVersion: maistra.io/v1
+kind: ServiceMeshMemberRoll
+metadata:
+  name: default
+  namespace: istio-system
+spec:
+  members: <1>
+    - knative-serving
+    - <namespace>
+----
+<1> A list of namespaces to be integrated with {SMProductShortName}.
++
+[IMPORTANT]
+====
+This list of namespaces must include the `knative-serving` namespace.
+====
+
+. Apply the `ServiceMeshMemberRoll` resource:
++
+[source,terminal]
+----
+$ oc apply -f <filename>
+----
+
+. Create the necessary gateways so that {SMProductShortName} can accept traffic:
++
+.Example `knative-local-gateway` object using HTTP
+[source,yaml]
+----
+apiVersion: networking.istio.io/v1alpha3
+kind: Gateway
+metadata:
+  name: knative-ingress-gateway
+  namespace: knative-serving
+spec:
+  selector:
+    istio: ingressgateway
+  servers:
+    - port:
+        number: 443
+        name: https
+        protocol: HTTPS
+      hosts:
+        - "*"
+      tls:
+        mode: SIMPLE
+        credentialName: <wildcard_certs> <1>
+---
+apiVersion: networking.istio.io/v1alpha3
+kind: Gateway
+metadata:
+ name: knative-local-gateway
+ namespace: knative-serving
+spec:
+ selector:
+   istio: ingressgateway
+ servers:
+   - port:
+       number: 8081
+       name: http
+       protocol: HTTP <2>
+     hosts:
+       - "*"
+---
+apiVersion: v1
+kind: Service
+metadata:
+ name: knative-local-gateway
+ namespace: istio-system
+ labels:
+   experimental.istio.io/disable-gateway-port-translation: "true"
+spec:
+ type: ClusterIP
+ selector:
+   istio: ingressgateway
+ ports:
+   - name: http2
+     port: 80
+     targetPort: 8081
+----
+<1> Add the name of the secret that contains the wildcard certificate.
+<2> The `knative-local-gateway` serves HTTP traffic. Using HTTP means that traffic coming from outside of {SMProductShortName}, but using an internal hostname, such as `example.default.svc.cluster.local`, is not encrypted. You can set up encryption for this path by creating another wildcard certificate and an additional gateway that uses a different `protocol` spec.
++
+.Example `knative-local-gateway` object using HTTPS
+[source,yaml]
+----
+apiVersion: networking.istio.io/v1alpha3
+kind: Gateway
+metadata:
+  name: knative-local-gateway
+  namespace: knative-serving
+spec:
+  selector:
+    istio: ingressgateway
+  servers:
+    - port:
+        number: 443
+        name: https
+        protocol: HTTPS
+      hosts:
+        - "*"
+      tls:
+        mode: SIMPLE
+        credentialName: <wildcard_certs>
+----
+
+. Apply the `Gateway` resources:
++
+[source,terminal]
+----
+$ oc apply -f <filename>
+----
+
+. Install Knative Serving by creating the following `KnativeServing` custom resource definition (CRD), which also enables the Istio integration:
++
+[source,yaml]
+----
+apiVersion: operator.knative.dev/v1beta1
+kind: KnativeServing
+metadata:
+  name: knative-serving
+  namespace: knative-serving
+spec:
+  ingress:
+    istio:
+      enabled: true <1>
+  deployments: <2>
+  - name: activator
+    annotations:
+      "sidecar.istio.io/inject": "true"
+      "sidecar.istio.io/rewriteAppHTTPProbers": "true"
+  - name: autoscaler
+    annotations:
+      "sidecar.istio.io/inject": "true"
+      "sidecar.istio.io/rewriteAppHTTPProbers": "true"
+----
+<1> Enables Istio integration.
+<2> Enables sidecar injection for Knative Serving data plane pods.
+
+. Apply the `KnativeServing` resource:
++
+[source,terminal]
+----
+$ oc apply -f <filename>
+----
+
+. Create a Knative Service that has sidecar injection enabled and uses a pass-through route:
++
+[source,yaml]
+----
+apiVersion: serving.knative.dev/v1
+kind: Service
+metadata:
+  name: <service_name>
+  namespace: <namespace> <1>
+  annotations:
+    serving.knative.openshift.io/enablePassthrough: "true" <2>
+spec:
+  template:
+    metadata:
+      annotations:
+        sidecar.istio.io/inject: "true" <3>
+        sidecar.istio.io/rewriteAppHTTPProbers: "true"
+    spec:
+      containers:
+      - image: <image_url>
+----
+<1> A namespace that is part of the Service Mesh member roll.
+<2> Instructs Knative Serving to generate an {product-title} pass-through enabled route, so that the certificates you have generated are served through the ingress gateway directly.
+<3> Injects {SMProductShortName} sidecars into the Knative service pods.
+
+. Apply the `Service` resource:
++
+[source,terminal]
+----
+$ oc apply -f <filename>
+----
+
+.Verification
+
+* Access your serverless application by using a secure connection that is now trusted by the CA:
++
+[source,terminal]
+----
+$ curl --cacert root.crt <service_url>
+----
++
+.Example command
+[source,terminal]
+----
+$ curl --cacert root.crt https://hello-default.apps.openshift.example.com
+----
++
+.Example output
+[source,terminal]
+----
+Hello Openshift!
+----

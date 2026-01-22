@@ -1,0 +1,195 @@
+// Module included in the following assembly:
+//
+// * hosted_control_planes/hcp_high_availability/hcp-backup-restore-aws.adoc
+
+:_mod-docs-content-type: PROCEDURE
+[id="dr-hosted-cluster-within-aws-region-restore_{context}"]
+= Restoring a hosted cluster
+
+Gather all of the objects that you backed up and restore them in your destination management cluster.
+
+.Prerequisites
+
+You backed up the data from your source management cluster.
+
+[TIP]
+====
+Ensure that the `kubeconfig` file of the destination management cluster is placed as it is set in the `KUBECONFIG` variable or, if you use the script, in the `MGMT2_KUBECONFIG` variable. Use `export KUBECONFIG=<Kubeconfig FilePath>` or, if you use the script, use `export KUBECONFIG=${MGMT2_KUBECONFIG}`.
+====
+
+.Procedure
+
+. Verify that the new management cluster does not contain any namespaces from the cluster that you are restoring by entering these commands:
++
+[source,terminal]
+----
+$ export KUBECONFIG=${MGMT2_KUBECONFIG}
+----
++
+[source,terminal]
+----
+$ BACKUP_DIR=${HC_CLUSTER_DIR}/backup
+----
++
+.Namespace deletion in the destination Management cluster
+[source,terminal]
+----
+$ oc delete ns ${HC_CLUSTER_NS} || true
+----
++
+[source,terminal]
+----
+$ oc delete ns ${HC_CLUSTER_NS}-{HC_CLUSTER_NAME} || true
+----
+
+. Re-create the deleted namespaces by entering these commands:
++
+.Namespace creation commands
+[source,terminal]
+----
+$ oc new-project ${HC_CLUSTER_NS}
+----
++
+[source,terminal]
+----
+$ oc new-project ${HC_CLUSTER_NS}-${HC_CLUSTER_NAME}
+----
+
+. Restore the secrets in the HC namespace by entering this command:
++
+[source,terminal]
+----
+$ oc apply -f ${BACKUP_DIR}/namespaces/${HC_CLUSTER_NS}/secret-*
+----
+
+. Restore the objects in the `HostedCluster` control plane namespace by entering these commands:
++
+.Restore secret command
+[source,terminal]
+----
+$ oc apply -f ${BACKUP_DIR}/namespaces/${HC_CLUSTER_NS}-${HC_CLUSTER_NAME}/secret-*
+----
++
+.Cluster restore commands
+[source,terminal]
+----
+$ oc apply -f ${BACKUP_DIR}/namespaces/${HC_CLUSTER_NS}-${HC_CLUSTER_NAME}/hcp-*
+----
++
+[source,terminal]
+----
+$ oc apply -f ${BACKUP_DIR}/namespaces/${HC_CLUSTER_NS}-${HC_CLUSTER_NAME}/cl-*
+----
+
+. If you are recovering the nodes and the node pool to reuse AWS instances, restore the objects in the HC control plane namespace by entering these commands:
++
+.Commands for AWS
+[source,terminal]
+----
+$ oc apply -f ${BACKUP_DIR}/namespaces/${HC_CLUSTER_NS}-${HC_CLUSTER_NAME}/awscl-*
+----
++
+[source,terminal]
+----
+$ oc apply -f ${BACKUP_DIR}/namespaces/${HC_CLUSTER_NS}-${HC_CLUSTER_NAME}/awsmt-*
+----
++
+[source,terminal]
+----
+$ oc apply -f ${BACKUP_DIR}/namespaces/${HC_CLUSTER_NS}-${HC_CLUSTER_NAME}/awsm-*
+----
++
+.Commands for machines
+[source,terminal]
+----
+$ oc apply -f ${BACKUP_DIR}/namespaces/${HC_CLUSTER_NS}-${HC_CLUSTER_NAME}/machinedeployment-*
+----
++
+[source,terminal]
+----
+$ oc apply -f ${BACKUP_DIR}/namespaces/${HC_CLUSTER_NS}-${HC_CLUSTER_NAME}/machineset-*
+----
++
+[source,terminal]
+----
+$ oc apply -f ${BACKUP_DIR}/namespaces/${HC_CLUSTER_NS}-${HC_CLUSTER_NAME}/machine-*
+----
+
+. Restore the etcd data and the hosted cluster by running this bash script:
++
+[source,terminal]
+----
+ETCD_PODS="etcd-0"
+if [ "${CONTROL_PLANE_AVAILABILITY_POLICY}" = "HighlyAvailable" ]; then
+  ETCD_PODS="etcd-0 etcd-1 etcd-2"
+fi
+
+HC_RESTORE_FILE=${BACKUP_DIR}/namespaces/${HC_CLUSTER_NS}/hc-${HC_CLUSTER_NAME}-restore.yaml
+HC_BACKUP_FILE=${BACKUP_DIR}/namespaces/${HC_CLUSTER_NS}/hc-${HC_CLUSTER_NAME}.yaml
+HC_NEW_FILE=${BACKUP_DIR}/namespaces/${HC_CLUSTER_NS}/hc-${HC_CLUSTER_NAME}-new.yaml
+cat ${HC_BACKUP_FILE} > ${HC_NEW_FILE}
+cat > ${HC_RESTORE_FILE} <<EOF
+    restoreSnapshotURL:
+EOF
+
+for POD in ${ETCD_PODS}; do
+  # Create a pre-signed URL for the etcd snapshot
+  ETCD_SNAPSHOT="s3://${BUCKET_NAME}/${HC_CLUSTER_NAME}-${POD}-snapshot.db"
+  ETCD_SNAPSHOT_URL=$(AWS_DEFAULT_REGION=${MGMT2_REGION} aws s3 presign ${ETCD_SNAPSHOT})
+
+  # FIXME no CLI support for restoreSnapshotURL yet
+  cat >> ${HC_RESTORE_FILE} <<EOF
+    - "${ETCD_SNAPSHOT_URL}"
+EOF
+done
+
+cat ${HC_RESTORE_FILE}
+
+if ! grep ${HC_CLUSTER_NAME}-snapshot.db ${HC_NEW_FILE}; then
+  sed -i '' -e "/type: PersistentVolume/r ${HC_RESTORE_FILE}" ${HC_NEW_FILE}
+  sed -i '' -e '/pausedUntil:/d' ${HC_NEW_FILE}
+fi
+
+HC=$(oc get hc -n ${HC_CLUSTER_NS} ${HC_CLUSTER_NAME} -o name || true)
+if [[ ${HC} == "" ]];then
+    echo "Deploying HC Cluster: ${HC_CLUSTER_NAME} in ${HC_CLUSTER_NS} namespace"
+    oc apply -f ${HC_NEW_FILE}
+else
+    echo "HC Cluster ${HC_CLUSTER_NAME} already exists, avoiding step"
+fi
+----
+
+. If you are recovering the nodes and the node pool to reuse AWS instances, restore the node pool by entering this command:
++
+[source,terminal]
+----
+$ oc apply -f ${BACKUP_DIR}/namespaces/${HC_CLUSTER_NS}/np-*
+----
+
+.Verification
+
+* To verify that the nodes are fully restored, use this function:
++
+[source,terminal]
+----
+timeout=40
+count=0
+NODE_STATUS=$(oc get nodes --kubeconfig=${HC_KUBECONFIG} | grep -v NotReady | grep -c "worker") || NODE_STATUS=0
+
+while [ ${NODE_POOL_REPLICAS} != ${NODE_STATUS} ]
+do
+    echo "Waiting for Nodes to be Ready in the destination MGMT Cluster: ${MGMT2_CLUSTER_NAME}"
+    echo "Try: (${count}/${timeout})"
+    sleep 30
+    if [[ $count -eq timeout ]];then
+        echo "Timeout waiting for Nodes in the destination MGMT Cluster"
+        exit 1
+    fi
+    count=$((count+1))
+    NODE_STATUS=$(oc get nodes --kubeconfig=${HC_KUBECONFIG} | grep -v NotReady | grep -c "worker") || NODE_STATUS=0
+done
+----
+
+.Next steps
+
+Shut down and delete your cluster.

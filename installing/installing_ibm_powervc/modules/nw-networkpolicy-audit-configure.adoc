@@ -1,0 +1,215 @@
+// Module included in the following assemblies:
+//
+// * networking/network_security/logging-network-security.adoc
+
+:_mod-docs-content-type: PROCEDURE
+[id="nw-networkpolicy-audit-configure_{context}"]
+= Configuring egress firewall and network policy auditing for a cluster
+
+As a cluster administrator, you can customize audit logging for your cluster.
+
+.Prerequisites
+
+* Install the OpenShift CLI (`oc`).
+* Log in to the cluster with a user with `cluster-admin` privileges.
+
+.Procedure
+
+* To customize the audit logging configuration, enter the following command:
++
+[source,terminal]
+----
+$ oc edit network.operator.openshift.io/cluster
+----
++
+[TIP]
+====
+You can also customize and apply the following YAML to configure audit logging:
+
+[source,yaml]
+----
+apiVersion: operator.openshift.io/v1
+kind: Network
+metadata:
+  name: cluster
+spec:
+  defaultNetwork:
+    ovnKubernetesConfig:
+      policyAuditConfig:
+        destination: "null"
+        maxFileSize: 50
+        rateLimit: 20
+        syslogFacility: local0
+----
+====
+
+.Verification
+
+. To create a namespace with network policies complete the following steps:
+.. Create a namespace for verification:
++
+[source,terminal]
+----
+$ cat <<EOF| oc create -f -
+kind: Namespace
+apiVersion: v1
+metadata:
+  name: verify-audit-logging
+  annotations:
+    k8s.ovn.org/acl-logging: '{ "deny": "alert", "allow": "alert" }'
+EOF
+----
++
+Successful output lists the namespace with the network policy and the `created` status.
+
+.. Create network policies for the namespace:
++
+[source,terminal]
+----
+$ cat <<EOF| oc create -n verify-audit-logging -f -
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: deny-all
+spec:
+  podSelector:
+    matchLabels:
+  policyTypes:
+  - Ingress
+  - Egress
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: allow-from-same-namespace
+  namespace: verify-audit-logging
+spec:
+  podSelector: {}
+  policyTypes:
+   - Ingress
+   - Egress
+  ingress:
+    - from:
+        - podSelector: {}
+  egress:
+    - to:
+       - namespaceSelector:
+          matchLabels:
+            kubernetes.io/metadata.name: verify-audit-logging
+EOF
+----
++
+.Example output
+[source,text]
+----
+networkpolicy.networking.k8s.io/deny-all created
+networkpolicy.networking.k8s.io/allow-from-same-namespace created
+----
+
+. Create a pod for source traffic in the `default` namespace:
++
+[source,terminal]
+----
+$ cat <<EOF| oc create -n default -f -
+apiVersion: v1
+kind: Pod
+metadata:
+  name: client
+spec:
+  containers:
+    - name: client
+      image: registry.access.redhat.com/rhel7/rhel-tools
+      command: ["/bin/sh", "-c"]
+      args:
+        ["sleep inf"]
+EOF
+----
+
+. Create two pods in the `verify-audit-logging` namespace:
++
+[source,terminal]
+----
+$ for name in client server; do
+cat <<EOF| oc create -n verify-audit-logging -f -
+apiVersion: v1
+kind: Pod
+metadata:
+  name: ${name}
+spec:
+  containers:
+    - name: ${name}
+      image: registry.access.redhat.com/rhel7/rhel-tools
+      command: ["/bin/sh", "-c"]
+      args:
+        ["sleep inf"]
+EOF
+done
+----
++
+Successful output lists the two pods, such as `pod/client` and `pod/server`, and the `created` status.
+
+. To generate traffic and produce network policy audit log entries, complete the following steps:
+
+.. Obtain the IP address for pod named `server` in the `verify-audit-logging` namespace:
++
+[source,terminal]
+----
+$ POD_IP=$(oc get pods server -n verify-audit-logging -o jsonpath='{.status.podIP}')
+----
+
+.. Ping the IP address from an earlier command from the pod named `client` in the `default` namespace and confirm the all packets are dropped:
++
+[source,terminal]
+----
+$ oc exec -it client -n default -- /bin/ping -c 2 $POD_IP
+----
++
+.Example output
+[source,text]
+----
+PING 10.128.2.55 (10.128.2.55) 56(84) bytes of data.
+
+--- 10.128.2.55 ping statistics ---
+2 packets transmitted, 0 received, 100% packet loss, time 2041ms
+----
+
+.. From the client pod in the `verify-audit-logging` namespace, ping the IP address stored in the `POD_IP shell` environment variable and confirm the system allows all packets.
++
+[source,terminal]
+----
+$ oc exec -it client -n verify-audit-logging -- /bin/ping -c 2 $POD_IP
+----
++
+.Example output
+[source,text]
+----
+PING 10.128.0.86 (10.128.0.86) 56(84) bytes of data.
+64 bytes from 10.128.0.86: icmp_seq=1 ttl=64 time=2.21 ms
+64 bytes from 10.128.0.86: icmp_seq=2 ttl=64 time=0.440 ms
+
+--- 10.128.0.86 ping statistics ---
+2 packets transmitted, 2 received, 0% packet loss, time 1001ms
+rtt min/avg/max/mdev = 0.440/1.329/2.219/0.890 ms
+----
+
+. Display the latest entries in the network policy audit log:
++
+[source,terminal]
+----
+$ for pod in $(oc get pods -n openshift-ovn-kubernetes -l app=ovnkube-node --no-headers=true | awk '{ print $1 }') ; do
+    oc exec -it $pod -n openshift-ovn-kubernetes -- tail -4 /var/log/ovn/acl-audit-log.log
+  done
+----
++
+.Example output
+[source,text]
+----
+2023-11-02T16:28:54.139Z|00004|acl_log(ovn_pinctrl0)|INFO|name="NP:verify-audit-logging:Ingress", verdict=drop, severity=alert, direction=to-lport: tcp,vlan_tci=0x0000,dl_src=0a:58:0a:81:02:01,dl_dst=0a:58:0a:81:02:23,nw_src=10.131.0.39,nw_dst=10.129.2.35,nw_tos=0,nw_ecn=0,nw_ttl=62,nw_frag=no,tp_src=58496,tp_dst=8080,tcp_flags=syn
+2023-11-02T16:28:55.187Z|00005|acl_log(ovn_pinctrl0)|INFO|name="NP:verify-audit-logging:Ingress", verdict=drop, severity=alert, direction=to-lport: tcp,vlan_tci=0x0000,dl_src=0a:58:0a:81:02:01,dl_dst=0a:58:0a:81:02:23,nw_src=10.131.0.39,nw_dst=10.129.2.35,nw_tos=0,nw_ecn=0,nw_ttl=62,nw_frag=no,tp_src=58496,tp_dst=8080,tcp_flags=syn
+2023-11-02T16:28:57.235Z|00006|acl_log(ovn_pinctrl0)|INFO|name="NP:verify-audit-logging:Ingress", verdict=drop, severity=alert, direction=to-lport: tcp,vlan_tci=0x0000,dl_src=0a:58:0a:81:02:01,dl_dst=0a:58:0a:81:02:23,nw_src=10.131.0.39,nw_dst=10.129.2.35,nw_tos=0,nw_ecn=0,nw_ttl=62,nw_frag=no,tp_src=58496,tp_dst=8080,tcp_flags=syn
+2023-11-02T16:49:57.909Z|00028|acl_log(ovn_pinctrl0)|INFO|name="NP:verify-audit-logging:allow-from-same-namespace:Egress:0", verdict=allow, severity=alert, direction=from-lport: icmp,vlan_tci=0x0000,dl_src=0a:58:0a:81:02:22,dl_dst=0a:58:0a:81:02:23,nw_src=10.129.2.34,nw_dst=10.129.2.35,nw_tos=0,nw_ecn=0,nw_ttl=64,nw_frag=no,icmp_type=8,icmp_code=0
+2023-11-02T16:49:57.909Z|00029|acl_log(ovn_pinctrl0)|INFO|name="NP:verify-audit-logging:allow-from-same-namespace:Ingress:0", verdict=allow, severity=alert, direction=to-lport: icmp,vlan_tci=0x0000,dl_src=0a:58:0a:81:02:22,dl_dst=0a:58:0a:81:02:23,nw_src=10.129.2.34,nw_dst=10.129.2.35,nw_tos=0,nw_ecn=0,nw_ttl=64,nw_frag=no,icmp_type=8,icmp_code=0
+2023-11-02T16:49:58.932Z|00030|acl_log(ovn_pinctrl0)|INFO|name="NP:verify-audit-logging:allow-from-same-namespace:Egress:0", verdict=allow, severity=alert, direction=from-lport: icmp,vlan_tci=0x0000,dl_src=0a:58:0a:81:02:22,dl_dst=0a:58:0a:81:02:23,nw_src=10.129.2.34,nw_dst=10.129.2.35,nw_tos=0,nw_ecn=0,nw_ttl=64,nw_frag=no,icmp_type=8,icmp_code=0
+2023-11-02T16:49:58.932Z|00031|acl_log(ovn_pinctrl0)|INFO|name="NP:verify-audit-logging:allow-from-same-namespace:Ingress:0", verdict=allow, severity=alert, direction=to-lport: icmp,vlan_tci=0x0000,dl_src=0a:58:0a:81:02:22,dl_dst=0a:58:0a:81:02:23,nw_src=10.129.2.34,nw_dst=10.129.2.35,nw_tos=0,nw_ecn=0,nw_ttl=64,nw_frag=no,icmp_type=8,icmp_code=0
+
+----

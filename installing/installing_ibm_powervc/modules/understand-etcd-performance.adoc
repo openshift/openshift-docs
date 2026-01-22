@@ -1,0 +1,149 @@
+// Module included in the following assemblies:
+// etcd/etcd-overview.adoc
+
+:_mod-docs-content-type: CONCEPT
+[id="understand-etcd-performance_{context}"]
+= Understanding etcd performance
+
+As a consistent distributed key-value store operating as a cluster of replicated nodes, etcd follows the Raft algorithm by electing one node as the leader and the others as followers. The leader maintains the current state of the system current state and ensures that the followers are up-to-date.
+
+The leader node is responsible for log replication. It handles incoming write transactions from the client and writes a Raft log entry that it then broadcasts to the followers. 
+
+When an etcd client such as `kube-apiserver` connects to an etcd member that is requesting an action that requires a quorum, such as writing a value, if the etcd member is a follower, it returns a message indicating that the transaction needs to go to the leader. 
+
+When the etcd client requests an action from the leader that requires a quorum, such as writing a value, the leader maintains the client connection open while it writes the local Raft log, broadcasts the log to the followers, and waits for the majority of the followers to acknowledge to have committed the log without failures. The leader sends the acknowledgment to the etcd client and closes the session. If failure notifications are received from the followers and a consensus is not met, the leader returns the error message to the client and closes the session.
+
+
+.{product-title} timer conditions for etcd
+
+{product-title} maintains etcd timers that are optimized for each platform. {product-title} has prescribed validated values that are optimized for each platform provider. The default `etcd timers` parameters with `platform=none` or `platform=metal` values are as follows:
+
+[source,yaml]
+----
+- name: ETCD_ELECTION_TIMEOUT <1>
+  value: "1000"
+  ...
+- name: ETCD_HEARTBEAT_INTERVAL <2>
+  value: "100" 
+----
+
+<1> This timeout is how long a follower node waits without hearing a heartbeat before it attempts to become the leader.
+<2> The frequency that the leader notifies followers that it is still the leader.
+
+These parameters do not provide all of the information for the control plane or for etcd. An etcd cluster is sensitive to disk latencies. Because etcd must persist proposals to its log, disk activity from other processes might cause long `fsync` latencies. The consequence is that etcd might miss heartbeats, causing request timeouts and temporary leader loss. During a leader loss and reelection, the Kubernetes API cannot process any request that causes a service-affecting event and instability of the cluster.
+
+
+.Effects of disk latency on etcd
+
+An etcd cluster is sensitive to disk latencies. To understand the disk latency that etcd experiences by etcd in your control plane environment, run the Flexible I/O Tester (fio) tests or suite, to check etcd disk performance in {product-title}.
+
+[IMPORTANT]
+====
+Use only the `fio` test to measure disk latency at a specific point in time. This test does not account for long-term disk behavior and other disk workloads that occur with etcd in a production environment.
+====
+
+Ensure that the final report classifies the disk as appropriate for etcd, as shown in the following example:
+
+[source,text]
+----
+...
+99th percentile of fsync is 5865472 ns
+99th percentile of the fsync is within the suggested threshold: - 20 ms, the disk can be used to host etcd
+----
+
+When a high latency disk is used, a message states that the disk is not suggested for etcd, as shown in the following example:
+
+[source,text]
+----
+...
+99th percentile of fsync is 15865472 ns
+99th percentile of the fsync is greater than the suggested value which is 20 ms, faster disks are suggested to host etcd for better performance
+----
+
+When your cluster deployments span many data centers that are using disks for etcd that do not meet the suggested latency, service-affecting failures can occur. In addition, the network latency that the control plane can sustain is dramatically reduced.
+
+
+.Effects of network latency and jitter on etcd
+
+Use the tools that are described in the maximum transmission unit (MTU) discovery and validation section to obtain the average and maximum network latency.
+
+The value of the heartbeat interval should be approximately the maximum of the average round-trip time (RTT) between members, normally around 1.5 times the round-trip time. With the {product-title} default heartbeat interval of 100 ms, the suggested RTT between control plane nodes is less than 33 ms, with a maximum of less than 66 ms (66 ms x 1.5 = 99 ms). Any network latency that is larger might cause service-affecting events and cluster instability.
+
+The network latency is determined by factors that include the technology of the transport networks, such as copper, fiber, wireless, or satellite, the number and quality of the network devices in the transport network, and other factors. 
+
+Consider network latency with network jitter for exact calculations. _Network jitter_ is the variance in network latency or the variation in the delay of received packets. In efficient network conditions, the jitter should be zero. Network jitter affects the network latency calculations for etcd because the actual network latency over time will be the RTT plus or minus Jitter.
+
+For example, a network with a maximum latency of 80 ms and jitter of 30 ms will experience latencies of 110 ms, which means etcd will miss heartbeats. This condition results in request timeouts and temporary leader loss. During a leader loss and re-election, the Kubernetes API cannot process any request that causes a service-affecting event and instability of the cluster.
+
+
+.Effects of consensus latency on etcd
+
+The procedure can run only on an active cluster. The disk or network test should be completed while you plan a cluster deployment. That test validates and monitors cluster health after a deployment.
+
+By using the `etcdctl` CLI, you can watch the latency for reaching consensus as experienced by etcd. You must identify one of the etcd pods and then retrieve the endpoint health.
+
+
+.etcd peer round trip time impacts on performance
+
+The etcd peer round trip time is not the same as the network round trip time. This calculation is an end-to-end test metric about how quickly replication can occur among members.
+
+The etcd peer round trip time is the metric that shows the latency of etcd to finish replicating a client request among all the etcd members.
+The {product-title} console provides dashboards to visualize the various etcd metrics. In the console, click *Observe* -> *Dashboards*.  From the dropdown list, select *etcd*.
+
+A plot that summarizes the etcd peer round trip time is near the end of the etcd *Dashboard* page. 
+
+
+.Effects of database size on etcd
+
+The etcd database size has a direct impact on the time to complete the etcd defragmentation process. {product-title} automatically runs the etcd defragmentation on one etcd member at a time when it detects at least 45% fragmentation. During the defragmentation process, the etcd member cannot process any requests. On small etcd databases, the defragmentation process happens in less than a second. With larger etcd databases, the disk latency directly impacts the fragmentation time, causing additional latency, as operations are blocked while defragmentation happens.
+
+The size of the etcd database is a factor to consider when network partitions isolate a control plane node for a period of time, and the control plane needs to sync after communication is re-established.
+
+Minimal options exist for controlling the size of the etcd database, because it depends on the Operators and applications in the system. When you consider the latency range where the system operates, account for the effects of synchronization or defragmentation per size of the etcd database.
+
+The magnitude of the effects is specific to the deployment. The time to complete a defragmentation will cause degradation in the transaction rate, as the etcd member cannot accept updates during the defragmentation process. Similarly, the time for the etcd re-synchronization for large databases with high change rate affects the transaction rate and transaction latency on the system. Consider the following two examples for the type of impacts to plan for.
+
+The first example of the effect of etcd defragmentation based on database size is that writing an etcd database of 1 GB to a slow 7200 RPMs disk at 80 Mb per second takes about 1 minute and 40 seconds. In such a scenario, the defragmentation process takes at least this long, to complete the defragmentation.
+
+The second example of the effect of database size on etcd synchronization is that if there is a change of 10% of the etcd database during disconnection of one of the control plane nodes, the sync needs to transfer at least 100 MB. Transferring 100 MB over a 1 Gbps link takes 800 ms. On clusters with regular transactions with the Kubernetes API, the larger the etcd database size, the more network instabilities will cause control plane instabilities.
+
+In {product-title}, the etcd dashboard has a plot that reports the size of the etcd database. Alternatively, you can obtain the database size from the CLI by using the `etcdctl` tool.
+
+[source,terminal]
+----
+# oc get pods -n openshift-etcd -l app=etcd
+----
+
+[Discrete]
+.Example output
+[source,terminal]
+----
+NAME      READY   STATUS    RESTARTS   AGE
+etcd-m0   4/4     Running   4          22h
+etcd-m1   4/4     Running   4          22h
+etcd-m2   4/4     Running   4          22h
+----
+
+[source,terminal]
+----
+# oc exec -t etcd-m0 -- etcdctl endpoint status -w simple | cut -d, -f 1,3,4
+----
+
+[Discrete]
+.Example output
+[source,terminal]
+----
+https://198.18.111.12:2379, 3.5.6, 1.1 GB
+https://198.18.111.13:2379, 3.5.6, 1.1 GB
+https://198.18.111.14:2379, 3.5.6, 1.1 GB
+----
+
+
+.Effects of the Kubernetes API transaction rate on etcd
+
+When you are using a stretched control plane, the Kebernetes API transaction rate depends on the characteristics of the particular deployment. It depends on the combination of the etcd disk latency, the etcd round trip time, and the size of objects that are written to the API. As a result, when you use stretched control planes, the cluster administrators need to test the environment to determine the sustained transaction rate that is possible for their environment. The `kube-burner` tool can be used for this purpose.
+
+
+.Determining Kubernetes API transaction rate for your environment
+
+You cannot determine the transaction rate of the Kubernetes API without measuring it. One of the tools that is used for load testing the control plane is `kube-burner`. The binary provides a {product-title} wrapper for testing {product-title} clusters. It is used to test cluster or node density. For testing the control plane, `kube-burner ocp` has three workload profiles: `cluster-density`, `cluster-density-v2`, and `cluster-density-ms`. Each workload profile creates a series of resources designed to load the control. 

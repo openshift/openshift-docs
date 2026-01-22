@@ -1,0 +1,32 @@
+// Module included in the following assemblies:
+//
+// * post_installation_configuration/node-tasks.adoc
+
+:_mod-docs-content-type: PROCEDURE
+[id="modify-unavailable-workers_{context}"]
+= Modifying the number of unavailable worker nodes
+
+By default, only one machine is allowed to be unavailable when applying the kubelet-related configuration to the available worker nodes. For a large cluster, it can take a long time for the configuration change to be reflected. At any time, you can adjust the number of machines that are updating to speed up the process.
+
+.Procedure
+
+. Edit the `worker` machine config pool:
++
+[source,terminal]
+----
+$ oc edit machineconfigpool worker
+----
+
+. Add the `maxUnavailable` field and set the value:
++
+[source,yaml]
+----
+spec:
+  maxUnavailable: <node_count>
+----
++
+[IMPORTANT]
+====
+When setting the value, consider the number of worker nodes that can be
+unavailable without affecting the applications running on the cluster.
+====

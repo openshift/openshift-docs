@@ -1,0 +1,244 @@
+// Module included in the following assemblies:
+//
+// * nodes/nodes-containers-volumes.adoc
+
+:_mod-docs-content-type: PROCEDURE
+[id="nodes-containers-volumes-adding_{context}"]
+= Adding volumes to a pod
+
+You can add volumes and volume mounts to a pod.
+
+.Procedure
+
+To add a volume, a volume mount, or both to pod templates:
+
+[source,terminal]
+----
+$ oc set volume <object_type>/<name> --add [options]
+----
+
+.Supported Options for Adding Volumes
+[cols="3a*",options="header"]
+|===
+
+|Option |Description |Default
+
+|`--name`
+|Name of the volume.
+|Automatically generated, if not specified.
+
+|`-t, --type`
+|Name of the volume source. Supported values: `emptyDir`, `hostPath`, `secret`,
+`configmap`, `persistentVolumeClaim` or `projected`.
+|`emptyDir`
+
+|`-c, --containers`
+|Select containers by name. It can also take wildcard `'*'` that matches any
+character.
+|`'*'`
+
+|`-m, --mount-path`
+|Mount path inside the selected containers. Do not mount to the container root, `/`, or any path that is the same in the host and the container. This can corrupt your host system if the container is sufficiently privileged, such as the host `/dev/pts` files. It is safe to mount the host by using `/host`.
+|
+
+|`--path`
+|Host path. Mandatory parameter for `--type=hostPath`. Do not mount to the container root, `/`, or any path that is the same in the host and the container. This can corrupt your host system if the container is sufficiently privileged, such as the host `/dev/pts` files. It is safe to mount the host by using `/host`.
+|
+
+|`--secret-name`
+|Name of the secret. Mandatory parameter for `--type=secret`.
+|
+
+|`--configmap-name`
+|Name of the configmap. Mandatory parameter for `--type=configmap`.
+|
+
+|`--claim-name`
+|Name of the persistent volume claim. Mandatory parameter for
+`--type=persistentVolumeClaim`.
+|
+
+|`--source`
+|Details of volume source as a JSON string. Recommended if the desired volume
+source is not supported by `--type`.
+|
+
+|`-o, --output`
+|Display the modified objects instead of updating them on the server. Supported
+values: `json`, `yaml`.
+|
+
+|`--output-version`
+|Output the modified objects with the given version.
+|`api-version`
+|===
+
+
+For example:
+
+* To add a new volume source *emptyDir* to the *registry* `DeploymentConfig` object:
++
+[source,terminal]
+----
+$ oc set volume dc/registry --add
+----
++
+[TIP]
+====
+You can alternatively apply the following YAML to add the volume:
+
+.Sample deployment config with an added volume
+[%collapsible]
+=====
+[source,yaml]
+----
+kind: DeploymentConfig
+apiVersion: apps.openshift.io/v1
+metadata:
+  name: registry
+  namespace: registry
+spec:
+  replicas: 3
+  selector:
+    app: httpd
+  template:
+    metadata:
+      labels:
+        app: httpd
+    spec:
+      volumes: <1>
+        - name: volume-pppsw
+          emptyDir: {}
+      containers:
+        - name: httpd
+          image: >-
+            image-registry.openshift-image-registry.svc:5000/openshift/httpd:latest
+          ports:
+            - containerPort: 8080
+              protocol: TCP
+----
+<1> Add the volume source *emptyDir*.
+=====
+====
+
+* To add volume *v1* with secret *secret1* for replication controller *r1* and mount
+inside the containers at *_/data_*:
++
+[source,terminal]
+----
+$ oc set volume rc/r1 --add --name=v1 --type=secret --secret-name='secret1' --mount-path=/data
+----
++
+[TIP]
+====
+You can alternatively apply the following YAML to add the volume:
+
+.Sample replication controller with added volume and secret
+[%collapsible]
+=====
+[source,yaml]
+----
+kind: ReplicationController
+apiVersion: v1
+metadata:
+  name: example-1
+  namespace: example
+spec:
+  replicas: 0
+  selector:
+    app: httpd
+    deployment: example-1
+    deploymentconfig: example
+  template:
+    metadata:
+      creationTimestamp: null
+      labels:
+        app: httpd
+        deployment: example-1
+        deploymentconfig: example
+    spec:
+      volumes: <1>
+        - name: v1
+          secret:
+            secretName: secret1
+            defaultMode: 420
+      containers:
+        - name: httpd
+          image: >-
+            image-registry.openshift-image-registry.svc:5000/openshift/httpd:latest
+          volumeMounts: <2>
+            - name: v1
+              mountPath: /data
+----
+<1> Add the volume and secret.
+<2> Add the container mount path.
+=====
+====
+
+* To add existing persistent volume *v1* with claim name *pvc1* to deployment
+configuration *_dc.json_* on disk, mount the volume on container *c1* at
+*_/data_*, and update the `DeploymentConfig` object on the server:
++
+[source,terminal]
+----
+$ oc set volume -f dc.json --add --name=v1 --type=persistentVolumeClaim \
+  --claim-name=pvc1 --mount-path=/data --containers=c1
+----
++
+[TIP]
+====
+You can alternatively apply the following YAML to add the volume:
+
+.Sample deployment config with persistent volume added
+[%collapsible]
+=====
+[source,yaml]
+----
+kind: DeploymentConfig
+apiVersion: apps.openshift.io/v1
+metadata:
+  name: example
+  namespace: example
+spec:
+  replicas: 3
+  selector:
+    app: httpd
+  template:
+    metadata:
+      labels:
+        app: httpd
+    spec:
+      volumes:
+        - name: volume-pppsw
+          emptyDir: {}
+        - name: v1 <1>
+          persistentVolumeClaim:
+            claimName: pvc1
+      containers:
+        - name: httpd
+          image: >-
+            image-registry.openshift-image-registry.svc:5000/openshift/httpd:latest
+          ports:
+            - containerPort: 8080
+              protocol: TCP
+          volumeMounts: <2>
+            - name: v1
+              mountPath: /data
+----
+<1> Add the persistent volume claim named `pvc1.
+<2> Add the container mount path.
+=====
+====
+
+* To add a volume *v1* based on Git repository
+*$$https://github.com/namespace1/project1$$* with revision *5125c45f9f563* for
+all replication controllers:
++
+[source,terminal]
+----
+$ oc set volume rc --all --add --name=v1 \
+  --source='{"gitRepo": {
+                "repository": "https://github.com/namespace1/project1",
+                "revision": "5125c45f9f563"
+            }}'
+----

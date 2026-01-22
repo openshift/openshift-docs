@@ -1,0 +1,68 @@
+// Module included in the following assemblies:
+//
+// * scalability_and_performance/ztp_far_edge/ztp-manual-install.adoc
+
+:_mod-docs-content-type: PROCEDURE
+[id="setting-managed-bare-metal-host-kernel-arguments_{context}"]
+= Configuring Discovery ISO kernel arguments for manual installations using {ztp}
+
+The {ztp-first} workflow uses the Discovery ISO as part of the {product-title} installation process on managed bare-metal hosts. You can edit the `InfraEnv` resource to specify kernel arguments for the Discovery ISO. This is useful for cluster installations with specific environmental requirements. For example, configure the `rd.net.timeout.carrier` kernel argument for the Discovery ISO to facilitate static networking for the cluster or to receive a DHCP address before downloading the root file system during installation.
+
+[NOTE]
+====
+In {product-title} {product-version}, you can only add kernel arguments. You can not replace or delete kernel arguments.
+====
+
+.Prerequisites
+
+* You have installed the OpenShift CLI (oc).
+* You have logged in to the hub cluster as a user with cluster-admin privileges.
+* You have manually generated the installation and configuration custom resources (CRs).
+
+.Procedure
+
+. Edit the `spec.kernelArguments` specification in the `InfraEnv` CR to configure kernel arguments:
+
+[source,yaml,options="nowrap",role="white-space-pre"]
+----
+apiVersion: agent-install.openshift.io/v1beta1
+kind: InfraEnv
+metadata:
+  name: <cluster_name>
+  namespace: <cluster_name>
+spec:
+  kernelArguments:
+    - operation: append <1>
+      value: audit=0 <2>
+    - operation: append
+      value: trace=1
+  clusterRef:
+    name: <cluster_name>
+    namespace: <cluster_name>
+  pullSecretRef:
+    name: pull-secret
+----
+<1> Specify the append operation to add a kernel argument.
+<2> Specify the kernel argument you want to configure. This example configures the audit kernel argument and the trace kernel argument.
+
+[NOTE]
+====
+The `SiteConfig` CR generates the `InfraEnv` resource as part of the day-0 installation CRs.
+====
+
+.Verification
+To verify that the kernel arguments are applied, after the Discovery image verifies that {product-title} is ready for installation, you can SSH to the target host before the installation process begins. At that point, you can view the kernel arguments for the Discovery ISO in the `/proc/cmdline` file.
+
+. Begin an SSH session with the target host:
++
+[source,terminal]
+----
+$ ssh -i /path/to/privatekey core@<host_name>
+----
+
+. View the system's kernel arguments by using the following command:
++
+[source,terminal]
+----
+$ cat /proc/cmdline
+----

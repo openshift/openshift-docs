@@ -1,0 +1,248 @@
+// Module included in the following assemblies:
+//
+// * virt/post_installation_configuration/virt-configuring-higher-vm-workload-density.adoc
+
+:_mod-docs-content-type: PROCEDURE
+[id="virt-using-wasp-agent-to-configure-higher-vm-workload-density_{context}"]
+= Using wasp-agent to increase VM workload density
+
+[role="_abstract"]
+The `wasp-agent` component facilitates memory overcommitment by assigning swap resources to worker nodes.
+
+The `wasp-agent` component is deployed automatically if `memoryOvercommitPercentage` is set to more than `100` when you first create the `HyperConverged` custom resource (CR).
+
+[IMPORTANT]
+====
+Swap resources can be only assigned to virtual machine workloads (VM pods) of the `Burstable` Quality of Service (QoS) class. VM pods of the `Guaranteed` QoS class and pods of any QoS class that do not belong to VMs cannot swap resources.
+
+For descriptions of QoS classes, see link:https://kubernetes.io/docs/tasks/configure-pod-container/quality-service-pod/[Configure Quality of Service for Pods] (Kubernetes documentation).
+
+Using `spec.domain.resources.requests.memory` in the VM manifest disables the memory overcommit configuration. Use `spec.domain.memory.guest` instead.
+====
+
+.Prerequisites
+
+* You have installed the {oc-first}.
+* You are logged into the cluster with the `cluster-admin` role.
+* A memory overcommit ratio is defined.
+* The node belongs to a worker pool.
+
+[NOTE]
+====
+The `wasp-agent` component deploys an Open Container Initiative (OCI) hook to enable swap usage for containers on the node level. The low-level nature requires the `DaemonSet` object to be privileged.
+====
+
+.Procedure
+
+. Configure the `kubelet` service to permit swap usage:
+.. Create or edit a `KubeletConfig` file with the parameters shown in the following example:
++
+[source,yaml]
+----
+apiVersion: machineconfiguration.openshift.io/v1
+kind: KubeletConfig
+metadata:
+  name: custom-config
+spec:
+  machineConfigPoolSelector:
+    matchLabels:
+      pools.operator.machineconfiguration.openshift.io/worker: ''  # MCP
+      #machine.openshift.io/cluster-api-machine-role: worker # machine
+      #node-role.kubernetes.io/worker: '' # node
+  kubeletConfig:
+    failSwapOn: false
+----
+
+.. Wait for the worker nodes to sync with the new configuration by running the following command:
++
+[source,yaml]
+----
+$ oc wait mcp worker --for condition=Updated=True --timeout=-1s
+----
+
+. Provision swap by creating a `MachineConfig` object:
+
+.. Create a `MachineConfig` file with the parameters shown in the following example:
++
+[source,yaml]
+----
+apiVersion: machineconfiguration.openshift.io/v1
+kind: MachineConfig
+metadata:
+  labels:
+    machineconfiguration.openshift.io/role: worker
+  name: 90-worker-swap
+spec:
+  config:
+    ignition:
+      version: 3.5.0
+    storage:
+      files:
+      - contents:
+          source: data:text/plain;charset=utf-8;base64,YXBpVmVyc2lvbjoga3ViZWxldC5jb25maWcuazhzLmlvL3YxYmV0YTEKa2luZDogS3ViZWxldENvbmZpZ3VyYXRpb24KZmFpbFN3YXBPbjogZmFsc2UK
+        mode: 420
+        overwrite: true
+        path: /etc/openshift/kubelet.conf.d/90-swap.conf
+    systemd:
+      units:
+        - contents: |
+            [Unit]
+            Description=Enable swap
+            ConditionFirstBoot=no
+            ConditionPathExists=/var/tmp/swapfile
+
+            [Service]
+            Type=oneshot
+            ExecStart=/bin/sh -c "sudo swapon /var/tmp/swapfile"
+
+            [Install]
+            RequiredBy=kubelet-dependencies.target
+          enabled: true
+          name: swap-enable.service
+        - contents: |
+            [Unit]
+            Description=Provision and enable swap
+            ConditionFirstBoot=no
+            ConditionPathExists=!/var/tmp/swapfile
+
+            [Service]
+            Type=oneshot
+            Environment=SWAP_SIZE_MB=5000
+            ExecStart=/bin/sh -c "sudo fallocate -l ${SWAP_SIZE_MB}M /var/tmp/swapfile && \
+            sudo chmod 600 /var/tmp/swapfile && \
+            sudo mkswap /var/tmp/swapfile && \
+            sudo swapon /var/tmp/swapfile && \
+            free -h"
+
+            [Install]
+            RequiredBy=kubelet-dependencies.target
+          enabled: true
+          name: swap-provision.service
+        - contents: |
+            [Unit]
+            Description=Restrict swap for system slice
+            ConditionFirstBoot=no
+
+            [Service]
+            Type=oneshot
+            ExecStart=/bin/sh -c "sudo systemctl set-property --runtime system.slice MemorySwapMax=0 IODeviceLatencyTargetSec=\"/ 50ms\""
+
+            [Install]
+            RequiredBy=kubelet-dependencies.target
+          enabled: true
+          name: cgroup-system-slice-config.service
+----
++
+To have enough swap space for the worst-case scenario, make sure to have at least as much swap space provisioned as overcommitted RAM. Calculate the amount of swap space to be provisioned on a node by using the following formula:
++
+[source,terminal]
+----
+NODE_SWAP_SPACE = NODE_RAM * (MEMORY_OVER_COMMIT_PERCENT / 100% - 1)
+----
++
+Example:
++
+[source,terminal]
+----
+NODE_SWAP_SPACE = 16 GB * (150% / 100% - 1)
+               = 16 GB * (1.5 - 1)
+               = 16 GB * (0.5)
+               =  8 GB
+----
+
+.. Wait for the worker nodes to sync with the new configuration by running the following command:
++
+[source,yaml]
+----
+$ oc wait mcp worker --for condition=Updated=True --timeout=-1s
+----
+
+. Enable memory overcommitment in {VirtProductName} by using the web console or the CLI.
++
+--
+* Web console
++
+. In the {product-title} web console, go to *Virtualization* -> *Overview* -> *Settings* -> *General settings* -> *Memory density*.
+. Set *Enable memory density* to on.
+
+* CLI
+** Configure your {VirtProductName} to enable higher memory density and set the overcommit rate:
++
+[source,terminal]
+----
+$ oc -n openshift-cnv patch HyperConverged/kubevirt-hyperconverged --type='json' -p='[ \
+  { \
+  "op": "replace", \
+  "path": "/spec/higherWorkloadDensity/memoryOvercommitPercentage", \
+  "value": 150 \
+  } \
+]'
+----
++
+Successful output:
++
+[source,terminal]
+----
+hyperconverged.hco.kubevirt.io/kubevirt-hyperconverged patched
+----
+--
+
+.Verification
+
+. To verify the deployment of `wasp-agent`, run the following command:
++
+[source,terminal,subs="attributes+"]
+----
+$ oc rollout status ds wasp-agent -n {CNVNamespace}
+----
++
+If the deployment is successful, the following message is displayed:
++
+Example output:
++
+[source, terminal]
+----
+daemon set "wasp-agent" successfully rolled out
+----
+
+. To verify that swap is correctly provisioned, complete the following steps:
+.. View a list of worker nodes by running the following command:
++
+[source,terminal]
+----
+$ oc get nodes -l node-role.kubernetes.io/worker
+----
+.. Select a node from the list and display its memory usage by running the following command:
++
+[source,terminal]
+----
+$ oc debug node/<selected_node> -- free -m
+----
++
+Replace `<selected_node>` with the node name.
++
+If swap is provisioned, an amount greater than zero is displayed in the `Swap:` row.
++
+.Example output
+[cols="1,1,1,1,1,1,1"]
+|===
+| |total |used |free |shared |buff/cache |available
+|Mem: |31846 |23155 |1044 |6014 |14483 |8690
+|Swap: |8191 |2337 |5854 | | |
+|===
+
+. Verify the {VirtProductName} memory overcommitment configuration by running the following command:
++
+[source,terminal]
+----
+$ oc -n openshift-cnv get HyperConverged/kubevirt-hyperconverged -o jsonpath='{.spec.higherWorkloadDensity}{"\n"}'
+----
++
+Example output:
++
+[source,terminal]
+----
+{"memoryOvercommitPercentage":150}
+----
++
+The returned value must match the value you had previously configured.

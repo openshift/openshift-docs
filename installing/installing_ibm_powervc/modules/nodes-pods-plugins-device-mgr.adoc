@@ -1,0 +1,46 @@
+// Module included in the following assemblies:
+//
+// * nodes/nodes-pods-plugins.adoc
+// * post_installation_configuration/node-tasks.adoc
+
+:_mod-docs-content-type: CONCEPT
+[id="nodes-pods-plugins-device-mgr_{context}"]
+= Understanding the Device Manager
+
+Device Manager provides a mechanism for advertising specialized node hardware resources
+with the help of plugins known as device plugins.
+
+You can advertise specialized hardware without requiring any upstream code changes.
+
+[IMPORTANT]
+====
+{product-title} supports the device plugin API, but the device plugin
+Containers are supported by individual vendors.
+====
+
+Device Manager advertises devices as *Extended Resources*. User pods can consume
+devices, advertised by Device Manager, using the same *Limit/Request* mechanism,
+which is used for requesting any other *Extended Resource*.
+
+Upon start, the device plugin registers itself with Device Manager invoking `Register` on the
+*_/var/lib/kubelet/device-plugins/kubelet.sock_* and starts a gRPC service at
+*_/var/lib/kubelet/device-plugins/<plugin>.sock_* for serving Device Manager
+requests.
+
+Device Manager, while processing a new registration request, invokes
+`ListAndWatch` remote procedure call (RPC) at the device plugin service. In
+response, Device Manager gets a list of *Device* objects from the plugin over a
+gRPC stream. Device Manager will keep watching on the stream for new updates
+from the plugin. On the plugin side, the plugin will also keep the stream
+open and whenever there is a change in the state of any of the devices, a new
+device list is sent to the Device Manager over the same streaming connection.
+
+While handling a new pod admission request, Kubelet passes requested `Extended
+Resources` to the Device Manager for device allocation. Device Manager checks in
+its database to verify if a corresponding plugin exists or not. If the plugin exists
+and there are free allocatable devices as well as per local cache, `Allocate`
+RPC is invoked at that particular device plugin.
+
+Additionally, device plugins can also perform several other device-specific
+operations, such as driver installation, device initialization, and device
+resets. These functionalities vary from implementation to implementation.

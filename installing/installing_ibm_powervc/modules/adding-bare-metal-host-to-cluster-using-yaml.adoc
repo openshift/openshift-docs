@@ -1,0 +1,47 @@
+// Module included in the following assemblies:
+//
+// scalability_and_performance/managing-bare-metal-hosts.adoc
+
+:_mod-docs-content-type: PROCEDURE
+[id="adding-bare-metal-host-to-cluster-using-yaml_{context}"]
+= Adding a bare metal host to the cluster using YAML in the web console
+
+You can add bare metal hosts to the cluster in the web console using a YAML file that describes the bare metal host.
+
+.Prerequisites
+
+* Install a {op-system} compute machine on bare metal infrastructure for use in the cluster.
+* Log in as a user with `cluster-admin` privileges.
+* Create a `Secret` CR for the bare metal host.
+
+.Procedure
+
+. In the web console, navigate to *Compute* -> *Bare Metal Hosts*.
+. Select *Add Host* -> *New from YAML*.
+. Copy and paste the below YAML, modifying the relevant fields with the details of your host:
++
+[source,yaml]
+----
+apiVersion: metal3.io/v1alpha1
+kind: BareMetalHost
+metadata:
+  name: <bare_metal_host_name>
+spec:
+  online: true
+  bmc:
+    address: <bmc_address>
+    credentialsName: <secret_credentials_name>  <1>
+    disableCertificateVerification: True <2>
+  bootMACAddress: <host_boot_mac_address>
+----
++
+<1> `credentialsName` must reference a valid `Secret` CR. The `baremetal-operator` cannot manage the bare metal host without a valid `Secret` referenced in the `credentialsName`. For more information about secrets and how to create them, see xref:../nodes/pods/nodes-pods-secrets.adoc#nodes-pods-secrets-about_nodes-pods-secrets[Understanding secrets].
+<2> Setting `disableCertificateVerification` to `true` disables TLS host validation between the cluster and the baseboard management controller (BMC).
+
+. Select *Create* to save the YAML and create the new bare metal host.
+. Scale up the number of replicas to match the number of available bare metal hosts. Navigate to *Compute* -> *MachineSets*, and increase the number of machines in the cluster by selecting *Edit Machine count* from the *Actions* drop-down menu.
++
+[NOTE]
+====
+You can also manage the number of bare metal nodes using the `oc scale` command and the appropriate bare metal compute machine set.
+====

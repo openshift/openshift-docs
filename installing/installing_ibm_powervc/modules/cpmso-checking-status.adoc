@@ -1,0 +1,45 @@
+// Module included in the following assemblies:
+//
+// * machine_management/cpmso-getting-started.adoc
+// * machine_management/cpmso-troubleshooting.adoc
+// * machine_management/cpmso-disabling.adoc
+
+ifeval::["{context}" == "cpmso-disabling"]
+:cpmso-disabling:
+endif::[]
+
+:_mod-docs-content-type: PROCEDURE
+[id="cpmso-checking-status_{context}"]
+= Checking the control plane machine set custom resource state
+
+You can verify the existence and state of the `ControlPlaneMachineSet` custom resource (CR).
+
+.Procedure
+
+* Determine the state of the CR by running the following command:
++
+[source,terminal]
+----
+$ oc get controlplanemachineset.machine.openshift.io cluster \
+  --namespace openshift-machine-api
+----
+
+** A result of `Active` indicates that the `ControlPlaneMachineSet` CR exists and is activated. No administrator action is required.
+
+** A result of `Inactive` indicates that a `ControlPlaneMachineSet` CR exists but is not activated.
+
+** A result of `NotFound` indicates that there is no existing `ControlPlaneMachineSet` CR.
+
+ifndef::cpmso-disabling[]
+.Next steps
+
+To use the control plane machine set, you must ensure that a `ControlPlaneMachineSet` CR with the correct settings for your cluster exists.
+
+* If your cluster has an existing CR, you must verify that the configuration in the CR is correct for your cluster.
+
+* If your cluster does not have an existing CR, you must create one with the correct configuration for your cluster.
+endif::[]
+
+ifeval::["{context}" == "cpmso-disabling"]
+:!cpmso-disabling:
+endif::[]

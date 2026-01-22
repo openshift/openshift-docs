@@ -1,0 +1,35 @@
+// Module included in the following assemblies:
+//
+// * /serverless/eventing/triggers/create-trigger-odc.adoc
+
+:_mod-docs-content-type: PROCEDURE
+[id="serverless-create-trigger-odc_{context}"]
+= Creating a trigger by using the Developer perspective
+
+Using the {product-title} web console provides a streamlined and intuitive user interface to create a trigger. After Knative Eventing is installed on your cluster and you have created a broker, you can create a trigger by using the web console.
+
+.Prerequisites
+
+* The {ServerlessOperatorName}, Knative Serving, and Knative Eventing are installed on your {product-title} cluster.
+* You have logged in to the web console.
+* You have created a project or have access to a project with the appropriate roles and permissions to create applications and other workloads in {product-title}.
+* You have created a broker and a Knative service or other event sink to connect to the trigger.
+
+.Procedure
+
+. In the *Developer* perspective, navigate to the *Topology* page.
+. Hover over the broker that you want to create a trigger for, and drag the arrow. The *Add Trigger* option is displayed.
+. Click *Add Trigger*.
+. Select your sink in the *Subscriber* list.
+. Click *Add*.
+
+.Verification
+
+* After the subscription has been created, you can view it in the *Topology* page, where it is represented as a line that connects the broker to the event sink.
+
+.Deleting a trigger
+// should be a separate module; out of scope for this PR
+
+. In the *Developer* perspective, navigate to the *Topology* page.
+. Click on the trigger that you want to delete.
+. In the *Actions* context menu, select *Delete Trigger*.

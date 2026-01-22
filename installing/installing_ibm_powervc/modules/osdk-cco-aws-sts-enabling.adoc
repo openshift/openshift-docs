@@ -1,0 +1,322 @@
+// Module included in the following assemblies:
+//
+// * operators/operator_sdk/osdk-token-auth.adoc
+// * hosted_control_planes/hcp-authentication-authorization.adoc
+
+:_mod-docs-content-type: PROCEDURE
+[id="osdk-cco-aws-sts-enabling_{context}"]
+= Enabling Operators to support CCO-based workflows with AWS STS
+
+As an Operator author designing your project to run on Operator Lifecycle Manager (OLM), you can enable your Operator to authenticate against AWS on STS-enabled {product-title} clusters by customizing your project to support the Cloud Credential Operator (CCO).
+
+With this method, the Operator is responsible for and requires RBAC permissions for creating the `CredentialsRequest` object and reading the resulting `Secret` object.
+
+[NOTE]
+====
+By default, pods related to the Operator deployment mount a `serviceAccountToken` volume so that the service account token can be referenced in the resulting `Secret` object.
+====
+
+.Prerequisities
+
+* {product-title} 4.14 or later
+* Cluster in STS mode
+* OLM-based Operator project
+
+.Procedure
+
+. Update your Operator project's `ClusterServiceVersion` (CSV) object:
+
+.. Ensure your Operator has RBAC permission to create `CredentialsRequests` objects:
++
+.Example `clusterPermissions` list
+[%collapsible]
+====
+[source,yaml]
+----
+# ...
+install:
+  spec:
+    clusterPermissions:
+    - rules:
+      - apiGroups:
+        - "cloudcredential.openshift.io"
+        resources:
+        - credentialsrequests
+        verbs:
+        - create
+        - delete
+        - get
+        - list
+        - patch
+        - update
+        - watch
+----
+====
+
+.. Add the following annotation to claim support for this method of CCO-based workflow with AWS STS:
++
+[source,yaml]
+----
+# ...
+metadata:
+ annotations:
+   features.operators.openshift.io/token-auth-aws: "true"
+----
+
+. Update your Operator project code:
+
+.. Get the role ARN from the environment variable set on the pod by the `Subscription` object. For example:
++
+[source,go]
+----
+// Get ENV var
+roleARN := os.Getenv("ROLEARN")
+setupLog.Info("getting role ARN", "role ARN = ", roleARN)
+webIdentityTokenPath := "/var/run/secrets/openshift/serviceaccount/token"
+----
+
+.. Ensure you have a `CredentialsRequest` object ready to be patched and applied. For example:
++
+.Example `CredentialsRequest` object creation
+[%collapsible]
+====
+[source,go]
+----
+import (
+   minterv1 "github.com/openshift/cloud-credential-operator/pkg/apis/cloudcredential/v1"
+   corev1 "k8s.io/api/core/v1"
+   metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+)
+
+var in = minterv1.AWSProviderSpec{
+   StatementEntries: []minterv1.StatementEntry{
+      {
+         Action: []string{
+            "s3:*",
+         },
+         Effect:   "Allow",
+         Resource: "arn:aws:s3:*:*:*",
+      },
+   },
+	STSIAMRoleARN: "<role_arn>",
+}
+
+var codec = minterv1.Codec
+var ProviderSpec, _ = codec.EncodeProviderSpec(in.DeepCopyObject())
+
+const (
+   name      = "<credential_request_name>"
+   namespace = "<namespace_name>"
+)
+
+var CredentialsRequestTemplate = &minterv1.CredentialsRequest{
+   ObjectMeta: metav1.ObjectMeta{
+       Name:      name,
+       Namespace: "openshift-cloud-credential-operator",
+   },
+   Spec: minterv1.CredentialsRequestSpec{
+      ProviderSpec: ProviderSpec,
+      SecretRef: corev1.ObjectReference{
+         Name:      "<secret_name>",
+         Namespace: namespace,
+      },
+      ServiceAccountNames: []string{
+         "<service_account_name>",
+      },
+      CloudTokenPath:   "",
+   },
+}
+----
+====
++
+Alternatively, if you are starting from a `CredentialsRequest` object in YAML form (for example, as part of your Operator project code), you can handle it differently:
++
+.Example `CredentialsRequest` object creation in YAML form
+[%collapsible]
+====
+[source,go]
+----
+// CredentialsRequest is a struct that represents a request for credentials
+type CredentialsRequest struct {
+  APIVersion string `yaml:"apiVersion"`
+  Kind       string `yaml:"kind"`
+  Metadata   struct {
+     Name      string `yaml:"name"`
+     Namespace string `yaml:"namespace"`
+  } `yaml:"metadata"`
+  Spec struct {
+     SecretRef struct {
+        Name      string `yaml:"name"`
+        Namespace string `yaml:"namespace"`
+     } `yaml:"secretRef"`
+     ProviderSpec struct {
+        APIVersion     string `yaml:"apiVersion"`
+        Kind           string `yaml:"kind"`
+        StatementEntries []struct {
+           Effect   string   `yaml:"effect"`
+           Action   []string `yaml:"action"`
+           Resource string   `yaml:"resource"`
+        } `yaml:"statementEntries"`
+        STSIAMRoleARN   string `yaml:"stsIAMRoleARN"`
+     } `yaml:"providerSpec"`
+
+     // added new field
+      CloudTokenPath   string `yaml:"cloudTokenPath"`
+  } `yaml:"spec"`
+}
+
+// ConsumeCredsRequestAddingTokenInfo is a function that takes a YAML filename and two strings as arguments
+// It unmarshals the YAML file to a CredentialsRequest object and adds the token information.
+func ConsumeCredsRequestAddingTokenInfo(fileName, tokenString, tokenPath string) (*CredentialsRequest, error) {
+  // open a file containing YAML form of a CredentialsRequest
+  file, err := os.Open(fileName)
+  if err != nil {
+     return nil, err
+  }
+  defer file.Close()
+
+  // create a new CredentialsRequest object
+  cr := &CredentialsRequest{}
+
+  // decode the yaml file to the object
+  decoder := yaml.NewDecoder(file)
+  err = decoder.Decode(cr)
+  if err != nil {
+     return nil, err
+  }
+
+  // assign the string to the existing field in the object
+  cr.Spec.CloudTokenPath = tokenPath
+
+  // return the modified object
+  return cr, nil
+}
+----
+====
++
+[NOTE]
+====
+Adding a `CredentialsRequest` object to the Operator bundle is not currently supported.
+====
+
+.. Add the role ARN and web identity token path to the credentials request and apply it during Operator initialization:
++
+.Example applying `CredentialsRequest` object during Operator initialization
+[%collapsible]
+====
+[source,go]
+----
+// apply CredentialsRequest on install
+credReq := credreq.CredentialsRequestTemplate
+credReq.Spec.CloudTokenPath = webIdentityTokenPath
+
+c := mgr.GetClient()
+if err := c.Create(context.TODO(), credReq); err != nil {
+   if !errors.IsAlreadyExists(err) {
+      setupLog.Error(err, "unable to create CredRequest")
+      os.Exit(1)
+   }
+}
+----
+====
+
+.. Ensure your Operator can wait for a `Secret` object to show up from the CCO, as shown in the following example, which is called along with the other items you are reconciling in your Operator:
++
+.Example wait for `Secret` object
+[%collapsible]
+====
+[source,go]
+----
+// WaitForSecret is a function that takes a Kubernetes client, a namespace, and a v1 "k8s.io/api/core/v1" name as arguments
+// It waits until the secret object with the given name exists in the given namespace
+// It returns the secret object or an error if the timeout is exceeded
+func WaitForSecret(client kubernetes.Interface, namespace, name string) (*v1.Secret, error) {
+  // set a timeout of 10 minutes
+  timeout := time.After(10 * time.Minute) <1>
+
+  // set a polling interval of 10 seconds
+  ticker := time.NewTicker(10 * time.Second)
+
+  // loop until the timeout or the secret is found
+  for {
+     select {
+     case <-timeout:
+        // timeout is exceeded, return an error
+        return nil, fmt.Errorf("timed out waiting for secret %s in namespace %s", name, namespace)
+           // add to this error with a pointer to instructions for following a manual path to a Secret that will work on STS
+     case <-ticker.C:
+        // polling interval is reached, try to get the secret
+        secret, err := client.CoreV1().Secrets(namespace).Get(context.Background(), name, metav1.GetOptions{})
+        if err != nil {
+           if errors.IsNotFound(err) {
+              // secret does not exist yet, continue waiting
+              continue
+           } else {
+              // some other error occurred, return it
+              return nil, err
+           }
+        } else {
+           // secret is found, return it
+           return secret, nil
+        }
+     }
+  }
+}
+----
+<1> The `timeout` value is based on an estimate of how fast the CCO might detect an added `CredentialsRequest` object and generate a `Secret` object. You might consider lowering the time or creating custom feedback for cluster administrators that could be wondering why the Operator is not yet accessing the cloud resources.
+====
+
+.. Set up the AWS configuration by reading the secret created by the CCO from the credentials request and creating the AWS config file containing the data from that secret:
++
+.Example AWS configuration creation
+[%collapsible]
+====
+[source,go]
+----
+func SharedCredentialsFileFromSecret(secret *corev1.Secret) (string, error) {
+   var data []byte
+   switch {
+   case len(secret.Data["credentials"]) > 0:
+       data = secret.Data["credentials"]
+   default:
+       return "", errors.New("invalid secret for aws credentials")
+   }
+
+
+   f, err := ioutil.TempFile("", "aws-shared-credentials")
+   if err != nil {
+       return "", errors.Wrap(err, "failed to create file for shared credentials")
+   }
+   defer f.Close()
+   if _, err := f.Write(data); err != nil {
+       return "", errors.Wrapf(err, "failed to write credentials to %s", f.Name())
+   }
+   return f.Name(), nil
+}
+----
+====
++
+[IMPORTANT]
+====
+The secret is assumed to exist, but your Operator code should wait and retry when using this secret to give time to the CCO to create the secret.
+
+Additionally, the wait period should eventually time out and warn users that the {product-title} cluster version, and therefore the CCO, might be an earlier version that does not support the `CredentialsRequest` object workflow with STS detection. In such cases, instruct users that they must add a secret by using another method.
+====
+
+.. Configure the AWS SDK session, for example:
++
+.Example AWS SDK session configuration
+[%collapsible]
+====
+[source,go]
+----
+sharedCredentialsFile, err := SharedCredentialsFileFromSecret(secret)
+if err != nil {
+   // handle error
+}
+options := session.Options{
+   SharedConfigState: session.SharedConfigEnable,
+   SharedConfigFiles: []string{sharedCredentialsFile},
+}
+----
+====

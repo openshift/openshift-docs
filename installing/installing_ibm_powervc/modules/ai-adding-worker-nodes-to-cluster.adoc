@@ -1,0 +1,320 @@
+// Module included in the following assemblies:
+//
+// * nodes/nodes/nodes-sno-worker-nodes.adoc
+
+:_mod-docs-content-type: PROCEDURE
+[id="ai-adding-worker-nodes-to-cluster_{context}"]
+= Adding worker nodes using the Assisted Installer REST API
+
+You can add worker nodes to clusters using the Assisted Installer REST API.
+
+.Prerequisites
+
+* Install the OpenShift Cluster Manager CLI (`ocm`).
+
+* Log in to link:https://console.redhat.com/openshift/assisted-installer/clusters[{cluster-manager}] as a user with cluster creation privileges.
+
+* Install `jq`.
+
+* Ensure that all the required DNS records exist for the cluster that you are adding the worker node to.
+
+.Procedure
+
+. Authenticate against the Assisted Installer REST API and generate a JSON web token (JWT) for your session. The generated JWT token is valid for 15 minutes only.
+
+. Set the `$API_URL` variable by running the following command:
++
+[source,terminal]
+----
+$ export API_URL=<api_url> <1>
+----
+<1> Replace `<api_url>` with the Assisted Installer API URL, for example, `https://api.openshift.com`
+
+. Import the {sno} cluster by running the following commands:
++
+.. Set the `$OPENSHIFT_CLUSTER_ID` variable. Log in to the cluster and run the following command:
++
+[source,terminal]
+----
+$ export OPENSHIFT_CLUSTER_ID=$(oc get clusterversion -o jsonpath='{.items[].spec.clusterID}')
+----
++
+.. Set the `$CLUSTER_REQUEST` variable that is used to import the cluster:
++
+[source,terminal]
+----
+$ export CLUSTER_REQUEST=$(jq --null-input --arg openshift_cluster_id "$OPENSHIFT_CLUSTER_ID" '{
+  "api_vip_dnsname": "<api_vip>", <1>
+  "openshift_cluster_id": $openshift_cluster_id,
+  "name": "<openshift_cluster_name>" <2>
+}')
+----
+<1> Replace `<api_vip>` with the hostname for the cluster's API server. This can be the DNS domain for the API server or the IP address of the single node which the worker node can reach. For example, `api.compute-1.example.com`.
+<2> Replace `<openshift_cluster_name>` with the plain text name for the cluster. The cluster name should match the cluster name that was set during the Day 1 cluster installation.
++
+.. Import the cluster and set the `$CLUSTER_ID` variable. Run the following command:
++
+[source,terminal]
+----
+$ CLUSTER_ID=$(curl "$API_URL/api/assisted-install/v2/clusters/import" -H "Authorization: Bearer ${JWT_TOKEN}" -H 'accept: application/json' -H 'Content-Type: application/json' \
+  -d "$CLUSTER_REQUEST" | tee /dev/stderr | jq -r '.id')
+----
+
+. Generate the `InfraEnv` resource for the cluster and set the `$INFRA_ENV_ID` variable by running the following commands:
++
+.. Download the pull secret file from Red Hat OpenShift Cluster Manager at link:console.redhat.com/openshift/install/pull-secret[console.redhat.com].
++
+.. Set the `$INFRA_ENV_REQUEST` variable:
++
+[source,terminal]
+----
+export INFRA_ENV_REQUEST=$(jq --null-input \
+    --slurpfile pull_secret <path_to_pull_secret_file> \//<1>
+    --arg ssh_pub_key "$(cat <path_to_ssh_pub_key>)" \//<2>
+    --arg cluster_id "$CLUSTER_ID" '{
+  "name": "<infraenv_name>", <3>
+  "pull_secret": $pull_secret[0] | tojson,
+  "cluster_id": $cluster_id,
+  "ssh_authorized_key": $ssh_pub_key,
+  "image_type": "<iso_image_type>" <4>
+}')
+----
+<1> Replace `<path_to_pull_secret_file>` with the path to the local file containing the downloaded pull secret from Red Hat OpenShift Cluster Manager at link:console.redhat.com/openshift/install/pull-secret[console.redhat.com].
+<2> Replace `<path_to_ssh_pub_key>` with the path to the public SSH key required to access the host. If you do not set this value, you cannot access the host while in discovery mode.
+<3> Replace `<infraenv_name>` with the plain text name for the `InfraEnv` resource.
+<4> Replace `<iso_image_type>` with the ISO image type, either `full-iso` or `minimal-iso`.
++
+.. Post the `$INFRA_ENV_REQUEST` to the link:https://api.openshift.com/?urls.primaryName=assisted-service%20service#/installer/RegisterInfraEnv[/v2/infra-envs] API and set the `$INFRA_ENV_ID` variable:
++
+[source,terminal]
+----
+$ INFRA_ENV_ID=$(curl "$API_URL/api/assisted-install/v2/infra-envs" -H "Authorization: Bearer ${JWT_TOKEN}" -H 'accept: application/json' -H 'Content-Type: application/json' -d "$INFRA_ENV_REQUEST" | tee /dev/stderr | jq -r '.id')
+----
+
+. Get the URL of the discovery ISO for the cluster worker node by running the following command:
++
+[source,terminal]
+----
+$ curl -s "$API_URL/api/assisted-install/v2/infra-envs/$INFRA_ENV_ID" -H "Authorization: Bearer ${JWT_TOKEN}" | jq -r '.download_url'
+----
++
+.Example output
+[source,terminal]
+----
+https://api.openshift.com/api/assisted-images/images/41b91e72-c33e-42ee-b80f-b5c5bbf6431a?arch=x86_64&image_token=eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJleHAiOjE2NTYwMjYzNzEsInN1YiI6IjQxYjkxZTcyLWMzM2UtNDJlZS1iODBmLWI1YzViYmY2NDMxYSJ9.1EX_VGaMNejMhrAvVRBS7PDPIQtbOOc8LtG8OukE1a4&type=minimal-iso&version=$VERSION
+----
+
+. Download the ISO:
++
+[source,terminal]
+----
+$ curl -L -s '<iso_url>' --output rhcos-live-minimal.iso <1>
+----
+<1> Replace `<iso_url>` with the URL for the ISO from the previous step.
+
+. Boot the new worker host from the downloaded `rhcos-live-minimal.iso`.
+
+. Get the list of hosts in the cluster that are _not_ installed. Keep running the following command until the new host shows up:
++
+[source,terminal]
+----
+$ curl -s "$API_URL/api/assisted-install/v2/clusters/$CLUSTER_ID" -H "Authorization: Bearer ${JWT_TOKEN}" | jq -r '.hosts[] | select(.status != "installed").id'
+----
++
+.Example output
+[source,terminal]
+----
+2294ba03-c264-4f11-ac08-2f1bb2f8c296
+----
+
+. Set the `$HOST_ID` variable for the new worker node, for example:
++
+[source,terminal]
+----
+$ HOST_ID=<host_id> <1>
+----
+<1> Replace `<host_id>` with the host ID from the previous step.
+
+. Check that the host is ready to install by running the following command:
++
+[NOTE]
+====
+Ensure that you copy the entire command including the complete `jq` expression.
+====
++
+[source,terminal]
+----
+$ curl -s $API_URL/api/assisted-install/v2/clusters/$CLUSTER_ID -H "Authorization: Bearer ${JWT_TOKEN}" | jq '
+def host_name($host):
+    if (.suggested_hostname // "") == "" then
+        if (.inventory // "") == "" then
+            "Unknown hostname, please wait"
+        else
+            .inventory | fromjson | .hostname
+        end
+    else
+        .suggested_hostname
+    end;
+
+def is_notable($validation):
+    ["failure", "pending", "error"] | any(. == $validation.status);
+
+def notable_validations($validations_info):
+    [
+        $validations_info // "{}"
+        | fromjson
+        | to_entries[].value[]
+        | select(is_notable(.))
+    ];
+
+{
+    "Hosts validations": {
+        "Hosts": [
+            .hosts[]
+            | select(.status != "installed")
+            | {
+                "id": .id,
+                "name": host_name(.),
+                "status": .status,
+                "notable_validations": notable_validations(.validations_info)
+            }
+        ]
+    },
+    "Cluster validations info": {
+        "notable_validations": notable_validations(.validations_info)
+    }
+}
+' -r
+----
++
+.Example output
+[source,terminal]
+----
+{
+  "Hosts validations": {
+    "Hosts": [
+      {
+        "id": "97ec378c-3568-460c-bc22-df54534ff08f",
+        "name": "localhost.localdomain",
+        "status": "insufficient",
+        "notable_validations": [
+          {
+            "id": "ntp-synced",
+            "status": "failure",
+            "message": "Host couldn't synchronize with any NTP server"
+          },
+          {
+            "id": "api-domain-name-resolved-correctly",
+            "status": "error",
+            "message": "Parse error for domain name resolutions result"
+          },
+          {
+            "id": "api-int-domain-name-resolved-correctly",
+            "status": "error",
+            "message": "Parse error for domain name resolutions result"
+          },
+          {
+            "id": "apps-domain-name-resolved-correctly",
+            "status": "error",
+            "message": "Parse error for domain name resolutions result"
+          }
+        ]
+      }
+    ]
+  },
+  "Cluster validations info": {
+    "notable_validations": []
+  }
+}
+----
+
+. When the previous command shows that the host is ready, start the installation using the link:https://api.openshift.com/?urls.primaryName=assisted-service%20service#/installer/v2InstallHost[/v2/infra-envs/{infra_env_id}/hosts/{host_id}/actions/install] API by running the following command:
++
+[source,terminal]
+----
+$ curl -X POST -s "$API_URL/api/assisted-install/v2/infra-envs/$INFRA_ENV_ID/hosts/$HOST_ID/actions/install"  -H "Authorization: Bearer ${JWT_TOKEN}"
+----
+
+. As the installation proceeds, the installation generates pending certificate signing requests (CSRs) for the worker node.
++
+[IMPORTANT]
+====
+You must approve the CSRs to complete the installation.
+====
++
+Keep running the following API call to monitor the cluster installation:
++
+[source,terminal]
+----
+$ curl -s "$API_URL/api/assisted-install/v2/clusters/$CLUSTER_ID" -H "Authorization: Bearer ${JWT_TOKEN}" | jq '{
+    "Cluster day-2 hosts":
+        [
+            .hosts[]
+            | select(.status != "installed")
+            | {id, requested_hostname, status, status_info, progress, status_updated_at, updated_at, infra_env_id, cluster_id, created_at}
+        ]
+}'
+----
++
+.Example output
+[source,terminal]
+----
+{
+  "Cluster day-2 hosts": [
+    {
+      "id": "a1c52dde-3432-4f59-b2ae-0a530c851480",
+      "requested_hostname": "control-plane-1",
+      "status": "added-to-existing-cluster",
+      "status_info": "Host has rebooted and no further updates will be posted. Please check console for progress and to possibly approve pending CSRs",
+      "progress": {
+        "current_stage": "Done",
+        "installation_percentage": 100,
+        "stage_started_at": "2022-07-08T10:56:20.476Z",
+        "stage_updated_at": "2022-07-08T10:56:20.476Z"
+      },
+      "status_updated_at": "2022-07-08T10:56:20.476Z",
+      "updated_at": "2022-07-08T10:57:15.306369Z",
+      "infra_env_id": "b74ec0c3-d5b5-4717-a866-5b6854791bd3",
+      "cluster_id": "8f721322-419d-4eed-aa5b-61b50ea586ae",
+      "created_at": "2022-07-06T22:54:57.161614Z"
+    }
+  ]
+}
+----
+
+. Optional: Run the following command to see all the events for the cluster:
++
+[source,terminal]
+----
+$ curl -s "$API_URL/api/assisted-install/v2/events?cluster_id=$CLUSTER_ID" -H "Authorization: Bearer ${JWT_TOKEN}" | jq -c '.[] | {severity, message, event_time, host_id}'
+----
++
+.Example output
+[source,terminal]
+----
+{"severity":"info","message":"Host compute-0: updated status from insufficient to known (Host is ready to be installed)","event_time":"2022-07-08T11:21:46.346Z","host_id":"9d7b3b44-1125-4ad0-9b14-76550087b445"}
+{"severity":"info","message":"Host compute-0: updated status from known to installing (Installation is in progress)","event_time":"2022-07-08T11:28:28.647Z","host_id":"9d7b3b44-1125-4ad0-9b14-76550087b445"}
+{"severity":"info","message":"Host compute-0: updated status from installing to installing-in-progress (Starting installation)","event_time":"2022-07-08T11:28:52.068Z","host_id":"9d7b3b44-1125-4ad0-9b14-76550087b445"}
+{"severity":"info","message":"Uploaded logs for host compute-0 cluster 8f721322-419d-4eed-aa5b-61b50ea586ae","event_time":"2022-07-08T11:29:47.802Z","host_id":"9d7b3b44-1125-4ad0-9b14-76550087b445"}
+{"severity":"info","message":"Host compute-0: updated status from installing-in-progress to added-to-existing-cluster (Host has rebooted and no further updates will be posted. Please check console for progress and to possibly approve pending CSRs)","event_time":"2022-07-08T11:29:48.259Z","host_id":"9d7b3b44-1125-4ad0-9b14-76550087b445"}
+{"severity":"info","message":"Host: compute-0, reached installation stage Rebooting","event_time":"2022-07-08T11:29:48.261Z","host_id":"9d7b3b44-1125-4ad0-9b14-76550087b445"}
+----
+
+. Log in to the cluster and approve the pending CSRs to complete the installation.
+
+.Verification
+
+* Check that the new worker node was successfully added to the cluster with a status of `Ready`:
++
+[source,terminal]
+----
+$ oc get nodes
+----
++
+.Example output
+[source,terminal]
+----
+NAME                           STATUS   ROLES           AGE   VERSION
+control-plane-1.example.com    Ready    master,worker   56m   v1.34.2
+compute-1.example.com          Ready    worker          11m   v1.34.2
+----

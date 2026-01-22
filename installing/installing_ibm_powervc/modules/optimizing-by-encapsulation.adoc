@@ -1,0 +1,41 @@
+// Module included in the following assemblies:
+//
+// * scalability_and_performance/optimization/optimizing-cpu-usage.adoc
+
+:_mod-docs-content-type: CONCEPT
+[id="optimizing-cpu-usage_{context}"]
+= Encapsulating mount namespaces
+
+Mount namespaces are used to isolate mount points so that processes in different namespaces cannot view each others' files. Encapsulation is the process of moving Kubernetes mount namespaces to an alternative location where they will not be constantly scanned by the host operating system.
+
+The host operating system uses systemd to constantly scan all mount namespaces: both the standard Linux mounts and the numerous mounts that Kubernetes uses to operate. The current implementation of kubelet and CRI-O both use the top-level namespace for all container runtime and kubelet mount points. However, encapsulating these container-specific mount points in a private namespace reduces systemd overhead with no difference in functionality. Using a separate mount namespace for both CRI-O and kubelet can encapsulate container-specific mounts from any systemd or other host operating system interaction.
+
+This ability to potentially achieve major CPU optimization is now available to all {product-title} administrators. Encapsulation can also improve security by storing Kubernetes-specific mount points in a location safe from inspection by unprivileged users.
+
+The following diagrams illustrate a Kubernetes installation before and after encapsulation. Both scenarios show example containers which have mount propagation settings of bidirectional, host-to-container, and none.
+
+image::before-k8s-mount-propagation.png[Before encapsulation]
+
+Here we see systemd, host operating system processes, kubelet, and the container runtime sharing a single mount namespace.
+
+* systemd, host operating system processes, kubelet, and the container runtime each have access to and visibility of all mount points.
+
+* Container 1, configured with bidirectional mount propagation, can access systemd and host mounts, kubelet and CRI-O mounts. A mount originating in Container 1, such as `/run/a` is visible to systemd, host operating system processes, kubelet, container runtime, and other containers with host-to-container or bidirectional mount propagation configured (as in Container 2).
+
+* Container 2, configured with host-to-container mount propagation, can access systemd and host mounts, kubelet and CRI-O mounts. A mount originating in Container 2, such as `/run/b`, is not visible to any other context.
+
+* Container 3, configured with no mount propagation, has no visibility of external mount points. A mount originating in Container 3, such as `/run/c`, is not visible to any other context.
+
+The following diagram illustrates the system state after encapsulation.
+
+image::after-k8s-mount-propagation.png[After encapsulation]
+
+* The main systemd process is no longer devoted to unnecessary scanning of Kubernetes-specific mount points. It only monitors systemd-specific and host mount points.
+
+* The host operating system processes can access only the systemd and host mount points.
+
+* Using a separate mount namespace for both CRI-O and kubelet completely separates all container-specific mounts away from any systemd or other host operating system interaction whatsoever.
+
+* The behavior of Container 1 is unchanged, except a mount it creates such as `/run/a` is no longer visible to systemd or host operating system processes. It is still visible to kubelet, CRI-O, and other containers with host-to-container or bidirectional mount propagation configured (like Container 2).
+
+* The behavior of Container 2 and Container 3 is unchanged.

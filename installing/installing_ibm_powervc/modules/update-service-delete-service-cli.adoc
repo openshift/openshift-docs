@@ -1,0 +1,37 @@
+// Module included in the following assemblies:
+// * updating/updating_a_cluster/updating_disconnected_cluster/uninstalling-osus.adoc
+
+:_mod-docs-content-type: PROCEDURE
+[id="update-service-delete-service-cli_{context}"]
+= Deleting an OpenShift Update Service application by using the CLI
+
+You can use the OpenShift CLI (`oc`) to delete an OpenShift Update Service application.
+
+.Procedure
+
+. Get the OpenShift Update Service application name using the namespace the OpenShift Update Service application was created in, for example, `openshift-update-service`:
++
+[source,terminal]
+----
+$ oc get updateservice -n openshift-update-service
+----
++
+.Example output
+[source,terminal]
+----
+NAME      AGE
+service   6s
+----
+
+. Delete the OpenShift Update Service application using the `NAME` value from the previous step and the namespace the OpenShift Update Service application was created in, for example, `openshift-update-service`:
++
+[source,terminal]
+----
+$ oc delete updateservice service -n openshift-update-service
+----
++
+.Example output
+[source,terminal]
+----
+updateservice.updateservice.operator.openshift.io "service" deleted
+----

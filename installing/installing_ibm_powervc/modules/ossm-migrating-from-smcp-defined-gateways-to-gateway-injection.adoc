@@ -1,0 +1,154 @@
+// Module included in the following assemblies:
+//
+// * service_mesh/v2x/ossm-gateway-migration.adoc
+
+:_mod-docs-content-type: CONCEPT
+[id="ossm-migrating-from-smcp-defined-gateways-to-gateway-injection_{context}"]
+= Migrate from SMCP-Defined gateways to gateway injection
+
+This procedure explains how to migrate with zero downtime from gateways defined in the `ServiceMeshControlPlane` resource to gateways that are managed using gateway injection. This migration is achieved by using the existing gateway `Service` object to target a new gateway deployment that is created using gateway injection.
+
+.Prerequisites
+
+* You are logged in to the {product-title} web console as `cluster-admin`.
+
+* The {SMProductName} Operator must be installed.
+
+* The `ServiceMeshControlPlane` resource must be deployed and an ingress gateway exists in the configuration.
+
+.Procedure
+
+. Create a new ingress gateway that is configured to use gateway injection.
++
+[NOTE]
+====
+This procedure migrates away from the default ingress gateway deployment defined in the `ServiceMeshControlPlane` resource to gateway injection. The procedure may be modified to migrate from additional ingress gateways configured in the SMCP.
+====
++
+.Example ingress gateway resource with gateway injection
+[source,yaml, subs="attributes,verbatim"]
+----
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: istio-ingressgateway-canary
+  namespace: istio-system <1>
+spec:
+  selector:
+    matchLabels:
+      app: istio-ingressgateway
+      istio: ingressgateway
+  template:
+    metadata:
+      annotations:
+        inject.istio.io/templates: gateway
+      labels: <2>
+        app: istio-ingressgateway
+        istio: ingressgateway
+        sidecar.istio.io/inject: "true"
+    spec:
+      containers:
+        - name: istio-proxy
+          image: auto
+      serviceAccountName: istio-ingressgateway
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: istio-ingressgateway
+  namespace: istio-system
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: secret-reader
+  namespace: istio-system
+rules:
+  - apiGroups: [""]
+    resources: ["secrets"]
+    verbs: ["get", "watch", "list"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: istio-ingressgateway-secret-reader
+  namespace: istio-system
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: secret-reader
+subjects:
+  - kind: ServiceAccount
+    name: istio-ingressgateway
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy <3>
+metadata:
+  name: gatewayingress
+  namespace: istio-system
+spec:
+  podSelector:
+    matchLabels:
+      istio: ingressgateway
+  ingress:
+    - {}
+  policyTypes:
+    - Ingress
+----
+<1> The gateway injection deployment and all supporting resources should be deployed in the same namespace as the SMCP-defined gateway.
+<2> Ensure that the labels specified in the pod template include all of the label selectors specified in the `Service` object associated with the existing SMCP-defined gateway.
+<3> Grant access to the new gateway from outside the cluster. This access is required whenever the `spec.security.manageNetworkPolicy` of the `ServiceMeshControlPlane` resource is set to `true`, which is the default setting.
+
+. Verify that the new gateway deployment is successfully handling requests.
++
+If access logging was configured in the `ServiceMeshControlPlane` resource, view the access logs of the new gateway deployment to confirm the behavior.
+
+. Scale down the old deployment and scale up the new deployment.
++
+Gradually shift traffic from the old gateway deployment to the new gateway deployment by performing the following steps:
+
+.. Increase the number of replicas for the new gateway deployment by running the following command:
++
+[source,terminal]
+----
+$ oc scale -n istio-system deployment/<new_gateway_deployment> --replicas <new_number_of_replicas>
+----
+.. Decrease the number of replicas for the old gateway deployment by running the following command:
++
+[source,terminal]
+----
+$ oc scale -n istio-system deployment/<old_gateway_deployment> --replicas <new_number_of_replicas>
+----
+
+.. Repeat running the previous two commands. Each time, increase the number of replicas for the new gateway deployment and decrease the number of replicas for the old gateway deployment. Continue repeating until the new gateway deployment handles all traffic to the gateway `Service` object.
+
+. Remove the `app.kubernetes.io/managed-by` label from the gateway `Service` object by running the following command:
++
+[source,terminal]
+----
+$ oc label service -n istio-system istio-ingressgateway app.kubernetes.io/managed-by-
+----
++
+Removing the label prevents the service from being deleted when the gateway is disabled in the `ServiceMeshControlPlane` resource.
+
+. Remove the `ownerReferences` object from the gateway `Service` object by running the following command:
++
+[source,terminal]
+----
+$ oc patch service -n istio-system istio-ingressgateway --type='json' -p='[{"op": "remove", "path": "/metadata/ownerReferences"}]'
+----
++
+Removing this object prevents the service from being garbage collected when the `ServiceMeshControlPlane` resource is deleted.
+
+. Disable the old gateway deployment that was managed by the `ServiceMeshControlPlane` resource by running the following command:
++
+[source,terminal]
+----
+$ oc patch smcp -n istio-system <smcp_name> --type='json' -p='[{"op": "replace", "path": "/spec/gateways/ingress/enabled", "value": false}]'
+----
++
+[NOTE]
+====
+* When the old ingress gateway `Service` object is disabled it is not deleted. You may save this `Service` object to a file and manage it alongside the new gateway injection resources.
+* The `/spec/gateways/ingress/enabled` path is available if you explicitly set it for the `ServiceMeshControlPlane` resource. If you are using the default value, you must patch the `/spec/gateways/enabled` path for both ingress and egress gateways.
+====

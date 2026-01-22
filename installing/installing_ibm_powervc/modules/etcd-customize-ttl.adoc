@@ -1,0 +1,120 @@
+// Module included in the following assemblies:
+//
+// * etcd/etcd-performance.adoc
+
+:_mod-docs-content-type: PROCEDURE
+[id="etcd-customize-ttl_{context}"]
+= Managing etcd size by limiting the duration of Kubernetes events
+
+[role="_abstract"]
+To manage etcd size, you can set the maximum time that Kubernetes events are stored in the etcd database of the Kubernetes API server. By specifying the `eventTTLMinutes` property, you can control how long events are stored in the etcd database before they are purged.
+
+The `eventTTLMinutes` property is managed through the `KubeAPIServer` custom resource, which is maintained by the Kube API Server Operator.
+
+:FeatureName: Limiting the duration of events by setting the `eventTTLMinutes` property
+include::snippets/technology-preview.adoc[]
+
+.Procedure
+
+. Edit the `KubeAPIServer` custom resource by entering the following command:
++
+[source,terminal]
+----
+$ oc patch kubeapiserver/cluster -p='{"spec": {"eventTTLMinutes": 5 }}' --type=merge
+----
++
+The value for the `eventTTLMinutes` property specifies how many minutes events are stored in the etcd database. Valid values are `5` - `180`.
+
+. Save the changes to the `KubeAPIServer` custom resource. 
++
+The Kube API Server Operator automatically reconciles the change, which involves rolling out new configurations to the Kube API Server pods.
+
+. Wait for the rollout to finish by entering the following command:
++
+[source,terminal]
+----
+$ oc adm wait-for-stable-cluster
+----
++
+The following example shows the output that is displayed during that process:
++
+[source,terminal]
+----
+...
+clusteroperators/kube-apiserver is still progressing after 10s
+...
+clusteroperators/kube-apiserver stabilized at 2025-11-12T12:02:40+01:00 after 9m0s
+----
+
+.Verification
+
+* To verify that the configuration was applied, enter the following command:
++
+[source,terminal]
+----
+$ oc get cm config -n openshift-kube-apiserver -ojsonpath='{.data.config\.yaml}' | jq -r ".apiServerArguments[\"event-ttl\"][0]"
+----
++
+The output shows the configured duration, which is 5m in the following example:
++
+[source,terminal]
+----
+5m
+----
++
+[NOTE]
+====
+Only newly created events are written to etcd by using the new value for the `eventTTLMinutes` property. Older, existing events are not updated and will expire according to any previously specified TTL values.
+====
+
+* To manually verify that a given event was written with a shorter lease, examine the lease directly on etcd by entering the following command:
++
+[source,terminal]
+----
+$ oc exec -it pods/<etcd_pod_name> -n openshift-etcd -c etcdctl -- sh
+----
++
+The output of the command looks similar to the following example:
++
+[source,terminal]
+---- 
+sh-5.1h# $ etcdctl lease list | xargs -I {} etcdctl lease timetolive {}
+lease 1e6e9a77a71d8235 granted with TTL(15s), remaining(1s)
+lease 1e6e9a77a71d8247 granted with TTL(15s), remaining(3s)
+lease 1e6e9a77a71d8252 granted with TTL(15s), remaining(3s)
+lease 1e6e9a77a71d8310 granted with TTL(15s), remaining(11s)
+lease 1e6e9a77a71d8332 granted with TTL(15s), remaining(12s)
+lease 1e6e9a77a71d833e granted with TTL(15s), remaining(13s)
+lease 086e9a77a31f0776 granted with TTL(315s), remaining(177s)
+lease 086e9a779dcd8245 granted with TTL(10860s), remaining(8369s)
+lease 086e9a779dcd8fdf granted with TTL(10860s), remaining(8369s)
+----
++
+[NOTE]
+====
+Other API objects can also have leases. 
+====
+
+* To inspect the attached keys, filter for the key prefix of the event by entering the following command:
++
+[source,terminal]
+----
+$ etcdctl lease list | xargs -I {} etcdctl lease timetolive --keys {} | grep "/kubernetes.io/events"
+----
++
+The output looks similar to the following example:
++
+[source,terminal]
+----
+lease 0f009a77a48509ac granted with TTL(315s), remaining(74s), attached keys([/kubernetes.io/events/openshift-marketplace/redhat-operators-rrq79.18773e905b3e29a8 /kubernetes.io/events/openshift-marketplace/community-operators-csds7.18773e91b1e551a3])
+...
+...
+lease 1e6e9a77a71d3df1 granted with TTL(10860s), remaining(9478s), attached keys([/kubernetes.io/events/openshift-kube-apiserver/kube-apiserver-guard-ci-ln-pbkb71t-72292-dwp9h-master-2.18773c38ef4dcc03])
+----
++
+In the example, the TTL value is 5 minutes (`300s`), but the output shows `315s` because a lease buffer reuse of 5% is added.
++
+[NOTE]
+====
+If a lease can be reused, etcd reuses it. Instead of creating a unique etcd lease for every resource that requires a `TTL` property, which would force the API server to track thousands of separate objects, the system reuses a smaller pool of existing leases. When a new object needs a lease for a specific duration, the manager checks for an existing lease that still has enough remaining life to cover that duration, plus a small safety buffer of 5%. If a match is found, the new object uses that existing lease. If not, a new lease is created and added to the pool for others to share.
+====

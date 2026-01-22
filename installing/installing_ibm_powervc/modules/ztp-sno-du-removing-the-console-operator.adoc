@@ -1,0 +1,19 @@
+// Module included in the following assemblies:
+//
+// * scalability_and_performance/ztp_far_edge/ztp-reference-cluster-configuration-for-vdu.adoc
+
+:_mod-docs-content-type: CONCEPT
+[id="ztp-sno-du-removing-the-console-operator_{context}"]
+= Console Operator
+
+Use the cluster capabilities feature to prevent the Console Operator from being installed.
+When the node is centrally managed it is not needed.
+Removing the Operator provides additional space and capacity for application workloads.
+
+
+To disable the Console Operator during the installation of the managed cluster, set the following in the `spec.clusters.0.installConfigOverrides` field of the `SiteConfig` custom resource (CR):
+
+[source,yaml]
+----
+installConfigOverrides:  "{\"capabilities\":{\"baselineCapabilitySet\": \"None\" }}"
+----

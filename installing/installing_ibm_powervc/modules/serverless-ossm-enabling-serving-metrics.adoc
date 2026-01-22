@@ -1,0 +1,78 @@
+// Module included in the following assemblies:
+//
+// * /serverless/integrations/serverless-ossm-setup.adoc
+
+:_mod-docs-content-type: PROCEDURE
+[id="serverless-ossm-enabling-serving-metrics_{context}"]
+= Enabling Knative Serving metrics when using Service Mesh with mTLS
+
+If Service Mesh is enabled with mTLS, metrics for Knative Serving are disabled by default, because Service Mesh prevents Prometheus from scraping metrics. This section shows how to enable Knative Serving metrics when using Service Mesh and mTLS.
+
+.Prerequisites
+
+* You have installed the {ServerlessOperatorName} and Knative Serving on your cluster.
+* You have installed {SMProductName} with the mTLS functionality enabled.
+
+ifdef::openshift-enterprise[]
+* You have access to an {product-title} account with cluster administrator access.
+endif::[]
+
+ifdef::openshift-dedicated,openshift-rosa[]
+* You have access to an {product-title} account with cluster or dedicated administrator access.
+endif::[]
+
+* Install the OpenShift CLI (`oc`).
+* You have created a project or have access to a project with the appropriate roles and permissions to create applications and other workloads in {product-title}.
+
+.Procedure
+
+. Specify `prometheus` as the `metrics.backend-destination` in the `observability` spec of the Knative Serving custom resource (CR):
++
+[source,yaml]
+----
+apiVersion: operator.knative.dev/v1beta1
+kind: KnativeServing
+metadata:
+  name: knative-serving
+spec:
+  config:
+    observability:
+      metrics.backend-destination: "prometheus"
+...
+----
++
+This step prevents metrics from being disabled by default.
+
+. Apply the following network policy to allow traffic from the Prometheus namespace:
++
+[source,yaml]
+----
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: allow-from-openshift-monitoring-ns
+  namespace: knative-serving
+spec:
+  ingress:
+  - from:
+    - namespaceSelector:
+        matchLabels:
+          name: "openshift-monitoring"
+  podSelector: {}
+...
+----
+
+. Modify and reapply the default Service Mesh control plane in the `istio-system` namespace, so that it includes the following spec:
++
+[source,yaml]
+----
+...
+spec:
+  proxy:
+    networking:
+      trafficControl:
+        inbound:
+          excludedPorts:
+          - 8444
+...
+----

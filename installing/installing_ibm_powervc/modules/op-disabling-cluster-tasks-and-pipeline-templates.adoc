@@ -1,0 +1,32 @@
+// This module is included in the following assembly:
+//
+// *openshift_pipelines/customizing-configurations-in-the-tektonconfig-cr.adoc
+
+:_mod-docs-content-type: CONCEPT
+[id="op-disabling-cluster-tasks-and-pipeline-templates_{context}"]
+= Disabling cluster tasks and pipeline templates
+
+By default, the `TektonAddon` custom resource (CR) installs `clusterTasks` and `pipelineTemplates` resources along with {pipelines-shortname} on the cluster.
+
+You can disable installation of the `clusterTasks` and `pipelineTemplates` resources by setting the parameter value to `false` in the `.spec.addon` specification. In addition, you can disable the `communityClusterTasks` parameter.
+
+
+.Example
+
+[source,yaml]
+----
+apiVersion: operator.tekton.dev/v1alpha1
+kind: TektonConfig
+metadata:
+  name: config
+spec:
+  addon:
+    params:
+      - name: clusterTasks
+        value: 'false'
+      - name: pipelineTemplates
+        value: 'false'
+      - name: communityClusterTasks
+        value: 'true'
+----
+

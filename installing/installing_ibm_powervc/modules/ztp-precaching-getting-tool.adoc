@@ -1,0 +1,36 @@
+// Module included in the following assemblies:
+//
+// * scalability_and_performance/ztp_far_edge/ztp-precaching-tool.adoc
+
+:_mod-docs-content-type: PROCEDURE
+[id="ztp-getting-tool_{context}"]
+= Getting the {factory-prestaging-tool}
+
+The {factory-prestaging-tool} Go binary is publicly available in link:https://quay.io/openshift-kni/telco-ran-tools:latest[the {rds-first} tools container image].
+The {factory-prestaging-tool} Go binary in the container image is executed on the server running an {op-system} live image using `podman`.
+If you are working in a disconnected environment or have a private registry, you need to copy the image there so you can download the image to the server.
+
+.Procedure
+
+* Pull the {factory-prestaging-tool} image by running the following command:
++
+[source,terminal]
+----
+# podman pull quay.io/openshift-kni/telco-ran-tools:latest
+----
+
+.Verification
+
+* To check that the tool is available, query the current version of the {factory-prestaging-tool} Go binary:
++
+[source,terminal]
+----
+# podman run quay.io/openshift-kni/telco-ran-tools:latest -- factory-precaching-cli -v
+----
+
++
+.Example output
+[source,terminal]
+----
+factory-precaching-cli version 20221018.120852+main.feecf17
+----

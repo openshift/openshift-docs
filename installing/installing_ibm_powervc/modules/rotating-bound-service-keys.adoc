@@ -1,0 +1,417 @@
+// Module included in the following assemblies:
+//
+// * post_installation_configuration/changing-cloud-credentials-configuration.adoc
+
+ifeval::["{context}" == "key-rotation-aws"]
+:rotate-aws:
+endif::[]
+ifeval::["{context}" == "key-rotation-gcp"]
+:rotate-gcp:
+endif::[]
+ifeval::["{context}" == "key-rotation-azure"]
+:rotate-azure:
+endif::[]
+
+:_mod-docs-content-type: PROCEDURE
+[id="rotating-bound-service-keys_{context}"]
+ifdef::rotate-aws[= Rotating {aws-short} OIDC bound service account signer keys]
+ifdef::rotate-gcp[= Rotating {gcp-short} OIDC bound service account signer keys]
+ifdef::rotate-azure[= Rotating {azure-short} OIDC bound service account signer keys]
+
+If the Cloud Credential Operator (CCO) for your {product-title} cluster
+ifdef::rotate-aws[on {aws-first}]
+ifdef::rotate-gcp[on {gcp-first}]
+ifdef::rotate-azure[on {azure-first}]
+is configured to operate in manual mode with
+ifdef::rotate-aws[{sts-short},]
+ifdef::rotate-gcp[{gcp-wid-short},]
+ifdef::rotate-azure[{entra-first},]
+you can rotate the bound service account signer key.
+
+To rotate the key, you delete the existing key on your cluster, which causes the Kubernetes API server to create a new key.
+To reduce authentication failures during this process, you must immediately add the new public key to the existing issuer file.
+After the cluster is using the new key for authentication, you can remove any remaining keys.
+
+//Modified version of the disclaimer from enabling Azure WID on an existing cluster, since there are similar concerns:
+[IMPORTANT]
+====
+The process to rotate OIDC bound service account signer keys is disruptive and takes a significant amount of time.
+Some steps are time-sensitive.
+Before proceeding, observe the following considerations:
+
+* Read the following steps and ensure that you understand and accept the time requirement.
+The exact time requirement varies depending on the individual cluster, but it is likely to require at least one hour.
+
+* To reduce the risk of authentication failures, ensure that you understand and prepare for the time-sensitive steps.
+
+* During this process, you must refresh all service accounts and restart all pods on the cluster.
+These actions are disruptive to workloads.
+To mitigate this impact, you can temporarily halt these services and then redeploy them when the cluster is ready.
+====
+
+.Prerequisites
+
+* You have access to the {oc-first} as a user with the `cluster-admin` role.
+
+//Permissions requirements (per platform, for install and key rotation)
+include::snippets/ccoctl-provider-permissions-requirements.adoc[]
+
+* You have configured the `ccoctl` utility.
+* Your cluster is in a stable state.
+You can confirm that the cluster is stable by running the following command:
++
+[source,terminal]
+----
+$ oc adm wait-for-stable-cluster --minimum-stable-period=5s
+----
+
+.Procedure
+
+. Configure the following environment variables:
++
+[source,text]
+----
+ifdef::rotate-aws[]
+INFRA_ID=$(oc get infrastructures cluster -o jsonpath='{.status.infrastructureName}')
+CLUSTER_NAME=${INFRA_ID%-*} <1>
+endif::rotate-aws[]
+ifdef::rotate-gcp[]
+CURRENT_ISSUER=$(oc get authentication cluster -o jsonpath='{.spec.serviceAccountIssuer}')
+GCP_BUCKET=$(echo ${CURRENT_ISSUER} | cut -d "/" -f4)
+endif::rotate-gcp[]
+ifdef::rotate-azure[]
+CURRENT_ISSUER=$(oc get authentication cluster -o jsonpath='{.spec.serviceAccountIssuer}')
+AZURE_STORAGE_ACCOUNT=$(echo ${CURRENT_ISSUER} | cut -d "/" -f3 | cut -d "." -f1)
+AZURE_STORAGE_CONTAINER=$(echo ${CURRENT_ISSUER} | cut -d "/" -f4)
+endif::rotate-azure[]
+----
+ifdef::rotate-aws[]
+<1> This value should match the name of the cluster that was specified in the `metadata.name` field of the `install-config.yaml` file during installation.
+endif::rotate-aws[]
++
+[NOTE]
+====
+Your cluster might differ from this example, and the resource names might not be derived identically from the cluster name.
+Ensure that you specify the correct corresponding resource names for your cluster.
+====
+ifdef::rotate-aws[]
+** For {aws-short} clusters that store the OIDC configuration in a public S3 bucket, configure the following environment variable:
++
+[source,text]
+----
+AWS_BUCKET=$(oc get authentication cluster -o jsonpath={'.spec.serviceAccountIssuer'} | awk -F'://' '{print$2}' |awk -F'.' '{print$1}')
+----
+
+** For {aws-short} clusters that store the OIDC configuration in a private S3 bucket that is accessed by the IAM identity provider through a public CloudFront distribution URL, complete the following steps:
+
+... Extract the public CloudFront distribution URL by running the following command:
++
+[source,terminal]
+----
+$ basename $(oc get authentication cluster -o jsonpath={'.spec.serviceAccountIssuer'} )
+----
++
+.Example output
+[source,text]
+----
+<subdomain>.cloudfront.net
+----
++
+where `<subdomain>` is an alphanumeric string.
+
+... Determine the private S3 bucket name by running the following command:
++
+[source,terminal]
+----
+$ aws cloudfront list-distributions --query "DistributionList.Items[].{DomainName: DomainName, OriginDomainName: Origins.Items[0].DomainName}[?contains(DomainName, '<subdomain>.cloudfront.net')]"
+----
++
+.Example output
+[source,text]
+----
+[
+    {
+        "DomainName": "<subdomain>.cloudfront.net",
+        "OriginDomainName": "<s3_bucket>.s3.us-east-2.amazonaws.com"
+    }
+]
+----
++
+where `<s3_bucket>` is the private S3 bucket name for your cluster.
+
+... Configure the following environment variable:
++
+[source,text]
+----
+AWS_BUCKET=$<s3_bucket>
+----
++
+where `<s3_bucket>` is the private S3 bucket name for your cluster.
+endif::rotate-aws[]
+
+. Create a temporary directory to use and assign it an environment variable by running the following command:
++
+[source,terminal]
+----
+$ TEMPDIR=$(mktemp -d)
+----
+
+. To cause the Kubernetes API server to create a new bound service account signing key, you delete the next bound service account signing key.
++
+[IMPORTANT]
+====
+After you complete this step, the Kubernetes API server starts to roll out a new key.
+To reduce the risk of authentication failures, complete the remaining steps as quickly as possible.
+The remaining steps might be disruptive to workloads.
+====
++
+When you are ready, delete the next bound service account signing key by running the following command:
++
+[source,terminal]
+----
+$ oc delete secrets/next-bound-service-account-signing-key \
+  -n openshift-kube-apiserver-operator
+----
+
+. Download the public key from the service account signing key secret that the Kubernetes API server created by running the following command:
++
+[source,terminal]
+----
+$ oc get secret/next-bound-service-account-signing-key \
+  -n openshift-kube-apiserver-operator \
+  -ojsonpath='{ .data.service-account\.pub }' | base64 \
+  -d > ${TEMPDIR}/serviceaccount-signer.public
+----
+
+. Use the public key to create a `keys.json` file by running the following command:
+ifdef::rotate-aws[]
++
+[source,terminal]
+----
+$ ccoctl aws create-identity-provider \
+  --dry-run \// <1>
+  --output-dir ${TEMPDIR} \
+  --public-key-file=${TEMPDIR}/serviceaccount-signer.public \// <2>
+  --name fake \// <3>
+  --region us-east-1 <4>
+----
+<1> The `--dry-run` option outputs files, including the new `keys.json` file, to the disk without making API calls.
+<2> Specify the path to the public key that you downloaded in the previous step.
+<3> Because the `--dry-run` option does not make any API calls, some parameters do not require real values.
+<4> Specify any valid {aws-short} region, such as `us-east-1`.
+This value does not need to match the region the cluster is in.
+endif::rotate-aws[]
+ifdef::rotate-gcp[]
++
+[source,terminal]
+----
+$ ccoctl gcp create-workload-identity-provider \
+  --dry-run \// <1>
+  --output-dir=${TEMPDIR} \
+  --public-key-file=${TEMPDIR}/serviceaccount-signer.public \// <2>
+  --name fake \// <3>
+  --project fake \
+  --workload-identity-pool fake
+----
+<1> The `--dry-run` option outputs files, including the new `keys.json` file, to the disk without making API calls.
+<2> Specify the path to the public key that you downloaded in the previous step.
+<3> Because the `--dry-run` option does not make any API calls, some parameters do not require real values.
+endif::rotate-gcp[]
+ifdef::rotate-azure[]
++
+[source,terminal]
+----
+$ ccoctl aws create-identity-provider \// <1>
+  --dry-run \// <2>
+  --output-dir ${TEMPDIR} \
+  --public-key-file=${TEMPDIR}/serviceaccount-signer.public \// <3>
+  --name fake \// <4>
+  --region us-east-1 <5>
+----
+<1> The `ccoctl azure` command does not include a `--dry-run` option.
+To use the `--dry-run` option, you must specify `aws` for an {azure-short} cluster.
+<2> The `--dry-run` option outputs files, including the new `keys.json` file, to the disk without making API calls.
+<3> Specify the path to the public key that you downloaded in the previous step.
+<4> Because the `--dry-run` option does not make any API calls, some parameters do not require real values.
+<5> Specify any valid {aws-short} region, such as `us-east-1`.
+This value does not need to match the region the cluster is in.
+endif::rotate-azure[]
+
+. Rename the `keys.json` file by running the following command:
++
+[source,terminal]
+----
+$ cp ${TEMPDIR}/<number>-keys.json ${TEMPDIR}/jwks.new.json
+----
++
+where `<number>` is a two-digit numerical value that varies depending on your environment.
+
+. Download the existing `keys.json` file from the cloud provider by running the following command:
+ifdef::rotate-aws[]
++
+[source,terminal]
+----
+$ aws s3api get-object \
+  --bucket ${AWS_BUCKET} \
+  --key keys.json ${TEMPDIR}/jwks.current.json
+----
+endif::rotate-aws[]
+ifdef::rotate-gcp[]
++
+[source,terminal]
+----
+$ gcloud storage cp gs://${GCP_BUCKET}/keys.json ${TEMPDIR}/jwks.current.json
+----
+endif::rotate-gcp[]
+ifdef::rotate-azure[]
++
+[source,terminal]
+----
+$ az storage blob download \
+  --container-name ${AZURE_STORAGE_CONTAINER} \
+  --account-name ${AZURE_STORAGE_ACCOUNT} \
+  --name 'openid/v1/jwks' \
+  -f ${TEMPDIR}/jwks.current.json
+----
+endif::rotate-azure[]
+
+. Combine the two `keys.json` files by running the following command:
++
+[source,terminal]
+----
+$ jq -s '{ keys: map(.keys[])}' ${TEMPDIR}/jwks.current.json ${TEMPDIR}/jwks.new.json > ${TEMPDIR}/jwks.combined.json
+----
+
+. To enable authentication for the old and new keys during the rotation, upload the combined `keys.json` file to the cloud provider by running the following command:
+ifdef::rotate-aws[]
++
+[source,terminal]
+----
+$ aws s3api put-object \
+  --bucket ${AWS_BUCKET} \
+  --tagging "openshift.io/cloud-credential-operator/${CLUSTER_NAME}=owned" \
+  --key keys.json \
+  --body ${TEMPDIR}/jwks.combined.json
+----
+endif::rotate-aws[]
+ifdef::rotate-gcp[]
++
+[source,terminal]
+----
+$ gcloud storage cp ${TEMPDIR}/jwks.combined.json gs://${GCP_BUCKET}/keys.json
+----
+endif::rotate-gcp[]
+ifdef::rotate-azure[]
++
+[source,terminal]
+----
+$ az storage blob upload \
+  --overwrite \
+  --account-name ${AZURE_STORAGE_ACCOUNT} \
+  --container-name ${AZURE_STORAGE_CONTAINER} \
+  --name 'openid/v1/jwks' \
+  -f ${TEMPDIR}/jwks.combined.json
+----
+endif::rotate-azure[]
+
+. Wait for the Kubernetes API server to update and use the new key.
+You can monitor the update progress by running the following command:
++
+[source,terminal]
+----
+$ oc adm wait-for-stable-cluster
+----
++
+This process might take 15 minutes or longer.
+The following output indicates that the process is complete:
++
+[source,text]
+----
+All clusteroperators are stable
+----
+
+. To ensure that all pods on the cluster use the new key, you must restart them.
++
+[IMPORTANT]
+====
+This step maintains uptime for services that are configured for high availability across multiple nodes, but might cause downtime for any services that are not.
+====
++
+Restart all of the pods in the cluster by running the following command:
++
+[source,terminal]
+----
+$ oc adm reboot-machine-config-pool mcp/worker mcp/master
+----
+
+. Monitor the restart and update process by running the following command:
++
+[source,terminal]
+----
+$ oc adm wait-for-node-reboot nodes --all
+----
++
+This process might take 15 minutes or longer.
+The following output indicates that the process is complete:
++
+[source,text]
+----
+All nodes rebooted
+----
+
+. Monitor the update progress by running the following command:
++
+[source,terminal]
+----
+$ oc adm wait-for-stable-cluster
+----
++
+This process might take 15 minutes or longer.
+The following output indicates that the process is complete:
++
+[source,text]
+----
+All clusteroperators are stable
+----
+
+. Replace the combined `keys.json` file with the updated `keys.json` file on the cloud provider by running the following command:
+ifdef::rotate-aws[]
++
+[source,terminal]
+----
+$ aws s3api put-object \
+  --bucket ${AWS_BUCKET} \
+  --tagging "openshift.io/cloud-credential-operator/${CLUSTER_NAME}=owned" \
+  --key keys.json \
+  --body ${TEMPDIR}/jwks.new.json
+----
+endif::rotate-aws[]
+ifdef::rotate-gcp[]
++
+[source,terminal]
+----
+$ gcloud storage cp ${TEMPDIR}/jwks.new.json gs://${GCP_BUCKET}/keys.json
+----
+endif::rotate-gcp[]
+ifdef::rotate-azure[]
++
+[source,terminal]
+----
+$ az storage blob upload \
+  --overwrite \
+  --account-name ${AZURE_STORAGE_ACCOUNT} \
+  --container-name ${AZURE_STORAGE_CONTAINER} \
+  --name 'openid/v1/jwks' \
+  -f ${TEMPDIR}/jwks.new.json
+----
+endif::rotate-azure[]
+
+ifeval::["{context}" == "key-rotation-aws"]
+:!rotate-aws:
+endif::[]
+ifeval::["{context}" == "key-rotation-gcp"]
+:!rotate-gcp:
+endif::[]
+ifeval::["{context}" == "key-rotation-azure"]
+:!rotate-azure:
+endif::[]

@@ -1,0 +1,147 @@
+// Module included in the following assemblies:
+//
+// AWS assemblies:
+// * installing/installing_aws/installing-aws-customizations.adoc
+// * installing/installing_aws/installing-restricted-networks-aws-installer-provisioned.adoc
+// * installing/installing_aws/installing-aws-vpc.adoc
+// * installing/installing_aws/installing-aws-private.adoc
+// * installing/installing_aws/installing-aws-government-region.adoc
+// * installing/installing_aws/installing-aws-secret-region.adoc
+// * installing/installing_aws/installing-aws-china.adoc
+// * installing/installing_aws/installing-aws-outposts-remote-workers.adoc
+
+:_mod-docs-content-type: PROCEDURE
+[id="cco-ccoctl-creating-individually_{context}"]
+= Creating AWS resources individually
+
+You can use the `ccoctl` tool to create AWS resources individually. This option might be useful for an organization that shares the responsibility for creating these resources among different users or departments.
+
+Otherwise, you can use the `ccoctl aws create-all` command to create the AWS resources automatically. For more information, see "Creating AWS resources with a single command".
+
+[NOTE]
+====
+By default, `ccoctl` creates objects in the directory in which the commands are run. To create the objects in a different directory, use the `--output-dir` flag. This procedure uses `<path_to_ccoctl_output_dir>` to refer to this directory.
+
+Some `ccoctl` commands make AWS API calls to create or modify AWS resources. You can use the `--dry-run` flag to avoid making API calls. Using this flag creates JSON files on the local file system instead. You can review and modify the JSON files and then apply them with the AWS CLI tool using the `--cli-input-json` parameters.
+====
+
+.Prerequisites
+
+* Extract and prepare the `ccoctl` binary.
+
+.Procedure
+
+. Generate the public and private RSA key files that are used to set up the OpenID Connect provider for the cluster by running the following command:
++
+[source,terminal]
+----
+$ ccoctl aws create-key-pair
+----
++
+.Example output
+[source,text]
+----
+2021/04/13 11:01:02 Generating RSA keypair
+2021/04/13 11:01:03 Writing private key to /<path_to_ccoctl_output_dir>/serviceaccount-signer.private
+2021/04/13 11:01:03 Writing public key to /<path_to_ccoctl_output_dir>/serviceaccount-signer.public
+2021/04/13 11:01:03 Copying signing key for use by installer
+----
++
+where `serviceaccount-signer.private` and `serviceaccount-signer.public` are the generated key files.
++
+This command also creates a private key that the cluster requires during installation in `/<path_to_ccoctl_output_dir>/tls/bound-service-account-signing-key.key`.
+
+. Create an OpenID Connect identity provider and S3 bucket on AWS by running the following command:
++
+[source,terminal]
+----
+$ ccoctl aws create-identity-provider \
+  --name=<name> \// <1>
+  --region=<aws_region> \// <2>
+  --public-key-file=<path_to_ccoctl_output_dir>/serviceaccount-signer.public <3>
+----
+<1> `<name>` is the name used to tag any cloud resources that are created for tracking.
+<2> `<aws-region>` is the AWS region in which cloud resources will be created.
+<3> `<path_to_ccoctl_output_dir>` is the path to the public key file that the `ccoctl aws create-key-pair` command generated.
++
+.Example output
+[source,text]
+----
+2021/04/13 11:16:09 Bucket <name>-oidc created
+2021/04/13 11:16:10 OpenID Connect discovery document in the S3 bucket <name>-oidc at .well-known/openid-configuration updated
+2021/04/13 11:16:10 Reading public key
+2021/04/13 11:16:10 JSON web key set (JWKS) in the S3 bucket <name>-oidc at keys.json updated
+2021/04/13 11:16:18 Identity Provider created with ARN: arn:aws:iam::<aws_account_id>:oidc-provider/<name>-oidc.s3.<aws_region>.amazonaws.com
+----
++
+where `openid-configuration` is a discovery document and `keys.json` is a JSON web key set file.
++
+This command also creates a YAML configuration file in `/<path_to_ccoctl_output_dir>/manifests/cluster-authentication-02-config.yaml`. This file sets the issuer URL field for the service account tokens that the cluster generates, so that the AWS IAM identity provider trusts the tokens.
+
+. Create IAM roles for each component in the cluster:
+
+.. Set a `$RELEASE_IMAGE` variable with the release image from your installation file by running the following command:
++
+[source,terminal]
+----
+$ RELEASE_IMAGE=$(./openshift-install version | awk '/release image/ {print $3}')
+----
+
+.. Extract the list of `CredentialsRequest` objects from the {product-title} release image:
++
+[source,terminal]
+----
+$ oc adm release extract \
+  --from=$RELEASE_IMAGE \
+  --credentials-requests \
+  --included \// <1>
+  --install-config=<path_to_directory_with_installation_configuration>/install-config.yaml \// <2>
+  --to=<path_to_directory_for_credentials_requests> <3>
+----
+<1> The `--included` parameter includes only the manifests that your specific cluster configuration requires.
+<2> Specify the location of the `install-config.yaml` file.
+<3> Specify the path to the directory where you want to store the `CredentialsRequest` objects. If the specified directory does not exist, this command creates it.
+
+.. Use the `ccoctl` tool to process all `CredentialsRequest` objects by running the following command:
++
+[source,terminal]
+----
+$ ccoctl aws create-iam-roles \
+  --name=<name> \
+  --region=<aws_region> \
+  --credentials-requests-dir=<path_to_credentials_requests_directory> \
+  --identity-provider-arn=arn:aws:iam::<aws_account_id>:oidc-provider/<name>-oidc.s3.<aws_region>.amazonaws.com
+----
++
+[NOTE]
+====
+For AWS environments that use alternative IAM API endpoints, such as GovCloud, you must also specify your region with the `--region` parameter.
+
+If your cluster uses Technology Preview features that are enabled by the `TechPreviewNoUpgrade` feature set, you must include the `--enable-tech-preview` parameter.
+====
++
+For each `CredentialsRequest` object, `ccoctl` creates an IAM role with a trust policy that is tied to the specified OIDC identity provider, and a permissions policy as defined in each `CredentialsRequest` object from the {product-title} release image.
+
+.Verification
+
+* To verify that the {product-title} secrets are created, list the files in the `<path_to_ccoctl_output_dir>/manifests` directory:
++
+[source,terminal]
+----
+$ ls <path_to_ccoctl_output_dir>/manifests
+----
++
+.Example output
+[source,text]
+----
+cluster-authentication-02-config.yaml
+openshift-cloud-credential-operator-cloud-credential-operator-iam-ro-creds-credentials.yaml
+openshift-cloud-network-config-controller-cloud-credentials-credentials.yaml
+openshift-cluster-api-capa-manager-bootstrap-credentials-credentials.yaml
+openshift-cluster-csi-drivers-ebs-cloud-credentials-credentials.yaml
+openshift-image-registry-installer-cloud-credentials-credentials.yaml
+openshift-ingress-operator-cloud-credentials-credentials.yaml
+openshift-machine-api-aws-cloud-credentials-credentials.yaml
+----
++
+You can verify that the IAM roles are created by querying AWS. For more information, refer to AWS documentation on listing IAM roles.

@@ -1,0 +1,37 @@
+// Module included in the following assemblies
+//
+// * storage/expanding-persistent-volumes.adoc
+//* microshift_storage/expanding-persistent-volumes-microshift.adoc
+
+:_mod-docs-content-type: PROCEDURE
+[id="add-volume-expansion_{context}"]
+= Enabling volume expansion support
+
+Before you can expand persistent volumes, the `StorageClass` object must
+have the `allowVolumeExpansion` field set to `true`.
+
+.Procedure
+
+* Edit the `StorageClass` object and add the `allowVolumeExpansion` attribute by running the following command:
++
+[source,terminal]
+----
+$ oc edit storageclass <storage_class_name> <1>
+----
+<1> Specifies the name of the storage class.
++
+The following example demonstrates adding this line at the bottom
+of the storage class configuration.
++
+[source,yaml]
+----
+apiVersion: storage.k8s.io/v1
+kind: StorageClass
+...
+parameters:
+  type: gp2
+reclaimPolicy: Delete
+allowVolumeExpansion: true <1>
+----
+<1> Setting this attribute to `true` allows PVCs to be
+expanded after creation.

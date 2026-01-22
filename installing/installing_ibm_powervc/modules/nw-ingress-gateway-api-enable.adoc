@@ -1,0 +1,263 @@
+// Modules included in the following assemblies:
+//
+// * networking/configuring_ingress_cluster_traffic/ingress-gateway-api.adoc
+
+:_mod-docs-content-type: PROCEDURE
+[id="nw-ingress-gateway-api-enable_{context}"]
+= Getting started with Gateway API for the Ingress Operator
+
+[role="_abstract"]
+To implement routing policies in your {product-title} cluster, create a GatewayClass resource. This resource initializes the Gateway API infrastructure, providing the foundational template required to define and manage how external traffic reaches your internal services.
+
+[IMPORTANT]
+====
+The {product-title} Gateway API implementation relies on the Cluster Ingress Operator (CIO) to install and manage a specific version of OpenShift Service Mesh (OSSM v3.x) in the `openshift-ingress` namespace.
+
+A conflict occurs if your cluster already has an active OpenShift Service Mesh (OSSM v2.x) subscription in any namespace. OSSM v2.x and OSSM v3.x cannot coexist on the same cluster.
+
+If a conflicting OSSM v2.x subscription is present when you create a GatewayClass resource, the Cluster Ingress Operator attempts to install the required OSSM v3.x components but fails this installation operation. As a result, Gateway API resources, such as Gateway or HTTPRoute, have no effect and no proxy gets configured to route traffic. In {product-title} 4.19, this failure is silent. For {product-title} 4.20 and later, this conflict causes the ingress ClusterOperator to report a Degraded status.
+
+Before enabling Gateway API by creating a `GatewayClass`, verify that you do not have an active OSSM v2.x subscription on the cluster.
+====
+
+.Procedure
+
+. Create a `GatewayClass` object:
++
+.. Create a YAML file, `openshift-default.yaml`, that contains the following information:
++
+.Example `GatewayClass` CR
+[source,yaml]
+----
+apiVersion: gateway.networking.k8s.io/v1
+kind: GatewayClass
+metadata:
+  name: openshift-default
+spec:
+  controllerName: openshift.io/gateway-controller/v1
+----
++
+* `controllerName`: The controller name.
++
+[IMPORTANT]
+====
+The controller name must be exactly as shown for the Ingress Operator to manage it. If you set this field to anything else, the Ingress Operator ignores the `GatewayClass` object and all associated `Gateway`, `GRPCRoute`, and `HTTPRoute` objects. The controller name is tied to the implementation of Gateway API in {product-title}, and `openshift.io/gateway-controller/v1` is the only controller name allowed.
+====
++
+.. Run the following command to create the `GatewayClass` resource:
++
+[source,terminal]
+----
+$ oc create -f openshift-default.yaml
+----
++
+.Example output
+[source,terminal]
+----
+gatewayclass.gateway.networking.k8s.io/openshift-default created
+----
++
+During the creation of the `GatewayClass` resource, the Ingress Operator installs a lightweight version of {SMProductName}, an Istio custom resource, and a new deployment in the `openshift-ingress` namespace.
++
+.. Optional: Verify that the new deployment, `istiod-openshift-gateway`, is ready and available:
++
+[source,terminal]
+----
+$ oc get deployment -n openshift-ingress
+----
++
+.Example output
+[source,terminal]
+----
+NAME                       READY   UP-TO-DATE   AVAILABLE   AGE
+istiod-openshift-gateway   1/1     1            1           55s
+router-default             2/2     2            2           6h4m
+----
+
+. Create a secret by running the following command:
++
+[source,terminal]
+----
+$ oc -n openshift-ingress create secret tls gwapi-wildcard --cert=wildcard.crt --key=wildcard.key
+----
+
+. Get the domain of the Ingress Operator by running the following command:
++
+[source,terminal]
+----
+$ DOMAIN=$(oc get ingresses.config/cluster -o jsonpath={.spec.domain})
+----
+
+. Create a `Gateway` object:
++
+.. Create a YAML file, `example-gateway.yaml`, that contains the following information:
++
+.Example `Gateway` CR
+[source,yaml]
+----
+apiVersion: gateway.networking.k8s.io/v1
+kind: Gateway
+metadata:
+  name: example-gateway
+  namespace: openshift-ingress
+spec:
+  gatewayClassName: openshift-default
+  listeners:
+  - name: https
+    hostname: "*.gwapi.${DOMAIN}"
+    port: 443
+    protocol: HTTPS
+    tls:
+      mode: Terminate
+      certificateRefs:
+      - name: gwapi-wildcard
+    allowedRoutes:
+      namespaces:
+        from: All
+----
++
+where:
++
+`metadata.namespace`:: The `Gateway` object must be created in the `openshift-ingress` namespace.
+`gatewayClassName`:: The `Gateway` object must reference the name of the previously created `GatewayClass` object.
+`listeners.name`:: The HTTPS listener listens for HTTPS requests that match a subdomain of the cluster domain. You use this listener to configure ingress to your applications by using Gateway API `HTTPRoute` resources.
+`listeners.hostname`::  The hostname must be a subdomain of the Ingress Operator domain. If you use a domain, the listener tries to serve all traffic in that domain.
+`tls.name`:: The name of the previously created secret.
+
+.. Apply the resource by running the following command:
++
+[source,terminal]
+----
+$ oc apply -f example-gateway.yaml
+----
++
+.. Optional: When you create a `Gateway` object, {SMProductName} automatically provisions a deployment and service with the same name. Verify this by running the following commands:
+*** To verify the deployment, run the following command:
++
+[source,terminal]
+----
+$ oc get deployment -n openshift-ingress example-gateway-openshift-default
+----
++
+.Example output
+[source,terminal]
+----
+NAME                                 READY   UP-TO-DATE   AVAILABLE   AGE
+example-gateway-openshift-default    1/1     1            1           25s
+----
+*** To verify the service, run the following command:
++
+[source,terminal]
+----
+$ oc get service -n openshift-ingress example-gateway-openshift-default
+----
++
+.Example output
+[source,terminal]
+----
+NAME                                TYPE           CLUSTER-IP   EXTERNAL-IP         PORT(S)      AGE
+example-gateway-openshift-default   LoadBalancer   10.1.2.3     <external_ipname>   <port_info>  47s
+----
+
+.. Optional: The Ingress Operator automatically creates a `DNSRecord` CR using the hostname from the listeners, and adds the label `gateway.networking.k8s.io/gateway-name=example-gateway`. Verify the status of the DNS record by running the following command:
++
+[source,terminal]
+----
+$ oc -n openshift-ingress get dnsrecord -l gateway.networking.k8s.io/gateway-name=example-gateway -o yaml
+----
++
+.Example output
+[source,yaml]
+----
+kind: DNSRecord
+  ...
+status:
+  ...
+  zones:
+  - conditions:
+    - message: The DNS provider succeeded in ensuring the record
+      reason: ProviderSuccess
+      status: "True"
+      type: Published
+    dnsZone:
+      tags:
+        ...
+  - conditions:
+    - message: The DNS provider succeeded in ensuring the record
+      reason: ProviderSuccess
+      status: "True"
+      type: Published
+    dnsZone:
+      id: ...
+----
++
+[NOTE]
+====
+For {gcp-first} installations, you can use a custom DNS solution. You must manually create a DNS record for any Gateways in Gateway API. For more information, see "Enabling a user-managed DNS" and "Provisioning your own DNS records".
+====
+
+. Create an `HTTPRoute` resource that directs requests to your already-created namespace and application called `example-app/example-app`:
++
+.. Create a YAML file, `example-route.yaml`, that contains the following information:
++
+.Example `HTTPRoute` CR
+[source,yaml]
+----
+apiVersion: gateway.networking.k8s.io/v1
+kind: HTTPRoute
+metadata:
+  name: example-route
+  namespace: example-app-ns
+spec:
+  parentRefs:
+  - name: example-gateway
+    namespace: openshift-ingress
+  hostnames: ["example.gwapi.${DOMAIN}"]
+  rules:
+  - backendRefs:
+    - name: example-app <5>
+      port: 8443
+----
++
+where:
++
+`metadata.namespace`:: The namespace you are deploying your application.
+`spec.parentRefs`:: This field must point to the `Gateway` object you previously configured.
+`spec.hostnames`:: The hostname must match the one specified in the `Gateway` object. In this case, the listeners use a wildcard hostname.
+`rules.backendRefs`:: This field specifies the backend references that point to your service.
+`rules.name`:: The name of the `Service` for your application.
++
+.. Apply the resource by running the following command:
++
+[source,terminal]
+----
+$ oc apply -f example-route.yaml
+----
++
+.Example output
+[source,terminal]
+----
+httproute.gateway.networking.k8s.io/example-route created
+----
+
+.Verification
+
+. Verify that the `Gateway` object is deployed and has the condition `Programmed` by running the following command:
++
+[source,terminal]
+----
+$ oc wait -n openshift-ingress --for=condition=Programmed gateways.gateway.networking.k8s.io example-gateway
+----
++
+.Example output
+[source,terminal]
+----
+gateway.gateway.networking.k8s.io/example-gateway condition met
+----
+
+. Send a request to the configured `HTTPRoute` object hostname:
++
+[source,terminal]
+----
+$ curl -I --cacert <local cert file> https://example.gwapi.${DOMAIN}:443
+----
