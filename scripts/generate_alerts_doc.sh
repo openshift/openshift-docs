@@ -2,51 +2,105 @@
 
 # USE THIS SCRIPT TO GENERATE AN ASCIIDOC LIST OF ALERTS 
 # INCLUDED IN A FRESH INSTALLATION OF THE CLUSTER.
-# THE WRITER USED AWS CLUSTER FOR THE 4.20 OCP VERSION.
+# THE WRITER USED AWS CLUSTER
 
-OUTPUT_FILE="openshift_alerts.adoc"
+OUTPUT_FILE="openshift_cmo_alerts.adoc"
 
-echo "Extracting alerts from the cluster..."
+echo "Extracting CMO-managed alerts from the cluster..."
 
 cat <<EOF > $OUTPUT_FILE
+[options="header"]
 |===
 |Name |Severity |Duration |Description
 
 EOF
 
-# The oc command: connect to Prometheus pod and fetch alerting rules via API
+# Extract alerts from openshift-monitoring PrometheusRules
+
 # The jq filter performs the following operations:
-# L35: Extracts all alerting rules from Prometheus API response
-# L36: Sorts alerts by name (case-insensitive)
-# L37: Creates AsciiDoc table row with alert name, severity, duration, and description
-# L38-L47: Clean up Prometheus template syntax in descriptions, THE FOLLOWING LINES WERE CREATED WITH THE HELP OF AI:
-#   - L38: Replace {{...$value...}} template patterns with simple "$value"
-#   - L39: Extract label names from $labels.xxx patterns and replace with simplified format
-#   - L40: Replace {{printf...}} function calls with "$value"
-#   - L41: Replace nested template patterns {{...{...}...}} with "$value"
-#   - L42: Remove any remaining {{...}} template patterns
-#   - L43: Replace multiple consecutive "$value" occurrences with single "$value"
-#   - L44: Replace "$values" with "$value" (singular form)
-#   - L45: Replace multiple whitespace characters with single space
-#   - L46: Trim leading and trailing whitespace
-#   - L47: Escape pipe characters for AsciiDoc table format
-oc -n openshift-monitoring exec -c prometheus prometheus-k8s-0 -- \
-  curl -s 'http://localhost:9090/api/v1/rules' | \
-  jq -r '[ .data.groups[].rules[] | select(.type == "alerting") ]
-  | sort_by(.name | ascii_downcase)[]|
-  "| `\(.name)` | \(.labels.severity // "n/a") | \(.duration)s | \((.annotations.description // "No description")
-    | gsub("\\{\\{[^}]*\\$value[^}]*\\}\\}"; "$value")
-    | (. as $text | [scan("\\{\\{[^}]*\\$labels\\.([a-zA-Z_]+)[^}]*\\}\\}") | .[0]] | unique as $labels | reduce $labels[] as $label ($text; gsub("\\{\\{[^}]*\\$labels\\." + $label + "[^}]*\\}\\}"; "$labels." + $label)))
-    | gsub("\\{\\{\\s*printf[^}]*\\}\\}"; "$value")
-    | gsub("\\{\\{[^{]*\\{[^}]*\\}[^}]*\\}\\}"; "$value")
-    | gsub("\\{\\{[^}]*\\}\\}"; "")
-    | gsub("\\$value\\$value\\$value"; "$value")
-    | gsub("\\$values\\b"; "$value")
-    | gsub("\\s+"; " ")
-    | gsub("^\\s+|\\s+$"; "")
-    | gsub("\\|"; "\\|"))"' \
+# L46: Sorts alerts by name (case-insensitive)
+# L47: Creates AsciiDoc table row with alert name, severity, duration, and description
+# L48-L57: Clean up template syntax in descriptions, THE FOLLOWING LINES WERE CREATED WITH THE HELP OF AI:
+#   - L48: Replace {{...$value...}} template patterns with simple "$value"
+#   - L49: Extract label names from $labels.xxx patterns and replace with simplified format
+#   - L50: Replace {{printf...}} function calls with "$value"
+#   - L51: Replace nested template patterns {{...{...}...}} with "$value"
+#   - L52: Remove any remaining {{...}} template patterns
+#   - L53: Replace multiple consecutive "$value" occurrences with single "$value"
+#   - L54: Replace "$values" with "$value" (singular form)
+#   - L55: Replace multiple whitespace characters with single space
+#   - L56: Trim leading and trailing whitespace
+#   - L57: Escape pipe characters for AsciiDoc table format
+oc get prometheusrules -n openshift-monitoring -o json | \
+  jq -r '
+    [
+      .items[] |
+      .spec.groups[]? |
+      .rules[]? |
+      select(.alert != null) |
+      {
+        name: .alert,
+        severity: (.labels.severity // "n/a"),
+        duration: (.for // "0s"),
+        description: (.annotations.description // "No description")
+      }
+    ]
+    | sort_by(.name | ascii_downcase)[] |
+    "| `\(.name)` | \(.severity) | \(.duration) | \((.description
+      | gsub("\\{\\{[^}]*\\$value[^}]*\\}\\}"; "$value")
+      | (. as $text | [scan("\\{\\{[^}]*\\$labels\\.([a-zA-Z_]+)[^}]*\\}\\}") | .[0]] | unique as $labels | reduce $labels[] as $label ($text; gsub("\\{\\{[^}]*\\$labels\\." + $label + "[^}]*\\}\\}"; "$labels." + $label)))
+      | gsub("\\{\\{\\s*printf[^}]*\\}\\}"; "$value")
+      | gsub("\\{\\{[^{]*\\{[^}]*\\}[^}]*\\}\\}"; "$value")
+      | gsub("\\{\\{[^}]*\\}\\}"; "")
+      | gsub("\\$value\\$value\\$value"; "$value")
+      | gsub("\\$values\\b"; "$value")
+      | gsub("\\s+"; " ")
+      | gsub("^\\s+|\\s+$"; "")
+      | gsub("\\|"; "\\|")))"' \
+  >> $OUTPUT_FILE
+
+# Close the first table and start a new section for user workload monitoring
+cat <<EOF >> $OUTPUT_FILE
+|===
+
+[options="header"]
+|===
+|Name |Severity |Duration |Description
+
+EOF
+
+# Extract alerts from openshift-user-workload-monitoring namespace, PrometheusRules
+oc get prometheusrules -n openshift-user-workload-monitoring -o json | \
+  jq -r '
+    [
+      .items[] |
+      .spec.groups[]? |
+      .rules[]? |
+      select(.alert != null) |
+      {
+        name: .alert,
+        severity: (.labels.severity // "n/a"),
+        duration: (.for // "0s"),
+        description: (.annotations.description // "No description")
+      }
+    ]
+    | sort_by(.name | ascii_downcase)[] |
+    "| `\(.name)` | \(.severity) | \(.duration) | \((.description
+      | gsub("\\{\\{[^}]*\\$value[^}]*\\}\\}"; "$value")
+      | (. as $text | [scan("\\{\\{[^}]*\\$labels\\.([a-zA-Z_]+)[^}]*\\}\\}") | .[0]] | unique as $labels | reduce $labels[] as $label ($text; gsub("\\{\\{[^}]*\\$labels\\." + $label + "[^}]*\\}\\}"; "$labels." + $label)))
+      | gsub("\\{\\{\\s*printf[^}]*\\}\\}"; "$value")
+      | gsub("\\{\\{[^{]*\\{[^}]*\\}[^}]*\\}\\}"; "$value")
+      | gsub("\\{\\{[^}]*\\}\\}"; "")
+      | gsub("\\$value\\$value\\$value"; "$value")
+      | gsub("\\$values\\b"; "$value")
+      | gsub("\\s+"; " ")
+      | gsub("^\\s+|\\s+$"; "")
+      | gsub("\\|"; "\\|")))"' \
   >> $OUTPUT_FILE
 
 echo "|===" >> $OUTPUT_FILE
 
-echo "Extraction is completed. AsciiDoc table is generated in $OUTPUT_FILE"
+echo "Extraction completed. CMO-managed alerts are generated in $OUTPUT_FILE"
+echo "This includes only alerts from:"
+echo "  - openshift-monitoring namespace PrometheusRules"
+echo "  - openshift-user-workload-monitoring namespace PrometheusRules"
