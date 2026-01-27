@@ -1,0 +1,484 @@
+// Module included in the following assemblies:
+//
+// * security/zero_trust_workload_identity_manager/zero-trust-manager-spire-federation.adoc
+
+:_mod-docs-content-type: PROCEDURE
+[id="zero-trust-manager-verify-authentication_{context}"]
+= Verifying cross-cluster authentication using SPIFFE identities
+
+[role="_abstract"]
+Deploy real Mutual Transport Layer Security (mTLS) workloads to verify cross-cluster authentication using SPIFFE identities. This process helps you confirm that your federated trust bundles and identity policies are working correctly across both clusters.
+
+.Prerequisites
+
+* The SPIRE stack has been deployed
+
+* Federation has been configured and verified
+
+.Procedure
+
+. Deploy mTLS on the cluster 1 server.
+
+.. Set the remote cluster's domain (cluster 2's app domain) by running the following command:
++
+[source,terminal]
+----
+$ export REMOTE_DOMAIN="<CLUSTER2_APPS_DOMAIN>"
+----
+
+.. Create the `namespace` by running the following command:
++
+[source,terminal]
+----
+$ oc create namespace mtls-server
+----
+
+.. Create the `ClusterSPIFFEID` with federation by running the following command:
++
+[source,yaml]
+----
+$ oc apply -f - <<EOF
+apiVersion: spire.spiffe.io/v1alpha1
+kind: ClusterSPIFFEID
+metadata:
+  name: mtls-server
+spec:
+  className: zero-trust-workload-identity-manager-spire
+  spiffeIDTemplate: "spiffe://{{ .TrustDomain }}/ns/{{ .PodMeta.Namespace }}/sa/{{ .PodSpec.ServiceAccountName }}"
+  podSelector:
+    matchLabels:
+      app: mtls-server
+  namespaceSelector:
+    matchLabels:
+      kubernetes.io/metadata.name: mtls-server
+  federatesWith:
+    - "${REMOTE_DOMAIN}"
+EOF
+----
+
+.. Create the `spiffe-helper` ConfigMap by running the following command:
++
+[source,yaml]
+----
+$ oc apply -f - <<EOF
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: spiffe-helper-config
+  namespace: mtls-server
+data:
+  helper.conf: |
+    agent_address = "/spiffe-workload-api/spire-agent.sock"
+    cmd = ""
+    cert_dir = "/certs"
+    svid_file_name = "svid.pem"
+    svid_key_file_name = "svid_key.pem"
+    svid_bundle_file_name = "bundle.pem"
+    renew_signal = ""
+EOF
+----
+
+.. Deploy the mTLS server by running the following command:
++
+[source,yaml]
+----
+$ oc apply -f - <<EOF
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: mtls-server-sa
+  namespace: mtls-server
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: mtls-server
+  namespace: mtls-server
+spec:
+  selector:
+    app: mtls-server
+  ports:
+  - port: 8443
+    targetPort: 8443
+    name: https
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: mtls-server
+  namespace: mtls-server
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: mtls-server
+  template:
+    metadata:
+      labels:
+        app: mtls-server
+    spec:
+      serviceAccountName: mtls-server-sa
+      containers:
+      - name: server
+        image: registry.access.redhat.com/ubi9/ubi:latest
+        command:
+        - /bin/bash
+        - -c
+        - |
+          dnf install -y openssl &>/dev/null
+          echo "Waiting for SVID files..."
+          while [ ! -f /certs/svid.pem ]; do
+            sleep 5
+          done
+          echo "✓ SVID ready! Starting mTLS server on port 8443..."
+          openssl x509 -in /certs/svid.pem -noout -subject
+          while true; do
+            openssl s_server \
+              -cert /certs/svid.pem \
+              -key /certs/svid_key.pem \
+              -CAfile /certs/bundle.pem \
+              -Verify 1 \
+              -verify_return_error \
+              -accept 8443 \
+              -www 2>&1
+            sleep 1
+          done
+        ports:
+        - containerPort: 8443
+        volumeMounts:
+        - name: certs
+          mountPath: /certs
+          readOnly: true
+      - name: spiffe-helper
+        image: ghcr.io/spiffe/spiffe-helper:0.8.0
+        args: ["-config", "/config/helper.conf"]
+        volumeMounts:
+        - name: spiffe-workload-api
+          mountPath: /spiffe-workload-api
+          readOnly: true
+        - name: certs
+          mountPath: /certs
+        - name: helper-config
+          mountPath: /config
+      volumes:
+      - name: spiffe-workload-api
+        csi:
+          driver: csi.spiffe.io
+          readOnly: true
+      - name: certs
+        emptyDir: {}
+      - name: helper-config
+        configMap:
+          name: spiffe-helper-config
+EOF
+----
+
+.. Create the TLS `Passthrough` route.
+
+... Get the cluster's apps domain by running the following command:
++
+[source,terminal]
+----
+$ CLUSTER1_DOMAIN=$(oc get dns cluster -o jsonpath='{.spec.baseDomain}')
+----
++
+[source,terminal]
+----
+$ CLUSTER1_DOMAIN="apps.${CLUSTER1_DOMAIN}"
+----
+
+... Apply the cluster apps domains by running the following command:
++
+[source,yaml]
+----
+$ oc apply -f - <<EOF
+apiVersion: route.openshift.io/v1
+kind: Route
+metadata:
+  name: mtls-secure
+  namespace: mtls-server
+spec:
+  host: mtls-secure.${CLUSTER1_DOMAIN}
+  port:
+    targetPort: https
+  tls:
+    termination: passthrough
+  to:
+    kind: Service
+    name: mtls-server
+    weight: 100
+EOF
+----
+
+... Get the route URL by running the following command:
++
+[source,terminal]
+----
+$ echo "Server Route: https://$(oc get route mtls-secure -n mtls-server -o jsonpath='{.spec.host}')"
+----
+
+. Deploy mTLS on the cluster 2 server.
+
+.. Set the remote cluster's domain (cluster 2's app domain) by running the following command:
++
+[source,terminal]
+----
+$ export REMOTE_DOMAIN="<CLUSTER1_APPS_DOMAIN>"
+----
+
+.. Create the `namespace` by running the following command:
++
+[source,terminal]
+----
+$ oc create namespace mtls-server
+----
+
+.. Create the `ClusterSPIFFEID` with federation by running the following command:
++
+[source,yaml]
+----
+$ oc apply -f - <<EOF
+apiVersion: spire.spiffe.io/v1alpha1
+kind: ClusterSPIFFEID
+metadata:
+  name: mtls-client
+spec:
+  className: zero-trust-workload-identity-manager-spire
+  spiffeIDTemplate: "spiffe://{{ .TrustDomain }}/ns/{{ .PodMeta.Namespace }}/sa/{{ .PodSpec.ServiceAccountName }}"
+  podSelector:
+    matchLabels:
+      app: mtls-client
+  namespaceSelector:
+    matchLabels:
+      kubernetes.io/metadata.name: mtls-client
+  federatesWith:
+    - "${REMOTE_DOMAIN}"
+EOF
+----
+
+.. Create the `spiffe-helper` ConfigMap by running the following command:
++
+[source,yaml]
+----
+$ oc apply -f - <<EOF
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: spiffe-helper-config
+  namespace: mtls-client
+data:
+  helper.conf: |
+    agent_address = "/spiffe-workload-api/spire-agent.sock"
+    cmd = ""
+    cert_dir = "/certs"
+    svid_file_name = "svid.pem"
+    svid_key_file_name = "svid_key.pem"
+    svid_bundle_file_name = "bundle.pem"
+    renew_signal = ""
+EOF
+----
+
+.. Deploy the mTLS client pod by running the following command:
++
+[source,yaml]
+----
+$ oc apply -f - <<EOF
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: mtls-client-sa
+  namespace: mtls-client
+---
+apiVersion: v1
+kind: Pod
+metadata:
+  name: mtls-client
+  namespace: mtls-client
+  labels:
+    app: mtls-client
+spec:
+  serviceAccountName: mtls-client-sa
+  containers:
+  - name: client
+    image: registry.access.redhat.com/ubi9/ubi:latest
+    command:
+    - /bin/bash
+    - -c
+    - |
+      dnf install -y openssl &>/dev/null
+      echo "Waiting for SVID files..."
+      while [ ! -f /certs/svid.pem ]; do
+        sleep 5
+      done
+      echo "✓ SVID ready! Client is ready for mTLS testing."
+      openssl x509 -in /certs/svid.pem -noout -subject
+      sleep infinity
+    volumeMounts:
+    - name: certs
+      mountPath: /certs
+      readOnly: true
+  - name: spiffe-helper
+    image: ghcr.io/spiffe/spiffe-helper:0.8.0
+    args: ["-config", "/config/helper.conf"]
+    volumeMounts:
+    - name: spiffe-workload-api
+      mountPath: /spiffe-workload-api
+      readOnly: true
+    - name: certs
+      mountPath: /certs
+    - name: helper-config
+      mountPath: /config
+  volumes:
+  - name: spiffe-workload-api
+    csi:
+      driver: csi.spiffe.io
+      readOnly: true
+  - name: certs
+    emptyDir: {}
+  - name: helper-config
+    configMap:
+      name: spiffe-helper-config
+EOF
+----
+
+. Verify that the SVID files exist on the clusters.
+
+.. Check that the SVID files exist on cluster 1 by running the following command:
++
+[source,terminal]
+----
+$ oc exec -n mtls-server $(oc get pod -n mtls-server -l app=mtls-server -o name | head -1) -c server -- ls -la /certs/
+----
+
+.. Verify the SPIFFE ID on cluster 1 by running the following command:
++
+[source,terminal]
+----
+$ oc exec -n mtls-server $(oc get pod -n mtls-server -l app=mtls-server -o name | head -1) -c server -- \
+  openssl x509 -in /certs/svid.pem -noout -subject -ext subjectAltName
+----
++
+The following example shows the output from running the two previous commands:
++
+[source,terminal]
+----
+-rw-r--r--. 1 ... bundle.pem
+-rw-r--r--. 1 ... svid.pem
+-rw-------. 1 ... svid_key.pem
+
+subject=C=US, O=SPIRE
+X509v3 Subject Alternative Name:
+    URI:spiffe://<CLUSTER1_APPS_DOMAIN>/ns/mtls-server/sa/mtls-server-sa
+----
+
+.. Check that the SVID files exist on cluster 2 by running the following command:
++
+[source,terminal]
+----
+$ oc exec -n mtls-client mtls-client -c client -- ls -la /certs/
+----
+
+.. Verify the SPIFFE ID on cluster 2 by running the following command:
++
+[source,terminal]
+----
+$ oc exec -n mtls-client mtls-client -c client -- \
+  openssl x509 -in /certs/svid.pem -noout -subject -ext subjectAltName
+----
++
+The following example shows the output from running the two previous commands:
++
+[source,terminal]
+----
+-rw-r--r--. 1 ... bundle.pem
+-rw-r--r--. 1 ... svid.pem
+-rw-------. 1 ... svid_key.pem
+
+subject=C=US, O=SPIRE
+X509v3 Subject Alternative Name:
+    URI:spiffe://<CLUSTER2_APPS_DOMAIN>/ns/mtls-client/sa/mtls-client-sa
+----
+ . Verify that the `FederatesWith` object exists in the SPIRE entries.
+
+ .. On cluster 1, run the following command:
++
+[source,terminal]
+----
+$ oc -n zero-trust-workload-identity-manager exec spire-server-0 -c spire-server -- \
+  /spire-server entry show -socketPath /tmp/spire-server/private/api.sock | grep -A10 "mtls-server"
+----
++
+After the command has completed, the results should show `FederatesWith: <CLUSTER2_APPS_DOMAIN>`
+
+ .. On cluster 2, run the following command:
++
+[source,terminal]
+----
+$ oc -n zero-trust-workload-identity-manager exec spire-server-0 -c spire-server -- \
+  /spire-server entry show -socketPath /tmp/spire-server/private/api.sock | grep -A10 "mtls-client"
+----
++
+After the command has completed, the results should show `FederatesWith: <CLUSTER1_APPS_DOMAIN>`
+
+. Set the server hostname from cluster 1's route by running the following command:
++
+[source,terminal]
+----
+$ SERVER_HOST="mtls-secure.<CLUSTER1_APPS_DOMAIN>"
+----
++
+The following example shows the results of setting the server hostname:
++
+[source,terminal]
+----
+echo "=========================================="
+echo "🔐 mTLS TEST: Cluster 2 Client → Cluster 1 Server"
+echo "=========================================="
+echo ""
+echo "Client presents: Cluster 2 SPIFFE SVID"
+echo "Server presents: Cluster 1 SPIFFE SVID"
+echo "Both verify certificates using federated trust bundle"
+echo ""
+----
+
+.. Execute the mTLS connection by running the following command:
++
+[source,terminal]
+----
+$ oc exec -n mtls-client mtls-client -c client -- \
+  openssl s_client \
+    -connect ${SERVER_HOST}:443 \
+    -cert /certs/svid.pem \
+    -key /certs/svid_key.pem \
+    -CAfile /certs/bundle.pem \
+    -verify 1 \
+    -brief \
+    </dev/null 2>&1
+----
++
+The following example shows the expected mTLS test output.
++
+[source,terminal]
+----
+==========================================
+🔐 mTLS TEST: Cluster 2 Client → Cluster 1 Server
+==========================================
+
+Client presents: Cluster 2 SPIFFE SVID
+Server presents: Cluster 1 SPIFFE SVID
+Both verify certificates using federated trust bundle
+
+verify depth is 1
+CONNECTION ESTABLISHED
+Protocol version: TLSv1.3
+Ciphersuite: TLS_AES_256_GCM_SHA384
+Peer certificate: C=US, O=SPIRE
+Hash used: SHA256
+Signature type: ecdsa_secp256r1_sha256
+Verification error: self-signed certificate in certificate chain
+DONE
+
+==========================================
+----
+
+

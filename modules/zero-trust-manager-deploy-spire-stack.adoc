@@ -1,0 +1,263 @@
+// Module included in the following assemblies:
+//
+// * security/zero_trust_workload_identity_manager/zero-trust-manager-spire-federation.adoc
+
+:_mod-docs-content-type: PROCEDURE
+[id="zero-trust-manager-deploy-spire-stack_{context}"]
+= Deploying the SPIRE stack
+
+[role="_abstract"]
+You need to deploy a SPIRE stack on OpenShift clusters to establish a zero-trust identity management. This process enables secure cross-cluster federation, allowing workloads to authenticate and communicate across different domains using SPIFFE IDs.
+
+.Prerequisites
+
+* A {zero-trust-full} must be installed and working.
+
+.Procedure
+
+. Set up environment variables on each cluster.
+
+.. To set up the environment variables on cluster 1, run the following commands:
++
+[source,terminal]
+----
+$ export APP_DOMAIN=apps.$(oc get dns cluster -o jsonpath='{.spec.baseDomain}')
+----
++
+[source,terminal]
+----
+$ export JWT_ISSUER_ENDPOINT=oidc-discovery.${APP_DOMAIN}
+----
++
+[source,terminal]
+----
+$ export CLUSTER_NAME=cluster1
+----
+
+.. To verify that the environment variables are available, run the following commands:
++
+[source,terminal]
+----
+$ echo "APP_DOMAIN: ${APP_DOMAIN}"
+----
++
+[source,terminal]
+----
+$ echo "JWT_ISSUER_ENDPOINT: ${JWT_ISSUER_ENDPOINT}"
+----
++
+[source,terminal]
+----
+$ echo "CLUSTER_NAME: ${CLUSTER_NAME}"
+----
+
+.. To set up the environment variables on cluster 2, run the following commands:
++
+[source,terminal]
+----
+$ export APP_DOMAIN=apps.$(oc get dns cluster -o jsonpath='{.spec.baseDomain}')
+----
++
+[source,terminal]
+----
+$ export JWT_ISSUER_ENDPOINT=oidc-discovery.${APP_DOMAIN}
+----
++
+[source,terminal]
+----
+$ export CLUSTER_NAME=cluster2
+----
+
+.. To verify that the environment variables are available, run the following commands:
++
+[source,terminal]
+----
+$ echo "APP_DOMAIN: ${APP_DOMAIN}"
+----
++
+[source,terminal]
+----
+$ echo "JWT_ISSUER_ENDPOINT: ${JWT_ISSUER_ENDPOINT}"
+----
++
+[source,terminal]
+----
+$ echo "CLUSTER_NAME: ${CLUSTER_NAME}"
+----
++
+[NOTE]
+====
+Write down the APP_DOMAIN values bor both cluster 1 and cluster 2 since the values are needed in other steps.
+====
+
+. Deploy the SPIRE stack by running the following command on both clusters:
++
+[source,yaml]
+----
+cat <<'EOF' | envsubst | oc apply -f -
+---
+# 1. ZeroTrustWorkloadIdentityManager (Main CR)
+apiVersion: operator.openshift.io/v1alpha1
+kind: ZeroTrustWorkloadIdentityManager
+metadata:
+  name: cluster
+spec:
+  trustDomain: ${APP_DOMAIN}
+  clusterName: ${CLUSTER_NAME}
+
+---
+# 2. SpireServer
+apiVersion: operator.openshift.io/v1alpha1
+kind: SpireServer
+metadata:
+  name: cluster
+spec:
+  caSubject:
+    commonName: ${APP_DOMAIN}
+    country: "US"
+    organization: "RH"
+  persistence:
+    type: pvc
+    size: "1Gi"
+    accessMode: ReadWriteOncePod
+  datastore:
+    databaseType: sqlite3
+    connectionString: "/run/spire/data/datastore.sqlite3"
+    maxOpenConns: 100
+    maxIdleConns: 2
+    connMaxLifetime: 3600
+  jwtIssuer: https://${JWT_ISSUER_ENDPOINT}
+
+---
+# 3. SpireAgent
+apiVersion: operator.openshift.io/v1alpha1
+kind: SpireAgent
+metadata:
+  name: cluster
+spec:
+  nodeAttestor:
+    k8sPSATEnabled: "true"
+  workloadAttestors:
+    k8sEnabled: "true"
+    workloadAttestorsVerification:
+      type: "auto"
+
+---
+# 4. SpiffeCSIDriver
+apiVersion: operator.openshift.io/v1alpha1
+kind: SpiffeCSIDriver
+metadata:
+  name: cluster
+spec: {}
+
+---
+# 5. SpireOIDCDiscoveryProvider
+apiVersion: operator.openshift.io/v1alpha1
+kind: SpireOIDCDiscoveryProvider
+metadata:
+  name: cluster
+spec:
+  jwtIssuer: https://${JWT_ISSUER_ENDPOINT}
+EOF
+----
+
+. After the base stack is deployed, update the `SpireServer` to enable federation.
+
+.. On cluster 1, replace the <CLUSTER2_APPS_DOMAIN> value with the apps domain value from cluster 2 by running the following command:
++
+[source,terminal]
+----
+$ oc patch spireserver cluster --type=merge -p '
+{
+  "spec": {
+    "federation": {
+      "bundleEndpoint": {
+        "profile": "https_spiffe"
+      },
+      "managedRoute": "true",
+      "federatesWith": [
+        {
+          "trustDomain": "<CLUSTER2_APPS_DOMAIN>",
+          "bundleEndpointUrl": "https://federation.<CLUSTER2_APPS_DOMAIN>",
+          "bundleEndpointProfile": "https_spiffe",
+          "endpointSpiffeId": "spiffe://<CLUSTER2_APPS_DOMAIN>/spire/server"
+        }
+      ]
+    }
+  }
+}'
+----
+
+.. On cluster 2, replace the <CLUSTER1_APPS_DOMAIN> value with the apps domain value from cluster 1 by running the following command:
++
+[source,terminal]
+----
+$ ooc patch spireserver cluster --type=merge -p '
+{
+  "spec": {
+    "federation": {
+      "bundleEndpoint": {
+        "profile": "https_spiffe"
+      },
+      "managedRoute": "true",
+      "federatesWith": [
+        {
+          "trustDomain": "<CLUSTER1_APPS_DOMAIN>",
+          "bundleEndpointUrl": "https://federation.<CLUSTER1_APPS_DOMAIN>",
+          "bundleEndpointProfile": "https_spiffe",
+          "endpointSpiffeId": "spiffe://<CLUSTER1_APPS_DOMAIN>/spire/server"
+        }
+      ]
+    }
+  }
+}'
+----
+
+.Verification
+
+. Verify that all pods are operational by running the following command on both clusters:
++
+[source,terminal]
+----
+$ oc get pods -n zero-trust-workload-identity-manager
+----
++
+The following is an example output showing that the pods are running
++
+[source,terminal]
+----
+NAME                                                            READY  STATUS    RESTARTS    AGE
+spire-agent-xxxxx                                               1/1     Running   0          3m
+spire-agent-yyyyy                                               1/1     Running   0          3m
+spire-agent-zzzzz                                               1/1     Running   0          3m
+spire-server-0                                                  2/2     Running   0          3m
+spire-spiffe-csi-driver-xxxxx                                   2/2     Running   0          3m
+spire-spiffe-csi-driver-yyyyy                                   2/2     Running   0          3m
+spire-spiffe-csi-driver-zzzzz                                   2/2     Running   0          3m
+spire-spiffe-oidc-discovery-provider-xxxxx                      1/1     Running   0          3m
+zero-trust-workload-identity-manager-controller-manager-xxxxx   1/1     Running   0          10m
+----
+
+. Verify that the federations routes exist by running the following command:
++
+[source,terminal]
+----
+$ oc get routes -n zero-trust-workload-identity-manager
+----
++
+The following is an example output showing that the routes exist
++
+[source,terminal]
+----
+NAME                            HOST/PORT                        TERMINATION
+spire-oidc-discovery-provider   oidc-discovery.apps.<domain>     reencrypt/Redirect
+spire-server-federation         federation.apps.<domain>         passthrough/Redirect
+----
+
+
+
+
+
+
+
+
