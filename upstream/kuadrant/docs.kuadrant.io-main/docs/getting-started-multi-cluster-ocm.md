@@ -36,7 +36,7 @@ Export environment variables with the keys listed below for your desired provide
 
 >Alternatively, to set defaults, add the above environment variables to your `.zshrc` or `.bash_profile`.
 
-### Set the release you want to use 
+### Set the release you want to use
 
 ```bash
 export MGC_BRANCH=release-0.3
@@ -52,4 +52,4 @@ curl "https://raw.githubusercontent.com/kuadrant/multicluster-gateway-controller
 
 ### What's Next
 
-Now that you have two Kind clusters configured with Kuadrant installed you are ready to begin [the Multicluster Gateways walkthrough.](/multicluster-gateway-controller/docs/gateways/define-and-place-a-gateway/)
+Now that you have two Kind clusters configured with Kuadrant installed you are ready to begin [the Multicluster gateways walkthrough.](/multicluster-gateway-controller/docs/gateways/define-and-place-a-gateway/)
