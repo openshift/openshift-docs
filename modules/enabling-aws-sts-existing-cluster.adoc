@@ -1,0 +1,229 @@
+// Module included in the following assemblies:
+//
+// /post_installation_configuration/changing-cloud-credentials-configuration.adoc
+
+:_mod-docs-content-type: PROCEDURE
+[id="enabling-aws-sts-existing-cluster_{context}"]
+= Enabling {aws-short} {sts-first} on an existing cluster
+
+If you did not configure your {aws-first} {product-title} cluster to use {sts-first} during installation, you can enable this authentication method on an existing cluster.
+
+[IMPORTANT]
+====
+The process to enable {sts-short} on an existing cluster is disruptive and takes a significant amount of time.
+Before proceeding, observe the following considerations:
+
+* Read the following steps and ensure that you understand and accept the time requirement.
+The exact time requirement varies depending on the individual cluster, but it is likely to require at least one hour.
+
+* During this process, you must refresh all service accounts and restart all pods on the cluster.
+These actions are disruptive to workloads.
+To mitigate this impact, you can temporarily halt these services and then redeploy them when the cluster is ready.
+
+* Do not update the cluster until this process is complete.
+====
+
+.Prerequisites
+
+* You have installed an {product-title} cluster on {aws-short}.
+* You have access to the cluster using an account with `cluster-admin` permissions.
+* You have installed the {oc-first}.
+* You have extracted and prepared the Cloud Credential Operator utility (`ccoctl`) binary.
+* You have access to your AWS account by using the AWS CLI (aws).
+
+.Procedure
+
+. Create an output directory for `ccoctl` generated manifests by running the following command:
++
+[source,terminal]
+----
+$ mkdir ./output_dir
+----
+
+. Create the {aws-short} Identity and Access Management (IAM) OpenID Connect (OIDC) provider.
+
+.. Extract the service account public signing key for the cluster by running the following command:
++
+[source,terminal]
+----
+$ oc get secret/next-bound-service-account-signing-key \
+  -n openshift-kube-apiserver-operator \
+  -ojsonpath='{ .data.service-account\.pub }' | base64 -d \
+  > output_dir/serviceaccount-signer.public <1>
+----
+<1> This procedure uses a file named `serviceaccount-signer.public` as an example.
+
+.. Create the {aws-short} IAM identity provider and S3 bucket by running the following command:
++
+[source,terminal]
+----
+$ ./ccoctl aws create-identity-provider \
+  --output-dir output_dir \ <1>
+  --name <name_you_choose> \ <2>
+  --region us-east-2 \ <3>
+  --public-key-file output_dir/serviceaccount-signer.public <4>
+----
+<1> Specify the output directory you created earlier.
+<2> Specify a globally unique name. This name functions as a prefix for AWS resources created by this command.
+<3> Specify the AWS region of the cluster.
+<4> Specify the relative path to the `serviceaccount-signer.public` file you created earlier.
+
+.. Save or note the Amazon Resource Name (ARN) for the IAM identity provider. You can find this information in the final line of the output of the previous command.
+
+. Update the cluster authentication configuration.
+
+.. Extract the OIDC issuer URL and update the authentication configuration of the cluster by running the following commands:
++
+[source,terminal]
+----
+$ OIDC_ISSUER_URL=`awk '/serviceAccountIssuer/ { print $2 }' output_dir/manifests/cluster-authentication-02-config.yaml`
+$ oc patch authentication cluster --type=merge -p "{\"spec\":{\"serviceAccountIssuer\":\"${OIDC_ISSUER_URL}\"}}"
+----
+
+.. Monitor the configuration update progress by running the following command:
++
+[source,terminal]
+----
+$ oc adm wait-for-stable-cluster
+----
++
+This process might take 15 minutes or longer.
+The following output indicates that the process is complete:
++
+[source,text]
+----
+All clusteroperators are stable
+----
+
+. Restart pods to apply the issuer update.
+
+.. Restart all of the pods in the cluster by running the following command:
++
+[source,terminal]
+----
+$ oc adm reboot-machine-config-pool mcp/worker mcp/master
+----
++
+Restarting a pod updates the `serviceAccountIssuer` field and refreshes the service account public signing key.
+
+.. Monitor the restart and update process by running the following command:
++
+[source,terminal]
+----
+$ oc adm wait-for-node-reboot nodes --all
+----
++
+This process might take 15 minutes or longer. The following output indicates that the process is complete:
++
+[source,text]
+----
+All nodes rebooted
+----
+
+. Update the Cloud Credential Operator `spec.credentialsMode` parameter to `Manual` by running the following command:
++
+[source,terminal]
+----
+$ oc patch cloudcredential cluster \
+  --type=merge \
+  --patch '{"spec":{"credentialsMode":"Manual"}}'
+----
+
+. Extract `CredentialsRequests` objects.
+
+.. Create a `CLUSTER_VERSION` environment variable by running the following command:
++
+[source,terminal]
+----
+$ CLUSTER_VERSION=$(oc get clusterversion version -o json | jq -r '.status.desired.version')
+----
+
+.. Create a `CLUSTER_IMAGE` environment variable by running the following command:
++
+[source,terminal]
+----
+$ CLUSTER_IMAGE=$(oc get clusterversion version -o json | jq -r ".status.history[] | select(.version == \"${CLUSTER_VERSION}\") | .image")
+----
+
+.. Extract `CredentialsRequests` objects from the release image by running the following command:
++
+[source,terminal]
+----
+$ oc adm release extract \
+  --credentials-requests \
+  --cloud=aws \
+  --from ${CLUSTER_IMAGE} \
+  --to output_dir/cred-reqs
+----
+
+. Create {aws-short} IAM roles and apply secrets.
+
+.. Create an IAM role for each `CredentialsRequests` object by running the following command:
++
+[source,terminal]
+----
+$ ./ccoctl aws create-iam-roles \
+  --output-dir ./output_dir/ \ <1>
+  --name <name_you_choose> \ <2>
+  --identity-provider-arn <identity_provider_arn> \ <3>
+  --region us-east-2 \ <4>
+  --credentials-requests-dir ./output_dir/cred-reqs/ <5>
+----
+<1> Specify the output directory you created earlier.
+<2> Specify a globally unique name. This name functions as a prefix for AWS resources created by this command.
+<3> Specify the ARN for the IAM identity provider.
+<4> Specify the AWS region of the cluster.
+<5> Specify the relative path to the folder where you extracted the `CredentialsRequest` files with the `oc adm release extract` command.
+
+.. Apply the generated secrets by running the following command:
++
+[source,terminal]
+----
+$ find ./output_dir/manifests -iname "openshift*yaml" -print0 | xargs -I {} -0 -t oc replace -f {}
+----
+
+. Finish the configuration process by restarting the cluster.
+
+.. Restart all of the pods in the cluster by running the following command:
++
+[source,terminal]
+----
+$ oc adm reboot-machine-config-pool mcp/worker mcp/master
+----
+
+.. Monitor the restart and update process by running the following command:
++
+[source,terminal]
+----
+$ oc adm wait-for-node-reboot nodes --all
+----
++
+This process might take 15 minutes or longer.
+The following output indicates that the process is complete:
++
+[source,text]
+----
+All nodes rebooted
+----
+
+.. Monitor the configuration update progress by running the following command:
++
+[source,terminal]
+----
+$ oc adm wait-for-stable-cluster
+----
++
+This process might take 15 minutes or longer.
+The following output indicates that the process is complete:
++
+[source,text]
+----
+All clusteroperators are stable
+----
+
+. Optional: Remove the {aws-short} root credentials secret by running the following command:
++
+[source,terminal]
+----
+$ oc delete secret -n kube-system aws-creds
+----
