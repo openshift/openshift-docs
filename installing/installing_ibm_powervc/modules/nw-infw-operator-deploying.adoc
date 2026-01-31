@@ -1,0 +1,23 @@
+// Module included in the following assemblies:
+//
+// * networking/ingress-node-firewall-operator.adoc
+
+:_mod-docs-content-type: PROCEDURE
+[id="nw-infw-operator-deploying_{context}"]
+= Deploying Ingress Node Firewall Operator
+
+.Prerequisite
+* The Ingress Node Firewall Operator is installed.
+
+.Procedure
+
+To deploy the Ingress Node Firewall Operator, create a `IngressNodeFirewallConfig` custom resource that will deploy the Operator's daemon set. You can deploy one or multiple `IngressNodeFirewall` CRDs to nodes by applying firewall rules.
+
+. Create the `IngressNodeFirewallConfig` inside the `openshift-ingress-node-firewall` namespace named `ingressnodefirewallconfig`.
+
+. Run the following command to deploy Ingress Node Firewall Operator rules:
++
+[source,terminal]
+----
+$ oc apply -f rule.yaml
+----

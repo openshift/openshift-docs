@@ -1,0 +1,28 @@
+// Module included in the following assemblies:
+//
+// * machine_management/creating_machinesets/creating-machineset-vsphere.adoc
+//
+// Currently only in the vSphere compute machine set content, but we will want this for other platforms such as AWS and GCP.
+
+ifeval::["{context}" == "creating-machineset-vsphere"]
+:vsphere:
+endif::[]
+
+:_mod-docs-content-type: PROCEDURE
+[id="machineset-upi-reqs-infra-id_{context}"]
+= Obtaining the infrastructure ID
+
+To create compute machine sets, you must be able to supply the infrastructure ID for your cluster.
+
+.Procedure
+
+* To obtain the infrastructure ID for your cluster, run the following command:
++
+[source,terminal]
+----
+$ oc get infrastructure cluster -o jsonpath='{.status.infrastructureName}'
+----
+
+ifeval::["{context}" == "creating-machineset-vsphere"]
+:!vsphere:
+endif::[]

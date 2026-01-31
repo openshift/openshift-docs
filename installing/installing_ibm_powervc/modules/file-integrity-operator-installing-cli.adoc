@@ -1,0 +1,92 @@
+// Module included in the following assemblies:
+//
+// * security/file_integrity_operator/file-integrity-operator-installation.adoc
+
+:_mod-docs-content-type: PROCEDURE
+[id="installing-file-integrity-operator-using-cli_{context}"]
+= Installing the File Integrity Operator using the CLI
+
+.Prerequisites
+
+* You must have `admin` privileges.
+
+.Procedure
+
+. Create a `Namespace` object YAML file by running:
++
+[source,terminal]
+----
+$ oc create -f <file-name>.yaml
+----
++
+.Example output
+[source,yaml]
+----
+apiVersion: v1
+kind: Namespace
+metadata:
+  labels:
+    openshift.io/cluster-monitoring: "true"
+    pod-security.kubernetes.io/enforce: privileged <1>
+  name: openshift-file-integrity
+----
+<1> In {product-title} {product-version}, the pod security label must be set to `privileged` at the namespace level.
+
+. Create the `OperatorGroup` object YAML file:
++
+[source,terminal]
+----
+$ oc create -f <file-name>.yaml
+----
++
+.Example output
+[source,yaml]
+----
+apiVersion: operators.coreos.com/v1
+kind: OperatorGroup
+metadata:
+  name: file-integrity-operator
+  namespace: openshift-file-integrity
+spec:
+  targetNamespaces:
+  - openshift-file-integrity
+----
+
+. Create the `Subscription` object YAML file:
++
+[source,terminal]
+----
+$ oc create -f <file-name>.yaml
+----
++
+.Example output
+[source,yaml]
+----
+apiVersion: operators.coreos.com/v1alpha1
+kind: Subscription
+metadata:
+  name: file-integrity-operator
+  namespace: openshift-file-integrity
+spec:
+  channel: "stable"
+  installPlanApproval: Automatic
+  name: file-integrity-operator
+  source: redhat-operators
+  sourceNamespace: openshift-marketplace
+----
+
+.Verification
+
+. Verify the installation succeeded by inspecting the CSV file:
++
+[source,terminal]
+----
+$ oc get csv -n openshift-file-integrity
+----
+
+. Verify that the File Integrity Operator is up and running:
++
+[source,terminal]
+----
+$ oc get deploy -n openshift-file-integrity
+----

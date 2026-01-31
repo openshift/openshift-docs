@@ -1,0 +1,63 @@
+// Module included in the following assemblies:
+//
+// * security/security_profiles_operator/spo-advanced.adoc
+
+:_mod-docs-content-type: REFERENCE
+[id="spo-runtime-metrics_{context}"]
+= controller-runtime metrics
+
+The controller-runtime `metrics` and the DaemonSet endpoint `metrics-spod` provide a set of default metrics. Additional metrics are provided by the daemon, which are always prefixed with `security_profiles_operator_`.
+
+.Available controller-runtime metrics
+|===
+| Metric key | Possible labels | Type | Purpose
+
+| `seccomp_profile_total`
+| `operation={delete,update}`
+| Counter
+| Amount of seccomp profile operations.
+
+| `seccomp_profile_audit_total`
+| `node`, `namespace`, `pod`, `container`, `executable`, `syscall`
+| Counter
+| Amount of seccomp profile audit operations. Requires the log enricher to be enabled.
+
+| `seccomp_profile_bpf_total`
+| `node`, `mount_namespace`, `profile`
+| Counter
+| Amount of seccomp profile bpf operations. Requires the bpf recorder to be enabled.
+
+| `seccomp_profile_error_total`
+| `reason={` +
+`SeccompNotSupportedOnNode,` +
+`InvalidSeccompProfile,` +
+`CannotSaveSeccompProfile,` +
+`CannotRemoveSeccompProfile,` +
+`CannotUpdateSeccompProfile,` +
+`CannotUpdateNodeStatus` +
+`}`
+| Counter
+| Amount of seccomp profile errors.
+
+| `selinux_profile_total`
+| `operation={delete,update}`
+| Counter
+| Amount of SELinux profile operations.
+
+| `selinux_profile_audit_total`
+| `node`, `namespace`, `pod`, `container`, `executable`, `scontext`,`tcontext`
+| Counter
+| Amount of SELinux profile audit operations. Requires the log enricher to be enabled.
+
+| `selinux_profile_error_total`
+| `reason={` +
+`CannotSaveSelinuxPolicy,` +
+`CannotUpdatePolicyStatus,` +
+`CannotRemoveSelinuxPolicy,` +
+`CannotContactSelinuxd,` +
+`CannotWritePolicyFile,` +
+`CannotGetPolicyStatus` +
+`}`
+| Counter
+| Amount of SELinux profile errors.
+|===

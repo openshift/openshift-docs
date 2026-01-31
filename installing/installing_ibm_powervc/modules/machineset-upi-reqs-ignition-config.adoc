@@ -1,0 +1,57 @@
+// Module included in the following assemblies:
+//
+// * machine_management/creating_machinesets/creating-machineset-vsphere.adoc
+//
+// Currently only in the vSphere compute machine set content, but we will want this for other platforms such as AWS and GCP.
+
+ifeval::["{context}" == "creating-machineset-vsphere"]
+:vsphere:
+endif::[]
+
+:_mod-docs-content-type: PROCEDURE
+[id="machineset-upi-reqs-ignition-config_{context}"]
+= Satisfying Ignition configuration requirements
+
+Provisioning virtual machines (VMs) requires a valid Ignition configuration. The Ignition configuration contains the `machine-config-server` address and a system trust bundle for obtaining further Ignition configurations from the Machine Config Operator.
+
+By default, this configuration is stored in the `worker-user-data` secret in the `machine-api-operator` namespace. Compute machine sets reference the secret during the machine creation process.
+
+.Procedure
+
+. To determine whether the required secret exists, run the following command:
++
+[source,terminal]
+----
+$ oc get secret \
+  -n openshift-machine-api worker-user-data \
+  -o go-template='{{range $k,$v := .data}}{{printf "%s: " $k}}{{if not $v}}{{$v}}{{else}}{{$v | base64decode}}{{end}}{{"\n"}}{{end}}'
+----
++
+.Sample output
+[source,terminal]
+----
+disableTemplating: false
+userData: <1>
+  {
+    "ignition": {
+      ...
+      },
+    ...
+  }
+----
+<1> The full output is omitted here, but should have this format.
+
+. If the secret does not exist, create it by running the following command:
++
+[source,terminal]
+----
+$ oc create secret generic worker-user-data \
+  -n openshift-machine-api \
+  --from-file=<installation_directory>/worker.ign
+----
++
+where `<installation_directory>` is the directory that was used to store your installation assets during cluster installation.
+
+ifeval::["{context}" == "creating-machineset-vsphere"]
+:!vsphere:
+endif::[]

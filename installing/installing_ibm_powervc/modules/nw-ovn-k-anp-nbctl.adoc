@@ -1,0 +1,496 @@
+//module included in the following assemblies:
+//
+//networking/network_security/AdminNetworkPolicy/nw-ovn-k-anp-troubleshooting.adoc
+:_mod-docs-content-type: PROCEDURE
+[id="metrics-commands-anp_{context}"]
+== Using nbctl commands for ANP and BANP
+
+To troubleshoot an unsuccessful setup, start by looking at OVN Northbound database (nbdb) objects including `ACL`, `AdressSet`, and `Port_Group`. To view the nbdb, you need to be inside the pod on that node to view the objects in that node's database.
+
+.Prerequisites
+
+* Access to the cluster as a user with the `cluster-admin` role.
+* The OpenShift CLI (`oc`) installed.
+
+[NOTE]
+====
+To run ovn `nbctl` commands in a cluster, you must open a remote shell into the `nbdb`on the relevant node.
+====
+The following policy was used to generate outputs.
+
+.`AdminNetworkPolicy` used to generate outputs
+[%collapsible]
+====
+[source,yaml]
+----
+apiVersion: policy.networking.k8s.io/v1alpha1
+kind: AdminNetworkPolicy
+metadata:
+  name: cluster-control
+spec:
+  priority: 34
+  subject:
+    namespaces:
+      matchLabels:
+        anp: cluster-control-anp # Only namespaces with this label have this ANP
+  ingress:
+  - name: "allow-from-ingress-router" # rule0
+    action: "Allow"
+    from:
+    - namespaces:
+        matchLabels:
+          policy-group.network.openshift.io/ingress: ""
+  - name: "allow-from-monitoring" # rule1
+    action: "Allow"
+    from:
+    - namespaces:
+        matchLabels:
+          kubernetes.io/metadata.name: openshift-monitoring
+    ports:
+    - portNumber:
+        protocol: TCP
+        port: 7564
+    - namedPort: "scrape"
+  - name: "allow-from-open-tenants" # rule2
+    action: "Allow"
+    from:
+    - namespaces: # open tenants
+        matchLabels:
+          tenant: open
+  - name: "pass-from-restricted-tenants" # rule3
+    action: "Pass"
+    from:
+    - namespaces: # restricted tenants
+        matchLabels:
+          tenant: restricted
+  - name: "default-deny" # rule4
+    action: "Deny"
+    from:
+    - namespaces: {} # Use the empty selector with caution because it also selects OpenShift namespaces as well.
+  egress:
+  - name: "allow-to-dns" # rule0
+    action: "Allow"
+    to:
+    - pods:
+        namespaceSelector:
+          matchLabels:
+            kubernetes.io/metadata.name: openshift-dns
+        podSelector:
+          matchLabels:
+            app: dns
+    ports:
+    - portNumber:
+        protocol: UDP
+        port: 5353
+  - name: "allow-to-kapi-server" # rule1
+    action: "Allow"
+    to:
+    - nodes:
+        matchExpressions:
+        - key: node-role.kubernetes.io/control-plane
+          operator: Exists
+    ports:
+    - portNumber:
+        protocol: TCP
+        port: 6443
+  - name: "allow-to-splunk" # rule2
+    action: "Allow"
+    to:
+    - namespaces:
+        matchLabels:
+          tenant: splunk
+    ports:
+    - portNumber:
+        protocol: TCP
+        port: 8991
+    - portNumber:
+        protocol: TCP
+        port: 8992
+  - name: "allow-to-open-tenants-and-intranet-and-worker-nodes" # rule3
+    action: "Allow"
+    to:
+    - nodes: # worker-nodes
+        matchExpressions:
+        - key: node-role.kubernetes.io/worker
+          operator: Exists
+    - networks: # intranet
+      - 172.29.0.0/30
+      - 10.0.54.0/19
+      - 10.0.56.38/32
+      - 10.0.69.0/24
+    - namespaces: # open tenants
+        matchLabels:
+          tenant: open
+  - name: "pass-to-restricted-tenants" # rule4
+    action: "Pass"
+    to:
+    - namespaces: # restricted tenants
+        matchLabels:
+          tenant: restricted
+  - name: "default-deny"
+    action: "Deny"
+    to:
+    - networks:
+      - 0.0.0.0/0
+----
+====
+
+.Procedure
+
+. List pods with node information by running the following command:
++
+[source,terminal]
+----
+$ oc get pods -n openshift-ovn-kubernetes -owide
+----
++
+.Example output
+[source,terminal]
+----
+NAME                                     READY   STATUS    RESTARTS   AGE   IP           NODE                                       NOMINATED NODE   READINESS GATES
+ovnkube-control-plane-5c95487779-8k9fd   2/2     Running   0          34m   10.0.0.5     ci-ln-0tv5gg2-72292-6sjw5-master-0         <none>           <none>
+ovnkube-control-plane-5c95487779-v2xn8   2/2     Running   0          34m   10.0.0.3     ci-ln-0tv5gg2-72292-6sjw5-master-1         <none>           <none>
+ovnkube-node-524dt                       8/8     Running   0          33m   10.0.0.4     ci-ln-0tv5gg2-72292-6sjw5-master-2         <none>           <none>
+ovnkube-node-gbwr9                       8/8     Running   0          24m   10.0.128.4   ci-ln-0tv5gg2-72292-6sjw5-worker-c-s9gqt   <none>           <none>
+ovnkube-node-h4fpx                       8/8     Running   0          33m   10.0.0.5     ci-ln-0tv5gg2-72292-6sjw5-master-0         <none>           <none>
+ovnkube-node-j4hzw                       8/8     Running   0          24m   10.0.128.2   ci-ln-0tv5gg2-72292-6sjw5-worker-a-hzbh5   <none>           <none>
+ovnkube-node-wdhgv                       8/8     Running   0          33m   10.0.0.3     ci-ln-0tv5gg2-72292-6sjw5-master-1         <none>           <none>
+ovnkube-node-wfncn                       8/8     Running   0          24m   10.0.128.3   ci-ln-0tv5gg2-72292-6sjw5-worker-b-5bb7f   <none>           <none>
+----
+
+. Navigate into a pod to look at the northbound database by running the following command:
++
+[source,terminal]
+----
+$ oc rsh -c nbdb -n openshift-ovn-kubernetes ovnkube-node-524dt
+----
++
+. Run the following command to look at the ACLs nbdb:
++
+[source,terminal]
+----
+$ ovn-nbctl find ACL 'external_ids{>=}{"k8s.ovn.org/owner-type"=AdminNetworkPolicy,"k8s.ovn.org/name"=cluster-control}'
+----
++
+--
+Where::
++
+cluster-control:: Specifies the name of the `AdminNetworkPolicy` you are troubleshooting.
++
+AdminNetworkPolicy:: Specifies the type: `AdminNetworkPolicy` or `BaselineAdminNetworkPolicy`.
+--
++
+.Example output for ACLs
+[%collapsible]
+====
+[source,terminal]
+----
+_uuid               : 0d5e4722-b608-4bb1-b625-23c323cc9926
+action              : allow-related
+direction           : to-lport
+external_ids        : {direction=Ingress, gress-index="2", "k8s.ovn.org/id"="default-network-controller:AdminNetworkPolicy:cluster-control:Ingress:2:None", "k8s.ovn.org/name"=cluster-control, "k8s.ovn.org/owner-controller"=default-network-controller, "k8s.ovn.org/owner-type"=AdminNetworkPolicy, port-policy-protocol=None}
+label               : 0
+log                 : false
+match               : "outport == @a14645450421485494999 && ((ip4.src == $a13730899355151937870))"
+meter               : acl-logging
+name                : "ANP:cluster-control:Ingress:2"
+options             : {}
+priority            : 26598
+severity            : []
+tier                : 1
+
+_uuid               : b7be6472-df67-439c-8c9c-f55929f0a6e0
+action              : drop
+direction           : from-lport
+external_ids        : {direction=Egress, gress-index="5", "k8s.ovn.org/id"="default-network-controller:AdminNetworkPolicy:cluster-control:Egress:5:None", "k8s.ovn.org/name"=cluster-control, "k8s.ovn.org/owner-controller"=default-network-controller, "k8s.ovn.org/owner-type"=AdminNetworkPolicy, port-policy-protocol=None}
+label               : 0
+log                 : false
+match               : "inport == @a14645450421485494999 && ((ip4.dst == $a11452480169090787059))"
+meter               : acl-logging
+name                : "ANP:cluster-control:Egress:5"
+options             : {apply-after-lb="true"}
+priority            : 26595
+severity            : []
+tier                : 1
+
+_uuid               : 5a6e5bb4-36eb-4209-b8bc-c611983d4624
+action              : pass
+direction           : to-lport
+external_ids        : {direction=Ingress, gress-index="3", "k8s.ovn.org/id"="default-network-controller:AdminNetworkPolicy:cluster-control:Ingress:3:None", "k8s.ovn.org/name"=cluster-control, "k8s.ovn.org/owner-controller"=default-network-controller, "k8s.ovn.org/owner-type"=AdminNetworkPolicy, port-policy-protocol=None}
+label               : 0
+log                 : false
+match               : "outport == @a14645450421485494999 && ((ip4.src == $a764182844364804195))"
+meter               : acl-logging
+name                : "ANP:cluster-control:Ingress:3"
+options             : {}
+priority            : 26597
+severity            : []
+tier                : 1
+
+_uuid               : 04f20275-c410-405c-a923-0e677f767889
+action              : pass
+direction           : from-lport
+external_ids        : {direction=Egress, gress-index="4", "k8s.ovn.org/id"="default-network-controller:AdminNetworkPolicy:cluster-control:Egress:4:None", "k8s.ovn.org/name"=cluster-control, "k8s.ovn.org/owner-controller"=default-network-controller, "k8s.ovn.org/owner-type"=AdminNetworkPolicy, port-policy-protocol=None}
+label               : 0
+log                 : false
+match               : "inport == @a14645450421485494999 && ((ip4.dst == $a5972452606168369118))"
+meter               : acl-logging
+name                : "ANP:cluster-control:Egress:4"
+options             : {apply-after-lb="true"}
+priority            : 26596
+severity            : []
+tier                : 1
+
+_uuid               : 4b5d836a-e0a3-4088-825e-f9f0ca58e538
+action              : drop
+direction           : to-lport
+external_ids        : {direction=Ingress, gress-index="4", "k8s.ovn.org/id"="default-network-controller:AdminNetworkPolicy:cluster-control:Ingress:4:None", "k8s.ovn.org/name"=cluster-control, "k8s.ovn.org/owner-controller"=default-network-controller, "k8s.ovn.org/owner-type"=AdminNetworkPolicy, port-policy-protocol=None}
+label               : 0
+log                 : false
+match               : "outport == @a14645450421485494999 && ((ip4.src == $a13814616246365836720))"
+meter               : acl-logging
+name                : "ANP:cluster-control:Ingress:4"
+options             : {}
+priority            : 26596
+severity            : []
+tier                : 1
+
+_uuid               : 5d09957d-d2cc-4f5a-9ddd-b97d9d772023
+action              : allow-related
+direction           : from-lport
+external_ids        : {direction=Egress, gress-index="2", "k8s.ovn.org/id"="default-network-controller:AdminNetworkPolicy:cluster-control:Egress:2:tcp", "k8s.ovn.org/name"=cluster-control, "k8s.ovn.org/owner-controller"=default-network-controller, "k8s.ovn.org/owner-type"=AdminNetworkPolicy, port-policy-protocol=tcp}
+label               : 0
+log                 : false
+match               : "inport == @a14645450421485494999 && ((ip4.dst == $a18396736153283155648)) && tcp && tcp.dst=={8991,8992}"
+meter               : acl-logging
+name                : "ANP:cluster-control:Egress:2"
+options             : {apply-after-lb="true"}
+priority            : 26598
+severity            : []
+tier                : 1
+
+_uuid               : 1a68a5ed-e7f9-47d0-b55c-89184d97e81a
+action              : allow-related
+direction           : from-lport
+external_ids        : {direction=Egress, gress-index="1", "k8s.ovn.org/id"="default-network-controller:AdminNetworkPolicy:cluster-control:Egress:1:tcp", "k8s.ovn.org/name"=cluster-control, "k8s.ovn.org/owner-controller"=default-network-controller, "k8s.ovn.org/owner-type"=AdminNetworkPolicy, port-policy-protocol=tcp}
+label               : 0
+log                 : false
+match               : "inport == @a14645450421485494999 && ((ip4.dst == $a10706246167277696183)) && tcp && tcp.dst==6443"
+meter               : acl-logging
+name                : "ANP:cluster-control:Egress:1"
+options             : {apply-after-lb="true"}
+priority            : 26599
+severity            : []
+tier                : 1
+
+_uuid               : aa1a224d-7960-4952-bdfb-35246bafbac8
+action              : allow-related
+direction           : to-lport
+external_ids        : {direction=Ingress, gress-index="1", "k8s.ovn.org/id"="default-network-controller:AdminNetworkPolicy:cluster-control:Ingress:1:tcp", "k8s.ovn.org/name"=cluster-control, "k8s.ovn.org/owner-controller"=default-network-controller, "k8s.ovn.org/owner-type"=AdminNetworkPolicy, port-policy-protocol=tcp}
+label               : 0
+log                 : false
+match               : "outport == @a14645450421485494999 && ((ip4.src == $a6786643370959569281)) && tcp && tcp.dst==7564"
+meter               : acl-logging
+name                : "ANP:cluster-control:Ingress:1"
+options             : {}
+priority            : 26599
+severity            : []
+tier                : 1
+
+_uuid               : 1a27d30e-3f96-4915-8ddd-ade7f22c117b
+action              : allow-related
+direction           : from-lport
+external_ids        : {direction=Egress, gress-index="3", "k8s.ovn.org/id"="default-network-controller:AdminNetworkPolicy:cluster-control:Egress:3:None", "k8s.ovn.org/name"=cluster-control, "k8s.ovn.org/owner-controller"=default-network-controller, "k8s.ovn.org/owner-type"=AdminNetworkPolicy, port-policy-protocol=None}
+label               : 0
+log                 : false
+match               : "inport == @a14645450421485494999 && ((ip4.dst == $a10622494091691694581))"
+meter               : acl-logging
+name                : "ANP:cluster-control:Egress:3"
+options             : {apply-after-lb="true"}
+priority            : 26597
+severity            : []
+tier                : 1
+
+_uuid               : b23a087f-08f8-4225-8c27-4a9a9ee0c407
+action              : allow-related
+direction           : from-lport
+external_ids        : {direction=Egress, gress-index="0", "k8s.ovn.org/id"="default-network-controller:AdminNetworkPolicy:cluster-control:Egress:0:udp", "k8s.ovn.org/name"=cluster-control, "k8s.ovn.org/owner-controller"=default-network-controller, "k8s.ovn.org/owner-type"=AdminNetworkPolicy, port-policy-protocol=udp}
+label               : 0
+log                 : false
+match               : "inport == @a14645450421485494999 && ((ip4.dst == $a13517855690389298082)) && udp && udp.dst==5353"
+meter               : acl-logging
+name                : "ANP:cluster-control:Egress:0"
+options             : {apply-after-lb="true"}
+priority            : 26600
+severity            : []
+tier                : 1
+
+_uuid               : d14ed5cf-2e06-496e-8cae-6b76d5dd5ccd
+action              : allow-related
+direction           : to-lport
+external_ids        : {direction=Ingress, gress-index="0", "k8s.ovn.org/id"="default-network-controller:AdminNetworkPolicy:cluster-control:Ingress:0:None", "k8s.ovn.org/name"=cluster-control, "k8s.ovn.org/owner-controller"=default-network-controller, "k8s.ovn.org/owner-type"=AdminNetworkPolicy, port-policy-protocol=None}
+label               : 0
+log                 : false
+match               : "outport == @a14645450421485494999 && ((ip4.src == $a14545668191619617708))"
+meter               : acl-logging
+name                : "ANP:cluster-control:Ingress:0"
+options             : {}
+priority            : 26600
+severity            : []
+tier                : 1
+
+----
+====
++
+[NOTE]
+====
+The outputs for ingress and egress show you the logic of the policy in the ACL. For example, every time a packet matches the provided `match` the `action` is taken.
+====
+
+.. Examine the specific ACL for the rule by running the following command:
++
+[source,terminal]
+----
+$ ovn-nbctl find ACL 'external_ids{>=}{"k8s.ovn.org/owner-type"=AdminNetworkPolicy,direction=Ingress,"k8s.ovn.org/name"=cluster-control,gress-index="1"}'
+----
++
+--
+Where::
++
+`cluster-control`:: Specifies the `name` of your ANP.
++
+`Ingress`:: Specifies the `direction` of traffic either of type `Ingress` or `Egress`.
++
+`1`:: Specifies the rule you want to look at.
+--
++
+For the example ANP named `cluster-control` at `priority` `34`, the following is an example output for `Ingress` `rule` 1:
++
+.Example output
+[%collapsible]
+====
+[source,terminal]
+----
+_uuid               : aa1a224d-7960-4952-bdfb-35246bafbac8
+action              : allow-related
+direction           : to-lport
+external_ids        : {direction=Ingress, gress-index="1", "k8s.ovn.org/id"="default-network-controller:AdminNetworkPolicy:cluster-control:Ingress:1:tcp", "k8s.ovn.org/name"=cluster-control, "k8s.ovn.org/owner-controller"=default-network-controller, "k8s.ovn.org/owner-type"=AdminNetworkPolicy, port-policy-protocol=tcp}
+label               : 0
+log                 : false
+match               : "outport == @a14645450421485494999 && ((ip4.src == $a6786643370959569281)) && tcp && tcp.dst==7564"
+meter               : acl-logging
+name                : "ANP:cluster-control:Ingress:1"
+options             : {}
+priority            : 26599
+severity            : []
+tier                : 1
+----
+====
+
+. Run the following command to look at address sets in the nbdb:
++
+[source,terminal]
+----
+$ ovn-nbctl find Address_Set 'external_ids{>=}{"k8s.ovn.org/owner-type"=AdminNetworkPolicy,"k8s.ovn.org/name"=cluster-control}'
+----
++
+.Example outputs for `Address_Set`
+[%collapsible]
+====
+[source,terminal]
+----
+_uuid               : 56e89601-5552-4238-9fc3-8833f5494869
+addresses           : ["192.168.194.135", "192.168.194.152", "192.168.194.193", "192.168.194.254"]
+external_ids        : {direction=Egress, gress-index="1", ip-family=v4, "k8s.ovn.org/id"="default-network-controller:AdminNetworkPolicy:cluster-control:Egress:1:v4", "k8s.ovn.org/name"=cluster-control, "k8s.ovn.org/owner-controller"=default-network-controller, "k8s.ovn.org/owner-type"=AdminNetworkPolicy}
+name                : a10706246167277696183
+
+_uuid               : 7df9330d-380b-4bdb-8acd-4eddeda2419c
+addresses           : ["10.132.0.10", "10.132.0.11", "10.132.0.12", "10.132.0.13", "10.132.0.14", "10.132.0.15", "10.132.0.16", "10.132.0.17", "10.132.0.5", "10.132.0.7", "10.132.0.71", "10.132.0.75", "10.132.0.8", "10.132.0.81", "10.132.0.9", "10.132.2.10", "10.132.2.11", "10.132.2.12", "10.132.2.14", "10.132.2.15", "10.132.2.3", "10.132.2.4", "10.132.2.5", "10.132.2.6", "10.132.2.7", "10.132.2.8", "10.132.2.9", "10.132.3.64", "10.132.3.65", "10.132.3.72", "10.132.3.73", "10.132.3.76", "10.133.0.10", "10.133.0.11", "10.133.0.12", "10.133.0.13", "10.133.0.14", "10.133.0.15", "10.133.0.16", "10.133.0.17", "10.133.0.18", "10.133.0.19", "10.133.0.20", "10.133.0.21", "10.133.0.22", "10.133.0.23", "10.133.0.24", "10.133.0.25", "10.133.0.26", "10.133.0.27", "10.133.0.28", "10.133.0.29", "10.133.0.30", "10.133.0.31", "10.133.0.32", "10.133.0.33", "10.133.0.34", "10.133.0.35", "10.133.0.36", "10.133.0.37", "10.133.0.38", "10.133.0.39", "10.133.0.40", "10.133.0.41", "10.133.0.42", "10.133.0.44", "10.133.0.45", "10.133.0.46", "10.133.0.47", "10.133.0.48", "10.133.0.5", "10.133.0.6", "10.133.0.7", "10.133.0.8", "10.133.0.9", "10.134.0.10", "10.134.0.11", "10.134.0.12", "10.134.0.13", "10.134.0.14", "10.134.0.15", "10.134.0.16", "10.134.0.17", "10.134.0.18", "10.134.0.19", "10.134.0.20", "10.134.0.21", "10.134.0.22", "10.134.0.23", "10.134.0.24", "10.134.0.25", "10.134.0.26", "10.134.0.27", "10.134.0.28", "10.134.0.30", "10.134.0.31", "10.134.0.32", "10.134.0.33", "10.134.0.34", "10.134.0.35", "10.134.0.36", "10.134.0.37", "10.134.0.38", "10.134.0.4", "10.134.0.42", "10.134.0.9", "10.135.0.10", "10.135.0.11", "10.135.0.12", "10.135.0.13", "10.135.0.14", "10.135.0.15", "10.135.0.16", "10.135.0.17", "10.135.0.18", "10.135.0.19", "10.135.0.23", "10.135.0.24", "10.135.0.26", "10.135.0.27", "10.135.0.29", "10.135.0.3", "10.135.0.4", "10.135.0.40", "10.135.0.41", "10.135.0.42", "10.135.0.43", "10.135.0.44", "10.135.0.5", "10.135.0.6", "10.135.0.7", "10.135.0.8", "10.135.0.9"]
+external_ids        : {direction=Ingress, gress-index="4", ip-family=v4, "k8s.ovn.org/id"="default-network-controller:AdminNetworkPolicy:cluster-control:Ingress:4:v4", "k8s.ovn.org/name"=cluster-control, "k8s.ovn.org/owner-controller"=default-network-controller, "k8s.ovn.org/owner-type"=AdminNetworkPolicy}
+name                : a13814616246365836720
+
+_uuid               : 84d76f13-ad95-4c00-8329-a0b1d023c289
+addresses           : ["10.132.3.76", "10.135.0.44"]
+external_ids        : {direction=Egress, gress-index="4", ip-family=v4, "k8s.ovn.org/id"="default-network-controller:AdminNetworkPolicy:cluster-control:Egress:4:v4", "k8s.ovn.org/name"=cluster-control, "k8s.ovn.org/owner-controller"=default-network-controller, "k8s.ovn.org/owner-type"=AdminNetworkPolicy}
+name                : a5972452606168369118
+
+_uuid               : 0c53e917-f7ee-4256-8f3a-9522c0481e52
+addresses           : ["10.132.0.10", "10.132.0.11", "10.132.0.12", "10.132.0.13", "10.132.0.14", "10.132.0.15", "10.132.0.16", "10.132.0.17", "10.132.0.5", "10.132.0.7", "10.132.0.71", "10.132.0.75", "10.132.0.8", "10.132.0.81", "10.132.0.9", "10.132.2.10", "10.132.2.11", "10.132.2.12", "10.132.2.14", "10.132.2.15", "10.132.2.3", "10.132.2.4", "10.132.2.5", "10.132.2.6", "10.132.2.7", "10.132.2.8", "10.132.2.9", "10.132.3.64", "10.132.3.65", "10.132.3.72", "10.132.3.73", "10.132.3.76", "10.133.0.10", "10.133.0.11", "10.133.0.12", "10.133.0.13", "10.133.0.14", "10.133.0.15", "10.133.0.16", "10.133.0.17", "10.133.0.18", "10.133.0.19", "10.133.0.20", "10.133.0.21", "10.133.0.22", "10.133.0.23", "10.133.0.24", "10.133.0.25", "10.133.0.26", "10.133.0.27", "10.133.0.28", "10.133.0.29", "10.133.0.30", "10.133.0.31", "10.133.0.32", "10.133.0.33", "10.133.0.34", "10.133.0.35", "10.133.0.36", "10.133.0.37", "10.133.0.38", "10.133.0.39", "10.133.0.40", "10.133.0.41", "10.133.0.42", "10.133.0.44", "10.133.0.45", "10.133.0.46", "10.133.0.47", "10.133.0.48", "10.133.0.5", "10.133.0.6", "10.133.0.7", "10.133.0.8", "10.133.0.9", "10.134.0.10", "10.134.0.11", "10.134.0.12", "10.134.0.13", "10.134.0.14", "10.134.0.15", "10.134.0.16", "10.134.0.17", "10.134.0.18", "10.134.0.19", "10.134.0.20", "10.134.0.21", "10.134.0.22", "10.134.0.23", "10.134.0.24", "10.134.0.25", "10.134.0.26", "10.134.0.27", "10.134.0.28", "10.134.0.30", "10.134.0.31", "10.134.0.32", "10.134.0.33", "10.134.0.34", "10.134.0.35", "10.134.0.36", "10.134.0.37", "10.134.0.38", "10.134.0.4", "10.134.0.42", "10.134.0.9", "10.135.0.10", "10.135.0.11", "10.135.0.12", "10.135.0.13", "10.135.0.14", "10.135.0.15", "10.135.0.16", "10.135.0.17", "10.135.0.18", "10.135.0.19", "10.135.0.23", "10.135.0.24", "10.135.0.26", "10.135.0.27", "10.135.0.29", "10.135.0.3", "10.135.0.4", "10.135.0.40", "10.135.0.41", "10.135.0.42", "10.135.0.43", "10.135.0.44", "10.135.0.5", "10.135.0.6", "10.135.0.7", "10.135.0.8", "10.135.0.9"]
+external_ids        : {direction=Egress, gress-index="2", ip-family=v4, "k8s.ovn.org/id"="default-network-controller:AdminNetworkPolicy:cluster-control:Egress:2:v4", "k8s.ovn.org/name"=cluster-control, "k8s.ovn.org/owner-controller"=default-network-controller, "k8s.ovn.org/owner-type"=AdminNetworkPolicy}
+name                : a18396736153283155648
+
+_uuid               : 5228bf1b-dfd8-40ec-bfa8-95c5bf9aded9
+addresses           : []
+external_ids        : {direction=Ingress, gress-index="0", ip-family=v4, "k8s.ovn.org/id"="default-network-controller:AdminNetworkPolicy:cluster-control:Ingress:0:v4", "k8s.ovn.org/name"=cluster-control, "k8s.ovn.org/owner-controller"=default-network-controller, "k8s.ovn.org/owner-type"=AdminNetworkPolicy}
+name                : a14545668191619617708
+
+_uuid               : 46530d69-70da-4558-8c63-884ec9dc4f25
+addresses           : ["10.132.2.10", "10.132.2.5", "10.132.2.6", "10.132.2.7", "10.132.2.8", "10.132.2.9", "10.133.0.47", "10.134.0.33", "10.135.0.10", "10.135.0.11", "10.135.0.12", "10.135.0.19", "10.135.0.24", "10.135.0.7", "10.135.0.8", "10.135.0.9"]
+external_ids        : {direction=Ingress, gress-index="1", ip-family=v4, "k8s.ovn.org/id"="default-network-controller:AdminNetworkPolicy:cluster-control:Ingress:1:v4", "k8s.ovn.org/name"=cluster-control, "k8s.ovn.org/owner-controller"=default-network-controller, "k8s.ovn.org/owner-type"=AdminNetworkPolicy}
+name                : a6786643370959569281
+
+_uuid               : 65fdcdea-0b9f-4318-9884-1b51d231ad1d
+addresses           : ["10.132.3.72", "10.135.0.42"]
+external_ids        : {direction=Ingress, gress-index="2", ip-family=v4, "k8s.ovn.org/id"="default-network-controller:AdminNetworkPolicy:cluster-control:Ingress:2:v4", "k8s.ovn.org/name"=cluster-control, "k8s.ovn.org/owner-controller"=default-network-controller, "k8s.ovn.org/owner-type"=AdminNetworkPolicy}
+name                : a13730899355151937870
+
+_uuid               : 73eabdb0-36bf-4ca3-b66d-156ac710df4c
+addresses           : ["10.0.32.0/19", "10.0.56.38/32", "10.0.69.0/24", "10.132.3.72", "10.135.0.42", "172.29.0.0/30", "192.168.194.103", "192.168.194.2"]
+external_ids        : {direction=Egress, gress-index="3", ip-family=v4, "k8s.ovn.org/id"="default-network-controller:AdminNetworkPolicy:cluster-control:Egress:3:v4", "k8s.ovn.org/name"=cluster-control, "k8s.ovn.org/owner-controller"=default-network-controller, "k8s.ovn.org/owner-type"=AdminNetworkPolicy}
+name                : a10622494091691694581
+
+_uuid               : 50cdbef2-71b5-474b-914c-6fcd1d7712d3
+addresses           : ["10.132.0.10", "10.132.0.11", "10.132.0.12", "10.132.0.13", "10.132.0.14", "10.132.0.15", "10.132.0.16", "10.132.0.17", "10.132.0.5", "10.132.0.7", "10.132.0.71", "10.132.0.75", "10.132.0.8", "10.132.0.81", "10.132.0.9", "10.132.2.10", "10.132.2.11", "10.132.2.12", "10.132.2.14", "10.132.2.15", "10.132.2.3", "10.132.2.4", "10.132.2.5", "10.132.2.6", "10.132.2.7", "10.132.2.8", "10.132.2.9", "10.132.3.64", "10.132.3.65", "10.132.3.72", "10.132.3.73", "10.132.3.76", "10.133.0.10", "10.133.0.11", "10.133.0.12", "10.133.0.13", "10.133.0.14", "10.133.0.15", "10.133.0.16", "10.133.0.17", "10.133.0.18", "10.133.0.19", "10.133.0.20", "10.133.0.21", "10.133.0.22", "10.133.0.23", "10.133.0.24", "10.133.0.25", "10.133.0.26", "10.133.0.27", "10.133.0.28", "10.133.0.29", "10.133.0.30", "10.133.0.31", "10.133.0.32", "10.133.0.33", "10.133.0.34", "10.133.0.35", "10.133.0.36", "10.133.0.37", "10.133.0.38", "10.133.0.39", "10.133.0.40", "10.133.0.41", "10.133.0.42", "10.133.0.44", "10.133.0.45", "10.133.0.46", "10.133.0.47", "10.133.0.48", "10.133.0.5", "10.133.0.6", "10.133.0.7", "10.133.0.8", "10.133.0.9", "10.134.0.10", "10.134.0.11", "10.134.0.12", "10.134.0.13", "10.134.0.14", "10.134.0.15", "10.134.0.16", "10.134.0.17", "10.134.0.18", "10.134.0.19", "10.134.0.20", "10.134.0.21", "10.134.0.22", "10.134.0.23", "10.134.0.24", "10.134.0.25", "10.134.0.26", "10.134.0.27", "10.134.0.28", "10.134.0.30", "10.134.0.31", "10.134.0.32", "10.134.0.33", "10.134.0.34", "10.134.0.35", "10.134.0.36", "10.134.0.37", "10.134.0.38", "10.134.0.4", "10.134.0.42", "10.134.0.9", "10.135.0.10", "10.135.0.11", "10.135.0.12", "10.135.0.13", "10.135.0.14", "10.135.0.15", "10.135.0.16", "10.135.0.17", "10.135.0.18", "10.135.0.19", "10.135.0.23", "10.135.0.24", "10.135.0.26", "10.135.0.27", "10.135.0.29", "10.135.0.3", "10.135.0.4", "10.135.0.40", "10.135.0.41", "10.135.0.42", "10.135.0.43", "10.135.0.44", "10.135.0.5", "10.135.0.6", "10.135.0.7", "10.135.0.8", "10.135.0.9"]
+external_ids        : {direction=Egress, gress-index="0", ip-family=v4, "k8s.ovn.org/id"="default-network-controller:AdminNetworkPolicy:cluster-control:Egress:0:v4", "k8s.ovn.org/name"=cluster-control, "k8s.ovn.org/owner-controller"=default-network-controller, "k8s.ovn.org/owner-type"=AdminNetworkPolicy}
+name                : a13517855690389298082
+
+_uuid               : 32a42f32-2d11-43dd-979d-a56d7ee6aa57
+addresses           : ["10.132.3.76", "10.135.0.44"]
+external_ids        : {direction=Ingress, gress-index="3", ip-family=v4, "k8s.ovn.org/id"="default-network-controller:AdminNetworkPolicy:cluster-control:Ingress:3:v4", "k8s.ovn.org/name"=cluster-control, "k8s.ovn.org/owner-controller"=default-network-controller, "k8s.ovn.org/owner-type"=AdminNetworkPolicy}
+name                : a764182844364804195
+
+_uuid               : 8fd3b977-6e1c-47aa-82b7-e3e3136c4a72
+addresses           : ["0.0.0.0/0"]
+external_ids        : {direction=Egress, gress-index="5", ip-family=v4, "k8s.ovn.org/id"="default-network-controller:AdminNetworkPolicy:cluster-control:Egress:5:v4", "k8s.ovn.org/name"=cluster-control, "k8s.ovn.org/owner-controller"=default-network-controller, "k8s.ovn.org/owner-type"=AdminNetworkPolicy}
+name                : a11452480169090787059
+----
+====
+
+.. Examine the specific address set of the rule  by running the following command:
++
+[source,terminal]
+----
+$ ovn-nbctl find Address_Set 'external_ids{>=}{"k8s.ovn.org/owner-type"=AdminNetworkPolicy,direction=Egress,"k8s.ovn.org/name"=cluster-control,gress-index="5"}'
+----
++
+.Example outputs for `Address_Set`
+[%collapsible]
+====
+[source,terminal]
+----
+_uuid               : 8fd3b977-6e1c-47aa-82b7-e3e3136c4a72
+addresses           : ["0.0.0.0/0"]
+external_ids        : {direction=Egress, gress-index="5", ip-family=v4, "k8s.ovn.org/id"="default-network-controller:AdminNetworkPolicy:cluster-control:Egress:5:v4", "k8s.ovn.org/name"=cluster-control, "k8s.ovn.org/owner-controller"=default-network-controller, "k8s.ovn.org/owner-type"=AdminNetworkPolicy}
+name                : a11452480169090787059
+----
+====
+
+. Run the following command to look at the port groups in the nbdb:
++
+[source,terminal]
+----
+$ ovn-nbctl find Port_Group 'external_ids{>=}{"k8s.ovn.org/owner-type"=AdminNetworkPolicy,"k8s.ovn.org/name"=cluster-control}'
+----
++
+.Example outputs for `Port_Group`
+[%collapsible]
+====
+[source,terminal]
+----
+_uuid               : f50acf71-7488-4b9a-b7b8-c8a024e99d21
+acls                : [04f20275-c410-405c-a923-0e677f767889, 0d5e4722-b608-4bb1-b625-23c323cc9926, 1a27d30e-3f96-4915-8ddd-ade7f22c117b, 1a68a5ed-e7f9-47d0-b55c-89184d97e81a, 4b5d836a-e0a3-4088-825e-f9f0ca58e538, 5a6e5bb4-36eb-4209-b8bc-c611983d4624, 5d09957d-d2cc-4f5a-9ddd-b97d9d772023, aa1a224d-7960-4952-bdfb-35246bafbac8, b23a087f-08f8-4225-8c27-4a9a9ee0c407, b7be6472-df67-439c-8c9c-f55929f0a6e0, d14ed5cf-2e06-496e-8cae-6b76d5dd5ccd]
+external_ids        : {"k8s.ovn.org/id"="default-network-controller:AdminNetworkPolicy:cluster-control", "k8s.ovn.org/name"=cluster-control, "k8s.ovn.org/owner-controller"=default-network-controller, "k8s.ovn.org/owner-type"=AdminNetworkPolicy}
+name                : a14645450421485494999
+ports               : [5e75f289-8273-4f8a-8798-8c10f7318833, de7e1b71-6184-445d-93e7-b20acadf41ea]
+----
+====

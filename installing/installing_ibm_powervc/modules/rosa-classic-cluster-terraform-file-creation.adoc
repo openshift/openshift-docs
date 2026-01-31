@@ -1,0 +1,292 @@
+// Module included in the following assemblies:
+//
+// * rosa_install_access_delete_clusters/rosa-classic-creating-a-cluster-quickly-terraform.adoc
+
+:_content-type: PROCEDURE
+
+[id="rosa-classic-cluster-terraform-file-creation_{context}"]
+= Creating your Terraform files locally
+
+After you set up your link:https://console.redhat.com/openshift/token/rosa[offline {cluster-manager-first} token], you need to create the Terraform files locally to build your cluster. You can create these files by using the following code templates.
+
+.Procedure
+
+. Create the `main.tf` file by running the following command:
++
+[source,terminal]
+----
+$ cat<<-EOF>main.tf
+#
+# Copyright (c) 2023 Red Hat, Inc.
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#   http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+#
+
+terraform {
+  required_providers {
+    aws = {
+      source  = "hashicorp/aws"
+      version = ">= 4.20.0"
+    }
+    rhcs = {
+      version = ">= 1.6.2"
+      source  = "terraform-redhat/rhcs"
+    }
+  }
+}
+
+# Export token using the RHCS_TOKEN environment variable
+provider "rhcs" {}
+
+provider "aws" {
+  region = var.aws_region
+  ignore_tags {
+    key_prefixes = ["kubernetes.io/"]
+  }
+  default_tags {
+    tags = var.default_aws_tags
+  }
+}
+
+data "aws_availability_zones" "available" {}
+
+locals {
+  # The default setting creates 3 availability zones. Set to "false" to create a single availability zones.
+  region_azs = var.multi_az ? slice([for zone in data.aws_availability_zones.available.names : format("%s", zone)], 0, 3) : slice([for zone in data.aws_availability_zones.available.names : format("%s", zone)], 0, 1)
+}
+
+resource "random_string" "random_name" {
+  length  = 6
+  special = false
+  upper   = false
+}
+
+locals {
+  path                 = coalesce(var.path, "/")
+  worker_node_replicas = try(var.worker_node_replicas, var.multi_az ? 3 : 2)
+  # If cluster_name is not null, use that, otherwise generate a random cluster name
+  cluster_name = coalesce(var.cluster_name, "rosa-\${random_string.random_name.result}")
+}
+
+# The network validator requires an additional 60 seconds to validate Terraform clusters.
+resource "time_sleep" "wait_60_seconds" {
+  count = var.create_vpc ? 1 : 0
+  depends_on = [module.vpc]
+  create_duration = "60s"
+}
+
+module "rosa-classic" {
+  source                 = "terraform-redhat/rosa-classic/rhcs"
+  version                = "1.5.0"
+  cluster_name           = local.cluster_name
+  openshift_version      = var.openshift_version
+  account_role_prefix    = local.cluster_name
+  operator_role_prefix   = local.cluster_name
+  replicas               = local.worker_node_replicas
+  aws_availability_zones = local.region_azs
+  create_oidc            = true
+  private                = var.private_cluster
+  aws_private_link       = var.private_cluster
+  aws_subnet_ids         = var.create_vpc ? var.private_cluster ? module.vpc[0].private_subnets : concat(module.vpc[0].public_subnets, module.vpc[0].private_subnets) : var.aws_subnet_ids
+  multi_az               = var.multi_az
+  create_account_roles   = true
+  create_operator_roles  = true
+# Optional: Configure a cluster administrator user \ <1>
+# 
+# Option 1: Default cluster-admin user
+# Create an administrator user (cluster-admin) and automatically
+# generate a password by uncommenting the following parameter:
+#  create_admin_user = true
+# Generated administrator credentials are displayed in terminal output.
+#
+# Option 2: Specify administrator username and password
+# Create an administrator user and define your own password
+# by uncommenting and editing the values of the following parameters:
+#  admin_credentials_username = <username>
+#  admin_credentials_password = <password>
+    
+  depends_on = [time_sleep.wait_60_seconds]
+}
+EOF
+----
+<1> Optional: Create an administrator user during cluster creation by uncommenting the appropriate parameters and editing their values.
+
+. Create the `variables.tf` file by running the following command:
++
+[NOTE]
+====
+Copy and edit this file _before_ running the command to build your cluster.
+====
++
+[source,terminal]
+----
+$ cat<<-EOF>variables.tf
+#
+# Copyright (c) 2023 Red Hat, Inc.
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#   http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+#
+variable "openshift_version" {
+  type        = string
+  default     = "4.14.20"
+  description = "Desired version of OpenShift for the cluster, for example '4.14.20'. If version is greater than the currently running version, an upgrade will be scheduled."
+}
+
+variable "create_vpc" {
+  type        = bool
+  description = "If you would like to create a new VPC, set this value to 'true'. If you do not want to create a new VPC, set this value to 'false'."
+}
+
+# ROSA Cluster info
+variable "cluster_name" {
+  default     = null
+  type        = string
+  description = "The name of the ROSA cluster to create"
+}
+
+variable "additional_tags" {
+  default = {
+    Terraform   = "true"
+    Environment = "dev"
+  }
+  description = "Additional AWS resource tags"
+  type        = map(string)
+}
+
+variable "path" {
+  description = "(Optional) The arn path for the account/operator roles as well as their policies."
+  type        = string
+  default     = null
+}
+
+variable "multi_az" {
+  type        = bool
+  description = "Multi AZ Cluster for High Availability"
+  default     = true
+}
+
+variable "worker_node_replicas" {
+  default     = 3
+  description = "Number of worker nodes to provision. Single zone clusters need at least 2 nodes, multizone clusters need at least 3 nodes"
+  type        = number
+}
+
+variable "aws_subnet_ids" {
+  type        = list(any)
+  description = "A list of either the public or public + private subnet IDs to use for the cluster blocks to use for the cluster"
+  default     = ["subnet-01234567890abcdef", "subnet-01234567890abcdef", "subnet-01234567890abcdef"]
+}
+
+variable "private_cluster" {
+  type        = bool
+  description = "If you want to create a private cluster, set this value to 'true'. If you want a publicly available cluster, set this value to 'false'."
+}
+
+#VPC Info
+variable "vpc_name" {
+  type        = string
+  description = "VPC Name"
+  default     = "tf-qs-vpc"
+}
+
+variable "vpc_cidr_block" {
+  type        = string
+  description = "value of the CIDR block to use for the VPC"
+  default     = "10.0.0.0/16"
+}
+
+variable "private_subnet_cidrs" {
+  type        = list(any)
+  description = "The CIDR blocks to use for the private subnets"
+  default     = ["10.0.1.0/24", "10.0.2.0/24", "10.0.3.0/24"]
+}
+
+variable "public_subnet_cidrs" {
+  type        = list(any)
+  description = "The CIDR blocks to use for the public subnets"
+  default     = ["10.0.101.0/24", "10.0.102.0/24", "10.0.103.0/24"]
+}
+
+variable "single_nat_gateway" {
+  type        = bool
+  description = "Single NAT or per NAT for subnet"
+  default     = false
+}
+
+#AWS Info
+variable "aws_region" {
+  type    = string
+  default = "us-east-2"
+}
+
+variable "default_aws_tags" {
+  type        = map(string)
+  description = "Default tags for AWS"
+  default     = {}
+}
+EOF
+----
+
+. Create the `vpc.tf` file by running the following command:
++
+[source,terminal]
+----
+$ cat<<-EOF>vpc.tf
+#
+# Copyright (c) 2023 Red Hat, Inc.
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#   http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+#
+module "vpc" {
+  source  = "terraform-aws-modules/vpc/aws"
+  version = "5.1.2"
+
+  count = var.create_vpc ? 1 : 0
+  name  = var.vpc_name
+  cidr  = var.vpc_cidr_block
+
+  azs             = local.region_azs
+  private_subnets = var.private_subnet_cidrs
+  public_subnets  = var.public_subnet_cidrs
+
+  enable_nat_gateway   = true
+  single_nat_gateway   = var.single_nat_gateway
+  enable_dns_hostnames = true
+  enable_dns_support   = true
+
+  tags = var.additional_tags
+}
+EOF
+----
++
+You are ready to initiate Terraform.

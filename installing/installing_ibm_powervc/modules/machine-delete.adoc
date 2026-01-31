@@ -1,0 +1,50 @@
+// Module included in the following assemblies:
+//
+// * machine_management/deleting-machine.adoc
+// * windows_containers/removing-windows-nodes.adoc
+
+:_mod-docs-content-type: PROCEDURE
+[id="machine-delete_{context}"]
+= Deleting a specific machine
+
+You can delete a specific machine.
+
+[IMPORTANT]
+====
+Do not delete a control plane machine unless your cluster uses a control plane machine set.
+====
+
+.Prerequisites
+
+* Install an {product-title} cluster.
+* Install the OpenShift CLI (`oc`).
+* Log in to `oc` as a user with `cluster-admin` permission.
+
+.Procedure
+
+. View the machines that are in the cluster by running the following command:
++
+[source,terminal]
+----
+$ oc get machine -n openshift-machine-api
+----
++
+The command output contains a list of machines in the `<clusterid>-<role>-<cloud_region>` format.
+
+. Identify the machine that you want to delete.
+
+. Delete the machine by running the following command:
++
+[source,terminal]
+----
+$ oc delete machine <machine> -n openshift-machine-api
+----
++
+[IMPORTANT]
+====
+By default, the machine controller tries to drain the node that is backed by the machine until it succeeds. In some situations, such as with a misconfigured pod disruption budget, the drain operation might not be able to succeed. If the drain operation fails, the machine controller cannot proceed removing the machine.
+
+You can skip draining the node by annotating `machine.openshift.io/exclude-node-draining` in a specific machine.
+====
++
+If the machine that you delete belongs to a machine set, a new machine is immediately created to satisfy the specified number of replicas.

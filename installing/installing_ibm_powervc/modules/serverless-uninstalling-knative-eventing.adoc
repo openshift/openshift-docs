@@ -1,0 +1,35 @@
+// Module included in the following assemblies:
+//
+// * serverless/removing/uninstalling-knative-eventing.adoc
+
+:_mod-docs-content-type: PROCEDURE
+[id="serverless-uninstalling-knative-eventing_{context}"]
+= Uninstalling Knative Eventing
+
+.Prerequisites
+
+ifdef::openshift-enterprise[]
+* You have access to an {product-title} account with cluster administrator access.
+endif::[]
+
+ifdef::openshift-dedicated[]
+* You have access to an {product-title} account with cluster administrator or dedicated administrator access.
+endif::[]
+
+* Install the OpenShift CLI (`oc`).
+
+.Procedure
+
+. Delete the `KnativeEventing` CR:
++
+[source,terminal]
+----
+$ oc delete knativeeventings.operator.knative.dev knative-eventing -n knative-eventing
+----
+
+. After the command has completed and all pods have been removed from the `knative-eventing` namespace, delete the namespace:
++
+[source,terminal]
+----
+$ oc delete namespace knative-eventing
+----

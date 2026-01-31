@@ -1,0 +1,9 @@
+// Module included in the following assemblies:
+// * installing/installing_nutanix/installing-nutanix-installer-provisioned.adoc
+
+:_mod-docs-content-type: CONCEPT
+[id="nutanix-entitlements_{context}"]
+= Internet access for Prism Central
+
+Prism Central requires internet access to obtain the {op-system-first} image that is required to install the cluster. The {op-system} image for Nutanix is available at `rhcos.mirror.openshift.com`.
+

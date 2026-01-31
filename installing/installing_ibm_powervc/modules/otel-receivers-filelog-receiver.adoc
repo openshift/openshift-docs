@@ -1,0 +1,165 @@
+// Module included in the following assemblies:
+//
+// * observability/otel/otel-collector/otel-collector-receivers.adoc
+
+:_mod-docs-content-type: REFERENCE
+[id="otel-receivers-filelog-receiver_{context}"]
+= Filelog Receiver
+
+[role="_abstract"]
+The Filelog Receiver tails and parses logs from files.
+
+.OpenTelemetry Collector custom resource with an enabled Filelog Receiver that tails a text file
+[source,yaml]
+----
+# ...
+  config:
+    receivers:
+      filelog:
+        include: [ /simple.log ] # <1>
+        operators: # <2>
+          - type: regex_parser
+            regex: '^(?P<time>\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}) (?P<sev>[A-Z]*) (?P<msg>.*)$'
+            timestamp:
+              parse_from: attributes.time
+              layout: '%Y-%m-%d %H:%M:%S'
+            severity:
+              parse_from: attributes.sev
+# ...
+----
+<1> A list of file glob patterns that match the file paths to be read.
+<2> An array of Operators. Each Operator performs a simple task such as parsing a timestamp or JSON. To process logs into a needed format, chain the Operators together.
+
+The next example shows how to make the Filelog Receiver work within security context constraints.
+
+.OpenTelemetry Collector custom resource with an enabled Filelog Receiver that parses cluster logs
+[source,yaml]
+----
+apiVersion: security.openshift.io/v1
+kind: SecurityContextConstraints
+metadata:
+  name: otel-clusterlogs-collector-scc <1>
+allowPrivilegedContainer: false
+requiredDropCapabilities:
+- ALL
+allowHostDirVolumePlugin: true
+volumes:
+- configMap
+- emptyDir
+- hostPath
+- projected
+- secret
+defaultAllowPrivilegeEscalation: false
+allowPrivilegeEscalation: false
+runAsUser:
+  type: RunAsAny
+seLinuxContext:
+  type: RunAsAny
+readOnlyRootFilesystem: true
+forbiddenSysctls:
+- '*'
+seccompProfiles:
+- runtime/default
+users:
+- system:serviceaccount:observability:clusterlogs-collector <2>
+---
+apiVersion: opentelemetry.io/v1beta1
+kind: OpenTelemetryCollector
+metadata:
+  name: clusterlogs
+  namespace: observability
+spec:
+  mode: daemonset
+  config:
+    receivers:
+      filelog:
+        include:
+        - "/var/log/pods/*/*/*.log"
+        exclude:
+        - "/var/log/pods/*/otc-container/*.log" <3>
+        - "/var/log/pods/*/*/*.gz"
+        - "/var/log/pods/*/*/*.log.*"
+        - "/var/log/pods/*/*/*.tmp"
+        include_file_path: true
+        include_file_name: false
+        operators:
+        - type: container
+    exporters:
+      debug:
+        verbosity: detailed
+    service:
+      pipelines:
+        logs:
+          receivers: [filelog]
+          exporters: [debug]
+  securityContext:
+    runAsUser: 0
+    seLinuxOptions:
+      type: spc_t
+    readOnlyRootFilesystem: true
+    allowPrivilegeEscalation: false
+    seccompProfile:
+      type: RuntimeDefault
+    capabilities:
+      drop:
+      - ALL
+  volumeMounts:
+  - name: varlogpods
+    mountPath: /var/log/pods
+    readOnly: true
+  volumes:
+  - name: varlogpods
+    hostPath:
+      path: /var/log/pods
+----
+<1> Configure a security context constraint (SCC) to allow access to files on the host.
+<2> The OpenTelemetry Operator created this service account for the Collector. Assign the SCC to this service account.
+<3> Exclude logs from the Collector container.
+
+You can use this receiver to collect logs from pod filesystems in one of two ways:
+
+* Configuring the receiver in a sidecar container running alongside your application pod.
+
+* Deploying the receiver as a DaemonSet on the host machine with appropriate permissions to access Kubernetes logs.
+
+To collect logs from application containers, you can use this receiver with sidecar injection. The {OTELOperator} allows injecting an OpenTelemetry Collector as a sidecar container into an application pod. This approach is useful when your application writes logs to files within the container filesystem. This receiver can then tail log files and apply Operators to parse the logs.
+
+To use this receiver in sidecar mode to collect logs from application containers, you must configure volume mounts in the `OpenTelemetryCollector` custom resource. Both the application container and the sidecar Collector must mount the same shared volume, such as `emptyDir`. Define the volume in the application's `Pod` specification. See the following example:
+
+.OpenTelemetry Collector custom resource with the Filelog Receiver configured in sidecar mode
+[source,yaml]
+----
+apiVersion: opentelemetry.io/v1beta1
+kind: OpenTelemetryCollector
+metadata:
+  name: filelog
+  namespace: otel-logging
+spec:
+  mode: sidecar
+  volumeMounts: # <1>
+  - name: logs
+    mountPath: /var/log/app
+  config:
+    receivers:
+      filelog:
+        include: # <2>
+        - /var/log/app/*.log
+        operators:
+        - type: regex_parser
+          regex: '^(?P<timestamp>\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}) \[(?P<level>\w+)\] (?P<message>.*)$'
+          timestamp:
+            parse_from: attributes.timestamp
+            layout: '%Y-%m-%d %H:%M:%S'
+    processors: {}
+    exporters:
+      debug:
+        verbosity: detailed
+    service:
+      pipelines:
+        logs:
+          receivers: [filelog]
+          processors: []
+          exporters: [debug]
+----
+<1> Defines the volume mount that the sidecar Collector uses to access the target log files. This volume must match the volume name defined in the application deployment.
+<2> Specifies file glob patterns for matching the log files to tail. This receiver watches these paths for new log entries.

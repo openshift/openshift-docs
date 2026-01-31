@@ -1,0 +1,170 @@
+// Module included in the following assemblies:
+//
+// * /serverless/eventing/event-sources/serverless-custom-event-sources.adoc
+
+:_mod-docs-content-type: PROCEDURE
+[id="serverless-sinkbinding-kn_{context}"]
+= Creating a sink binding by using the Knative CLI
+
+You can use the `kn source binding create` command to create a sink binding by using the Knative (`kn`) CLI. Using the Knative CLI to create event sources provides a more streamlined and intuitive user interface than modifying YAML files directly.
+
+.Prerequisites
+
+* The {ServerlessOperatorName}, Knative Serving and Knative Eventing are installed on the cluster.
+* You have created a project or have access to a project with the appropriate roles and permissions to create applications and other workloads in {product-title}.
+* Install the Knative (`kn`) CLI.
+* Install the OpenShift CLI (`oc`).
+
+[NOTE]
+====
+The following procedure requires you to create YAML files.
+
+If you change the names of the YAML files from those used in the examples, you must ensure that you also update the corresponding CLI commands.
+====
+
+.Procedure
+
+. To check that sink binding is set up correctly, create a Knative event display service, or event sink, that dumps incoming messages to its log:
++
+[source,terminal]
+----
+$ kn service create event-display --image quay.io/openshift-knative/knative-eventing-sources-event-display:latest
+----
+
+. Create a sink binding instance that directs events to the service:
++
+[source,terminal]
+----
+$ kn source binding create bind-heartbeat --subject Job:batch/v1:app=heartbeat-cron --sink ksvc:event-display
+----
+
+. Create a `CronJob` object.
+
+.. Create a cron job YAML file:
++
+.Example cron job YAML file
+[source,yaml]
+----
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: heartbeat-cron
+spec:
+  # Run every minute
+  schedule: "* * * * *"
+  jobTemplate:
+    metadata:
+      labels:
+        app: heartbeat-cron
+        bindings.knative.dev/include: "true"
+    spec:
+      template:
+        spec:
+          restartPolicy: Never
+          containers:
+            - name: single-heartbeat
+              image: quay.io/openshift-knative/heartbeats:latest
+              args:
+                - --period=1
+              env:
+                - name: ONE_SHOT
+                  value: "true"
+                - name: POD_NAME
+                  valueFrom:
+                    fieldRef:
+                      fieldPath: metadata.name
+                - name: POD_NAMESPACE
+                  valueFrom:
+                    fieldRef:
+                      fieldPath: metadata.namespace
+----
++
+[IMPORTANT]
+====
+To use sink binding, you must manually add a `bindings.knative.dev/include=true` label to your Knative CRs.
+
+For example, to add this label to a `CronJob` CR, add the following lines to the `Job` CR YAML definition:
+
+[source,yaml]
+----
+  jobTemplate:
+    metadata:
+      labels:
+        app: heartbeat-cron
+        bindings.knative.dev/include: "true"
+----
+
+====
++
+.. Create the cron job:
++
+[source,terminal]
+----
+$ oc apply -f <filename>
+----
+
+. Check that the controller is mapped correctly by entering the following command and inspecting the output:
++
+[source,terminal]
+----
+$ kn source binding describe bind-heartbeat
+----
++
+.Example output
+[source,terminal]
+----
+Name:         bind-heartbeat
+Namespace:    demo-2
+Annotations:  sources.knative.dev/creator=minikube-user, sources.knative.dev/lastModifier=minikub ...
+Age:          2m
+Subject:
+  Resource:   job (batch/v1)
+  Selector:
+    app:      heartbeat-cron
+Sink:
+  Name:       event-display
+  Resource:   Service (serving.knative.dev/v1)
+
+Conditions:
+  OK TYPE     AGE REASON
+  ++ Ready     2m
+----
+
+.Verification
+
+You can verify that the Kubernetes events were sent to the Knative event sink by looking at the message dumper function logs.
+
+* View the message dumper function logs by entering the following commands:
++
+[source,terminal]
+----
+$ oc get pods
+----
++
+[source,terminal]
+----
+$ oc logs $(oc get pod -o name | grep event-display) -c user-container
+----
++
+.Example output
+[source,terminal]
+----
+☁️  cloudevents.Event
+Validation: valid
+Context Attributes,
+  specversion: 1.0
+  type: dev.knative.eventing.samples.heartbeat
+  source: https://knative.dev/eventing-contrib/cmd/heartbeats/#event-test/mypod
+  id: 2b72d7bf-c38f-4a98-a433-608fbcdd2596
+  time: 2019-10-18T15:23:20.809775386Z
+  contenttype: application/json
+Extensions,
+  beats: true
+  heart: yes
+  the: 42
+Data,
+  {
+    "id": 1,
+    "label": ""
+  }
+----

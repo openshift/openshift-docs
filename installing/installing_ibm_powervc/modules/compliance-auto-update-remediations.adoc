@@ -1,0 +1,21 @@
+// Module included in the following assemblies:
+//
+// * security/compliance_operator/co-scans/compliance-operator-advanced.adoc
+
+:_mod-docs-content-type: PROCEDURE
+[id="automatically-update-remediations_{context}"]
+=  Automatically update remediations
+
+In some cases, a scan with newer content might mark remediations as `OUTDATED`. As an administrator, you can apply the `compliance.openshift.io/remove-outdated` annotation to apply new remediations and remove the outdated ones.
+
+.Procedure
+
+* Apply the `compliance.openshift.io/remove-outdated` annotation:
+
+[source,terminal]
+----
+$ oc -n openshift-compliance \
+annotate compliancesuites/workers-compliancesuite compliance.openshift.io/remove-outdated=
+----
+
+Alternatively, set the `autoUpdateRemediations` flag in a `ScanSetting` or `ComplianceSuite` object to update the remediations automatically.

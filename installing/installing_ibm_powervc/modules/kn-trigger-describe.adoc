@@ -1,0 +1,50 @@
+// Module included in the following assemblies:
+//
+// * /serverless/eventing/triggers/describe-triggers-cli.adoc
+
+:_mod-docs-content-type: PROCEDURE
+[id="kn-trigger-describe_{context}"]
+= Describing a trigger by using the Knative CLI
+
+You can use the `kn trigger describe` command to print information about existing triggers in your cluster by using the Knative CLI.
+
+.Prerequisites
+
+* The {ServerlessOperatorName} and Knative Eventing are installed on your {product-title} cluster.
+* You have installed the Knative (`kn`) CLI.
+* You have created a trigger.
+
+.Procedure
+
+* Enter the command:
++
+[source,terminal]
+----
+$ kn trigger describe <trigger_name>
+----
++
+.Example output
+[source,terminal]
+----
+Name:         ping
+Namespace:    default
+Labels:       eventing.knative.dev/broker=default
+Annotations:  eventing.knative.dev/creator=kube:admin, eventing.knative.dev/lastModifier=kube:admin
+Age:          2m
+Broker:       default
+Filter:
+  type:       dev.knative.event
+
+Sink:
+  Name:       edisplay
+  Namespace:  default
+  Resource:   Service (serving.knative.dev/v1)
+
+Conditions:
+  OK TYPE                  AGE REASON
+  ++ Ready                  2m
+  ++ BrokerReady            2m
+  ++ DependencyReady        2m
+  ++ Subscribed             2m
+  ++ SubscriberResolved     2m
+----

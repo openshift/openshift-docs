@@ -1,0 +1,25 @@
+// Module included in the following assemblies:
+//
+// * security/oc_compliance_plug_in/co-scans/oc-compliance-plug-in-using.adoc
+
+:_mod-docs-content-type: PROCEDURE
+[id="re-running-scans_{context}"]
+= Re-running scans
+
+Although it is possible to run scans as scheduled jobs, you must often re-run a scan on demand, particularly after remediations are applied or when other changes to the cluster are made.
+
+.Procedure
+
+* Rerunning a scan with the Compliance Operator requires use of an annotation on the scan object. However, with the `oc-compliance` plugin you can rerun a scan with a single command. Enter the following command to rerun the scans for the `ScanSettingBinding` object named `my-binding`:
++
+[source,terminal]
+----
+$ oc compliance rerun-now scansettingbindings my-binding
+----
++
+.Example output
+[source,terminal]
+----
+Rerunning scans from 'my-binding': ocp4-cis
+Re-running scan 'openshift-compliance/ocp4-cis'
+----

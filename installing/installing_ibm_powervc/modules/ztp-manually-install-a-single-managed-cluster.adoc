@@ -1,0 +1,69 @@
+// Module included in the following assemblies:
+//
+// * scalability_and_performance/ztp_far_edge/ztp-manual-install.adoc
+
+:_mod-docs-content-type: PROCEDURE
+[id="ztp-manually-install-a-single-managed-cluster_{context}"]
+= Installing a single managed cluster
+
+You can manually deploy a single managed cluster using the assisted service and {rh-rhacm-first}.
+
+.Prerequisites
+
+* You have installed the OpenShift CLI (`oc`).
+
+* You have logged in to the hub cluster as a user with `cluster-admin` privileges.
+
+* You have created the baseboard management controller (BMC) `Secret` and the image pull-secret `Secret` custom resources (CRs). See "Creating the managed bare-metal host secrets" for details.
+
+* Your target bare-metal host meets the networking and hardware requirements for managed clusters.
+
+.Procedure
+
+. Create a `ClusterImageSet` for each specific cluster version to be deployed, for example `clusterImageSet-{product-version}.yaml`. A `ClusterImageSet` has the following format:
++
+[source,yaml,subs="attributes+"]
+----
+apiVersion: hive.openshift.io/v1
+kind: ClusterImageSet
+metadata:
+  name: openshift-{product-version}.0 <1>
+spec:
+   releaseImage: quay.io/openshift-release-dev/ocp-release:{product-version}.0-x86_64 <2>
+----
+<1> The descriptive version that you want to deploy.
+<2> Specifies the `releaseImage` to deploy and determines the operating system image version. The discovery ISO is based on the image version as set by `releaseImage`, or the latest version if the exact version is unavailable.
+
+. Apply the `clusterImageSet` CR:
++
+[source,terminal,subs="attributes+"]
+----
+$ oc apply -f clusterImageSet-{product-version}.yaml
+----
+
+. Create the `Namespace` CR in the `cluster-namespace.yaml` file:
++
+[source,yaml]
+----
+apiVersion: v1
+kind: Namespace
+metadata:
+     name: <cluster_name> <1>
+     labels:
+        name: <cluster_name> <1>
+----
+<1>  The name of the managed cluster to provision.
+
+. Apply the `Namespace` CR by running the following command:
++
+[source,terminal]
+----
+$ oc apply -f cluster-namespace.yaml
+----
+
+. Apply the generated day-0 CRs that you extracted from the `ztp-site-generate` container and customized to meet your requirements:
++
+[source,terminal]
+----
+$ oc apply -R ./site-install/site-sno-1
+----

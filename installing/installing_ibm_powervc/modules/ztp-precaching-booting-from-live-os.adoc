@@ -1,0 +1,64 @@
+// Module included in the following assemblies:
+//
+// * scalability_and_performance/ztp_far_edge/ztp-precaching-tool.adoc
+
+:_mod-docs-content-type: PROCEDURE
+[id="ztp-booting-from-live-os_{context}"]
+= Booting from a live operating system image
+
+You can use the {factory-prestaging-tool} with to boot servers where only one disk is available and external disk drive cannot be attached to the server.
+
+[WARNING]
+====
+{op-system} requires the disk to not be in use when the disk is about to be written with an {op-system} image.
+====
+
+Depending on the server hardware, you can mount the {op-system} live ISO on the blank server using one of the following methods:
+
+* Using the Dell RACADM tool on a Dell server.
+* Using the HPONCFG tool on a HP server.
+* Using the Redfish BMC API.
+
+[NOTE]
+====
+It is recommended to automate the mounting procedure. To automate the procedure, you need to pull the required images and host them on a local HTTP server.
+====
+
+.Prerequisites
+
+* You powered up the host.
+* You have network connectivity to the host.
+
+.Procedure
+
+[NOTE]
+====
+This example procedure uses the Redfish BMC API to mount the {op-system} live ISO.
+====
+
+. Mount the {op-system} live ISO:
+
+.. Check virtual media status:
++
+[source,terminal]
+----
+$ curl --globoff -H "Content-Type: application/json" -H \
+"Accept: application/json" -k -X GET --user ${username_password} \
+https://$BMC_ADDRESS/redfish/v1/Managers/Self/VirtualMedia/1 | python -m json.tool
+----
+
+.. Mount the ISO file as a virtual media:
++
+[source,terminal]
+----
+$ curl --globoff -L -w "%{http_code} %{url_effective}\\n" -ku ${username_password} -H "Content-Type: application/json" -H "Accept: application/json" -d '{"Image": "http://[$HTTPd_IP]/RHCOS-live.iso"}' -X POST https://$BMC_ADDRESS/redfish/v1/Managers/Self/VirtualMedia/1/Actions/VirtualMedia.InsertMedia
+----
+
+.. Set the boot order to boot from the virtual media once:
++
+[source,terminal]
+----
+$ curl --globoff  -L -w "%{http_code} %{url_effective}\\n"  -ku ${username_password}  -H "Content-Type: application/json" -H "Accept: application/json" -d '{"Boot":{ "BootSourceOverrideEnabled": "Once", "BootSourceOverrideTarget": "Cd", "BootSourceOverrideMode": "UEFI"}}' -X PATCH https://$BMC_ADDRESS/redfish/v1/Systems/Self
+----
+
+. Reboot and ensure that the server is booting from virtual media.

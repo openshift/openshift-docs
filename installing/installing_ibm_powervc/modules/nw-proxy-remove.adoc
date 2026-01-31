@@ -1,0 +1,36 @@
+// Module included in the following assemblies:
+//
+// * networking/enable-cluster-wide-proxy.adoc
+
+:_mod-docs-content-type: PROCEDURE
+[id="nw-proxy-remove_{context}"]
+= Removing the cluster-wide proxy
+
+The `cluster` Proxy object cannot be deleted. To remove the proxy from a cluster, remove all `spec` fields from the Proxy object.
+
+.Prerequisites
+
+* Cluster administrator permissions
+* {product-title} `oc` CLI tool installed
+
+.Procedure
+
+. Use the `oc edit` command to modify the proxy:
++
+[source,terminal]
+----
+$ oc edit proxy/cluster
+----
+
+. Remove all `spec` fields from the Proxy object. For example:
++
+[source,yaml]
+----
+apiVersion: config.openshift.io/v1
+kind: Proxy
+metadata:
+  name: cluster
+spec: {}
+----
+
+. Save the file to apply the changes.

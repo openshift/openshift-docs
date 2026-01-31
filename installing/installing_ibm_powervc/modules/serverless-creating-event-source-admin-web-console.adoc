@@ -1,0 +1,29 @@
+// Module included in the following assemblies:
+//
+// * serverless/admin_guide/serverless-cluster-admin-eventing.adoc
+
+:_mod-docs-content-type: PROCEDURE
+[id="serverless-creating-event-source-admin-web-console_{context}"]
+= Creating an event source by using the Administrator perspective
+
+A Knative _event source_ can be any Kubernetes object that generates or imports cloud events, and relays those events to another endpoint, known as a _sink_.
+
+.Prerequisites
+
+* The {ServerlessOperatorName} and Knative Eventing are installed on your {product-title} cluster.
+
+* You have logged in to the web console and are in the *Administrator* perspective.
+
+ifdef::openshift-enterprise[]
+* You have cluster administrator permissions for {product-title}.
+endif::[]
+
+ifdef::openshift-dedicated,openshift-rosa[]
+* You have cluster or dedicated administrator permissions for {product-title}.
+endif::[]
+
+.Procedure
+
+. In the *Administrator* perspective of the {product-title} web console, navigate to *Serverless* -> *Eventing*.
+. In the *Create* list, select *Event Source*. You will be directed to the *Event Sources* page.
+. Select the event source type that you want to create.

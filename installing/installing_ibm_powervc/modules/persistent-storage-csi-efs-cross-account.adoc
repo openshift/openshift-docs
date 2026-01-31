@@ -1,0 +1,503 @@
+// Module included in the following assemblies:
+//
+// * storage/persistent_storage/persistent-storage-csi-aws-efs.adoc
+//
+
+:_mod-docs-content-type: PROCEDURE
+[id="persistent-storage-csi-efs-cross-account_{context}"]
+= AWS EFS CSI cross account support
+
+Cross account support allows you to have
+ifdef::openshift-rosa,openshift-rosa-hcp[]
+ a {product-title} cluster
+endif::openshift-rosa,openshift-rosa-hcp[]
+ifndef::openshift-rosa,openshift-rosa-hcp[]
+ an {product-title} cluster
+endif::openshift-rosa,openshift-rosa-hcp[]
+in one AWS account and mount your file system in another AWS account by using the AWS Elastic File System (EFS) Container Storage Interface (CSI) driver.
+
+.Prerequisites
+
+* Access to
+ifdef::openshift-rosa,openshift-rosa-hcp[]
+ a {product-title} cluster
+endif::openshift-rosa,openshift-rosa-hcp[]
+ifndef::openshift-rosa,openshift-rosa-hcp[]
+ an {product-title} cluster
+endif::openshift-rosa,openshift-rosa-hcp[]
+with administrator rights
+
+* Two valid AWS accounts
+
+* The EFS CSI Operator has been installed. For information about installing the EFS CSI Operator, see the _Installing the AWS EFS CSI Driver Operator_ section.
+
+* Both the {product-title} cluster and EFS file system must be located in the same AWS region.
+
+* Ensure that the two virtual private clouds (VPCs) used in the following procedure use different network Classless Inter-Domain Routing (CIDR) ranges.
+
+* Access to {product-title} CLI (`oc`).
+
+* Access to AWS CLI.
+
+* Access to `jq` command-line JSON processor.
+
+.Procedure
+
+The following procedure explains how to set up:
+
+* {product-title} AWS Account A: Contains a Red Hat {product-title} cluster v4.16, or later, deployed within a VPC
+
+* AWS Account B: Contains a VPC (including subnets, route tables, and network connectivity). The EFS filesystem will be created in this VPC.
+
+To use AWS EFS across accounts:
+
+. Set up the environment:
+
+.. Configure environment variables by running the following commands:
++
+[source,terminal]
+----
+export CLUSTER_NAME="<CLUSTER_NAME>" <1>
+export AWS_REGION="<AWS_REGION>" <2>
+export AWS_ACCOUNT_A_ID="<ACCOUNT_A_ID>" <3>
+export AWS_ACCOUNT_B_ID="<ACCOUNT_B_ID>" <4>
+export AWS_ACCOUNT_A_VPC_CIDR="<VPC_A_CIDR>" <5>
+export AWS_ACCOUNT_B_VPC_CIDR="<VPC_B_CIDR>" <6>
+export AWS_ACCOUNT_A_VPC_ID="<VPC_A_ID>" <7>
+export AWS_ACCOUNT_B_VPC_ID="<VPC_B_ID>" <8>
+export SCRATCH_DIR="<WORKING_DIRECTORY>" <9>
+export CSI_DRIVER_NAMESPACE="openshift-cluster-csi-drivers" <10>
+export AWS_PAGER="" <11>
+----
+<1> Cluster name of choice.
+<2> AWS region of choice.
+<3> AWS Account A ID.
+<4> AWS Account B ID.
+<5> CIDR range of VPC in Account A.
+<6> CIDR range of VPC in Account B.
+<7> VPC ID in Account A (cluster)
+<8> VPC ID in Account B (EFS cross account)
+<9> Any writeable directory of choice to use to store temporary files.
+<10> If your driver is installed in a non-default namespace, change this value.
+<11> Makes AWS CLI output everything directly to stdout.
+
+.. Create the working directory by running the following command:
++
+[source,terminal]
+----
+mkdir -p $SCRATCH_DIR
+----
+
+.. Verify cluster connectivity by running the following command in the {product-title} CLI:
++
+[source,terminal]
+----
+$ oc whoami
+----
+
+.. Determine the {product-title} cluster type and set node selector:
++
+The EFS cross account feature requires assigning AWS IAM policies to nodes running EFS CSI controller pods. However, this is
+not consistent for every {product-title} type.
++
+* If your cluster is deployed as a Hosted Control Plane (HyperShift), set the `NODE_SELECTOR` environment variable to hold the worker node label by running the following command:
++
+[source,terminal]
+----
+export NODE_SELECTOR=node-role.kubernetes.io/worker
+----
++
+* For all other {product-title} types, set the `NODE_SELECTOR` environment variable to hold the master node label by running the following command:
++
+[source,terminal]
+----
+export NODE_SELECTOR=node-role.kubernetes.io/master
+----
+
+.. Configure AWS CLI profiles as environment variables for account switching by running the following commands:
++
+[source,terminal]
+----
+export AWS_ACCOUNT_A="<ACCOUNT_A_NAME>"
+export AWS_ACCOUNT_B="<ACCOUNT_B_NAME>"
+----
+
+.. Ensure that your AWS CLI is configured with JSON output format as the default for both accounts by running the following commands:
++
+[source,terminal]
+----
+export AWS_DEFAULT_PROFILE=${AWS_ACCOUNT_A}
+aws configure get output
+export AWS_DEFAULT_PROFILE=${AWS_ACCOUNT_B}
+aws configure get output
+----
++
+If the preceding commands return:
++
+* *No value*: The default output format is already set to JSON and no changes are required. 
++
+* *Any value*: Reconfigure your AWS CLI to use JSON format. For information about changing output formats, see _Setting the output format in the AWS CLI_ in the AWS documentation.
+
+.. Unset `AWS_PROFILE` in your shell to prevent conflicts with `AWS_DEFAULT_PROFILE` by running the following command:
++
+[source,terminal]
+----
+unset AWS_PROFILE
+----
+
+. Configure the AWS Account B IAM roles and policies:
+
+.. Switch to your Account B profile by running the following command:
++
+[source,terminal]
+----
+export AWS_DEFAULT_PROFILE=${AWS_ACCOUNT_B}
+----
+
+.. Define the IAM role name for the EFS CSI Driver Operator by running the following command:
++
+[source,terminal]
+----
+export ACCOUNT_B_ROLE_NAME=${CLUSTER_NAME}-cross-account-aws-efs-csi-operator
+----
+
+.. Create the IAM trust policy file by running the following command:
++
+[source,terminal]
+----
+cat <<EOF > $SCRATCH_DIR/AssumeRolePolicyInAccountB.json
+{
+    "Version": "2012-10-17",
+    "Statement": [
+        {
+            "Effect": "Allow",
+            "Principal": {
+                "AWS": "arn:aws:iam::${AWS_ACCOUNT_A_ID}:root"
+            },
+            "Action": "sts:AssumeRole",
+            "Condition": {}
+        }
+    ]
+}
+EOF
+----
+
+.. Create the IAM role for the EFS CSI Driver Operator by running the following command:
++
+[source,terminal]
+----
+ACCOUNT_B_ROLE_ARN=$(aws iam create-role \
+  --role-name "${ACCOUNT_B_ROLE_NAME}" \
+  --assume-role-policy-document file://$SCRATCH_DIR/AssumeRolePolicyInAccountB.json \
+  --query "Role.Arn" --output text) \
+&& echo $ACCOUNT_B_ROLE_ARN
+----
+
+.. Create the IAM policy file by running the following command:
++
+[source,terminal]
+----
+cat << EOF > $SCRATCH_DIR/EfsPolicyInAccountB.json
+{
+    "Version": "2012-10-17",
+    "Statement": [
+        {
+            "Sid": "VisualEditor0",
+            "Effect": "Allow",
+            "Action": [
+                "ec2:DescribeNetworkInterfaces",
+                "ec2:DescribeSubnets"
+            ],
+            "Resource": "*"
+        },
+        {
+            "Sid": "VisualEditor1",
+            "Effect": "Allow",
+            "Action": [
+                "elasticfilesystem:DescribeMountTargets",
+                "elasticfilesystem:DeleteAccessPoint",
+                "elasticfilesystem:ClientMount",
+                "elasticfilesystem:DescribeAccessPoints",
+                "elasticfilesystem:ClientWrite",
+                "elasticfilesystem:ClientRootAccess",
+                "elasticfilesystem:DescribeFileSystems",
+                "elasticfilesystem:CreateAccessPoint",
+                "elasticfilesystem:TagResource"
+            ],
+            "Resource": "*"
+        }
+    ]
+}
+EOF
+----
+
+.. Create the IAM policy by running the following command:
++
+[source,terminal]
+----
+ACCOUNT_B_POLICY_ARN=$(aws iam create-policy --policy-name "${CLUSTER_NAME}-efs-csi-policy" \
+   --policy-document file://$SCRATCH_DIR/EfsPolicyInAccountB.json \
+   --query 'Policy.Arn' --output text) \
+&& echo ${ACCOUNT_B_POLICY_ARN}
+----
+
+.. Attach the policy to the role by running the following command:
++
+[source,terminal]
+----
+aws iam attach-role-policy \
+   --role-name "${ACCOUNT_B_ROLE_NAME}" \
+   --policy-arn "${ACCOUNT_B_POLICY_ARN}"
+----
+
+. Configure the AWS Account A IAM roles and policies:
+
+.. Switch to your Account A profile by running the following command:
++
+[source,terminal]
+----
+export AWS_DEFAULT_PROFILE=${AWS_ACCOUNT_A}
+----
+
+.. Create the IAM policy document by running the following command:
++
+[source,terminal]
+----
+cat << EOF > $SCRATCH_DIR/AssumeRoleInlinePolicyPolicyInAccountA.json
+{
+  "Version": "2012-10-17",
+  "Statement": [
+    {
+      "Effect": "Allow",
+      "Action": "sts:AssumeRole",
+      "Resource": "${ACCOUNT_B_ROLE_ARN}"
+    }
+  ]
+}
+EOF
+----
+
+.. In AWS Account A, attach the AWS-managed policy "AmazonElasticFileSystemClientFullAccess" to the {product-title} cluster master role by running the following command:
++
+[source,terminal]
+----
+EFS_CLIENT_FULL_ACCESS_BUILTIN_POLICY_ARN=arn:aws:iam::aws:policy/AmazonElasticFileSystemClientFullAccess
+declare -A ROLE_SEEN
+for NODE in $(oc get nodes --selector="${NODE_SELECTOR}" -o jsonpath='{.items[*].metadata.name}'); do
+    INSTANCE_PROFILE=$(aws ec2 describe-instances \
+        --filters "Name=private-dns-name,Values=${NODE}" \
+        --query 'Reservations[].Instances[].IamInstanceProfile.Arn' \
+        --output text | awk -F'/' '{print $NF}' | xargs)
+    MASTER_ROLE_ARN=$(aws iam get-instance-profile \
+        --instance-profile-name "${INSTANCE_PROFILE}" \
+        --query 'InstanceProfile.Roles[0].Arn' \
+        --output text | xargs)
+    MASTER_ROLE_NAME=$(echo "${MASTER_ROLE_ARN}" | awk -F'/' '{print $NF}' | xargs)
+    echo "Checking role: '${MASTER_ROLE_NAME}'"
+    if [[ -n "${ROLE_SEEN[$MASTER_ROLE_NAME]:-}" ]]; then
+        echo "Already processed role: '${MASTER_ROLE_NAME}', skipping."
+        continue
+    fi
+    ROLE_SEEN["$MASTER_ROLE_NAME"]=1
+    echo "Assigning policy ${EFS_CLIENT_FULL_ACCESS_BUILTIN_POLICY_ARN} to role ${MASTER_ROLE_NAME}"
+    aws iam attach-role-policy --role-name "${MASTER_ROLE_NAME}" --policy-arn "${EEFS_CLIENT_FULL_ACCESS_BUILTIN_POLICY_ARN}"
+done
+----
+
+. Attach the policy to the IAM entity to allow role assumption:
++
+This step depends on your cluster configuration. In both of the following scenarios, the EFS CSI Driver Operator uses an entity to authenticate to AWS, and this entity must be granted permission to assume roles in Account B.
++
+If your cluster:
++
+* *Does not have STS enabled*: The EFS CSI Driver Operator uses an IAM User entity for AWS authentication. Continue with the step "Attach policy to IAM User to allow role assumption".
++
+* *Has STS enabled*: The EFS CSI Driver Operator uses an IAM role entity for AWS authentication. Continue with the step "Attach policy to IAM Role to allow role assumption".
+
+. Attach policy to IAM User to allow role assumption
+
+.. Identify the IAM User used by the EFS CSI Driver Operator by running the following command:
++
+[source,terminal]
+----
+EFS_CSI_DRIVER_OPERATOR_USER=$(oc -n openshift-cloud-credential-operator get credentialsrequest/openshift-aws-efs-csi-driver -o json | jq -r '.status.providerStatus.user')
+----
+
+.. Attach the policy to the IAM user by running the following command:
++
+[source,terminal]
+----
+aws iam put-user-policy \
+    --user-name "${EFS_CSI_DRIVER_OPERATOR_USER}"  \
+    --policy-name efs-cross-account-inline-policy \
+    --policy-document file://$SCRATCH_DIR/AssumeRoleInlinePolicyPolicyInAccountA.json
+----
+
+. Attach the policy to the IAM role to allow role assumption:
+
+.. Identify the IAM role name currently used by the EFS CSI Driver Operator by running the following command:
++
+[source,terminal]
+----
+EFS_CSI_DRIVER_OPERATOR_ROLE=$(oc -n ${CSI_DRIVER_NAMESPACE} get secret/aws-efs-cloud-credentials -o jsonpath='{.data.credentials}' | base64 -d | grep role_arn | cut -d'/' -f2) && echo ${EFS_CSI_DRIVER_OPERATOR_ROLE}
+----
+
+.. Attach the policy to the IAM role used by the EFS CSI Driver Operator by running the following command:
++
+[source,terminal]
+----
+ aws iam put-role-policy \
+    --role-name "${EFS_CSI_DRIVER_OPERATOR_ROLE}"  \
+    --policy-name efs-cross-account-inline-policy \
+    --policy-document file://$SCRATCH_DIR/AssumeRoleInlinePolicyPolicyInAccountA.json
+----
+
+. Configure VPC peering:
+
+.. Initiate a peering request from Account A to Account B by running the following command:
++
+[source,terminal]
+----
+export AWS_DEFAULT_PROFILE=${AWS_ACCOUNT_A}
+PEER_REQUEST_ID=$(aws ec2 create-vpc-peering-connection --vpc-id "${AWS_ACCOUNT_A_VPC_ID}" --peer-vpc-id "${AWS_ACCOUNT_B_VPC_ID}" --peer-owner-id "${AWS_ACCOUNT_B_ID}" --query VpcPeeringConnection.VpcPeeringConnectionId --output text)
+----
+
+.. Accept the peering request from Account B by running the following command:
++
+[source,terminal]
+----
+export AWS_DEFAULT_PROFILE=${AWS_ACCOUNT_B}
+aws ec2 accept-vpc-peering-connection --vpc-peering-connection-id "${PEER_REQUEST_ID}"
+----
+
+.. Retrieve the route table IDs for Account A and add routes to the Account B VPC by running the following command:
++
+[source,terminal]
+----
+export AWS_DEFAULT_PROFILE=${AWS_ACCOUNT_A}
+for NODE in $(oc get nodes --selector=node-role.kubernetes.io/worker | tail -n +2 | awk '{print $1}')
+do
+    SUBNET=$(aws ec2 describe-instances --filters "Name=private-dns-name,Values=$NODE" --query 'Reservations[*].Instances[*].NetworkInterfaces[*].SubnetId' | jq -r '.[0][0][0]')
+    echo SUBNET is ${SUBNET}
+    ROUTE_TABLE_ID=$(aws ec2 describe-route-tables --filters "Name=association.subnet-id,Values=${SUBNET}" --query 'RouteTables[*].RouteTableId' | jq -r '.[0]')
+    echo Route table ID is $ROUTE_TABLE_ID
+    aws ec2 create-route --route-table-id ${ROUTE_TABLE_ID} --destination-cidr-block ${AWS_ACCOUNT_B_VPC_CIDR} --vpc-peering-connection-id ${PEER_REQUEST_ID}
+done
+----
+
+.. Retrieve the route table IDs for Account B and add routes to the Account A VPC by running the following command:
++
+[source,terminal]
+----
+export AWS_DEFAULT_PROFILE=${AWS_ACCOUNT_B}
+for ROUTE_TABLE_ID in $(aws ec2 describe-route-tables   --filters "Name=vpc-id,Values=${AWS_ACCOUNT_B_VPC_ID}"   --query "RouteTables[].RouteTableId" | jq -r '.[]')
+do
+    echo Route table ID is $ROUTE_TABLE_ID
+    aws ec2 create-route --route-table-id ${ROUTE_TABLE_ID} --destination-cidr-block ${AWS_ACCOUNT_A_VPC_CIDR} --vpc-peering-connection-id ${PEER_REQUEST_ID}
+done
+----
+
+. Configure security groups in Account B to allow NFS traffic from Account A to EFS:
+
+.. Switch to your Account B profile by running the following command:
++
+[source,terminal]
+----
+export AWS_DEFAULT_PROFILE=${AWS_ACCOUNT_B}
+----
+
+.. Configure the VPC security groups for EFS access by running the following command:
++
+[source,terminal]
+----
+SECURITY_GROUP_ID=$(aws ec2 describe-security-groups --filters Name=vpc-id,Values="${AWS_ACCOUNT_B_VPC_ID}" | jq -r '.SecurityGroups[].GroupId')
+aws ec2 authorize-security-group-ingress \
+ --group-id "${SECURITY_GROUP_ID}" \
+ --protocol tcp \
+ --port 2049 \
+ --cidr "${AWS_ACCOUNT_A_VPC_CIDR}" | jq .
+----
+
+. Create a region-wide EFS filesystem in Account B:
+
+.. Switch to your Account B profile by running the following command:
++
+[source,terminal]
+----
+export AWS_DEFAULT_PROFILE=${AWS_ACCOUNT_B}
+----
+
+.. Create a region-wide EFS file system by running the following command:
++
+[source,terminal]
+----
+CROSS_ACCOUNT_FS_ID=$(aws efs create-file-system --creation-token efs-token-1 \
+--region ${AWS_REGION} \
+--encrypted | jq -r '.FileSystemId') \
+&& echo $CROSS_ACCOUNT_FS_ID
+----
+
+.. Configure region-wide mount targets for EFS by running the following command:
++
+[source,terminal]
+----
+for SUBNET in $(aws ec2 describe-subnets \
+  --filters "Name=vpc-id,Values=${AWS_ACCOUNT_B_VPC_ID}" \
+  --region ${AWS_REGION} \
+  | jq -r '.Subnets.[].SubnetId'); do \
+    MOUNT_TARGET=$(aws efs create-mount-target --file-system-id ${CROSS_ACCOUNT_FS_ID} \
+    --subnet-id ${SUBNET} \
+    --region ${AWS_REGION} \
+    | jq -r '.MountTargetId'); \
+    echo ${MOUNT_TARGET}; \
+done
+----
++
+This creates a mount point in each subnet of your VPC.
+
+. Configure the EFS Operator for cross-account access:
+
+.. Define custom names for the secret and storage class that you will create in subsequent steps by running the following command:
++
+[source,terminal]
+----
+export SECRET_NAME=my-efs-cross-account
+export STORAGE_CLASS_NAME=efs-sc-cross
+----
+
+.. Create a secret that references the role ARN in Account B by running the following command in the {product-title} CLI:
++
+[source,terminal]
+----
+oc create secret generic ${SECRET_NAME} -n ${CSI_DRIVER_NAMESPACE} --from-literal=awsRoleArn="${ACCOUNT_B_ROLE_ARN}"
+----
+
+.. Grant the CSI driver controller access to the newly created secret by running the following commands in the {product-title} CLI:
++
+[source,terminal]
+----
+oc -n ${CSI_DRIVER_NAMESPACE} create role access-secrets --verb=get,list,watch --resource=secrets
+oc -n ${CSI_DRIVER_NAMESPACE} create rolebinding --role=access-secrets default-to-secrets --serviceaccount=${CSI_DRIVER_NAMESPACE}:aws-efs-csi-driver-controller-sa
+----
+
+.. Create a new storage class that references the EFS ID from Account B and the secret created previously by running the following command in the {product-title} CLI:
++
+[source,terminal]
+----
+cat << EOF | oc apply -f -
+kind: StorageClass
+apiVersion: storage.k8s.io/v1
+metadata:
+  name: ${STORAGE_CLASS_NAME}
+provisioner: efs.csi.aws.com
+parameters:
+  provisioningMode: efs-ap
+  fileSystemId: ${CROSS_ACCOUNT_FS_ID}
+  directoryPerms: "700"
+  gidRangeStart: "1000"
+  gidRangeEnd: "2000"
+  basePath: "/dynamic_provisioning"
+  csi.storage.k8s.io/provisioner-secret-name: ${SECRET_NAME}
+  csi.storage.k8s.io/provisioner-secret-namespace: ${CSI_DRIVER_NAMESPACE}
+EOF
+----

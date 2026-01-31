@@ -1,0 +1,255 @@
+// Module included in the following assemblies:
+//
+// * edge_computing/ztp-migrate-clusterinstance.adoc
+
+:_mod-docs-content-type: PROCEDURE
+[id="ztp-migrating-sno-clusterinstance_{context}"]
+= Performing the migration from SiteConfig CR to ClusterInstance CR
+
+Migrate a {sno} cluster from using a `SiteConfig` CR to a `ClusterInstance` CR by removing the `SiteConfig` CR from the old pipeline, and adding a corresponding `ClusterInstance` CR to the new pipeline.
+
+.Prerequisites
+
+* You have logged in to the hub cluster as a user with `cluster-admin` privileges.
+* You have set up the parallel Argo CD pipeline, including the Argo CD project and application, that will manage the cluster using the `ClusterInstance` CR.
+* The Argo CD application managing the original `SiteConfig` CR pipeline is configured with the sync policy `prune=false`. This setting ensures that resources remain intact after you remove the target cluster from this application.
+* You have access to the Git repository that contains your {sno} cluster configurations.
+* You have {rh-rhacm-first} version 2.12 or later installed in the hub cluster.
+* The SiteConfig Operator is installed and running in the hub cluster.
+* You have installed Podman and you have access to the registry.redhat.io container image registry.
+
+.Procedure
+
+. Mirror the `site-configs` folder structure to the new `site-configs-v2` directory that will contain the `ClusterInstance` CRs, for example:
++
+[source,text]
+----
+site-configs-v2/
+├── hub-1/ <1>
+│   └── extra-manifest/
+├── pre-reqs/
+│   └── sno1/ <2>
+├── reference-manifest/
+│   └── 4.20/
+└── resources/
+----
+<1> The `hub-1/` folder will contain the `ClusterInstance` CR for each cluster.
+<2> Mirror the target cluster, in this example `sno1`, to include the required pre-requisite resources such as the image registry pull secret, the baseboard management controller credentials, and so on.
+
+. Remove the target cluster from the original Argo CD application by commenting out the resources in the related files in Git:
+
+.. Comment out the target cluster from the `site-configs/kustomization.yaml` file, for example:
++
+[source,bash]
+----
+$ cat site-configs/kustomization.yaml
+----
++
+.Example updated `site-configs/kustomization.yaml` file
+[source,yaml]
+----
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+resources:
+   - pre-reqs/
+   #- resources/
+generators:
+   #- hub-1/sno1.yaml
+   - hub-1/sno2.yaml
+   - hub-1/sno3.yaml
+----
+
+.. Comment out the target cluster from the `site-configs/pre-reqs/kustomization.yaml` file. 
+This removes the `site-configs/pre-reqs/sno1` folder, which also requires migration and has resources such as the image registry pull secret, the baseboard management controller credentials, and so on, for example:
++
+[source,bash]
+----
+$ cat site-configs/pre-reqs/kustomization.yaml
+----
++
+.Example updated `site-configs/pre-reqs/kustomization.yaml` file
+[source,yaml]
+----
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+resources:
+  #- sno1/
+  - sno2/
+  - sno3/
+----
+
+. Commit the changes to the Git repository.
++
+[NOTE]
+====
+After you commit the changes, the original Argo CD application reports an `OutOfSync` sync status because the Argo CD application still attempts to monitor the status of the taget cluster's resources. However, because the sync policy is set to `prune=false`, the Argo CD application does not delete any resources.
+====
+
+. To ensure that the original Argo CD application no longer manages the cluster resources, you can remove the Argo CD application label from the resources by running the following command:
++
+[source,bash]
+----
+$ for cr in bmh,hfs,clusterdeployment,agentclusterinstall,infraenv,nmstateconfig,configmap,klusterletaddonconfig,secrets; do oc label $cr app.kubernetes.io/instance- --all -n sno1; done && oc label ns sno1 app.kubernetes.io/instance- && oc label managedclusters sno1 app.kubernetes.io/instance-
+----
++
+The Argo CD application label is removed from all resources in the `sno1` namespace and the sync status returns to `Synced`.
+
+. Create the `ClusterInstance` CR for the target cluster by using the `siteconfig-converter` tool packaged with the `ztp-site-generate` container image:
++
+[NOTE]
+====
+The siteconfig-converter tool cannot translate earlier versions of the `AgentClusterInstall` resource that uses the following deprecated fields in the `SiteConfig` CR:
+
+* `apiVIP`
+* `ingressVIP`
+* `manifestsConfigMapRef`
+
+To solve this issue, you can do one of the following options:
+
+* Create a custom cluster template that includes these fields. For more information about creating custom templates, see link:https://docs.redhat.com/en/documentation/red_hat_advanced_cluster_management_for_kubernetes/2.13/html/multicluster_engine_operator_with_red_hat_advanced_cluster_management/siteconfig-intro#create-custom-templates[Creating custom templates with the SiteConfig operator]
+* Suppress the creation of the `AgentClusterInstall` resource by adding it to the `suppressedManifests` list in the `ClusterInstance` CR, or by using the `-s` flag in the `siteconfig-converter` tool. You must remove the resource from the `suppressedManifests` list when reinstalling the cluster.
+====
+
+.. Pull the `ztp-site-generate` container image by running the following command:
++
+[source,bash,subs="attributes+"]
+----
+podman pull registry.redhat.io/openshift4/ztp-site-generate-rhel8:{product-version}
+----
+
+.. Run the `siteconfig-converter` tool interactively through the container by running the following command:
++
+[source,bash]
+----
+$ podman run -v "${PWD}":/resources:Z,U -it registry.redhat.io/openshift4/ztp-site-generate-rhel8:{product-version} siteconfig-converter -d /resources/<output_folder> /resources/<path_to_siteconfig_resource>
+----
++
+* Replace `<output_folder>` with the output directory for the generated files.
+* Replace `<path_to_siteconfig_resource>` with the path to the target `SiteConfig` CR file.
++
+.Example output
++
+[source,bash]
+----
+Successfully read SiteConfig: sno1/sno1
+Converted cluster 1 (sno1) to ClusterInstance: /resources/output/sno1.yaml
+WARNING: extraManifests field is not supported in ClusterInstance and will be ignored. Create one or more configmaps with the exact desired set of CRs for the cluster and include them in the extraManifestsRefs.
+WARNING: Added default extraManifest ConfigMap 'extra-manifests-cm' to extraManifestsRefs. This configmap is created automatically.
+Successfully converted 1 cluster(s) to ClusterInstance files in /resources/output: sno1.yaml
+Generating ConfigMap kustomization files...
+Using ConfigMap name: extra-manifests-cm, namespace: sno1, manifests directory: extra-manifests
+Generating ConfigMap kustomization files with name: extra-manifests-cm, namespace: sno1, manifests directory: extra-manifests
+Generating extraManifests for SiteConfig: /resources/sno1.yaml
+Using absolute path for input file: /resources/sno1.yaml
+Running siteconfig-generator from directory: /resources
+Found extraManifests directory: /resources/output/extra-manifests/sno1
+Moved sno1_containerruntimeconfig_enable-crun-master.yaml to /resources/output/extra-manifests/sno1_containerruntimeconfig_enable-crun-master.yaml
+Moved sno1_containerruntimeconfig_enable-crun-worker.yaml to /resources/output/extra-manifests/sno1_containerruntimeconfig_enable-crun-worker.yaml
+Moved 2 extraManifest files from /resources/output/extra-manifests/sno1 to /resources/output/extra-manifests
+Removed directory: /resources/output/extra-manifests/sno1
+--- Kustomization.yaml Generator ---
+Scanning directory: /resources/output/extra-manifests
+Found and adding: extra-manifests/sno1_containerruntimeconfig_enable-crun-master.yaml
+Found and adding: extra-manifests/sno1_containerruntimeconfig_enable-crun-worker.yaml
+------------------------------------
+kustomization-configMapGenerator-snippet.yaml generated successfully at: /resources/output/kustomization-configMapGenerator-snippet.yaml
+Content:
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+configMapGenerator:
+    - files:
+        - extra-manifests/sno1_containerruntimeconfig_enable-crun-master.yaml
+        - extra-manifests/sno1_containerruntimeconfig_enable-crun-worker.yaml
+      name: extra-manifests-cm
+      namespace: sno1
+generatorOptions:
+    disableNameSuffixHash: true
+
+------------------------------------
+----
++
+[NOTE]
+====
+The `ClusterInstance` CR requires the extra manifests to be defined in a `ConfigMap` resource. 
+
+To meet this requirement, the `siteconfig-converter` tool generates a `kustomization.yaml` snippet. The generated snippet uses Kustomize's `configMapGenerator` to automatically package your manifest files into the required `ConfigMap` resource. You must merge this snippet into your original `kustomization.yaml` file to ensure that the `ConfigMap` resource is created and managed alongside your other cluster resources.
+====
+
+. Configure the new Argo CD application to manage the target cluster by referencing it in the new pipelines `Kustomization` files, for example:
++
+[source,bash]
+----
+$ cat site-configs-v2/kustomization.yaml 
+----
++
+.Example updated `site-configs-v2/kustomization.yaml` file
+[source,yaml]
+----
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+resources:
+  - resources/
+  - pre-reqs/
+  - hub-1/sno1.yaml
+----
++
+[source,bash]
+----
+$ cat  site-configs-v2/pre-reqs/kustomization.yaml 
+----
++
+.Example updated `site-configs-v2/pre-reqs/kustomization.yaml` file
+[source,yaml]
+----
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+resources:
+  - sno1/
+----
+
+. Commit the changes to the Git repository.
+
+.Verification
+
+. Verify that the `ClusterInstance` CR is successfully deployed and the provisioning status complete by running the following command:
++
+[source,bash]
+----
+$ oc get clusterinstance -A
+----
++
+.Example output
+[source,bash]
+----
+NAME                                                         PAUSED   PROVISIONSTATUS   PROVISIONDETAILS         AGE 
+clusterinstance.siteconfig.open-cluster-management.io/sno1            Completed         Provisioning completed   27s  
+----
++
+At this point, the new Argo CD application that uses the `ClusterInstance` CR is managing the `sno1` cluster. You can continue to migrate one or more clusters at a time by repeating these steps until all target clusters are migrated to the new pipeline.
+
+. Verify the folder structure and files in the `site-configs-v2/` directory contain the migrated resources for the `sno1` cluster, for example:
++
+[source,text]
+----
+site-configs-v2/
+├── hub-1/
+│   ├── sno1.yaml <1>
+├── extra-manifest/
+│   ├── enable-crun-worker.yaml <2>
+│   └── enable-crun-master.yaml 
+├── kustomization.yaml <3>
+├── pre-reqs/
+│   └── sno1/
+│       ├── bmc-credentials.yaml
+│       ├── namespace.yaml
+│       └── pull-secret.yaml
+├── kustomization.yaml
+├── reference-manifest/
+│   └── 4.20/
+└── resources/
+    ├── active-ocp-version.yaml
+    └── kustomization.yaml
+----
+<1> This `ClusterInstance` CR for the `sno1` cluster.
+<2> The tool automatically generates the extra manifests referenced by the `ClusterInstance` CR. After generation, the file names might change. You can rename the files to match the original naming convention in the associated `kustomization.yaml` file.
+<3> The tool generates a `kuztomization.yaml` file snippet to create the `ConfigMap` resources that specifies the extra manifests. You can merge the generated `kustomization` snippet with your original `kuztomization.yaml` file.

@@ -1,0 +1,29 @@
+// Module included in the following assemblies:
+//
+// * osd_install_access_delete_cluster/osd-revoking-cluster-privileges.adoc
+// * osd_getting_started/osd-getting-started.adoc
+
+:_mod-docs-content-type: PROCEDURE
+[id="osd-revoke-admin-privileges_{context}"]
+= Revoking administrator privileges from a user
+
+Follow the steps in this section to revoke `dedicated-admin` privileges from a user.
+
+.Prerequisites
+
+* You logged in to {cluster-manager-url}.
+* You created an {product-title} cluster.
+* You have configured a GitHub identity provider for your cluster and added an identity provider user.
+* You granted `dedicated-admin` privileges to a user.
+
+.Procedure
+
+. Navigate to {cluster-manager-url} and select your cluster.
+
+. Click the *Access control* tab.
+
+. In the *Cluster Roles and Access* tab, select {kebab} next to a user and click *Delete*.
+
+.Verification
+
+* After revoking the privileges, the user is no longer listed as part of the `dedicated-admins` group under *Access control* -> *Cluster Roles and Access* on the {cluster-manager} page for your cluster.

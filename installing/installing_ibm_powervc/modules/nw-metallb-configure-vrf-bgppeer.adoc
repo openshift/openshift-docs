@@ -1,0 +1,217 @@
+// Module included in the following assemblies:
+//
+// * networking/metallb/metallb-configure-bgp-peers.adoc
+
+:_mod-docs-content-type: PROCEDURE
+[id="nw-metallb-bgp-peer-vrf_{context}"]
+= Exposing a service through a network VRF
+
+[role="_abstract"]
+To isolate network traffic and manage multiple routing tables, expose a service through a virtual routing and forwarding (VRF) instance. Associating a VRF with a MetalLB BGP peer ensures that external traffic is segmented and correctly routed to the intended application workloads.
+
+:FeatureName: Exposing a service through a VRF on a BGP peer
+include::snippets/technology-preview.adoc[]
+
+By using a VRF on a network interface to expose a service through a BGP peer, you can segregate traffic to the service, configure independent routing decisions, and enable multi-tenancy support on a network interface.
+
+[NOTE]
+====
+By establishing a BGP session through an interface belonging to a network VRF, MetalLB can advertise services through that interface and enable external traffic to reach the service through this interface. However, the network VRF routing table is different from the default VRF routing table used by OVN-Kubernetes. Therefore, the traffic cannot reach the OVN-Kubernetes network infrastructure.
+
+To enable the traffic directed to the service to reach the OVN-Kubernetes network infrastructure, you must configure routing rules to define the next hops for network traffic. See the `NodeNetworkConfigurationPolicy` resource in "Managing symmetric routing with MetalLB" in the _Additional resources_ section for more information.
+====
+
+The following high-level steps demonstrate how to expose a service through a network VRF with a BGP peer:
+
+. Define a BGP peer and add a network VRF instance.
+. Specify an IP address pool for MetalLB.
+. Configure a BGP route advertisement for MetalLB to advertise a route by using the specified IP address pool and the BGP peer associated with the VRF instance.
+. Deploy a service to test the configuration.
+
+.Prerequisites
+
+* You installed the {oc-first}.
+* You logged in as a user with `cluster-admin` privileges.
+* You defined a `NodeNetworkConfigurationPolicy` (NNCP) to associate a Virtual Routing and Forwarding (VRF) instance with a network interface. For more information about completing this prerequisite, see the _Additional resources_ section.
+* You installed MetalLB on your cluster.
+
+.Procedure
+
+. Create a `BGPPeer` custom resource (CR):
++
+.. Create a file, such as `frrviavrf.yaml`, with content like the following example:
++
+[source,yaml]
+----
+apiVersion: metallb.io/v1beta2
+kind: BGPPeer
+metadata:
+  name: frrviavrf
+  namespace: metallb-system
+spec:
+  myASN: 100
+  peerASN: 200
+  peerAddress: 192.168.130.1
+  vrf: ens4vrf
+# ...
+----
+`spec.vrf`: Specifies the network VRF instance to associate with the BGP peer. MetalLB can advertise services and make routing decisions based on the routing information in the VRF.
++
+[NOTE]
+====
+You must configure this network VRF instance in a `NodeNetworkConfigurationPolicy` CR. See the _Additional resources_ for more information.
+====
++
+.. Apply the configuration for the BGP peer by running the following command:
++
+[source,terminal]
+----
+$ oc apply -f frrviavrf.yaml
+----
+
+. Create an `IPAddressPool` CR:
++
+.. Create a file, such as `first-pool.yaml`, with content like the following example:
++
+[source,yaml]
+----
+apiVersion: metallb.io/v1beta1
+kind: IPAddressPool
+metadata:
+  name: first-pool
+  namespace: metallb-system
+spec:
+  addresses:
+  - 192.169.10.0/32
+# ...
+----
++
+.. Apply the configuration for the IP address pool by running the following command:
++
+[source,terminal]
+----
+$ oc apply -f first-pool.yaml
+----
+
+. Create a `BGPAdvertisement` CR:
++
+.. Create a file, such as `first-adv.yaml`, with content like the following example:
++
+[source,yaml]
+----
+apiVersion: metallb.io/v1beta1
+kind: BGPAdvertisement
+metadata:
+  name: first-adv
+  namespace: metallb-system
+spec:
+  ipAddressPools:
+    - first-pool
+  peers:
+    - frrviavrf
+# ...
+----
+`peers.frrviavrf`: In this example, MetalLB advertises a range of IP addresses from the `first-pool` IP address pool to the `frrviavrf` BGP peer.
++
+.. Apply the configuration for the BGP advertisement by running the following command:
++
+[source,terminal]
+----
+$ oc apply -f first-adv.yaml
+----
+
+. Create a `Namespace`, `Deployment`, and `Service` CR:
++
+.. Create a file, such as `deploy-service.yaml`, with content like the following example:
++
+[source,yaml]
+----
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: test
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: server
+  namespace: test
+spec:
+  selector:
+    matchLabels:
+      app: server
+  template:
+    metadata:
+      labels:
+        app: server
+    spec:
+      containers:
+      - name: server
+        image: nginx
+        ports:
+        - name: http
+          containerPort: 80
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: server1
+  namespace: test
+spec:
+  ports:
+  - name: http
+    port: 80
+    protocol: TCP
+    targetPort: 80
+  selector:
+    app: server
+  type: LoadBalancer
+# ...
+----
++
+.. Apply the configuration for the namespace, deployment, and service by running the following command:
++
+[source,terminal]
+----
+$ oc apply -f deploy-service.yaml
+----
+
+.Verification
+
+. Identify a MetalLB speaker pod by running the following command:
++
+[source,terminal]
+----
+$ oc get -n metallb-system pods -l component=speaker
+----
++
+.Example output
+[source,terminal]
+----
+NAME            READY   STATUS    RESTARTS   AGE
+speaker-c6c5f   6/6     Running   0          69m
+----
+
+. Verify that the state of the BGP session is `Established` in the speaker pod by running the following command, replacing the variables to match your configuration:
++
+[source,terminal]
+----
+$ oc exec -n metallb-system <speaker_pod> -c frr -- vtysh -c "show bgp vrf <vrf_name> neigh"
+----
++
+.Example output
+[source,terminal]
+----
+BGP neighbor is 192.168.30.1, remote AS 200, local AS 100, external link
+  BGP version 4, remote router ID 192.168.30.1, local router ID 192.168.30.71
+  BGP state = Established, up for 04:20:09
+
+...
+----
+
+. Verify that the service is advertised correctly by running the following command:
++
+[source,terminal]
+----
+$ oc exec -n metallb-system <speaker_pod> -c frr -- vtysh -c "show bgp vrf <vrf_name> ipv4"
+----
