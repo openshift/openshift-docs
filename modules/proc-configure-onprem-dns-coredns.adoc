@@ -1,0 +1,149 @@
+// Module included in the following assemblies:
+//
+// *deployment/deployment.adoc
+
+:_mod-docs-content-type: PROCEDURE
+[id="proc-configure-onprem-dns-coredns_{context}"]
+= Configure on-premise DNS with CoreDNS
+
+[role="_abstract"]
+Set up CoreDNS as a DNS provider for {prodname} in a multi-cluster, on-premise environment. This integration allows {prodname} to manage DNS entries within your internal network infrastructure.
+
+.Prerequisites
+
+* {prodname} is installed on two separate {ocp} clusters.
+* Kustomize is installed.
+* Either `kubectl` or {oc-first} is installed and has access to both clusters.
+* Your {ocp} clusters have support for the `loadbalanced` service type that allows UDP traffic on port 53, such as MetalLB.
+* You have administrator privileges on both {ocp} clusters.
+* You have access to configure your authoritative on-premise DNS server to delegate a subdomain.
+
+.Procedure
+
+. Set the following environment variables for your primary cluster context:
++
+[source,bash]
+----
+$ export CTX_PRIMARY=<primary_cluster_context_name> # for example, kind-primary \
+  export KUBECONFIG=~/.kube/config # Adjust path if necessary \
+  export PRIMARY_CLUSTER_NAME=<primary_cluster_name> # for example, primary \
+  export ONPREM_DOMAIN=<your_onprem_domain> # for example, example.local \
+  export KUADRANT_SUBDOMAIN=kuadrant # Subdomain to delegate
+----
+
+. Install CoreDNS using the {prodname} kustomization, which includes the required `kuadrant` plugin. Apply the following configuration to the primary cluster, replacing `<kuadrant_coredns_kustomize_url>` with the actual URL for the Kuadrant CoreDNS kustomization.
++
+[source,bash]
+----
+$ kustomize build --enable-helm github.com/kuadrant/dns-operator/config/coredns?ref=v0.15.0 | kubectl apply --context ${CTX_PRIMARY} -f -
+----
+//Command is incorrect as noted in 9 Feb mtg; WIP on eng side
++
+[IMPORTANT]
+====
+The default CoreDNS Helm chart does not include the `kuadrant` plugin. You must use the {prodname}-provided kustomization which bundles a customized CoreDNS build.
+====
+
+. Wait for the CoreDNS service to get an external IP address and store it by running the following command:
+//Q: wait for some output, wait 5 minutes? how do i know that the service got the external IP address?
++
+[source,bash]
+----
+$ export COREDNS_IP_PRIMARY=$(kubectl --context $CTX_PRIMARY -n kuadrant-system get service <coredns-service-name> -o jsonpath='{.status.loadBalancer.ingress[0].ip}'
+echo "CoreDNS Primary IP: ${COREDNS_IP_PRIMARY}"
+----
++
+You need this IP address later to configure delegation on your authoritative on-premise DNS server.
+
+. Create a `ConfigMap` to define the authoritative zone for CoreDNS on the primary cluster. This minimal configuration enables the `kuadrant` plugin and GeoIP features. Run the following command to create the YAML:
++
+[source,yaml]
+----
+cat | kubectl --context $CTX_PRIMARY apply -f -
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: coredns-kuadrant-config
+  namespace: kuadrant-system
+data:
+  Corefile: |
+    ${KUADRANT_SUBDOMAIN}.${ONPREM_DOMAIN}:53 {
+        debug
+        errors
+        health {
+            lameduck 5s
+        }
+        ready
+        log
+        geoip <GeoLite2-City-demo.mmdb> {
+            edns-subnet
+        }
+        metadata
+        kuadrant
+    }
+----
++
+[NOTE]
+====
+The `geoip` plugin in this example uses the `GeoLite2-City-demo.mmdb` database included for demonstration purposes. For production or accurate GeoIP routing, mount your licensed MaxMind GeoIP database into the CoreDNS pod and update the filename in the `Corefile`.
+====
+//Q: can we provide an example corefile?
+
+. Update the CoreDNS deployment to use the new configuration:
++
+[source,bash]
+----
+$ kubectl --context $CTX_PRIMARY -n kuadrant-system patch deployment <coredns-deployment-name> --patch '{"spec":{"template":{"spec":{"volumes":[{"name":"config-volume","configMap":{"name":"kuadrant-coredns","items":[{"key":"Corefile","path":"Corefile"}]}}]}}}}'
+----
+
+. Wait for the deployment rollout to complete:
+//what is this command doing? are we waiting, or checking status?
++
+[source,bash]
+----
+$ kubectl --context $CTX_PRIMARY -n kuadrant-system rollout status deployment/<coredns-deployment-name>
+----
+//example output?
+
+. Create the Kubernetes `Secret` that {prodname} uses to interact with CoreDNS by running the following command:
++
+[source,bash]
+----
+$ kubectl create secret generic coredns-credentials \
+  --namespace=kuadrant-system \
+  --type=kuadrant.io/coredns \
+  --from-literal=ZONES="${KUADRANT_SUBDOMAIN}.${ONPREM_DOMAIN}" \
+  --context ${CTX_PRIMARY}
+----
++
+This secret specifies the zones for which this provider instance is authoritative.
+
+. On your authoritative on-premise DNS server, configure delegation for the `${KUADRANT_SUBDOMAIN}.${ONPREM_DOMAIN}` subdomain to the external IP addresses of the CoreDNS services running on your primary and secondary clusters (`$COREDNS_IP_PRIMARY` and `$COREDNS_IP_SECONDARY`). The specific steps depend on your DNS server software, for example, BIND, Windows DNS Server. You typically need to add Name Server (NS) records pointing the subdomain to the CoreDNS IP addresses.
++
+.Example delegation
+[source,terminal]
+----
+; Delegate kuadrant.example.local to CoreDNS instances
+$ORIGIN ${KUADRANT_SUBDOMAIN}.${ONPREM_DOMAIN}.
+@       IN      SOA     ns1.${ONPREM_DOMAIN}. hostmaster.${ONPREM_DOMAIN}. (
+                        2023102601 ; serial
+                        7200       ; refresh (2 hours)
+                        3600       ; retry (1 hour)
+                        1209600    ; expire (2 weeks)
+                        3600       ; minimum (1 hour)
+                        )
+        IN      NS      coredns-primary.${KUADRANT_SUBDOMAIN}.${ONPREM_DOMAIN}.
+
+coredns-primary   IN A ${COREDNS_IP_PRIMARY}
+----
+
+.Verification
+
+* To test that the DNS resolution for the delegated subdomain works correctly, query your authoritative DNS server for a record within the `kuadrant` subdomain. The query is expected to be referred to, and answered by, one of the CoreDNS instances.
+
+//Q:example command and output?
+
+.Next steps
+
+* Create `DNSPolicy` resources in your {ocp} clusters, referencing the `coredns-credentials` secret as the provider. {prodname} manages DNS records within the delegated `${KUADRANT_SUBDOMAIN}.${ONPREM_DOMAIN}` zone through the CoreDNS instances.
+//can we provide a link or procedure here?
