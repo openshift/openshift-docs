@@ -1,0 +1,194 @@
+:_mod-docs-content-type: PROCEDURE
+[id="spo-logging-correlate_{context}"]
+= Correlate with Kubernetes audit logs
+
+
+[role="_abstract"]
+Use the requestUID from the Security Profiles Operator (SPO) log to find the corresponding API server log entry, confirming who initiated the session.
+
+
+Run a command in a pod:
+
+[source,terminal]
+----
+# oc exec my-pod -c nginx -- sh -c "touch /tmp/testfile.txt"
+----
+
+Identify the node where the pod is running:
+
+[source,terminal]
+----
+NODE=$(oc get pod my-pod -o jsonpath='{.spec.nodeName}')
+----
+
+Access the node and check the JSON enriched audit log:
+
+[source,terminal]
+----
+# oc debug node/$NODE
+----
+
+[source,terminal]
+----
+# chroot /host
+# grep "testfile" /tmp/logs/audit1.log | jq .
+----
+
+== Audit JSON Enricher Output
+
+The Audit JSON Log Enricher captures two entries for this exec session. The first listing is the container runtime wrapper. The example output shows SPO_EXEC_REQUEST_UID injection:
+
+[source,yaml]
+----
+{
+  "auditID": "062e2bd2-xxxx-xxxx-xxxx-57fb39d65a99",
+  "cmdLine": "env SPO_EXEC_REQUEST_UID=aec3e0e1-xxxx-xxxx-xxxx-a7c58241f1a9 sh -c touch /tmp/testfile.txt ",
+  "executable": "/usr/bin/crun",
+  "pid": 144966,
+  "requestUID": "aec3e0e1-xxxx-xxxx-xxxx-a7c58241f1a9",
+  "resource": {
+    "container": "nginx",
+    "namespace": "default",
+    "pod": "my-pod"
+  },
+  "node": {
+    "name": "worker-1"
+  },
+  "syscalls": ["execve", "getpid", "clone"],
+  "timestamp": "2026-02-16T14:01:07.000Z"
+}
+----
+
+The second listing is the actual command executed:
+
+[source,yaml]
+----
+{
+  "auditID": "d586679d-xxxx-xxxx-xxxx-9dc8ab273065",
+  "cmdLine": "touch /tmp/testfile.txt ",
+  "executable": "/bin/dash",
+  "pid": 144968,
+  "requestUID": "aec3e0e1-xxxx-xxxx-xxxx-a7c58241f1a9", // <-- Correlation key
+  "resource": {
+    "container": "nginx",
+    "namespace": "default",
+    "pod": "my-pod"
+  },
+  "node": {
+    "name": "worker-1"
+  },
+  "syscalls": ["execve"],
+  "timestamp": "2026-02-16T14:01:07.000Z"
+}
+----
+
+Search the Kubernetes API audit log by using the requestUID:
+
+[source,terminal]
+----
+oc adm node-logs --role=master --path=kube-apiserver/audit.log | grep "<request_UID>"
+----
+
+== Kubernetes API audit log output
+
+[source,yaml]
+----
+{
+  "kind": "Event",
+  "apiVersion": "audit.k8s.io/v1",
+  "level": "Metadata",
+  "auditID": "4d434cd4-xxxx-xxxx-xxxx-2d9aa46292ce",
+  "stage": "ResponseComplete",
+  "requestURI": "/api/v1/namespaces/test-namespace/pods/test-pod/exec?command=sh&command=-c&command=touch+/tmp/testfile.txt&container=nginx",
+  "verb": "create",
+  "user": {
+    "username": "kube:admin",
+    "groups": ["system:cluster-admins", "system:authenticated"]
+  },
+  "sourceIPs": ["xxx.xxx.xxx.xxx"],
+  "userAgent": "oc/4.19.0 (linux/amd64)",
+  "objectRef": {
+    "resource": "pods",
+    "namespace": "default",
+    "name": "my-pod",
+    "subresource": "exec"
+  },
+  "responseStatus": {
+    "code": 101
+  },
+  "requestReceivedTimestamp": "2026-02-16T14:01:06.056518Z",
+  "annotations": {
+    "authorization.k8s.io/decision": "allow",
+    "authorization.k8s.io/reason": "RBAC: allowed by ClusterRoleBinding...",
+    "execmetadata.spo.io/SPO_EXEC_REQUEST_UID": "aec3e0e1-xxxx-xxxx-xxxx-a7c58241f1a9" // <-- Correlation key 
+  }
+}
+----
+
+== Correlation key
+
+The `requestUID` field in Audit JSON Enricher logs matches the `annotations.execmetadata.spo.io/SPO_EXEC_REQUEST_UID` annotation in the Kubernetes API audit log:
+
+[source,terminal]
+----
+aec3e0e1-xxxx-xxxx-xxxx-a7c58241f1a9
+----
+
+This correlation enables administrators to establish a complete audit trail: who executed a command (from Kubernetes API audit log: `kube:admin` from IP `xxx.xxx.xxx.xxx`) and what the command did at the system level (from SPO JSON Enricher log: `touch /tmp/testfile.txt`).
+
+
+== Correlating with API Server Audit Log
+
+By default, when you use kubectl exec to access a pod or container, Kubernetes does not pass the user's authentication details into that session's environment. This means the Audit JSON log enricher cannot include "who did what" information for exec commands. The `UID` or `GID` recorded will map to the system user. In most cases this would be the root user.
+
+To address this, the Audit JSON log enricher relies on mutating webhooks (execmetadata.spo.io and nodedebuggingpod.spo.io). The webhook injects the exec request UID as an environment variable into the exec session. Now, when the administrator enables audit logging on the API server, the webhooks will add the `SPO_EXEC_REQUEST_UID` audit annotation. The API server audit log will contain this information. This request ID will also be available in the JSON lines produced by the Audit JSON log enricher, specifically within the `requestUID` field.
+
+By default, these webhooks are enabled for all namespaces with the Audit JSON log enricher enabled. To reduce the scope of this webhook you can disable it for certain namespaces.
+
+Edit the `spod` configuration:
+
+[source,terminal]
+----
+kubectl edit spod spod -n openshift-security-profiles
+----
+
+Add `webhookOptions` to the `spec`:
+
+Locate the `spec` section and add the following `webhookOptions` block. This will tell the webhook to apply to a specific namespace.
+
+[source,yaml]
+----
+# ... (rest of your spod configuration)
+spec:
+  webhookOptions:
+    - name: execmetadata.spo.io # or nodedebuggingpod.spo.io
+      namespaceSelector:
+      #...add rules
+# ...
+----
+
+After saving your changes, the operator will reconfigure the mutating webhook, allowing request details to be passed into kubectl exec sessions cluster-wide.
+
+[NOTE]
+====
+This webhook injects the environment variable `SPO_EXEC_REQUEST_UID` into your exec request. If a container in your Pod already defines an environment variable with this exact name, the webhook injected value will override it for this exec session.
+====
+
+When you use `kubectl debug node/<node_name>`, the `nodedebuggingpod.spo.io` webhook automatically injects the `SPO_EXEC_REQUEST_UID` environment variable into the debug pod.
+
+This webhook primarily identifies kubectl debug pods by the label `app.kubernetes.io/managed-by: kubectl-debug`, which is added by the kubectl client. Because this label might vary across different Kubernetes client implementations (`oc debug` in OpenShift uses `debug.openshift.io/managed-by: oc-debug`), you may need to configure additional `webhookOptions` to ensure the webhook catches all relevant debug pods.
+
+For example, to include oc debug pods:
+
+[source,terminal]
+----
+# ... (rest of your spod configuration)
+spec:
+  webhookOptions:
+    - name: nodedebuggingpodmetada.spo.io
+      objectSelector:
+        matchLabels: # Use matchLabels for exact matching
+          debug.openshift.io/managed-by: "oc-debug"
+# ... other webhook rule details such as rules, clientConfig, etc.
+----
+
