@@ -1,0 +1,145 @@
+// Module included in the following assemblies:
+//
+// * operating/examine-images-for-vulnerabilities.adoc
+:_mod-docs-content-type: PROCEDURE
+[id="deploy-roxagent-quadlet_{context}"]
+= Deploying roxagent by using Podman Quadlet
+
+[role="_abstract"]
+You can deploy `roxagent` as a systemd-managed container service by using Podman Quadlet. This deployment method uses container images from a validated build pipeline, runs `roxagent` periodically by using a systemd timer, and manages the container lifecycle automatically.
+
+.Prerequisites
+
+* You have a {op-system-base-full} 8, 9, or 10 virtual machine running on {ocp-virt} with vsock enabled.
+* You have installed Podman on the VM.
+* You have deployed {product-title-short} with VM scanning enabled by setting `ROX_VIRTUAL_MACHINES=true`.
+* The VM has network access to pull the {product-title-short} main image from your container registry.
+
+.Procedure
+
+. Verify that vsock is available:
++
+[source,terminal]
+----
+$ ls -la /dev/vsock
+----
+
+. Create the Quadlet directory:
++
+[source,terminal]
+----
+$ sudo mkdir -p /etc/containers/systemd/
+----
+
+. Copy the following content to `/etc/systemd/system/roxagent-prep.service`:
++
+[source,ini]
+----
+[Unit]
+Description=Prepare RPM database for StackRox VM Agent
+# Copy the RPM database to a writable location because SQLite WAL mode
+# requires write access even for read-only queries
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=/bin/rm -rf /tmp/roxagent-rpm
+ExecStart=/bin/cp -a /var/lib/rpm /tmp/roxagent-rpm
+ExecStart=/bin/chmod -R 755 /tmp/roxagent-rpm
+----
+
+. Copy the following content to `/etc/systemd/system/roxagent.timer`:
++
+[source,ini]
+----
+[Unit]
+Description=Run StackRox VM Agent periodically
+
+[Timer]
+OnBootSec=5min
+OnUnitActiveSec=3h40m
+RandomizedDelaySec=40min
+Persistent=true
+
+[Install]
+WantedBy=timers.target
+----
+
+. Copy the following content to `/etc/containers/systemd/roxagent.container`, replacing `<version>` with the version of your {product-title-short} deployment:
++
+[source,ini]
+----
+[Unit]
+Description=StackRox VM Agent Container
+# Copy RPM database before starting (SQLite WAL requires writable access)
+Requires=roxagent-prep.service
+After=roxagent-prep.service
+
+[Container]
+# Replace with your StackRox main image tag
+Image=quay.io/stackrox-io/main:<version>
+Exec=--host-path /host
+Network=host
+
+# Privileged for vsock access
+# Use PodmanArgs for entrypoint (RHEL 8 Quadlet doesn't support Entrypoint key)
+# Run as root since image defaults to non-root user
+SecurityLabelDisable=true
+PodmanArgs=--privileged --user root --entrypoint /stackrox/bin/roxagent --device /dev/vsock
+
+# Mount copied RPM database (writable for SQLite WAL) and host config files (read-only)
+Volume=/tmp/roxagent-rpm:/host/var/lib/rpm:rw
+Volume=/etc/yum.repos.d:/host/etc/yum.repos.d:ro
+Volume=/etc/os-release:/host/etc/os-release:ro
+Volume=/etc/redhat-release:/host/etc/redhat-release:ro
+Volume=/etc/system-release-cpe:/host/etc/system-release-cpe:ro
+# DNF cache and state for repo-to-package mapping
+Volume=/var/cache/dnf:/host/var/cache/dnf:ro
+Volume=/var/lib/dnf:/host/var/lib/dnf:ro
+
+[Service]
+Type=oneshot
+TimeoutStartSec=300
+
+[Install]
+WantedBy=
+----
+
+. If SELinux is enabled, restore the SELinux contexts:
++
+[source,terminal]
+----
+$ sudo restorecon -Rv /etc/containers/systemd/
+$ sudo restorecon -Rv /etc/systemd/system/roxagent.timer /etc/systemd/system/roxagent-prep.service
+----
+
+. Reload systemd and enable the timer:
++
+[source,terminal]
+----
+$ sudo systemctl daemon-reload
+$ sudo systemctl enable --now roxagent.timer
+----
+
+.Verification
+
+* Verify that the timer is active:
++
+[source,terminal]
+----
+$ sudo systemctl list-timers roxagent.timer
+----
+
+* Optional: Run a scan immediately:
++
+[source,terminal]
+----
+$ sudo systemctl start roxagent.service
+----
+
+* View the scan logs:
++
+[source,terminal]
+----
+$ sudo journalctl -u roxagent.service -f
+----
