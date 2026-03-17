@@ -1,0 +1,232 @@
+// Module included in the following assemblies:
+//
+// * cloud_experts_tutorials/cloud-experts-deploy-api-data-protection.adoc
+
+:_mod-docs-content-type: PROCEDURE
+[id="cloud-experts-deploy-api-data-protection-deploy-oadp-on-cluster_{context}"]
+= Deploy OADP on the cluster
+
+[role="_abstract"]
+You need to use the {oc-first} tool to deploy OADP to your cluster.
+
+.Procedure
+. Create a namespace for OADP:
++
+[source,terminal]
+----
+$ oc create namespace openshift-adp
+----
+
+. Create a credentials secret:
++
+[source,terminal]
+----
+$ cat <<EOF > ${SCRATCH}/credentials
+[default]
+role_arn = ${ROLE_ARN}
+web_identity_token_file = /var/run/secrets/openshift/serviceaccount/token
+region=<aws_region> #
+EOF
+$ oc -n openshift-adp create secret generic cloud-credentials \
+ --from-file=${SCRATCH}/credentials
+----
++
+--
+where:
+
+`<aws_region>`:: Replace with the AWS region to use for the {sts-first} endpoint.
+--
+
+. Deploy the OADP Operator:
++
+[NOTE]
+====
+There is currently an issue with version 1.1 of the Operator with backups that have a `PartiallyFailed` status. This does not seem to affect the backup and restore process, but it should be noted as there are issues with it.
+====
++
+[source,terminal]
+----
+$ cat << EOF | oc create -f -
+apiVersion: operators.coreos.com/v1
+kind: OperatorGroup
+metadata:
+ generateName: openshift-adp-
+ namespace: openshift-adp
+ name: oadp
+spec:
+ targetNamespaces:
+ - openshift-adp
+---
+apiVersion: operators.coreos.com/v1alpha1
+kind: Subscription
+metadata:
+ name: redhat-oadp-operator
+ namespace: openshift-adp
+spec:
+ channel: stable-1.2
+ installPlanApproval: Automatic
+ name: redhat-oadp-operator
+ source: redhat-operators
+ sourceNamespace: openshift-marketplace
+EOF
+----
+
+. Wait for the Operator to be ready:
++
+[source,terminal]
+----
+$ watch oc -n openshift-adp get pods
+----
++
+.Example output
+[source,terminal]
+----
+NAME                                                READY   STATUS    RESTARTS   AGE
+openshift-adp-controller-manager-546684844f-qqjhn   1/1     Running   0          22s
+----
+
+. Create Cloud Storage:
++
+[source,terminal]
+----
+$ cat << EOF | oc create -f -
+apiVersion: oadp.openshift.io/v1alpha1
+kind: CloudStorage
+metadata:
+ name: ${CLUSTER_NAME}-oadp
+ namespace: openshift-adp
+spec:
+ creationSecret:
+   key: credentials
+   name: cloud-credentials
+ enableSharedConfig: true
+ name: ${CLUSTER_NAME}-oadp
+ provider: aws
+ region: $REGION
+EOF
+----
+
+. Check your application's storage default storage class by running the following command with your desired namespace:
++
+[source,terminal]
+----
+$ oc get pvc -n <namespace>
+----
++
+.Example output
+[source,terminal]
+----
+NAME     STATUS   VOLUME                                     CAPACITY   ACCESS MODES   STORAGECLASS   AGE
+applog   Bound    pvc-351791ae-b6ab-4e8b-88a4-30f73caf5ef8   1Gi        RWO            gp3-csi        4d19h
+mysql    Bound    pvc-16b8e009-a20a-4379-accc-bc81fedd0621   1Gi        RWO            gp3-csi        4d19h
+----
++
+[source,terminal]
+----
+$ oc get storageclass
+----
++
+.Example output
+[source,terminal]
+----
+NAME                PROVISIONER             RECLAIMPOLICY   VOLUMEBINDINGMODE      ALLOWVOLUMEEXPANSION   AGE
+gp2                 kubernetes.io/aws-ebs   Delete          WaitForFirstConsumer   true                   4d21h
+gp2-csi             ebs.csi.aws.com         Delete          WaitForFirstConsumer   true                   4d21h
+gp3                 ebs.csi.aws.com         Delete          WaitForFirstConsumer   true                   4d21h
+gp3-csi (default)   ebs.csi.aws.com         Delete          WaitForFirstConsumer   true                   4d21h
+----
++
+Using either gp3-csi, gp2-csi, gp3 or gp2 will work. If the application(s) that are being backed up are all using PV's with CSI, include the CSI plugin in the OADP DPA configuration.
+
+. CSI only: Deploy a Data Protection Application:
++
+[source,terminal]
+----
+$ cat << EOF | oc create -f -
+apiVersion: oadp.openshift.io/v1alpha1
+kind: DataProtectionApplication
+metadata:
+ name: ${CLUSTER_NAME}-dpa
+ namespace: openshift-adp
+spec:
+ backupImages: true
+ features:
+   dataMover:
+     enable: false
+ backupLocations:
+ - bucket:
+     cloudStorageRef:
+       name: ${CLUSTER_NAME}-oadp
+     credential:
+       key: credentials
+       name: cloud-credentials
+     prefix: velero
+     default: true
+     config:
+       region: ${REGION}
+ configuration:
+   velero:
+     defaultPlugins:
+     - openshift
+     - aws
+     - csi
+   restic:
+     enable: false
+EOF
+----
++
+[NOTE]
+====
+If you run this command for CSI volumes, you can skip the next step.
+====
+
+. Non-CSI volumes: Deploy a Data Protection Application:
++
+[source,terminal]
+----
+$ cat << EOF | oc create -f -
+apiVersion: oadp.openshift.io/v1alpha1
+kind: DataProtectionApplication
+metadata:
+ name: ${CLUSTER_NAME}-dpa
+ namespace: openshift-adp
+spec:
+ backupImages: true
+ features:
+   dataMover:
+     enable: false
+ backupLocations:
+ - bucket:
+     cloudStorageRef:
+       name: ${CLUSTER_NAME}-oadp
+     credential:
+       key: credentials
+       name: cloud-credentials
+     prefix: velero
+     default: true
+     config:
+       region: ${REGION}
+ configuration:
+   velero:
+     defaultPlugins:
+     - openshift
+     - aws
+   restic:
+     enable: false
+ snapshotLocations:
+   - velero:
+       config:
+         credentialsFile: /tmp/credentials/openshift-adp/cloud-credentials-credentials
+         enableSharedConfig: 'true'
+         profile: default
+         region: ${REGION}
+       provider: aws
+EOF
+----
++
+[NOTE]
+====
+* In OADP 1.1.x {product-title} STS environments, the container image backup and restore (`spec.backupImages`) value must be set to `false` as it is not supported.
+* The Restic feature (`restic.enable=false`) is disabled and not supported in {product-title} STS environments.
+* The DataMover feature (`dataMover.enable=false`) is disabled and not supported in {product-title} STS environments.
+====
