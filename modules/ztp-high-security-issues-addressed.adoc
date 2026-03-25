@@ -1,37 +1,261 @@
 // Module included in the following assemblies:
 //
-// * scalability_and_performance/ztp_far_edge/ztp-security-hardening.adoc
+// * edge_computing/ztp-security-hardening.adoc
 
 :_mod-docs-content-type: CONCEPT
 [id="ztp-addressed-security-issues_{context}"]
 = Security hardening measures implemented
 
-Disabling USB boot, wireless and bluetooth access
+[role="_abstract"]
+These high-severity security hardening measures address compliance requirements from National Institute of Standards and Technology (NIST) SP 800-53 and Center for Internet Security (CIS) Kubernetes benchmark v1.5.0.
+The measures are delivered through firmware configuration changes (outside ZTP) and ZTP-managed `MachineConfig` objects that enforce system-wide security controls.
 
-To prevent unauthorized modifications to the operating system and to reduce the risk of physical attack vectors, USB boot, wireless, and Bluetooth are disabled in the BIOS settings. These settings are not controlled by using ZTP configuration. Disabling USB boot prevents attackers from booting from a USB drive and gaining unauthorized access to the system. The recommended firmware configuration is described in "Configuring host firmware for low latency and high performance".
+.Applicability matrix: Day 0 versus Day 2 operations
+[cols="3,2,2,2,3", width="100%", options="header"]
+|====
+|Control
+|Day 0 only
+|Day 2 safe
+|Requires reboot
+|Notes
 
-Preventing unauthorized reboots
+|USB boot, wireless, Bluetooth disable
+|
+|✓
+|
+|Firmware configuration; no workload impact
+
+|Ctrl+Alt+Del protection
+|
+|✓
+|
+|`MachineConfig`; no reboot required
+
+|SSH root login restriction
+|
+|✓
+|✓
+|`MachineConfig`; verify no automated scripts use root SSH before applying
+
+|Cryptographic policy enforcement
+|
+|✓
+|✓
+|`MachineConfig`; mandatory reboot; might affect services using deprecated ciphers
+
+|Passwordless login disable
+|
+|✓
+|✓
+|`MachineConfig`; mandatory reboot; verify no accounts rely on passwordless access
+
+|RBAC least privilege
+|✓
+|✓
+|
+|Apply at Day 0; refine continuously; no reboot required
+|====
+
+== Disabling USB boot, wireless, and Bluetooth access
+
+To prevent unauthorized modifications to the operating system and reduce physical attack vectors, you disable USB boot, wireless, and Bluetooth in firmware settings.
+ZTP configuration does not control these settings.
+
+Disabling USB boot prevents attackers from booting from a USB drive and gaining unauthorized access to the system.
+Disabling wireless and Bluetooth eliminates additional physical attack vectors that attackers could exploit to compromise the host.
+
+The recommended firmware configuration is in xref:../edge_computing/ztp-reference-cluster-configuration-for-vdu.adoc#ztp-du-configuring-host-firmware-requirements_sno-configure-for-vdu[Configuring host firmware for low latency and high performance].
+Specifically, see the *USB Boot*, *Wireless LAN*, and *Bluetooth* rows in the firmware configuration table, which should all be set to *Disabled*.
+
+== Preventing unauthorized reboots
 
 Disabling `CtrlAltDelBurstAction` and `Ctrl+Alt+Del` actions prevents unauthorized reboots.
+This mitigates the risk that an attacker with physical access could trigger a denial of service by forcing unexpected system restarts.
 
-Restricting direct SSH access
+In RHEL systems, `CtrlAltDelBurstAction` is a systemd-logind configuration parameter that allows rapid Ctrl+Alt+Del key sequences to trigger an emergency reboot without authentication.
+When you disable this feature through `MachineConfig`, the emergency reboot path is blocked, requiring proper authentication and authorization for any system reboot.
+This is critical for telecommunications deployments that must keep availability up and prevent physical attackers from forcing denial-of-service reboots.
 
-Direct SSH access to {product-title} is limited by disabling the `root` login.
+After you apply this control, pressing Ctrl+Alt+Del has no effect on the system; only properly authorized administrators can start reboots through standard administrative channels.
 
-Disabling passwordless logins
+Ctrl+Alt+Del reboot protection is enforced through a `MachineConfig` object delivered through ZTP manifests.
 
-This feature enforces strict authentication policies by disabling logins for accounts without passwords to ensure compliance with security best practices and reduce unauthorized access risks.
+A sample `MachineConfig` object for disabling Ctrl+Alt+Del burst action (applied to all nodes) looks like the following:
 
-Ensure that the RBAC setup follows the principle of least privilege
+----
+apiVersion: machineconfiguration.openshift.io/v1
+kind: MachineConfig
+metadata:
+  name: disable-ctrl-alt-del
+spec:
+  config:
+    ignition:
+      version: 3.2.0
+    storage:
+      files:
+      - path: /etc/systemd/logind.conf.d/99-disable-ctrl-alt-del-burst
+        mode: 0644
+        contents:
+          source: data:,%5BLogind%5D%0ACtrlAltDelBurstAction%3Dnone
+nodeSelector: {}
+----
 
-To minimize the risk of unauthorized access, the RBAC setup follows the principle of least privilege, as described in "Using RBAC to define and apply permissions", granting users the minimum required permissions.
+You can verify that this control is active by checking that `CtrlAltDelBurstAction` is set to `none` on each node:
 
-{product-title} provides the tools for creating minimal permissions. However, you must assess the needs of users and services within your environment and apply the principle of least privilege accordingly.
+----
+oc debug node/<node-name> -- chroot /host cat /etc/systemd/logind.conf.d/99-disable-ctrl-alt-del-burst | grep CtrlAltDelBurstAction
+----
 
-For example, consider creating a role that:
+== Restricting direct SSH access
 
-* Provides permissions to control user access, such as granting users the ability to view resources without modifying them.
-* Enables developers to manage only deployments and services within a specific namespace, without granting access to sensitive resources.
-* Allows users to view configuration resources, such as `ConfigMaps` and `Secrets`, but not change them.
+You can limit direct SSH access to {product-title} by disabling the `root` login.
+This prevents attackers from gaining administrative access through brute-force attacks or credential compromise targeting the root account.
+
+SSH root login is disabled through a `MachineConfig` object that modifies SSH daemon (SSHD) configuration, delivered through ZTP manifests.
+
+A sample `MachineConfig` object for disabling root SSH access (applied to worker nodes) looks like the following:
+
+----
+apiVersion: machineconfiguration.openshift.io/v1
+kind: MachineConfig
+metadata:
+  name: disable-root-ssh
+spec:
+  config:
+    ignition:
+      version: 3.2.0
+    storage:
+      files:
+      - path: /etc/ssh/sshd_config.d/99-disable-root-login
+        mode: 0644
+        contents:
+          source: data:,PermitRootLogin%20no
+nodeSelector:
+  node-role.kubernetes.io/worker: ""
+----
+
+After you apply this `MachineConfig` (which triggers a node reboot), you can verify that root SSH login is disabled by running:
+
+----
+oc debug node/<node-name> -- chroot /host grep "PermitRootLogin" /etc/ssh/sshd_config.d/99-disable-root-login
+----
+
+This should return `PermitRootLogin no`, confirming that the SSH restriction is active.
+
+== Enforcing system-wide cryptographic policy
+
+System-wide cryptographic policy enforcement disables weaker cipher suites and ensures that all components use strong cryptographic algorithms.
+The default cryptographic policy is set to `DEFAULT:NO-SHA1`, which removes support for SHA-1 digest algorithms.
+This prevents downgrade attacks and ensures compliance with modern cryptographic standards required by NIST SP 800-53.
+
+Removing SHA-1 support might affect older clients or services that rely on SHA-1 for certificate verification or data integrity.
+Test this control in a non-production environment before applying to production clusters to ensure compatibility with your workloads.
+
+Cryptographic policy changes are enforced through a `MachineConfig` object that updates the system-wide cryptographic policy, delivered through ZTP manifests.
+
+A sample `MachineConfig` object for enforcing the `DEFAULT:NO-SHA1` cryptographic policy (applied to all nodes) looks like the following:
+
+----
+apiVersion: machineconfiguration.openshift.io/v1
+kind: MachineConfig
+metadata:
+  name: enforce-crypto-policy
+spec:
+  config:
+    ignition:
+      version: 3.2.0
+    systemd:
+      units:
+      - name: update-crypto-policies.service
+        enabled: true
+        contents: |
+          [Unit]
+          Description=Update crypto policies to DEFAULT:NO-SHA1
+          After=network.target
+          [Service]
+          Type=oneshot
+          ExecStart=/usr/bin/update-crypto-policies --set DEFAULT:NO-SHA1
+          RemainAfterExit=yes
+nodeSelector: {}
+----
+
+To verify that the cryptographic policy has been applied correctly after the `MachineConfig` is reconciled, run:
+
+----
+oc debug node/<node-name> -- chroot /host update-crypto-policies --show
+----
+
+This command should display `DEFAULT:NO-SHA1`, confirming that SHA-1 support has been disabled.
+
+[WARNING]
+====
+Applying or updating crypto policy MachineConfig objects triggers mandatory node reboot events.
+Plan your maintenance window accordingly to minimize service disruption.
+====
+
+== Disabling passwordless logins
+
+This feature enforces strict authentication policies by disabling logins for accounts without passwords.
+Removing the `nullok` Pluggable Authentication Modules (PAM) option ensures that all user accounts require a password to authenticate, reducing the risk of unauthorized access.
+
+PAM authentication changes are enforced through a `MachineConfig` object that removes the `nullok` parameter from PAM configuration files, delivered through ZTP manifests.
+
+A sample `MachineConfig` object for disabling password-less logins (applied to worker nodes) looks like the following:
+
+----
+apiVersion: machineconfiguration.openshift.io/v1
+kind: MachineConfig
+metadata:
+  name: disable-nullok-pam
+spec:
+  config:
+    ignition:
+      version: 3.2.0
+    storage:
+      files:
+      - path: /etc/pam.d/system-auth.d/99-disable-nullok
+        mode: 0644
+        contents:
+          source: data:,auth%20%20required%20%20pam_deny.so%0A
+nodeSelector:
+  node-role.kubernetes.io/worker: ""
+----
+
+After you apply this `MachineConfig`, verify that the `nullok` option has been removed from PAM configuration:
+
+----
+oc debug node/<node-name> -- chroot /host grep -r "nullok" /etc/pam.d/
+----
+
+This command should return no results, confirming that password-less login accounts are disabled.
+
+[WARNING]
+====
+Applying or updating PAM `MachineConfig` objects triggers mandatory node reboot events.
+Plan your maintenance window accordingly to minimize service disruption.
+Before applying this control, verify that no automated scripts or services depend on passwordless account access.
+====
+
+== Ensuring RBAC follows the principle of least privilege
+
+To minimize the risk of unauthorized access, the RBAC setup follows the principle of least privilege, as described in xref:../authentication/using-rbac.adoc#using-rbac[Using RBAC to define and apply permissions].
+
+In the context of security hardening for RAN deployments, RBAC controls are essential to prevent tampering with the security measures described in the preceding sections.
+Specifically, you must restrict who can:
+
+* Create, change, or delete `MachineConfig` objects (which enforce cryptographic policy, SSH restrictions, and PAM settings)
+* View or change SSH daemon (SSHD) configuration files
+* Change system-wide cryptographic policies
+* Change or remove the `SecurityContextConstraints` (SCC) policies that enforce pod security
+
+{product-title} provides the tools for creating minimal permissions.
+However, you must assess the needs of users and services within your environment and apply the principle of least privilege accordingly.
+
+For example, consider creating the following RBAC roles:
+
+* A restricted `machineconfig-admins` `ClusterRole` that grants permission to view and change `MachineConfig` objects only to a small set of cluster administrators who are responsible for security compliance.
+* A developer role that permits only deployment and service management within a specific namespace, without access to cluster-wide security resources such as `MachineConfigs` or `SecurityContextConstraints`.
+* An auditor role that permits viewing (but not changing) security-relevant resources such as `MachineConfigs`, SCC policies, and audit logs.
 
 Regularly review and update permissions to ensure that users have only the permissions necessary to perform their tasks.
+Use the audit logs to monitor who accessed or changed security-relevant resources, and verify that only authorized administrators can change the hardening controls described in the preceding sections.
