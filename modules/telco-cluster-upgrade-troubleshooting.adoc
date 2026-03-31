@@ -1,0 +1,404 @@
+:_mod-docs-content-type: PROCEDURE
+[id="telco-cluster-upgrade-troubleshooting_{context}"]
+= Troubleshoot Telco Core cluster upgrades
+
+[role="_abstract"]
+You can diagnose and resolve common issues that occur during Telco Core cluster upgrades.
+This procedure helps you identify the root cause of upgrade failures and take corrective action.
+
+Use this procedure when upgrades get stuck, fail, or result in degraded cluster operators.
+
+.Prerequisites
+
+* Upgrade is in progress or has failed.
+* Access to clusters with cluster-admin privileges.
+* Access to RHACM hub cluster for TALM-based upgrades.
+
+.Procedure
+
+. *Diagnose TALM ClusterGroupUpgrade stuck in Preparing state*:
++
+Check the CGU status:
++
+[source,terminal]
+----
+$ oc get cgu <cgu-name> -n <namespace> -o yaml
+----
++
+Look for error messages in the `status.conditions` section.
++
+Common causes:
++
+--
+* Managed policies do not exist or are not bound to target clusters
+* Target clusters are not in a ready state
+* Blocking custom resources are not ready
+--
++
+Check policy compliance in RHACM:
++
+[source,terminal]
+----
+$ oc get policy <policy-name> -n <namespace>
+----
++
+If the policy shows `NonCompliant`, check policy details:
++
+[source,terminal]
+----
+$ oc describe policy <policy-name> -n <namespace>
+----
++
+Resolve policy compliance issues before the CGU can proceed.
+
+. *Diagnose TALM ClusterGroupUpgrade failed on some clusters*:
++
+Check detailed cluster status in the CGU:
++
+[source,terminal]
+----
+$ oc get cgu <cgu-name> -n <namespace> -o jsonpath='{.status.clusters}' | jq
+----
++
+.Example output
+[source,json]
+----
+{
+  "spoke1": "complete",
+  "spoke2": "failed",
+  "spoke3": "inprogress"
+}
+----
++
+For failed clusters, check TALM operator logs:
++
+[source,terminal]
+----
+$ oc logs -n openshift-operators deployment/cluster-group-upgrades-controller-manager
+----
++
+Check policy violation events on the failed cluster:
++
+[source,terminal]
+----
+$ oc --context=<failed-cluster> get events -A --sort-by='.lastTimestamp' | tail -20
+----
+
+. *Diagnose cluster operator degraded during upgrade*:
++
+Identify degraded operators:
++
+[source,terminal]
+----
+$ oc get co | grep -v "True.*False.*False"
+----
++
+.Example output
+[source,terminal]
+----
+NAME                                       VERSION   AVAILABLE   PROGRESSING   DEGRADED   SINCE   MESSAGE
+authentication                             4.20.0    True        False         True       5m      APIServerDeploymentDegraded: ...
+----
++
+Check operator details:
++
+[source,terminal]
+----
+$ oc describe co authentication
+----
++
+Look for error messages in the `status.conditions` section.
++
+Check operator pod logs:
++
+[source,terminal]
+----
+$ oc logs -n openshift-authentication deployment/oauth-openshift
+----
++
+Common degraded operators during upgrades:
++
+--
+* `authentication`: Check OAuth pod logs and certificate validity
+* `console`: Check console pod logs and route accessibility
+* `monitoring`: Check Prometheus and Alertmanager pod status
+* `network`: Check CNI plugin pods on all nodes
+--
+
+. *Diagnose upgrade stuck in "Working towards" state*:
++
+Check ClusterVersion status:
++
+[source,terminal]
+----
+$ oc get clusterversion -o yaml
+----
++
+Look for the `status.conditions` section to identify blocking resources.
++
+Check which operators are still progressing:
++
+[source,terminal]
+----
+$ oc get co | grep "True"
+----
++
+Any operator showing `PROGRESSING=True` is still updating.
++
+Check ClusterVersion history:
++
+[source,terminal]
+----
+$ oc get clusterversion -o jsonpath='{.status.history}' | jq
+----
++
+Verify the upgrade has not timed out (upgrades typically complete within 90-180 minutes).
+
+. *Diagnose worker nodes stuck in NotReady state*:
++
+Identify NotReady nodes:
++
+[source,terminal]
+----
+$ oc get nodes | grep NotReady
+----
++
+Check node conditions:
++
+[source,terminal]
+----
+$ oc describe node <node-name> | grep -A 10 Conditions
+----
++
+Common conditions causing NotReady:
++
+--
+* `DiskPressure`: Node is low on disk space
+* `MemoryPressure`: Node is low on memory
+* `NetworkUnavailable`: Node network is not configured correctly
+* `PIDPressure`: Too many processes running on the node
+--
++
+Debug the node:
++
+[source,terminal]
+----
+$ oc debug node/<node-name>
+----
++
+Check kubelet logs:
++
+[source,terminal]
+----
+$ chroot /host journalctl -u kubelet -n 100
+----
+
+. *Diagnose worker node upgrade stuck*:
++
+Check MachineConfigPool status:
++
+[source,terminal]
+----
+$ oc get mcp worker -o yaml
+----
++
+Look for degraded machine configs in the status.
++
+Common issues:
++
+--
+* Node stuck draining due to Pod Disruption Budgets
+* Machine config daemon failing to apply configuration
+* Node reboot failure
+--
++
+Check Pod Disruption Budgets:
++
+[source,terminal]
+----
+$ oc get pdb -A
+----
++
+If a PDB shows `ALLOWED DISRUPTIONS` of 0, adjust the PDB configuration.
++
+Check machine-config-daemon logs on the stuck node:
++
+[source,terminal]
+----
+$ oc logs -n openshift-machine-config-operator <machine-config-daemon-pod>
+----
+
+. *Diagnose etcd issues during control plane upgrades*:
++
+Check etcd cluster health:
++
+[source,terminal]
+----
+$ oc get etcd -o yaml
+----
++
+Look for the `EtcdMembersAvailable` condition.
++
+Check etcd pod status:
++
+[source,terminal]
+----
+$ oc get pods -n openshift-etcd -l app=etcd
+----
++
+All etcd pods should be running.
++
+View etcd member status:
++
+[source,terminal]
+----
+$ oc rsh -n openshift-etcd <etcd-pod> etcdctl member list -w table
+----
++
+Monitor etcd logs for errors:
++
+[source,terminal]
+----
+$ oc logs -n openshift-etcd <etcd-pod> etcd
+----
+
+. *Diagnose image pull failures during upgrades*:
++
+Check image pull status on nodes:
++
+[source,terminal]
+----
+$ oc get events -A --field-selector reason=Failed --sort-by='.lastTimestamp' | grep -i image
+----
++
+Common causes:
++
+--
+* Registry connectivity issues
+* Image not mirrored to disconnected registry
+* Image pull authentication failures
+--
++
+For disconnected environments, verify image mirroring:
++
+[source,terminal]
+----
+$ oc get imagecontentsourcepolicy
+----
++
+Test image pull from a node:
++
+[source,terminal]
+----
+$ oc debug node/<node-name> -- chroot /host podman pull <image-url>
+----
+
+. *Diagnose upgrade timeout exceeded*:
++
+If TALM reports timeout exceeded, check cluster resource utilization:
++
+[source,terminal]
+----
+$ oc adm top nodes
+----
++
+High CPU or memory usage can slow upgrades.
++
+Check for slow image pulls:
++
+[source,terminal]
+----
+$ oc get events -A --sort-by='.lastTimestamp' | grep -i "pull"
+----
++
+Check network latency between nodes and registries.
++
+Increase CGU timeout if the cluster is healthy but upgrading slowly:
++
+[source,terminal]
+----
+$ oc patch cgu <cgu-name> -n <namespace> --type merge -p '{"spec":{"remediationStrategy":{"timeout":14400}}}'
+----
+
+. *Collect diagnostic information for Red Hat support*:
++
+Collect must-gather data:
++
+[source,terminal]
+----
+$ oc adm must-gather
+----
++
+For TALM-specific issues, collect RHACM must-gather:
++
+[source,terminal]
+----
+$ oc adm must-gather --image=registry.redhat.io/rhacm2/must-gather-rhel8
+----
++
+Collect ClusterVersion history:
++
+[source,terminal]
+----
+$ oc get clusterversion -o jsonpath='{.status.history}' > clusterversion-history.json
+----
++
+Collect CGU status:
++
+[source,terminal]
+----
+$ oc get cgu <cgu-name> -n <namespace> -o yaml > cgu-status.yaml
+----
+
+== Troubleshooting decision tree
+
+Use this decision tree to identify the appropriate troubleshooting step:
+
+. *Is the upgrade not starting?*
++
+→ Check CGU status and policy compliance (Step 1)
+
+. *Is the upgrade stuck on the control plane?*
++
+→ Check cluster operators and etcd health (Steps 3, 7)
+
+. *Are worker nodes not upgrading?*
++
+→ Check MachineConfigPool status and PDBs (Steps 5, 6)
+
+. *Did the upgrade complete but cluster is degraded?*
++
+→ Check operator status and logs (Step 3)
+
+. *None of the above?*
++
+→ Collect must-gather and contact Red Hat support (Step 10)
+
+.Verification
+
+. After resolving issues, verify cluster health:
++
+[source,terminal]
+----
+$ oc get co
+$ oc get nodes
+$ oc get mcp
+----
+
+. Verify the upgrade resumed or completed successfully:
++
+[source,terminal]
+----
+$ oc get clusterversion
+$ oc get cgu <cgu-name> -n <namespace>
+----
+
+.Next steps
+
+* If troubleshooting does not resolve the issue, consider rollback procedures: xref:telco-cluster-upgrade-rollback_{context}[Roll back Telco Core cluster upgrades]
+* If the upgrade succeeds after troubleshooting, document the issue and resolution for future reference.
+
+.Additional resources
+
+* xref:../../../support/troubleshooting/troubleshooting-operator-issues.adoc#troubleshooting-operator-issues[Troubleshooting Operator issues]
+* link:https://access.redhat.com/solutions[Red Hat Knowledgebase]
