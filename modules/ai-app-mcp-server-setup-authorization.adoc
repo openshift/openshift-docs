@@ -1,0 +1,161 @@
+// Module included in the following assemblies:
+//
+// * ai_applications/mcp_server/mcp-server-overview.adoc
+
+:_mod-docs-content-type: PROCEDURE
+[id="ai-app-mcp-server-setup-authorization_{context}"]
+= Set up MCP gateway authorization
+
+[role="_abstract"]
+To install the Model Context Protocol (MCP) server for Red Hat {product-title} feature, set up tool-level authorization for the MCP gateway to control which users can access specific MCP tools.
+
+.Prerequisites
+
+* Access to OpenShift console with admin rights.
+* The MCP server Helm chart is installed.
+* MCP-compatible client connected.
+* MCP gateway is installed and verified.
+* RBAC is configured.
+* You have revoked access to specific Custom Resources (CRs) as needed.
+* MCP gateway authentication is configured.
+* Your identity provider is configured to include group/role claims in JWT tokens.
+
+.Procedure
+
+. Ensure that your identity provider includes necessary group/role claims in the issued JWT tokens.
++
+The issued OAuth token should include claims similar to:
++
+.Example
+[source,json]
+----
+{
+  "resource_access": {
+    "mcp-ns/openshift-mcp-server": {
+      "roles": ["pods_list", "events_list", "nodes_list", "deployments_get"]
+    },
+    "mcp-ns/geometry-mcp-server": {
+      "roles": ["pods_list", "events_list", "nodes_list", "deployments_get"]
+    }
+  }
+}
+----
++
+* The namespace should match the namespace of the `MCPServerRegistration` CR.
+
+* The "`roles`" represent the allowed tools. In this example, pods_list, events_list, nodes_list, deployments_get.
+
+. Configure tool-level authorization by applying an AuthPolicy that enforces tool-level access control by running the following command:
++
+[source,terminal]
+----
+$ oc apply -f - <<EOF
+apiVersion: kuadrant.io/v1
+kind: AuthPolicy
+metadata:
+  name: mcp-tool-auth-policy
+  namespace: openshift-mcp-server
+spec:
+  targetRef:
+    group: gateway.networking.k8s.io
+    kind: Gateway
+    name: mcp-gateway
+    sectionName: mcp
+  rules:
+    authentication:
+      'sso-server':
+        jwt:
+          issuerUrl: https://login.microsoftonline.com/<tenant-id>/v2.0
+    authorization:
+      'tool-access-check':
+        patternMatching:
+          patterns:
+            - predicate: |
+                request.headers['x-mcp-toolname'] in (has(auth.identity.resource_access) && auth.identity.resource_access.exists(p, p == request.headers['x-mcp-servername']) ? auth.identity.resource_access[request.headers['x-mcp-servername']].roles : [])
+    response:
+      unauthenticated:
+        headers:
+          'WWW-Authenticate':
+            value: Bearer resource_metadata=http://mcp-gateway.apps.<cluster-name>.<domain-name>:8001/.well-known/oauth-protected-resource/mcp
+        body:
+          value: |
+            {
+              "error": "Unauthorized",
+              "message": "MCP Tool Access denied: Authentication required."
+            }
+      unauthorized:
+        body:
+          value: |
+            {
+              "error": "Forbidden",
+              "message": "MCP Tool Access denied: Insufficient permissions for this tool."
+            }
+EOF
+----
++
+Where:
+
+* `spec.sectionName` targets the MCP server Listener.
+
+* `<cluster-name>.<domain-name>` is the name and domain of your cluster.
+
+.Verification
+
+. Test that authorization now controls tool access by setting up the MCP Inspector:
+
+.. Start MCP Inspector (requires Node.js/npm) by running the following command:
++
+[source,terminal]
+----
+$ npx @modelcontextprotocol/inspector@latest &
+INSPECTOR_PID=$!
+----
+
+.. Wait for services to start by running the following command:
++
+[source,terminal]
+----
+$ sleep 3
+----
+
+.. Open MCP Inspector by going to the following URL: http://localhost:6274/?transport=streamable-http&serverUrl=http://mcp-gateway.apps.<cluster-name>.<domain-name>:8001/mcp.
++
+Where <cluster-name>.<domain-name> is the name and domain of your cluster.
+
+. To stop the services later, run the following command:
++
+[source,terminal]
+----
+$ kill $INSPECTOR_PID
+----
+
+. Authenticate using a user account configured with the required role claims in your identity provider.
+
+. Try the following allowed tools:
++
+* pods_list
+
+* events_list
+
+* nodes_list
+
+* deployments_get
+
+. Try this restricted tool: pods_delete
++
+Since this tool is restricted, you should get a 403 Forbidden error.
+
+. Monitor authorization decisions:
+
+.. Check the AuthPolicy status by running the following command:
++
+[source,terminal]
+----
+$ oc get authpolicy -A
+----
+.. View the authorization logs by running the following command:
++
+[source,terminal]
+----
+$ oc logs -n kuadrant-system -l authorino-resource=authorino
+----
