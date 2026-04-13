@@ -1,0 +1,148 @@
+// Module included in the following assemblies:
+//
+// * service_mesh/v3/ossm-integrations.adoc
+
+:_mod-docs-content-type: PROCEDURE
+[id="zero-trust-manager-deploy-spire_{context}"]
+= Deploying SPIRE for {SMProduct} integration
+
+[role="_abstract"]
+Deploy SPIRE by using {zero-trust-full} by creating custom resources (CRs) for the SPIRE Server, Agent, CSI Driver, and OIDC Discovery Provider to enable workload identities in {SMProduct}.
+
+.Prerequisites
+
+* You have installed the {zero-trust-full} from OperatorHub.
+* You have cluster administrator permissions.
+* You have the `oc` CLI installed.
+
+.Procedure
+
+. Create the `ZeroTrustWorkloadIdentityManager` CR:
++
+[source,yaml]
+----
+apiVersion: zerotrustworkloadidentity.operator.openshift.io/v1alpha1
+kind: ZeroTrustWorkloadIdentityManager
+metadata:
+  name: ztwim-instance
+  namespace: openshift-spire
+spec:
+  # ZTWIM configuration
+----
+
+. Create the `SpireServer` CR with the JWT issuer URL:
++
+[source,yaml]
+----
+apiVersion: spire.openshift.io/v1alpha1
+kind: SpireServer
+metadata:
+  name: spire-server
+  namespace: openshift-spire
+spec:
+  jwtIssuer: https://oidc-discovery.apps.<cluster-domain>
+  trustDomain: example.org
+----
++
+where
+
+'metadata.spec.jwtIssuer':: Specifies your {product-name} cluster's ingress domain. The URL must use the `https://` prefix.
+'metadata.spec.trustDoman':: Specifies the SPIFFE trust domain.
+
+. Create the `SpireAgent` CR:
++
+[source,yaml]
+----
+apiVersion: spire.openshift.io/v1alpha1
+kind: SpireAgent
+metadata:
+  name: spire-agent
+  namespace: openshift-spire
+spec:
+  serverAddress: spire-server.openshift-spire.svc.cluster.local
+  trustDomain: example.org
+----
+
+. Create the `SpiffeCSIDriver` CR:
++
+[source,yaml]
+----
+apiVersion: spire.openshift.io/v1alpha1
+kind: SpiffeCSIDriver
+metadata:
+  name: spiffe-csi-driver
+  namespace: openshift-spire
+spec:
+  agentSocketPath: /run/spire/agent-sockets/spire-agent.sock
+----
+
+. Create the `SpireOIDCDiscoveryProvider` CR:
++
+[source,yaml]
+----
+apiVersion: spire.openshift.io/v1alpha1
+kind: SpireOIDCDiscoveryProvider
+metadata:
+  name: oidc-discovery
+  namespace: openshift-spire
+spec:
+  serverAddress: spire-server.openshift-spire.svc.cluster.local
+----
+
+. Enable `CREATE_ONLY_MODE` on {zero-trust-full} to prevent overwriting manual ConfigMap changes by running the following command:
++
+[source,terminal]
+----
+$ oc set env deployment/ztwim-operator-controller-manager \
+    -n openshift-spire-operator \
+    CREATE_ONLY_MODE=true
+----
+
+. Patch the SPIRE Agent ConfigMap to add SDS configuration by running the following command:
++
+[source,terminal]
+----
+$ oc patch configmap spire-agent -n openshift-spire --type=json -p='[
+  {
+    "op": "add",
+    "path": "/data/agent.conf",
+    "value": "server_address = \"spire-server.openshift-spire.svc.cluster.local\"\nserver_port = \"8081\"\ntrust_domain = \"example.org\"\n\nplugins {\n  KeyManager \"disk\" {\n    plugin_data {\n      directory = \"/run/spire/data\"\n    }\n  }\n  NodeAttestor \"k8s_psat\" {\n    plugin_data {\n      cluster = \"openshift-cluster\"\n    }\n  }\n  WorkloadAttestor \"k8s\" {\n    plugin_data {}\n  }\n  WorkloadAttestor \"unix\" {\n    plugin_data {}\n  }\n  SDS \"unix\" {\n    plugin_cmd = \"/opt/spire/bin/spire-agent\"\n    plugin_checksum = \"sha256:...\"\n    plugin_data {\n      default_bundle_name = \"null\"\n      default_all_bundles_name = \"ROOTCA\" \n    }\n  }\n}\n"
+  }
+]'
+----
++
+The `default_all_bundles_name` setting serves all trust bundles under the name `ROOTCA`, which Envoy expects.
+
+. Restart the SPIRE Agent `DaemonSet` to apply the ConfigMap changes by running the following command:
++
+[source,terminal]
+----
+$ oc rollout restart daemonset/spire-agent -n openshift-spire
+----
+
+.Verification
+
+. Verify that all SPIRE pods are running by running the following command:
++
+[source,terminal]
+----
+$ oc get pods -n openshift-spire
+----
++
+.Example output
+[source,terminal]
+----
+NAME                           READY   STATUS    RESTARTS   AGE
+spire-agent-abcde              1/1     Running   0          5m
+spire-server-0                 1/1     Running   0          5m
+spiffe-csi-driver-fghij        2/2     Running   0          5m
+----
+
+. Verify that the SPIRE Agent ConfigMap includes SDS configuration by running the following command:
++
+[source,terminal]
+----
+$ oc get configmap spire-agent -n openshift-spire -o yaml | grep -A2 SDS
+----
++
+The output should include `default_all_bundles_name = "ROOTCA"`.

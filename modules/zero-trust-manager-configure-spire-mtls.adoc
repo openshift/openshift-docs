@@ -1,0 +1,139 @@
+// Module included in the following assemblies:
+//
+// * service_mesh/v3x/ossm-ztwim-cross-cluster-mtls.adoc
+
+:_mod-docs-content-type: PROCEDURE
+[id="zero-trust-manager-configure-spire-mtls_{context}"]
+= Configuring SPIRE federation for cross-cluster mTLS
+
+[role="_abstract"]
+Configure SPIRE federation to enable trust between clusters by exchanging certificate authority bundles.
+
+.Prerequisites
+
+* You installed the {zero-trust-full}. See link:https://docs.redhat.com/en/documentation/openshift_container_platform/latest/html-single/security_and_compliance/index#zero-trust-manager-install[Installing the Zero Trust Workload Identity Manager]
+
+* You installed Service Mesh 3.x. See link:https://docs.redhat.com/en/documentation/openshift_container_platform/latest/html-single/service_mesh/index#preparing-ossm-installation[Preparing to install Service Mesh]
+
+
+* You have two {product-title} clusters with {zero-trust-full} installed.
+
+* You have deployedtThe SPIRE operands. See link:https://docs.redhat.com/en/documentation/openshift_container_platform/latest/html-single/security_and_compliance/index#zero-trust-manager-configuration[Deploying Zero Trust Workload Identity Manager operands]
+
+* Network connectivity between clusters on port 15443.
+
+* `oc` CLI installed and configured with access to both clusters.
+
+.Procedure
+
+. Identify the trust domain for each cluster by running the following command:
++
+[source,terminal]
+----
+$ oc get spireserver spire-server -n zero-trust-workload-identity-manager -o jsonpath='{.spec.trustDomain}'
+----
++
+.Example output
+[source,terminal]
+----
+apps.cluster1.example.com
+----
+
+. On Cluster 1, enable federation in the `SpireServer` custom resource by running the following command:
++
+[source,terminal]
+----
+$ oc patch spireserver spire-server -n zero-trust-workload-identity-manager --type='merge' -p '{"spec":{"federation":{"bundleEndpoint":{"profile":"https_spiffe","refreshHint":300},"federatesWith":[{"trustDomain":"apps.cluster2.example.com","bundleEndpointUrl":"https://federation.apps.cluster2.example.com","bundleEndpointProfile":"https_spiffe","endpointSpiffeId":"spiffe://apps.cluster2.example.com/spire/server"}],"managedRoute":"true"}}}'
+----
+
+. On Cluster 2, enable federation with Cluster 1's trust domain by running the following command:
++
+[source,terminal]
+----
+$ oc patch spireserver spire-server -n zero-trust-workload-identity-manager --type='merge' -p '{"spec":{"federation":{"bundleEndpoint":{"profile":"https_spiffe","refreshHint":300},"federatesWith":[{"trustDomain":"apps.cluster1.example.com","bundleEndpointUrl":"https://federation.apps.cluster1.example.com","bundleEndpointProfile":"https_spiffe","endpointSpiffeId":"spiffe://apps.cluster1.example.com/spire/server"}],"managedRoute":"true"}}}'
+----
+
+. Extract the trust bundle from Cluster 1 by running the following commands:
++
+[source,terminal]
+----
+$ SPIRE_POD=$(oc get pod -n zero-trust-workload-identity-manager -l app.kubernetes.io/name=spire-server -o jsonpath='{.items[0].metadata.name}')
+----
++
+[source,terminal]
+----
+$ oc exec -n zero-trust-workload-identity-manager $SPIRE_POD -c spire-server -- /opt/spire/bin/spire-server bundle show -socketPath /tmp/spire-server/private/api.sock -format spiffe > cluster1-bundle.json
+----
+
+. Extract the trust bundle from Cluster 2 by running the following commands:
++
+[source,terminal]
+----
+$ SPIRE_POD=$(oc get pod -n zero-trust-workload-identity-manager -l app.kubernetes.io/name=spire-server -o jsonpath='{.items[0].metadata.name}')
+----
++
+[source,terminal]
+----
+$ oc exec -n zero-trust-workload-identity-manager $SPIRE_POD -c spire-server -- /opt/spire/bin/spire-server bundle show -socketPath /tmp/spire-server/private/api.sock -format spiffe > cluster2-bundle.json
+----
+
+. On Cluster 1, create a `ClusterFederatedTrustDomain` resource for Cluster 2 by running the following commands:
++
+[source,yaml]
+----
+apiVersion: spire.spiffe.io/v1alpha1
+kind: ClusterFederatedTrustDomain
+metadata:
+  name: cluster2-federation
+spec:
+  trustDomain: apps.cluster2.example.com
+  bundleEndpointURL: https://federation.apps.cluster2.example.com
+  bundleEndpointProfile:
+    type: https_spiffe
+    endpointSPIFFEID: spiffe://apps.cluster2.example.com/spire/server
+  trustDomainBundle: |
+    <contents of cluster2-bundle.json>
+----
+
+* The `spec.trustDomain` field sets a unique trust domain for each cluster.
+
+* The `spec.federation.bundleEnpoint.profile` field uses the `https_spiffe` profile for SPIFFE-based TLS authentication.
+
+* The `spec.federation.bundleEndpoint.refreshHint` field suggests intervals (in seconds) for remote servers to refresh the trust bundle. Range: 60-3600 seconds.
+
+* The `spec.federation.managedRoute` field enables automatic route creation by the Operator.
+
+. Apply the `ClusterFederatedTrustDomain` resource:
++
+[source,terminal]
+----
+$ oc apply -f cluster2-federation.yaml
+----
+
+. On Cluster 2, create and apply a `ClusterFederatedTrustDomain` resource for Cluster 1 with the corresponding values.
+
+. On Cluster 1, manually load the federated bundle into the SPIRE Server:
++
+[source,terminal]
+----
+$ echo '<contents of cluster2-bundle.json>' | jq -r '.keys[] | select(.use == "x509-svid") | .x5c[0]' | base64 -d > /tmp/cluster2-ca.der
+$ openssl x509 -in /tmp/cluster2-ca.der -inform DER -out /tmp/cluster2-ca.pem
+$ oc cp /tmp/cluster2-ca.pem zero-trust-workload-identity-manager/spire-server-0:/tmp/federated-ca.pem -c spire-server
+$ oc exec -n zero-trust-workload-identity-manager spire-server-0 -c spire-server -- /spire-server bundle set -id spiffe://apps.cluster2.example.com -path /tmp/federated-ca.pem -socketPath /tmp/spire-server/private/api.sock
+----
+
+. On Cluster 2, repeat the bundle loading process for Cluster 1's CA certificate.
+
+. Verify that the federated bundle is loaded on Cluster 1:
++
+[source,terminal]
+----
+$ oc exec -n zero-trust-workload-identity-manager spire-server-0 -c spire-server -- /spire-server bundle list -socketPath /tmp/spire-server/private/api.sock
+----
++
+.Example output
+[source,terminal]
+----
+spiffe://apps.cluster1.example.com
+spiffe://apps.cluster2.example.com
+----

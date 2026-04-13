@@ -1,0 +1,798 @@
+// Module included in the following assemblies:
+//
+// * service_mesh/v3/ossm-integrations.adoc
+
+:_mod-docs-content-type: REFERENCE
+[id="troubleshooting-spire-ossm-integration_{context}"]
+= Troubleshooting SPIRE integration with OpenShift Service Mesh
+
+[role="_abstract"]
+Resolve known limitations and configuration issues when integrating SPIRE with OpenShift Service Mesh 3.x (Istio v1.27.3). Each section describes the limitation or issue, its symptoms, causes, resolution steps, and verification procedures.
+
+[NOTE]
+====
+The configuration procedures and workarounds documented here are specific to OpenShift Service Mesh 3.x (Istio v1.27.3). Future versions may resolve these limitations or require different configuration.
+====
+
+.Quick reference: Common errors and solutions
+[cols="2,3,2",options="header"]
+|===
+|Error or Symptom |Issue |Section
+
+|`spec.jwtIssuer in body should match...`
+|JWT issuer URL format validation
+|<<SPIRE Server jwtIssuer URL format requirement>>
+
+|`Failed to load CA bundle: could not decode pem`
+|SPIRE Agent SDS configuration missing
+|<<SPIRE Agent SDS configuration not included by default>>
+
+|Workloads have Istio certificates instead of SPIFFE IDs
+|CREDENTIAL_SOCKET_EXISTS not configured
+|<<CREDENTIAL_SOCKET_EXISTS metadata configuration required>>
+
+|`workload is not authorized`
+|ClusterSPIFFEID registration delay
+|<<ClusterSPIFFEID controller registration delay>>
+
+|`spec.containers[1].image: Required value`
+|Sidecar injection template conflicts
+|<<Sidecar injection template modification conflicts>>
+
+|SPIRE Agent ConfigMap changes reverted
+|ZTWIM Operator reconciliation
+|<<ZTWIM Operator ConfigMap reconciliation>>
+
+|SPIRE socket not found in pod
+|Missing CSI volume mount annotations
+|<<SPIRE socket not mounted in workload pod>>
+
+|Cannot configure SPIRE for control plane
+|Control plane certificate provider not supported
+|<<SPIRE control plane certificate provider not implemented>>
+|===
+
+[id="spire-jwt-issuer-url-format_{context}"]
+== SPIRE Server jwtIssuer URL format requirement
+
+[NOTE]
+====
+Known limitation: The `jwtIssuer` field validates against a strict regex pattern requiring a complete URL.
+====
+
+**What doesn't work:** The `jwtIssuer` field in the `SpireServer` custom resource does not accept partial URLs or hostnames without a scheme.
+
+**Impact:** Creating a `SpireServer` resource with an invalid `jwtIssuer` format prevents SPIRE Server deployment.
+
+.Symptom
+
+The `SpireServer` resource creation fails with the following validation error:
+
+[source,terminal]
+----
+"spec.jwtIssuer in body should match '^(?i)https?://[^\s?#]+$'"
+----
+
+.Cause
+
+The `jwtIssuer` field validates against the regex pattern `^(?i)https?://[^\s?#]+$` and requires a complete URL with the `https://` or `http://` scheme prefix.
+
+**Valid formats:**
+[source,text]
+----
+https://oidc-discovery.apps.cluster.example.com
+https://spire-oidc.openshift-spire.svc.cluster.local
+----
+
+**Invalid formats:**
+[source,text]
+----
+oidc-discovery.apps.cluster.example.com  <1>
+spire-oidc  <2>
+----
+<1> Missing URL scheme (https://)
+<2> Hostname only, missing scheme
+
+.Resolution
+
+Update the `SpireServer` custom resource to include the full URL with the `https://` prefix:
+
+[source,yaml]
+----
+apiVersion: spire.openshift.io/v1alpha1
+kind: SpireServer
+metadata:
+  name: spire-server
+  namespace: openshift-spire
+spec:
+  jwtIssuer: https://oidc-discovery.apps.<cluster-domain>  <1>
+  trustDomain: example.org
+----
+<1> Replace `<cluster-domain>` with your OpenShift cluster's ingress domain
+
+.Verification
+
+Verify that the `SpireServer` resource is created successfully:
+
+[source,terminal]
+----
+$ oc get spireserver -n openshift-spire
+----
+
+[id="spire-agent-sds-configuration_{context}"]
+== SPIRE Agent SDS configuration not included by default
+
+[NOTE]
+====
+Known limitation: The SPIRE Agent ConfigMap created by the ZTWIM Operator does not include SDS configuration.
+====
+
+**What doesn't work:** The SPIRE Agent ConfigMap lacks the Secret Discovery Service (SDS) configuration required for Envoy to retrieve certificates and trust bundles from SPIRE.
+
+**Impact:** Without SDS configuration, Envoy sidecars cannot retrieve the trust bundle (ROOTCA) from SPIRE, causing mTLS connections to fail.
+
+.Symptom
+
+Envoy sidecars cannot establish mTLS connections. The following error appears in Envoy logs:
+
+[source,terminal]
+----
+Failed to load CA bundle: could not decode pem
+----
+
+.Cause
+
+The SPIRE Agent ConfigMap created by the ZTWIM Operator does not include the SDS plugin configuration. Envoy expects the trust bundle to be served under the name `ROOTCA`, which requires this SDS configuration:
+
+[source,text]
+----
+SDS "unix" {
+  plugin_data {
+    default_bundle_name = "null"
+    default_all_bundles_name = "ROOTCA"
+  }
+}
+----
+
+.Resolution
+
+. Enable `CREATE_ONLY_MODE` on the ZTWIM Operator to prevent reconciliation from reverting manual changes:
++
+[source,terminal]
+----
+$ oc set env deployment/ztwim-operator-controller-manager \
+    -n openshift-spire-operator \
+    CREATE_ONLY_MODE=true
+----
+
+. Patch the SPIRE Agent ConfigMap to add the SDS configuration:
++
+[source,terminal]
+----
+$ oc patch configmap spire-agent -n openshift-spire --type=json -p='[
+  {
+    "op": "add",
+    "path": "/data/agent.conf",
+    "value": "server_address = \"spire-server.openshift-spire.svc.cluster.local\"\nserver_port = \"8081\"\ntrust_domain = \"example.org\"\n\nplugins {\n  KeyManager \"disk\" {\n    plugin_data {\n      directory = \"/run/spire/data\"\n    }\n  }\n  NodeAttestor \"k8s_psat\" {\n    plugin_data {\n      cluster = \"openshift-cluster\"\n    }\n  }\n  WorkloadAttestor \"k8s\" {\n    plugin_data {}\n  }\n  WorkloadAttestor \"unix\" {\n    plugin_data {}\n  }\n  SDS \"unix\" {\n    plugin_cmd = \"/opt/spire/bin/spire-agent\"\n    plugin_checksum = \"sha256:...\"\n    plugin_data {\n      default_bundle_name = \"null\"\n      default_all_bundles_name = \"ROOTCA\"  <1>\n    }\n  }\n}\n"
+  }
+]'
+----
+<1> The `default_all_bundles_name` setting serves all trust bundles under the name `ROOTCA`, which Envoy expects.
+
+. Restart the SPIRE Agent DaemonSet to apply the configuration changes:
++
+[source,terminal]
+----
+$ oc rollout restart daemonset/spire-agent -n openshift-spire
+----
+
+.Verification
+
+Verify that the SPIRE Agent ConfigMap includes SDS configuration:
+
+[source,terminal]
+----
+$ oc get configmap spire-agent -n openshift-spire -o yaml | grep -A2 SDS
+----
+
+The output should include `default_all_bundles_name = "ROOTCA"`.
+
+[id="credential-socket-exists-config_{context}"]
+== CREDENTIAL_SOCKET_EXISTS metadata configuration required
+
+[NOTE]
+====
+Critical configuration: This setting is the primary switch that enables SPIRE integration.
+====
+
+**What doesn't work:** Without the `CREDENTIAL_SOCKET_EXISTS` metadata setting, SPIRE integration is not activated even when all other components are configured correctly.
+
+**Impact:** Envoy sidecars fall back to using Istio's built-in certificate authority instead of SPIRE. Workloads receive certificates with Istio-format identities instead of SPIFFE IDs, making SPIRE integration ineffective.
+
+.Symptom
+
+Workload certificates show Istio-issued identities instead of SPIFFE IDs from SPIRE. Check the certificate Subject Alternative Name (SAN):
+
+[source,terminal]
+----
+$ oc exec -n <namespace> <pod-name> -c istio-proxy -- \
+    openssl s_client -connect localhost:15000 -showcerts < /dev/null 2>/dev/null | \
+    openssl x509 -noout -text | grep -A1 "Subject Alternative Name"
+----
+
+If using Istio's CA, you'll see Istio-format identities. With SPIRE, you should see:
+
+[source,terminal]
+----
+Subject Alternative Name:
+    URI:spiffe://example.org/ns/<namespace>/sa/<service-account>
+----
+
+.Cause
+
+The `CREDENTIAL_SOCKET_EXISTS` environment variable in Envoy's `proxyMetadata` is the critical switch that enables external SDS provider integration. When this setting is:
+
+* **Set to `"true"`**: Envoy connects to the SPIRE Agent socket for certificates
+* **Missing or `"false"`**: Envoy falls back to Istio's built-in CA
+
+This behavior occurs because Envoy checks this variable to determine whether to use an external SDS provider or the default internal mechanism.
+
+.Resolution
+
+. Verify the current `Istio` resource configuration:
++
+[source,terminal]
+----
+$ oc get istio default -o yaml | grep -A5 proxyMetadata
+----
+
+. Update the `Istio` custom resource to include the `CREDENTIAL_SOCKET_EXISTS` setting in `proxyMetadata`:
++
+[source,yaml]
+----
+apiVersion: sailoperator.io/v1alpha1
+kind: Istio
+metadata:
+  name: default
+spec:
+  version: v1.27.3
+  namespace: istio-system
+  values:
+    meshConfig:
+      defaultConfig:
+        proxyMetadata:
+          CREDENTIAL_SOCKET_EXISTS: "true"  <1>
+          SPIFFE_ENDPOINT_SOCKET: "unix:///tmp/spire-agent/public/spire-agent.sock"  <2>
+----
+<1> Must be set to the string value `"true"`, not a boolean.
+<2> Path to the SPIRE Agent Unix domain socket mounted via the SPIFFE CSI Driver.
+
+. Restart workload pods to pick up the new sidecar configuration:
++
+[source,terminal]
+----
+$ oc delete pod -n <namespace> <pod-name>
+----
+
+.Verification
+
+. Check that Envoy has the correct environment variables:
++
+[source,terminal]
+----
+$ oc exec -n <namespace> <pod-name> -c istio-proxy -- env | grep -E 'CREDENTIAL_SOCKET|SPIFFE_ENDPOINT'
+----
++
+.Example output
+[source,terminal]
+----
+CREDENTIAL_SOCKET_EXISTS=true
+SPIFFE_ENDPOINT_SOCKET=unix:///tmp/spire-agent/public/spire-agent.sock
+----
+
+. Verify that the workload certificate contains a SPIFFE ID:
++
+[source,terminal]
+----
+$ oc exec -n <namespace> <pod-name> -c istio-proxy -- \
+    openssl s_client -connect localhost:15000 -showcerts < /dev/null 2>/dev/null | \
+    openssl x509 -noout -text | grep -A1 "Subject Alternative Name"
+----
++
+The output should show a URI in the format `spiffe://<trust-domain>/ns/<namespace>/sa/<service-account>`.
+
+[id="clusterspiffeid-registration-delay_{context}"]
+== ClusterSPIFFEID controller registration delay
+
+[NOTE]
+====
+Expected behavior: Brief delay during pod startup while workload is registered with SPIRE.
+====
+
+**What doesn't work:** There is a timing gap between when a pod starts and when the `ClusterSPIFFEID` controller registers it with SPIRE Server.
+
+**Impact:** Workload pods may log authorization errors during the initial startup period (30-60 seconds). These errors are transient and resolve automatically.
+
+.Symptom
+
+The SPIRE Agent logs contain authorization errors during pod startup:
+
+[source,terminal]
+----
+rpc error: code = InvalidArgument desc = workload is not authorized
+----
+
+.Cause
+
+The `ClusterSPIFFEID` controller in the ZTWIM Operator automatically creates SPIRE registration entries for workloads matching the defined selectors. However, there is a brief delay between:
+
+1. Pod creation and Envoy sidecar startup
+2. The controller detecting the new pod
+3. Creating the registration entry in SPIRE Server
+4. The registration entry becoming available to the SPIRE Agent
+
+This delay typically resolves within 30-60 seconds.
+
+.Resolution
+
+Wait 30-60 seconds after pod creation. The `ClusterSPIFFEID` controller automatically updates SPIRE registration entries, and the authorization errors resolve on their own.
+
+If authorization errors persist beyond 2 minutes, investigate:
+
+. Verify that the `ClusterSPIFFEID` custom resource exists and its selectors match your workload pods:
++
+[source,terminal]
+----
+$ oc get clusterspiffeid -o yaml
+----
+
+. Check that the workload pod has the expected labels:
++
+[source,terminal]
+----
+$ oc get pod -n <namespace> <pod-name> --show-labels
+----
++
+The pod should have the label `istio.io/rev: default` (or the appropriate revision label).
+
+. Verify that the pod's service account matches the SPIFFE ID template in the `ClusterSPIFFEID` resource.
+
+. Check SPIRE Server logs for registration errors:
++
+[source,terminal]
+----
+$ oc logs -n openshift-spire spire-server-0
+----
+
+.Verification
+
+. Check that SPIRE registration entries exist for your workload:
++
+[source,terminal]
+----
+$ oc exec -n openshift-spire spire-server-0 -- \
+    /opt/spire/bin/spire-server entry show
+----
++
+Verify that entries exist with the correct SPIFFE IDs for your service accounts.
+
+. Verify that authorization errors no longer appear in SPIRE Agent logs:
++
+[source,terminal]
+----
+$ oc logs -n openshift-spire spire-agent-<pod-id> | grep -i "not authorized"
+----
+
+[id="sidecar-injection-template-conflicts_{context}"]
+== Sidecar injection template modification conflicts
+
+[NOTE]
+====
+Known limitation: Direct modification of the Istio sidecar injection template is not supported in OpenShift Service Mesh 3.x.
+====
+
+**What doesn't work:** Directly modifying the Istio sidecar injection template to add volumes or volume mounts causes conflicts with the injection webhook.
+
+**Impact:** Pod creation fails, and you cannot configure global volume mounts for the SPIRE socket. Each workload pod must use annotations instead.
+
+.Symptom
+
+Creating pods with Istio sidecar injection fails with errors similar to:
+
+[source,terminal]
+----
+spec.containers[1].image: Required value
+spec.initContainers[1].name: Duplicate value
+----
+
+.Cause
+
+In OpenShift Service Mesh 3.x (Istio v1.27.3), the injection webhook validates the sidecar template strictly. Modifying the template to add custom volumes or volume mounts creates conflicts between:
+
+* The default injection template
+* Custom modifications
+* The injection webhook's expectations
+
+This results in validation failures when the webhook processes the modified template.
+
+.Resolution
+
+Use the `sidecar.istio.io/userVolume` and `sidecar.istio.io/userVolumeMount` annotations on workload pods instead of modifying the global injection template:
+
+[source,yaml]
+----
+apiVersion: v1
+kind: Pod
+metadata:
+  name: my-workload
+  namespace: mesh-test
+  annotations:
+    sidecar.istio.io/userVolume: '{"spire-agent-socket":{"csi":{"driver":"csi.spiffe.io","readOnly":true}}}'  <1>
+    sidecar.istio.io/userVolumeMount: '{"spire-agent-socket":{"mountPath":"/tmp/spire-agent/public","readOnly":true}}'  <2>
+spec:
+  serviceAccountName: my-service-account
+  containers:
+  - name: app
+    image: my-app:latest
+----
+<1> The `userVolume` annotation defines a CSI volume using the SPIFFE CSI Driver.
+<2> The `userVolumeMount` annotation mounts the SPIRE socket at the expected path for Envoy.
+
+This approach provides a supported way to customize volume mounts without conflicting with the default injection template. However, it requires adding these annotations to every workload pod that needs SPIRE integration.
+
+.Verification
+
+Verify that the SPIRE socket is mounted in the Envoy sidecar:
+
+[source,terminal]
+----
+$ oc exec -n <namespace> <pod-name> -c istio-proxy -- ls -l /tmp/spire-agent/public/
+----
+
+.Example output
+[source,terminal]
+----
+srwxrwxrwx 1 root root 0 May 20 10:15 spire-agent.sock
+----
+
+[id="ztwim-operator-reconciliation_{context}"]
+== ZTWIM Operator ConfigMap reconciliation
+
+[NOTE]
+====
+Default behavior: The ZTWIM Operator continuously reconciles all managed resources.
+====
+
+**What doesn't work:** Manual changes to SPIRE resources managed by the ZTWIM Operator are automatically reverted by the operator's reconciliation loop.
+
+**Impact:** You cannot manually edit the SPIRE Agent ConfigMap to add required SDS configuration without the operator reverting your changes.
+
+.Symptom
+
+Manual changes to the SPIRE Agent ConfigMap are immediately reverted by the ZTWIM Operator within seconds.
+
+.Cause
+
+By default, the Zero Trust Workload Identity Manager (ZTWIM) Operator continuously reconciles all managed resources, including the `configmap/spire-agent` in the `openshift-spire` namespace. The operator:
+
+1. Watches for changes to managed resources
+2. Compares the current state to the desired state
+3. Reverts any manual modifications to match the operator's template
+
+This reconciliation ensures consistency but prevents necessary manual configuration changes.
+
+.Resolution
+
+Enable `CREATE_ONLY_MODE` on the ZTWIM Operator to prevent reconciliation of existing resources:
+
+[source,terminal]
+----
+$ oc set env deployment/ztwim-operator-controller-manager \
+    -n openshift-spire-operator \
+    CREATE_ONLY_MODE=true
+----
+
+After enabling this mode:
+
+* The operator creates new resources when needed
+* The operator does **not** modify existing resources
+* You can manually edit ConfigMaps and other resources
+* Your changes persist
+
+This mode is required when adding SDS configuration to the SPIRE Agent ConfigMap.
+
+.Verification
+
+. Verify that `CREATE_ONLY_MODE` is enabled:
++
+[source,terminal]
+----
+$ oc get deployment ztwim-operator-controller-manager -n openshift-spire-operator -o yaml | grep -A2 CREATE_ONLY_MODE
+----
++
+.Example output
+[source,terminal]
+----
+- name: CREATE_ONLY_MODE
+  value: "true"
+----
+
+. Make a test change to the SPIRE Agent ConfigMap and verify it persists:
++
+[source,terminal]
+----
+$ oc annotate configmap spire-agent -n openshift-spire test=manual-change
+$ sleep 10
+$ oc get configmap spire-agent -n openshift-spire -o yaml | grep test
+----
++
+The annotation should still be present, confirming that the operator is no longer reverting changes.
+
+[id="spire-socket-not-mounted_{context}"]
+== SPIRE socket not mounted in workload pod
+
+**What doesn't work:** The SPIRE Agent socket is not available in the Envoy sidecar container.
+
+**Impact:** Envoy cannot connect to SPIRE for certificate issuance, causing SPIRE integration to fail even when all other components are configured.
+
+.Symptom
+
+The SPIRE Agent socket is not present in the Envoy sidecar container:
+
+[source,terminal]
+----
+$ oc exec -n <namespace> <pod-name> -c istio-proxy -- ls /tmp/spire-agent/public/
+ls: cannot access '/tmp/spire-agent/public/': No such file or directory
+----
+
+.Cause
+
+The pod is missing the required `userVolume` and `userVolumeMount` annotations that instruct the SPIFFE CSI Driver to mount the SPIRE Agent socket into the pod.
+
+Without these annotations:
+
+* The SPIFFE CSI Driver does not create the CSI volume
+* The SPIRE Agent socket is not mounted into the pod
+* Envoy has no socket to connect to
+* Certificate requests fail
+
+.Resolution
+
+Add the required annotations to your pod or deployment specification:
+
+[source,yaml]
+----
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: my-app
+  namespace: mesh-test
+spec:
+  template:
+    metadata:
+      annotations:
+        sidecar.istio.io/userVolume: '{"spire-agent-socket":{"csi":{"driver":"csi.spiffe.io","readOnly":true}}}'
+        sidecar.istio.io/userVolumeMount: '{"spire-agent-socket":{"mountPath":"/tmp/spire-agent/public","readOnly":true}}'
+    spec:
+      serviceAccountName: my-service-account
+      containers:
+      - name: app
+        image: my-app:latest
+----
+
+Delete and recreate the pod to apply the annotations:
+
+[source,terminal]
+----
+$ oc delete pod -n <namespace> <pod-name>
+----
+
+The new pod will have the SPIRE socket mounted via the SPIFFE CSI Driver.
+
+.Verification
+
+Verify that the SPIRE socket is mounted and accessible:
+
+[source,terminal]
+----
+$ oc exec -n <namespace> <pod-name> -c istio-proxy -- ls -l /tmp/spire-agent/public/
+----
+
+.Example output
+[source,terminal]
+----
+srwxrwxrwx 1 root root 0 May 20 10:15 spire-agent.sock
+----
+
+[id="control-plane-cert-provider_{context}"]
+== SPIRE control plane certificate provider not implemented
+
+[NOTE]
+====
+Known limitation: SPIRE cannot issue certificates for the Istio control plane in OpenShift Service Mesh 3.x.
+====
+
+**What doesn't work:** The `pilotCertProvider: spire` option is not implemented in OpenShift Service Mesh 3.x (Istio v1.27.3).
+
+**Impact:** SPIRE can only be used for workload (data plane) certificates. The Istio control plane (`istiod`) continues to use its built-in certificate authority.
+
+.Symptom
+
+Attempting to configure `pilotCertProvider: spire` in the `Istio` custom resource results in:
+
+* Configuration being ignored
+* Control plane continuing to use the default `istiod` certificate provider
+* No SPIRE integration for control plane certificates
+
+.Cause
+
+The SPIRE pilot certificate provider feature is not implemented in Istio v1.27.3, which is the version used by OpenShift Service Mesh 3.x. This feature may be implemented in future versions.
+
+.Resolution
+
+Use `pilotCertProvider: istiod` (the default) in the `Istio` custom resource. SPIRE integration applies only to workload certificates, not to the control plane:
+
+[source,yaml]
+----
+apiVersion: sailoperator.io/v1alpha1
+kind: Istio
+metadata:
+  name: default
+spec:
+  version: v1.27.3
+  namespace: istio-system
+  values:
+    global:
+      pilotCertProvider: istiod  <1>
+    meshConfig:
+      defaultConfig:
+        proxyMetadata:
+          CREDENTIAL_SOCKET_EXISTS: "true"
+          SPIFFE_ENDPOINT_SOCKET: "unix:///tmp/spire-agent/public/spire-agent.sock"
+----
+<1> Keep the default `istiod` provider. Do not use `spire` as it is not supported.
+
+This configuration allows:
+
+* Istio control plane uses its built-in CA for control plane certificates
+* Workload Envoy sidecars use SPIRE-issued certificates for data plane mTLS
+* SPIRE integration works correctly for workload identity and mTLS connections
+
+.Verification
+
+There is no verification needed for this limitation. The workaround is to accept that the control plane uses `istiod` certificates while workloads use SPIRE certificates.
+
+[id="verifying-complete-spire-integration_{context}"]
+== Verifying complete SPIRE integration
+
+After configuring SPIRE integration, perform the following verification steps to confirm that all components are working correctly.
+
+=== Verify SPIRE components are running
+
+Check that all SPIRE pods are running:
+
+[source,terminal]
+----
+$ oc get pods -n openshift-spire
+----
+
+.Example output
+[source,terminal]
+----
+NAME                           READY   STATUS    RESTARTS   AGE
+spire-agent-abcde              1/1     Running   0          5m
+spire-server-0                 1/1     Running   0          5m
+spiffe-csi-driver-fghij        2/2     Running   0          5m
+----
+
+=== Verify workload certificate contains SPIFFE ID
+
+Check that workload certificates contain SPIFFE IDs issued by SPIRE:
+
+[source,terminal]
+----
+$ oc exec -n <namespace> <pod-name> -c istio-proxy -- \
+    openssl s_client -connect localhost:15000 -showcerts < /dev/null 2>/dev/null | \
+    openssl x509 -noout -text | grep -A1 "Subject Alternative Name"
+----
+
+.Example output
+[source,terminal]
+----
+Subject Alternative Name:
+    URI:spiffe://example.org/ns/<namespace>/sa/<service-account>
+----
+
+=== Verify SPIRE socket is mounted
+
+Check that the SPIRE Agent socket is mounted in the Envoy sidecar:
+
+[source,terminal]
+----
+$ oc exec -n <namespace> <pod-name> -c istio-proxy -- ls -l /tmp/spire-agent/public/
+----
+
+.Example output
+[source,terminal]
+----
+srwxrwxrwx 1 root root 0 May 20 10:15 spire-agent.sock
+----
+
+=== Verify Envoy environment variables
+
+Check that Envoy has the correct environment variables for SPIRE integration:
+
+[source,terminal]
+----
+$ oc exec -n <namespace> <pod-name> -c istio-proxy -- env | grep -E 'CREDENTIAL_SOCKET|SPIFFE_ENDPOINT'
+----
+
+.Example output
+[source,terminal]
+----
+CREDENTIAL_SOCKET_EXISTS=true
+SPIFFE_ENDPOINT_SOCKET=unix:///tmp/spire-agent/public/spire-agent.sock
+----
+
+=== Verify SPIRE Agent SDS statistics
+
+Check SPIRE Agent SDS statistics to confirm certificate requests:
+
+[source,terminal]
+----
+$ oc exec -n openshift-spire spire-agent-<pod-id> -- \
+    /opt/spire/bin/spire-agent api fetch x509 \
+    -socketPath /run/spire/agent-sockets/spire-agent.sock
+----
+
+.Example output
+[source,terminal]
+----
+Received 1 svid after 123ms
+
+SPIFFE ID:      spiffe://example.org/ns/mesh-test/sa/backend
+SVID Valid After:       2026-05-21 10:00:00 +0000 UTC
+SVID Valid Until:       2026-05-21 11:00:00 +0000 UTC
+CA #1 Valid After:      2026-05-20 10:00:00 +0000 UTC
+CA #1 Valid Until:      2026-05-22 10:00:00 +0000 UTC
+----
+
+=== Test mTLS connectivity between services
+
+Test that mTLS connections between services work correctly:
+
+[source,terminal]
+----
+$ oc exec -n <namespace> frontend -- curl -v http://backend:8080
+----
+
+Check the curl output for TLS handshake details indicating mutual TLS. You should see:
+
+* TLS connection established
+* Certificate verification successful
+* SPIFFE IDs in the peer certificate
+
+=== Verify SPIRE registration entries
+
+Check that SPIRE Server has registration entries for your workloads:
+
+[source,terminal]
+----
+$ oc exec -n openshift-spire spire-server-0 -- \
+    /opt/spire/bin/spire-server entry show
+----
+
+.Example output
+[source,terminal]
+----
+Entry ID         : <entry-id>
+SPIFFE ID        : spiffe://example.org/ns/mesh-test/sa/backend
+Parent ID        : spiffe://example.org/spire/agent/k8s_psat/openshift-cluster/...
+Revision         : 0
+X509-SVID TTL    : default
+JWT-SVID TTL     : default
+Selector         : k8s:ns:mesh-test
+Selector         : k8s:sa:backend
+----
+
+Verify that entries exist for your workload service accounts with the correct SPIFFE IDs and selectors.
