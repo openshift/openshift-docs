@@ -1,0 +1,315 @@
+// Module included in the following assemblies:
+//
+// * resource/configuring-multicluster-support.adoc
+
+:_mod-docs-content-type: PROCEDURE
+[id="op-configuring-spoke-clusters-multicluster_{context}"]
+= Configuring spoke clusters for multicluster
+
+You can configure {product-title} clusters as spoke clusters to execute pipeline runs scheduled from a hub cluster.
+
+.Prerequisites
+
+* You have installed the {pipelines-shortname} Operator on each spoke cluster.
+* You have access to each spoke cluster using an account with `cluster-admin` permissions.
+* You have installed the `oc` CLI.
+* You have configured the hub cluster for multicluster support.
+
+.Procedure
+
+. Install the Red Hat Build of Kueue (RHBoK) operator on each spoke cluster:
++
+.. If the cert-manager is not already installed, install it from OperatorHub. Alternatively, you can install it using the following script:
++
+[source,terminal]
+----
+$ curl -sL https://raw.githubusercontent.com/openshift/kueue-operator/refs/heads/main/hack/deploy-cert-manager.sh | bash
+----
++
+.. Install the Red Hat Build of Kueue operator version 1.3 or later from OperatorHub.
++
+.. Create a Kueue custom resource to configure the operator by running the following command:
++
+[source,terminal]
+----
+$ oc apply -f - <<EOF
+apiVersion: kueue.openshift.io/v1
+kind: Kueue
+metadata:
+  name: cluster
+spec:
+  config:
+    integrations:
+      externalFrameworks:
+      - group: tekton.dev
+        resource: pipelineruns
+        version: v1
+      frameworks:
+      - BatchJob
+      - Pod
+      - Deployment
+    multiKueue:
+      externalFrameworks:
+      - group: tekton.dev
+        resource: pipelineruns
+        version: v1
+  logLevel: Normal
+  managementState: Managed
+  operatorLogLevel: Normal
+EOF
+----
+
+. On each spoke cluster, create a service account and RBAC resources for MultiKueue by running the following command:
++
+This service account and its associated roles allow the hub cluster to execute pipeline runs on this spoke cluster. The permissions include creating and managing pipeline runs, task runs, pods, secrets, and Kueue workloads. You will generate a kubeconfig for this service account in a later step.
++
+[source,terminal]
+----
+$ export MULTIKUEUE_SA=multikueue-sa
+$ export NAMESPACE=default
+$ oc apply -f - <<EOF
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: ${MULTIKUEUE_SA}
+  namespace: ${NAMESPACE}
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: ${MULTIKUEUE_SA}-role
+rules:
+- apiGroups:
+  - batch
+  resources:
+  - jobs
+  verbs:
+  - create
+  - delete
+  - get
+  - list
+  - watch
+- apiGroups:
+  - batch
+  resources:
+  - jobs/status
+  verbs:
+  - get
+- apiGroups:
+  - ""
+  resources:
+  - pods
+  - secrets
+  verbs:
+  - create
+  - delete
+  - get
+  - list
+  - watch
+- apiGroups:
+  - kueue.x-k8s.io
+  resources:
+  - workloads
+  verbs:
+  - create
+  - delete
+  - get
+  - list
+  - watch
+- apiGroups:
+  - kueue.x-k8s.io
+  resources:
+  - workloads/status
+  verbs:
+  - get
+  - patch
+  - update
+- apiGroups:
+  - tekton.dev
+  resources:
+  - pipelineruns
+  - taskruns
+  verbs:
+  - create
+  - delete
+  - get
+  - list
+  - patch
+  - update
+  - watch
+- apiGroups:
+  - tekton.dev
+  resources:
+  - pipelineruns/status
+  - taskruns/status
+  verbs:
+  - get
+  - patch
+  - update
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: ${MULTIKUEUE_SA}-crb
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: ${MULTIKUEUE_SA}-role
+subjects:
+- kind: ServiceAccount
+  name: ${MULTIKUEUE_SA}
+  namespace: ${NAMESPACE}
+EOF
+----
+
+. Create a network policy to allow egress traffic from Kueue pods by running the following command:
++
+[source,terminal]
+----
+$ export KUEUE_NAMESPACE=openshift-kueue-operator
+$ oc apply -f - <<EOF
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: kueue-allow-egress-external
+  namespace: ${KUEUE_NAMESPACE}
+spec:
+  podSelector:
+    matchLabels:
+      app.openshift.io/name: kueue
+  policyTypes:
+  - Egress
+  egress:
+  - ports:
+    - port: 443
+      protocol: TCP
+    - port: 80
+      protocol: TCP
+EOF
+----
++
+This network policy allows Kueue pods to communicate externally, which is required for MultiKueue functionality.
+
+. Create Kueue resources on the spoke cluster by running the following command:
++
+These resources configure Kueue to manage pipeline runs executed on this spoke cluster:
++
+* *ResourceFlavor*: Defines the type of resources available for workloads on this spoke cluster.
+* *ClusterQueue*: Manages resource quotas for this spoke cluster. It defines the resources available (CPU, memory, and pipeline runs) for workloads scheduled from the hub cluster.
+* *LocalQueue*: Provides a namespace-scoped queue for pipeline runs executing on this spoke cluster. The hub cluster references this queue when scheduling workloads to the spoke.
++
+[source,terminal]
+----
+$ oc apply -f - <<EOF
+apiVersion: kueue.x-k8s.io/v1beta2
+kind: ResourceFlavor
+metadata:
+  name: default-flavor
+---
+apiVersion: kueue.x-k8s.io/v1beta2
+kind: ClusterQueue
+metadata:
+  name: cluster-queue
+spec:
+  namespaceSelector: {}
+  resourceGroups:
+  - coveredResources: ["cpu", "memory", "tekton.dev/pipelineruns"]
+    flavors:
+    - name: default-flavor
+      resources:
+      - name: cpu
+        nominalQuota: 9
+      - name: memory
+        nominalQuota: 36Gi
+      - name: tekton.dev/pipelineruns
+        nominalQuota: 1
+---
+apiVersion: kueue.x-k8s.io/v1beta2
+kind: LocalQueue
+metadata:
+  namespace: default
+  name: pipelines-queue
+spec:
+  clusterQueue: cluster-queue
+EOF
+----
+
+. Configure the TektonConfig custom resource to enable multicluster support on the spoke cluster by running the following command:
++
+[source,terminal]
+----
+$ oc patch tektonconfig config --type=merge -p '
+{
+  "spec": {
+    "scheduler": {
+      "disabled": false,
+      "multi-cluster-disabled": false,
+      "multi-cluster-role": "Spoke"
+    }
+  }
+}'
+----
++
+This configuration enables the scheduler, activates multicluster features, and sets this cluster as a spoke cluster.
+
+. Generate a kubeconfig file that allows the hub cluster to connect to this spoke cluster:
++
+This kubeconfig file contains credentials for the service account created in the previous step. The hub cluster administrator will use this file to create a secret that enables the hub cluster to schedule workloads on this spoke cluster.
++
+.. Create a long-lived token secret for the service account by running the following command:
++
+[source,terminal]
+----
+$ oc apply -f - <<EOF
+apiVersion: v1
+kind: Secret
+type: kubernetes.io/service-account-token
+metadata:
+  name: ${MULTIKUEUE_SA}-token
+  namespace: ${NAMESPACE}
+  annotations:
+    kubernetes.io/service-account.name: "${MULTIKUEUE_SA}"
+EOF
+----
++
+.. Wait for the token to be populated and retrieve connection details by running the following command:
++
+[source,terminal]
+----
+$ sleep 2
+$ SA_TOKEN=$(oc get secret ${MULTIKUEUE_SA}-token -n ${NAMESPACE} -o jsonpath='{.data.token}' | base64 -d)
+$ CA_CERT=$(oc get secret ${MULTIKUEUE_SA}-token -n ${NAMESPACE} -o jsonpath='{.data.ca\.crt}')
+$ SERVER_URL=$(oc config view --minify -o jsonpath='{.clusters[0].cluster.server}')
+----
++
+.. Create a kubeconfig file for this spoke cluster by running the following command:
++
+[source,terminal]
+----
+$ cat > spoke-cluster.kubeconfig <<EOF
+apiVersion: v1
+clusters:
+- cluster:
+    certificate-authority-data: ${CA_CERT}
+    server: ${SERVER_URL}
+  name: spoke-cluster
+contexts:
+- context:
+    cluster: spoke-cluster
+    user: ${MULTIKUEUE_SA}
+  name: spoke-context
+current-context: spoke-context
+kind: Config
+preferences: {}
+users:
+- name: ${MULTIKUEUE_SA}
+  user:
+    token: ${SA_TOKEN}
+EOF
+----
++
+Save this `spoke-cluster.kubeconfig` file and provide it to the hub cluster administrator. The hub cluster administrator will use this kubeconfig file to create a secret on the hub cluster, which allows the hub cluster to authenticate and connect to this spoke cluster for scheduling pipeline runs.
+
+.Verification
+
+* Verify that the spoke cluster can receive and execute pipeline runs from the hub cluster. See "Verifying multicluster setup".
