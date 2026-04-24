@@ -1,0 +1,154 @@
+// Module included in the following assemblies:
+//
+// * observability/network_observability/monitoring-tls-traffic.adoc
+
+:_mod-docs-content-type: PROCEDURE
+[id="configuring-tls-alerts_{context}"]
+= Configuring alerts for insecure TLS versions
+
+[role="_abstract"]
+Create Prometheus alerts to detect workloads using deprecated TLS versions, such as 1.0 or 1.1.
+
+.Prerequisites
+
+* TLS tracking is enabled in the `FlowCollector` custom resource (CR).
+* Prometheus is installed and configured for monitoring.
+* Access to the cluster with `cluster-admin` privileges.
+
+.Procedure
+
+. Create a `PrometheusRule` custom resource to define the alert:
++
+[source,yaml]
+----
+apiVersion: monitoring.coreos.com/v1
+kind: PrometheusRule
+metadata:
+  name: insecure-tls-alert
+  namespace: netobserv
+spec:
+  groups:
+  - name: tls-security
+    rules:
+    - alert: InsecureTLSVersionDetected
+      expr: |
+        sum(rate(netobserv_flows_total{TlsVersion=~"1\\.0|1\\.1"}[5m])) by (SrcK8S_Namespace, SrcK8S_Name) > 0
+      for: 5m
+      labels:
+        severity: warning
+      annotations:
+        summary: "Insecure TLS version detected in {{ $labels.SrcK8S_Namespace }}/{{ $labels.SrcK8S_Name }}"
+        description: "Workload {{ $labels.SrcK8S_Name }} in namespace {{ $labels.SrcK8S_Namespace }} is using TLS version {{ $labels.TlsVersion }}, which is deprecated and insecure. Upgrade to TLS 1.2 or higher."
+----
++
+where:
++
+`spec.groups.rules.expr`:: Specifies the Prometheus query expression. This expression matches flows using TLS version 1.0 or 1.1 and groups results by source namespace and workload name.
+`spec.groups.rules.for`:: Specifies the duration the condition must persist before the alert fires. Set to `5m` to ensure the alert triggers only if insecure TLS usage continues for 5 minutes.
+`spec.groups.rules.labels.severity`:: Specifies the alert severity level. Set to `warning` for insecure TLS versions.
+`spec.groups.rules.annotations`:: Specifies the alert summary and description that appear in alert notifications.
+
+. Apply the `PrometheusRule` resource by running the following command:
++
+[source,terminal]
+----
+$ oc apply -f insecure-tls-alert.yaml
+----
+
+. Optional: Create an alert for workloads not using TLS 1.3:
++
+[source,yaml]
+----
+apiVersion: monitoring.coreos.com/v1
+kind: PrometheusRule
+metadata:
+  name: tls-version-compliance-alert
+  namespace: netobserv
+spec:
+  groups:
+  - name: tls-compliance
+    rules:
+    - alert: TLSVersionBelowStandard
+      expr: |
+        sum(rate(netobserv_flows_total{TlsVersion!="1.3"}[5m])) by (SrcK8S_Namespace, SrcK8S_Name) > 0
+      for: 10m
+      labels:
+        severity: info
+      annotations:
+        summary: "Workload not using TLS 1.3 in {{ $labels.SrcK8S_Namespace }}/{{ $labels.SrcK8S_Name }}"
+        description: "Workload {{ $labels.SrcK8S_Name }} is using TLS version {{ $labels.TlsVersion }}. Consider upgrading to TLS 1.3 for enhanced security."
+----
++
+where:
++
+`spec.groups.rules.expr`:: Specifies the Prometheus query expression. This expression matches flows not using TLS 1.3.
+`spec.groups.rules.for`:: Specifies the duration the condition must persist before the alert fires. Set to `10m` for informational alerts about TLS version compliance.
+`spec.groups.rules.labels.severity`:: Specifies the alert severity level. Set to `info` for compliance recommendations rather than critical security issues.
+
+. Optional: Configure alert routing in `Alertmanager`:
++
+[source,yaml]
+----
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: alertmanager-config
+  namespace: openshift-monitoring
+data:
+  alertmanager.yaml: |
+    route:
+      routes:
+      - match:
+          alertname: InsecureTLSVersionDetected
+        receiver: security-team
+    receivers:
+    - name: security-team
+      email_configs:
+      - to: security@example.com
+        from: alerts@example.com
+        smarthost: smtp.example.com:587
+----
+
+.Verification
+
+. Confirm that the `PrometheusRule` exists by running the following command:
++
+[source,terminal]
+----
+$ oc get prometheusrule insecure-tls-alert -n netobserv
+----
++
+.Example output
+[source,terminal]
+----
+NAME                   AGE
+insecure-tls-alert     2m
+----
+
+. Check the alert status in the {product-title} web console:
+
+.. Navigate to *Observe* → *Alerting*.
+
+.. Search for `InsecureTLSVersionDetected`.
+
+.. Verify that the alert appears and shows the correct firing conditions.
+
+. Trigger a test alert by creating a pod that uses an insecure TLS version by running the following command:
++
+[source,terminal]
+----
+$ oc run tls-test --image=curlimages/curl --restart=Never -- \
+  curl --tlsv1.1 --tls-max 1.1 https://example.com
+----
+
+. Wait 5 minutes and verify the alert fires by running the following command:
++
+[source,terminal]
+----
+$ oc get alerts -n netobserv | grep InsecureTLS
+----
+
+[NOTE]
+====
+Alert metrics are based on network flow data collected by the eBPF agent. Ensure that the workload performs a TLS handshake while the agent is running to capture the metadata.
+====
