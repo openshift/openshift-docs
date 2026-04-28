@@ -1,0 +1,104 @@
+// Module included in the following assemblies:
+//
+// * rosa_cluster_admin/rosa-nodes-managing-karpenter.adoc
+
+:_mod-docs-content-type: PROCEDURE
+[id="rosa-nodes-autonode-managing-setup_{context}"]
+= Prepare an AWS IAM role for {autonode}
+
+[role="_abstract"]
+Create the IAM policy and role that {autonode} requires to provision Amazon Elastic Compute Cloud (Amazon EC2) instances.
+
+This policy grants {autonode} the following permissions:
+
+* Create and terminate EC2 instances and fleets
+* Create and manage launch templates
+* Tag resources with Karpenter-specific tags
+* Describe EC2 resources such as instances, instance types, and subnets
+* Access Systems Manager (SSM) parameters for Amazon Machine Image (AMI) information
+* Query EC2 pricing information
+* Manage Simple Queue Service (SQS) interruption queues for Spot instance handling
+* Create and manage IAM instance profiles
++
+[NOTE]
+====
+All permissions are restricted to resources tagged with Karpenter-specific tags to ensure {autonode} manages only nodes that it provisions.
+====
+
+.Procedure
+
+. Download the latest {autonode} IAM policy:
++
+[source,terminal]
+----
+$ curl -o autonode-policy.json https://raw.githubusercontent.com/openshift/managed-cluster-config/refs/heads/master/resources/sts/hypershift/openshift_hcp_karpenter_controller_credentials_policy.json
+----
+
+. Export your cluster name and ID to environment variables:
++
+[source,terminal,subs="+quotes"]
+----
+$ export CLUSTER_NAME=<cluster_name>
+$ export CLUSTER_ID=$(rosa describe cluster -c "$CLUSTER_NAME" -o json | jq -r '.id')
+$ echo $CLUSTER_NAME $CLUSTER_ID
+----
+
+. Create the IAM policy:
++
+[source,terminal]
+----
+$ POLICY_ARN=$(aws iam create-policy \
+  --policy-name rosa-karpenter-controller-role-${CLUSTER_NAME} \
+  --policy-document file://autonode-policy.json \
+  --query 'Policy.Arn' \
+  --output text)
+----
+
+. Create the trust policy for the Karpenter service account:
++
+[source,terminal]
+----
+$ cat > trust-policy.json <<EOF
+{
+    "Version": "2012-10-17",
+    "Statement": [
+        {
+            "Effect": "Allow",
+            "Principal": {
+                "Federated": "arn:aws:iam::$(aws sts get-caller-identity --query Account --output text):oidc-provider/$(rosa describe cluster -c $CLUSTER_NAME -o json | jq -r .aws.sts.oidc_endpoint_url | sed 's|https://||')"
+            },
+            "Action": "sts:AssumeRoleWithWebIdentity",
+            "Condition": {
+                "StringEquals": {
+                    "$(rosa describe cluster -c $CLUSTER_NAME -o json | jq -r .aws.sts.oidc_endpoint_url | sed 's|https://||'):sub": "system:serviceaccount:kube-system:karpenter"
+                }
+            }
+        }
+    ]
+}
+EOF
+----
+
+. Create the IAM role and attach the policy:
++
+[source,terminal]
+----
+$ ROLE_ARN=$(aws iam create-role \
+  --role-name rosa-karpenter-controller-role-${CLUSTER_NAME} \
+  --assume-role-policy-document file://trust-policy.json \
+  --query 'Role.Arn' \
+  --output text)
+
+$ aws iam attach-role-policy \
+  --role-name rosa-karpenter-controller-role-${CLUSTER_NAME} \
+  --policy-arn $POLICY_ARN
+----
++
+
+.Verification 
+
+Verify that policies are present by running:
+[source,terminal]
+----
+$ aws iam list-attached-role-policies --role-name rosa-karpenter-controller-role-${CLUSTER_NAME}
+----
