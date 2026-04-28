@@ -1,0 +1,441 @@
+// Module included in the following assemblies:
+//
+// * rosa_cluster_admin/rosa_nodes/rosa-nodes-autonode-troubleshooting.adoc
+
+:_mod-docs-content-type: REFERENCE
+[id="rosa-nodes-autonode-troubleshooting_{context}"]
+= Troubleshooting {autonode}
+
+[role="_abstract"]
+Common issues, symptoms, and resolutions for {autonode} on {product-title}.
+
+[id="rosa-nodes-autonode-troubleshoot-nodeclass-not-ready_{context}"]
+== Node classes show READY=False
+
+.Symptom
+When you run `oc get ec2nodeclass` or `oc get openshiftec2nodeclass`, the `READY` column shows `False`.
+
+.Cause
+The node class cannot find required Amazon Web Services (AWS) resources or has a configuration error.
+
+.Resolution
+
+. Check the node class status conditions:
++
+[source,terminal]
+----
+$ oc describe openshiftec2nodeclass <name>
+----
+
+. Check for common issues in the status conditions:
++
+--
+* *Subnets not found*: Verify that your subnets are tagged with `karpenter.sh/discovery=<cluster-id>` or that your custom subnet selector terms match existing subnets.
++
+[source,terminal]
+----
+$ aws ec2 describe-subnets --filters "Name=tag:karpenter.sh/discovery,Values=<cluster-id>"
+----
+
+* *Security groups not found*: Verify that your security groups are tagged with `karpenter.sh/discovery=<cluster-id>` or that your custom security group selector terms match existing security groups.
++
+[source,terminal]
+----
+$ aws ec2 describe-security-groups --filters "Name=tag:karpenter.sh/discovery,Values=<cluster-id>"
+----
+
+* *AMI not found*: Verify that the Amazon Machine Image (AMI) ID or selector terms are correct and that the AMI exists in your AWS account and region.
++
+[source,terminal]
+----
+$ aws ec2 describe-images --image-ids <ami-id>
+----
+
+* *Instance profile not found*: Verify that the AWS Identity and Access Management (IAM) instance profile exists.
++
+[source,terminal]
+----
+$ aws iam get-instance-profile --instance-profile-name <profile-name>
+----
+--
+
+. After correcting the configuration, verify that the node class becomes ready:
++
+[source,terminal]
+----
+$ oc get openshiftec2nodeclass <name>
+----
+
+[id="rosa-nodes-autonode-troubleshoot-pods-pending_{context}"]
+== Pods remain pending despite available NodePool
+
+.Symptom
+Pods remain in `Pending` state even though a NodePool exists and has capacity limits that are not reached.
+
+.Cause
+Pod scheduling requirements do not match the NodePool requirements, or the NodePool cannot provision nodes due to resource or quota constraints.
+
+.Resolution
+
+. Check the pod's events for scheduling failures:
++
+[source,terminal]
+----
+$ oc describe pod <pod-name> -n <namespace>
+----
++
+Look for events that explain why the pod cannot be scheduled.
+
+. Verify that the pod's node selector matches NodePool labels:
++
+[source,terminal]
+----
+$ oc get pod <pod-name> -n <namespace> -o yaml | grep -A 5 nodeSelector
+----
++
+Ensure the pod's node selector labels match the labels defined in the NodePool's `spec.template.metadata.labels`.
+
+. Verify that the pod's resource requests are within the NodePool's instance types:
++
+Check that the pod's CPU and memory requests can be satisfied by the instance types allowed in the NodePool's requirements.
+
+. Check if the NodePool has reached its resource limits:
++
+[source,terminal]
+----
+$ oc get nodepool <nodepool-name> -o yaml
+----
++
+Compare the current resource usage against the limits defined in `spec.limits`.
+
+. Verify that the pod does not have taints that prevent scheduling on {autonode}-provisioned nodes:
++
+Check if the pod has the necessary tolerations for any taints defined in the NodePool's `spec.template.spec.taints`.
+
+. Check the Karpenter controller logs for provisioning errors:
++
+[source,terminal]
+----
+$ oc logs -n kube-system -l app.kubernetes.io/name=karpenter --tail=100
+----
+
+[id="rosa-nodes-autonode-troubleshoot-nodes-not-joining_{context}"]
+== Nodes provisioned but not joining the cluster
+
+.Symptom
+NodeClaims are created and show Amazon Elastic Compute Cloud (Amazon EC2) instances launching, but the nodes never register with the cluster or never show `READY=True`.
+
+.Cause
+Network connectivity issues, incorrect AMI, missing IAM permissions, or initialization script failures prevent nodes from joining the cluster.
+
+.Resolution
+
+. Check the NodeClaim status:
++
+[source,terminal]
+----
+$ oc get nodeclaim
+$ oc describe nodeclaim <nodeclaim-name>
+----
+
+. Verify that the Amazon EC2 instance is running in AWS:
++
+[source,terminal]
+----
+$ aws ec2 describe-instances --filters "Name=tag:karpenter.sh/nodepool,Values=<nodepool-name>"
+----
+
+. Check the Amazon EC2 instance's system log for initialization errors:
++
+[source,terminal]
+----
+$ aws ec2 get-console-output --instance-id <instance-id>
+----
++
+Look for errors during the boot process or in user data script execution.
+
+. Verify that the subnet allows outbound internet connectivity:
++
+--
+* Private subnets must have a route to a Network Address Translation (NAT) gateway or AWS PrivateLink endpoints configured for required AWS services
+* Check the route table associated with the subnet
+--
+
+. Verify that the security group allows required traffic:
++
+--
+* Inbound: Cluster communication ports (10250 for kubelet)
+* Outbound: Internet access for image registry and cluster API server
+--
+
+. Check IAM instance profile permissions:
++
+Verify that the instance profile has the required permissions for {product-title} worker nodes, including Amazon EC2 describe permissions and permissions to access the cluster's OIDC provider.
+
+. If using a custom AMI, verify that it is compatible with {product-title}:
++
+Custom AMIs must include the required software and configuration for {product-title} worker nodes.
+
+[id="rosa-nodes-autonode-troubleshoot-rapid-scaling_{context}"]
+== Nodes scaling rapidly up and down
+
+.Symptom
+{autonode} creates nodes, then deletes them shortly after, in a continuous cycle.
+
+.Cause
+Pods are scheduled on nodes but then the nodes become underutilized, triggering consolidation. The pods are then rescheduled, triggering new node creation.
+
+.Resolution
+
+. Check the disruption settings in your NodePool:
++
+[source,terminal]
+----
+$ oc get nodepool <nodepool-name> -o yaml | grep -A 10 disruption
+----
+
+. Increase the `consolidateAfter` duration to prevent rapid consolidation:
++
+[source,yaml]
+----
+spec:
+  disruption:
+    consolidateAfter: 5m
+----
+
+. Change the consolidation policy to `WhenEmpty` to prevent underutilization-based consolidation:
++
+[source,yaml]
+----
+spec:
+  disruption:
+    consolidationPolicy: WhenEmpty
+----
+
+. Add pod disruption budgets to your workloads to limit disruption:
++
+[source,yaml]
+----
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: <application-name>
+spec:
+  minAvailable: 1
+  selector:
+    matchLabels:
+      app: <application-name>
+----
+
+. Review pod resource requests to ensure they accurately reflect actual usage:
++
+Pods with very small resource requests might cause nodes to appear underutilized.
+
+[id="rosa-nodes-autonode-troubleshoot-insufficient-capacity_{context}"]
+== Insufficient capacity errors
+
+.Symptom
+NodeClaims show "InsufficientCapacity" errors in their status or logs indicate that {autonode} cannot provision the requested instance types.
+
+.Cause
+AWS does not have available capacity for the requested instance types in the selected availability zones, or your AWS account has insufficient service quotas.
+
+.Resolution
+
+. Broaden the instance type requirements in your NodePool:
++
+[source,yaml]
+----
+spec:
+  template:
+    spec:
+      requirements:
+        - key: karpenter.k8s.aws/instance-category
+          operator: In
+          values: ["c", "m", "r"]  # Multiple categories
+        - key: karpenter.k8s.aws/instance-generation
+          operator: Gt
+          values: ["2"]  # Allow newer generations
+----
+
+. Add multiple availability zones to your NodePool requirements:
++
+[source,yaml]
+----
+spec:
+  template:
+    spec:
+      requirements:
+        - key: topology.kubernetes.io/zone
+          operator: In
+          values: ["us-east-1a", "us-east-1b", "us-east-1c"]
+----
+
+. For spot instances, allow on-demand as a fallback:
++
+[source,yaml]
+----
+spec:
+  template:
+    spec:
+      requirements:
+        - key: karpenter.sh/capacity-type
+          operator: In
+          values: ["spot", "on-demand"]
+----
+
+. Check your AWS service quotas:
++
+[source,terminal]
+----
+$ aws service-quotas list-service-quotas --service-code ec2
+----
++
+Request quota increases if needed.
+
+[id="rosa-nodes-autonode-troubleshoot-spot-interruptions_{context}"]
+== Frequent spot instance interruptions
+
+.Symptom
+Nodes provisioned from spot instances are frequently terminated, causing pod disruptions.
+
+.Cause
+Spot instance interruptions occur when AWS needs the capacity back. Certain instance types experience higher interruption rates.
+
+.Resolution
+
+. Diversify the instance types in your NodePool to include more options:
++
+[source,yaml]
+----
+spec:
+  template:
+    spec:
+      requirements:
+        - key: karpenter.k8s.aws/instance-category
+          operator: In
+          values: ["c", "m", "r", "t"]
+        - key: karpenter.sh/capacity-type
+          operator: In
+          values: ["spot"]
+----
+
+. Configure your applications to tolerate disruptions:
++
+--
+* Set appropriate pod disruption budgets
+* Use multiple replicas
+* Configure graceful shutdown handling
+--
+
+. Consider using on-demand instances for critical workloads:
++
+Create separate NodePools: one for spot instances for fault-tolerant workloads, and one for on-demand instances for critical workloads.
+
+. Use node affinity to prefer spot but allow on-demand:
++
+This allows workloads to run on spot instances when available but fall back to on-demand during high interruption periods.
+
+[id="rosa-nodes-autonode-troubleshoot-nodepool-weight_{context}"]
+== {autonode} not using preferred NodePool
+
+.Symptom
+{autonode} provisions nodes from a NodePool other than the one you intended, even though both can satisfy the workload requirements.
+
+.Cause
+Multiple NodePools can satisfy the workload's requirements, and {autonode} chooses based on factors including price and availability, not your preference.
+
+.Resolution
+
+. Set higher weight values for preferred NodePools:
++
+[source,yaml]
+----
+spec:
+  weight: 100  # Higher weight = higher priority
+----
+
+. Use node selectors and taints to enforce NodePool selection:
++
+--
+* Add unique labels to the preferred NodePool
+* Add a node selector to your workload to target those labels
+* Optionally add taints to other NodePools to prevent scheduling
+--
+
+. Verify that the preferred NodePool has not reached its resource limits:
++
+[source,terminal]
+----
+$ oc get nodepool <nodepool-name> -o yaml | grep -A 5 limits
+----
+
+[id="rosa-nodes-autonode-troubleshoot-controller-logs_{context}"]
+== Viewing Karpenter controller logs
+
+To diagnose {autonode} issues, view the Karpenter controller logs:
+
+[source,terminal]
+----
+$ oc logs -n kube-system -l app.kubernetes.io/name=karpenter --tail=100 --follow
+----
+
+Common log messages and their meanings:
+
+* `"launching node"`: {autonode} is provisioning a new node
+* `"discovered subnets"`: {autonode} successfully found subnets tagged for discovery
+* `"discovered security groups"`: {autonode} successfully found security groups tagged for discovery
+* `"discovered amis"`: {autonode} successfully found AMIs matching the node class configuration
+* `"instance type option"`: Lists the instance types {autonode} is considering for a workload
+* `"consolidation delete"`: {autonode} is deleting an underutilized node
+* `"could not schedule pod"`: {autonode} cannot provision a node that satisfies the pod's requirements
+
+[id="rosa-nodes-autonode-troubleshoot-verification_{context}"]
+== Verification checklist
+
+When troubleshooting {autonode} issues, verify the following:
+
+. {autonode} is enabled on the cluster:
++
+[source,terminal]
+----
+$ rosa describe cluster -c <cluster-id> | grep -i autonode
+----
+
+. Node classes are ready:
++
+[source,terminal]
+----
+$ oc get ec2nodeclass
+$ oc get openshiftec2nodeclass
+----
+
+. NodePools are ready:
++
+[source,terminal]
+----
+$ oc get nodepool
+----
+
+. AWS resources are tagged correctly:
++
+[source,terminal]
+----
+$ aws ec2 describe-subnets --filters "Name=tag:karpenter.sh/discovery,Values=<cluster-id>"
+$ aws ec2 describe-security-groups --filters "Name=tag:karpenter.sh/discovery,Values=<cluster-id>"
+----
+
+. IAM role is configured correctly:
++
+[source,terminal]
+----
+$ aws iam get-role --role-name <autonode-role-name>
+$ aws iam list-attached-role-policies --role-name <autonode-role-name>
+----
+
+. Karpenter controllers are running:
++
+[source,terminal]
+----
+$ oc get pods -n kube-system -l app.kubernetes.io/name=karpenter
+----
