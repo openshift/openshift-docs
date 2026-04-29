@@ -1,0 +1,382 @@
+:_mod-docs-content-type: PROCEDURE
+[id="core-cluster-upgrade-eus-control-plane-only_{context}"]
+= Upgrade with EUS-to-EUS control-plane-only updates
+
+[role="_abstract"]
+You can upgrade bare metal Core clusters from one Extended Update Support (EUS) release to another using control-plane-only updates.
+This approach upgrades the control plane while leaving worker nodes at the previous EUS version, enabling staged rollouts that minimize workload disruption.
+
+EUS releases provide 18 months of support and include even-numbered minor versions such as 4.18, 4.20, and 4.22.
+Control plane and worker nodes can be up to two minor versions apart during EUS-to-EUS upgrades.
+
+WARNING: Control plane and worker version skew is limited to N-2 (two minor versions).
+For example, if the control plane is at 4.20, workers must be upgraded before the control plane reaches 4.22, or they will be in an unsupported configuration.
+Plan worker upgrades accordingly to avoid exceeding the version skew policy.
+For more information about version skew policies, see the Kubernetes version and version skew support policy.
+
+.Prerequisites
+
+* Pre-upgrade health check completed successfully.
+* {cgu-operator} is installed and configured on the {rh-rhacm} hub cluster.
+* Current cluster is at the latest z-stream of a source EUS version (for example, 4.18.latest).
+* Target EUS version is available (for example, 4.20).
+* EUS-to-EUS upgrade path is supported (verify in release notes).
+
+.Procedure
+
+. Verify the current cluster version is at the latest z-stream of the source EUS:
++
+[source,terminal]
+----
+$ oc --context=spoke1 get clusterversion
+----
++
+.Example output
+[source,terminal]
+----
+NAME      VERSION   AVAILABLE   PROGRESSING   SINCE   STATUS
+version   4.18.35   True        False         30d     Cluster version is 4.18.35
+----
++
+If not at the latest z-stream, upgrade to the latest patch release before proceeding.
+
+. Review the EUS-to-EUS release notes:
++
+Check the {product-title} documentation for:
++
+--
+* Supported EUS-to-EUS upgrade paths
+* API deprecations between EUS versions
+* Breaking changes affecting your workloads
+* Control plane and worker version skew policies
+--
+
+. Validate that CNF workloads tolerate control plane and worker version skew:
++
+Verify that your network functions can operate with the control plane at 4.20 while workers remain at 4.18.
++
+Consult with application teams if needed.
+
+. Plan the worker node upgrade schedule:
++
+Determine when to upgrade worker nodes after the control plane upgrade completes.
++
+Worker upgrades can be scheduled days or weeks after the control plane, depending on your maintenance windows.
+
+. Create a GitOps policy to pause worker nodes:
++
+[source,yaml]
+----
+apiVersion: policy.open-cluster-management.io/v1
+kind: Policy
+metadata:
+  name: core-pause-worker-nodes
+  namespace: openshift-upgrade-policies
+spec:
+  remediationAction: inform
+  disabled: false
+  policy-templates:
+  - objectDefinition:
+      apiVersion: policy.open-cluster-management.io/v1
+      kind: ConfigurationPolicy
+      metadata:
+        name: pause-worker-mcp
+      spec:
+        remediationAction: inform
+        severity: high
+        object-templates:
+        - complianceType: musthave
+          objectDefinition:
+            apiVersion: machineconfiguration.openshift.io/v1
+            kind: MachineConfigPool
+            metadata:
+              name: worker
+            spec:
+              paused: true
+----
+
+. Verify the current cluster channel before creating the upgrade policy:
++
+[source,terminal]
+----
+$ oc --context=spoke1 get clusterversion -o jsonpath='{.items[0].spec.channel}'
+----
++
+.Example output
+[source,terminal]
+----
+eus-4.18
+----
++
+If the cluster is on a non-EUS channel (such as `stable-4.18`), changing to an EUS channel and setting the required version simultaneously can cause unexpected upgrade behavior.
+
+. Get the release image reference for the target version.
++
+The image reference is required for the upgrade policy. Run the following command to retrieve it:
++
+[source,terminal]
+----
+$ oc adm release info 4.18.5 | head -9
+----
++
+.Example output
+[source,terminal]
+----
+Name:           4.18.5
+Digest:         sha256:93879f84b3165c5b5bd1fdf4563a11155dc61ea35cd93e67dc61c2b66e11c8bb
+Created:        2025-03-13T09:17:26Z
+OS/Arch:        linux/amd64
+Manifests:      758
+Metadata files: 2
+
+Pull From: quay.io/openshift-release-dev/ocp-release@sha256:93879f84b3165c5b5bd1fdf4563a11155dc61ea35cd93e67dc61c2b66e11c8bb
+----
++
+Use the `Pull From` value as the `image` field in the upgrade policy.
+
+. Create a policy for the EUS upgrade.
++
+For an EUS-to-EUS upgrade, you need a separate policy for each Y-stream step. The following example shows a policy for the first Y-stream upgrade:
++
+[source,yaml]
+----
+apiVersion: policy.open-cluster-management.io/v1
+kind: Policy
+metadata:
+  name: upgrade-ocp-16to17
+  namespace: upgrade
+  annotations:
+    policy.open-cluster-management.io/categories: CM Configuration Management
+    policy.open-cluster-management.io/controls: CM-2 Baseline Configuration
+    policy.open-cluster-management.io/standards: NIST SP 800-53
+  labels:
+    app.kubernetes.io/instance: policies
+spec:
+  disabled: false
+  policy-templates:
+    - objectDefinition:
+        apiVersion: policy.open-cluster-management.io/v1
+        kind: ConfigurationPolicy
+        metadata:
+          name: upgrade-ocp-16to17
+        spec:
+          object-templates:
+            - complianceType: musthave
+              objectDefinition:
+                apiVersion: config.openshift.io/v1
+                kind: ClusterVersion
+                metadata:
+                  name: version
+                spec:
+                  channel: eus-4.18
+                  desiredUpdate:
+                    force: true
+                    image: quay.io/openshift-release-dev/ocp-release@sha256:df00d64554b9b5d860273f938e0ff3b0c4a7af8356fbd103658ebe6fa2a830c8
+                    version: 4.17.29
+                status:
+                  history:
+                    - state: Completed
+                      version: 4.17.29
+          remediationAction: inform
+          severity: low
+  remediationAction: inform
+----
++
+Replace the following values:
++
+--
+* `channel`: Set the cluster channel to the target EUS release. Refer to the link:https://access.redhat.com/labs/ocpupgradegraph/update_path/[upgrade selection tool] when setting the channel.
+* `image`: Specify the release image reference obtained from the `oc adm release info` command.
+* `version`: Set the specific Y-stream and Z-stream release version for the cluster upgrade. The `status.history` section ensures the policy remains noncompliant until the upgrade completes.
+--
++
+IMPORTANT: For an EUS-to-EUS upgrade, create a policy for each Y-stream step. For example, upgrading from 4.16 to 4.18 requires one policy for 4.16-to-4.17 and another for 4.17-to-4.18.
+
+. Apply the policies to {rh-rhacm}:
++
+[source,terminal]
+----
+$ oc apply -f upgrade-ocp-16to17-policy.yaml
+$ oc apply -f pause-mcp-policy.yaml
+----
+
+. Create a ClusterGroupUpgrade CR for the EUS upgrade:
++
+[source,yaml]
+----
+apiVersion: ran.openshift.io/v1alpha1
+kind: ClusterGroupUpgrade
+metadata:
+  name: core-eus-upgrade-4.18-to-4.20
+  namespace: openshift-upgrade-policies
+spec:
+  clusters:
+  - spoke1
+  managedPolicies:
+  - core-pause-worker-nodes
+  - core-eus-upgrade-4.20-policy
+  enable: false
+  remediationStrategy:
+    maxConcurrency: 1
+    timeout: 10800
+----
++
+EUS upgrades might take longer than single y-stream upgrades, so the timeout is set to 10800 seconds (3 hours).
+
+. Apply and enable the ClusterGroupUpgrade CR:
++
+[source,terminal]
+----
+$ oc apply -f core-eus-upgrade-cgu.yaml
+$ oc patch cgu core-eus-upgrade-4.18-to-4.20 \
+  -n openshift-upgrade-policies \
+  --type merge \
+  -p '{"spec":{"enable":true}}'
+----
+
+. Monitor the EUS control plane upgrade progress:
++
+[source,terminal]
+----
+$ oc get cgu core-eus-upgrade-4.18-to-4.20 -n openshift-upgrade-policies -w
+----
+
+. On the target cluster, monitor cluster version:
++
+[source,terminal]
+----
+$ oc --context=spoke1 get clusterversion -w
+----
++
+The cluster version progresses through intermediate versions during the EUS upgrade.
+For example, upgrading from 4.18 to 4.20 goes through 4.19 internally.
+
+. Monitor cluster operator status:
++
+[source,terminal]
+----
+$ oc --context=spoke1 get co
+----
++
+Cluster operators might take longer to stabilize during EUS upgrades because of the larger version jump.
+
+. After the control plane upgrade completes, verify control plane health:
++
+[source,terminal]
+----
+$ oc --context=spoke1 get nodes -l node-role.kubernetes.io/master=
+----
++
+.Example output
+[source,terminal]
+----
+NAME                   STATUS   ROLES                  AGE   VERSION
+master-0.example.com   Ready    control-plane,master   60d   v1.30.1
+master-1.example.com   Ready    control-plane,master   60d   v1.30.1
+master-2.example.com   Ready    control-plane,master   60d   v1.30.1
+----
++
+Control plane nodes should show the new kubelet version (4.20).
+
+. Verify cluster operators are healthy:
++
+[source,terminal]
+----
+$ oc --context=spoke1 get co | grep -v "True.*False.*False"
+----
++
+All operators must be healthy before upgrading worker nodes.
+
+. Verify worker nodes remain at the previous EUS version:
++
+[source,terminal]
+----
+$ oc --context=spoke1 get nodes -l node-role.kubernetes.io/worker=
+----
++
+.Example output
+[source,terminal]
+----
+NAME                   STATUS   ROLES    AGE   VERSION
+worker-0.example.com   Ready    worker   60d   v1.27.10
+worker-1.example.com   Ready    worker   60d   v1.27.10
+worker-2.example.com   Ready    worker   60d   v1.27.10
+----
++
+Worker nodes should still show the previous kubelet version (4.18).
+
+. Update OLM operators for the new EUS version:
++
+Operators might need multiple version jumps for EUS-to-EUS upgrades.
++
+[source,terminal]
+----
+$ oc --context=spoke1 get csv -A | grep -v Succeeded
+----
++
+Update operator subscriptions to EUS-compatible channels:
++
+[source,terminal]
+----
+$ oc --context=spoke1 patch subscription sriov-network-operator-subscription \
+  -n openshift-sriov-network-operator \
+  --type merge \
+  -p '{"spec":{"channel":"stable-4.20"}}'
+----
+
+. Schedule worker node upgrades:
++
+Determine the timing for worker node upgrades based on your maintenance schedule.
++
+Workers can remain at the previous EUS version for an extended period if needed.
+
+. When ready to upgrade worker nodes, create and apply an unpause policy:
++
+Follow the procedure in "Manage worker nodes during upgrades" to unpause and upgrade workers.
+
+. Monitor worker node upgrades to completion:
++
+[source,terminal]
+----
+$ oc --context=spoke1 get mcp worker -w
+----
+
+.Verification
+
+. Verify all nodes are at the target EUS version:
++
+[source,terminal]
+----
+$ oc --context=spoke1 get nodes
+----
+
+. Verify all cluster operators are healthy:
++
+[source,terminal]
+----
+$ oc --context=spoke1 get co
+----
+
+. Validate custom resources:
++
+[source,terminal]
+----
+$ oc --context=spoke1 get performanceprofile
+$ oc --context=spoke1 get ptpconfig -n openshift-ptp
+$ oc --context=spoke1 get sriovnetworknodepolicy -n openshift-sriov-network-operator
+----
+
+. Run comprehensive smoke tests for all CNF workloads.
+
+.Troubleshooting
+
+* If the EUS upgrade path is not available, verify you are at the latest z-stream of the source EUS version.
+* If the control plane upgrade gets stuck, check for operator compatibility issues with the target EUS version.
+* If worker nodes fail to upgrade after unpause, check MachineConfigPool status and node logs.
+
+.Additional resources
+
+// xrefs moved to assembly per vale rules
+// * xref:../../../post_installation_configuration/day_2_core_cnf_clusters/updating/update-completing-the-control-plane-only-update.adoc#update-completing-the-control-plane-only-update[Control-plane-only updates]
+// * xref:core-cluster-upgrade-worker-node-management_{context}[Manage worker nodes during upgrades]
+// * xref:core-cluster-upgrade-operator-coordination_{context}[Coordinate OLM operator upgrades]

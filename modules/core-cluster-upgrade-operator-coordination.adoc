@@ -1,0 +1,340 @@
+:_mod-docs-content-type: PROCEDURE
+[id="core-cluster-upgrade-operator-coordination_{context}"]
+= Coordinate OLM operator upgrades with cluster upgrades
+
+[role="_abstract"]
+You can coordinate Operator Lifecycle Manager (OLM) operator upgrades with {product-title} cluster upgrades to ensure operator compatibility.
+Incompatible operators can block cluster upgrades or cause degraded cluster operators after upgrades complete.
+
+Update operator subscriptions before or immediately after control plane upgrades to maintain operator compatibility with the new cluster version.
+
+.Prerequisites
+
+* Understanding of OLM concepts including subscriptions, channels, and ClusterServiceVersions (CSVs).
+* Access to clusters with cluster-admin privileges.
+* Cluster upgrade is planned or in progress.
+
+.Procedure
+
+. Check installed operator versions before upgrading the cluster:
++
+[source,terminal]
+----
+$ oc get csv -A
+----
++
+.Example output
+[source,terminal]
+----
+NAMESPACE                              NAME                                          VERSION   PHASE
+openshift-sriov-network-operator       sriov-network-operator.v4.19.0                4.19.0    Succeeded
+openshift-ptp                          ptp-operator.v4.19.0                          4.19.0    Succeeded
+openshift-performance-addon-operator   performance-addon-operator.v4.19.0            4.19.0    Succeeded
+----
+
+. Check current operator subscription channels:
++
+[source,terminal]
+----
+$ oc get subscription -A
+----
++
+.Example output
+[source,terminal]
+----
+NAMESPACE                              NAME                                PACKAGE                  SOURCE             CHANNEL
+openshift-sriov-network-operator       sriov-network-operator-subscription sriov-network-operator   redhat-operators   stable-4.19
+openshift-ptp                          ptp-operator-subscription           ptp-operator             redhat-operators   stable-4.19
+----
+
+. Review operator compatibility matrices in the {product-title} release notes:
++
+Identify which operator channels support your target {product-title} version.
++
+.Example compatibility
+[cols="2,2,2",options="header"]
+|===
+|Operator
+|{product-title} 4.19
+|{product-title} 4.20
+
+|SR-IOV Network Operator
+|stable-4.19
+|stable-4.20
+
+|PTP Operator
+|stable-4.19
+|stable-4.20
+
+|Performance add-on Operator
+|stable-4.19
+|stable-4.20 (deprecated, use Node Tuning Operator)
+|===
+
+. Identify operators that need channel updates before the cluster upgrade:
++
+For a cluster upgrading from 4.19 to 4.20, identify operators still on 4.19 channels.
+
+. Create an OLM operator upgrade policy.
++
+In environments where operator updates are set to manual approval, use a {cgu-operator}-managed policy to coordinate operator upgrades. When {cgu-operator} enforces the policy, it automatically approves the operator `InstallPlan`:
++
+[source,yaml]
+----
+apiVersion: policy.open-cluster-management.io/v1
+kind: Policy
+metadata:
+  name: upgrade-olm-17
+  namespace: policy-upgrade
+  annotations:
+    ran.openshift.io/soak-seconds: "60"
+spec:
+  disabled: false
+  policy-templates:
+    - objectDefinition:
+        apiVersion: policy.open-cluster-management.io/v1
+        kind: ConfigurationPolicy
+        metadata:
+          name: upgrade-olm-17
+        spec:
+          object-templates:
+            - complianceType: musthave
+              objectDefinition:
+                apiVersion: operators.coreos.com/v1alpha1
+                kind: Subscription
+                metadata:
+                  name: cluster-logging
+                  namespace: openshift-logging
+                spec:
+                  name: cluster-logging
+                  channel: stable-6.1
+                status:
+                  state: AtLatestKnown
+----
++
+Replace the following values:
++
+--
+* `ran.openshift.io/soak-seconds`: The soak-seconds annotation gives the catalog pod time to restart and OLM time to read version data from the new pod before evaluating the `Subscription` status. This avoids a race condition where the policy evaluates too quickly after a catalog image change.
+* `channel`: Set the channel only if it needs to change for the new version. Channels are determined by the operator development team. Refer to the link:https://catalog.redhat.com/en[Red Hat Catalog] for compatibility.
+* `status.state: AtLatestKnown`: Ensures the operator upgrade completes before {cgu-operator} proceeds to the next step.
+--
++
+You can include multiple operator subscriptions in the same policy. The following example shows multiple operators in a single policy:
++
+[source,yaml]
+----
+spec:
+  disabled: false
+  policy-templates:
+    - objectDefinition:
+        apiVersion: policy.open-cluster-management.io/v1
+        kind: ConfigurationPolicy
+        metadata:
+          name: upgrade-olm-16to17
+        spec:
+          object-templates:
+            - complianceType: musthave
+              objectDefinition:
+                apiVersion: operators.coreos.com/v1alpha1
+                kind: Subscription
+                metadata:
+                  name: sriov-network-operator-subscription
+                  namespace: openshift-sriov-network-operator
+                spec:
+                  name: sriov-network-operator
+                  channel: stable
+                  installPlanApproval: Manual
+                  source: redhat-operators
+                  sourceNamespace: openshift-marketplace
+                status:
+                  state: AtLatestKnown
+            - complianceType: musthave
+              objectDefinition:
+                apiVersion: operators.coreos.com/v1alpha1
+                kind: Subscription
+                metadata:
+                  name: kubernetes-nmstate-operator
+                  namespace: openshift-nmstate
+                spec:
+                  name: kubernetes-nmstate-operator
+                  channel: stable
+                  installPlanApproval: Manual
+                  source: redhat-operators
+                  sourceNamespace: openshift-marketplace
+                status:
+                  state: AtLatestKnown
+----
++
+For an example of creating this policy with ZTP, see link:https://github.com/openshift-kni/telco-reference/blob/main/telco-core/configuration/core-upgrade.yaml#L68-L101[Example OLM upgrade policy in the OpenShift KNI reference repository].
+
+. Monitor operator upgrades after updating channels:
++
+[source,terminal]
+----
+$ oc get csv -n openshift-sriov-network-operator -w
+----
++
+The operator creates a new ClusterServiceVersion and transitions to the new version.
++
+Wait for the new CSV to appear and reach Succeeded phase:
++
+[source,terminal]
+----
+$ oc get csv -n openshift-sriov-network-operator -o jsonpath='{.items[?(@.spec.version=="4.20.0")].status.phase}'
+----
++
+.Example output
+[source,terminal]
+----
+Succeeded
+----
+
+. Verify operators are at compatible versions before upgrading the cluster:
++
+[source,terminal]
+----
+$ oc get csv -A | grep -v Succeeded
+----
++
+All operators should show `Succeeded` phase.
+
+. After the control plane upgrade completes, check for pending operator updates:
++
+[source,terminal]
+----
+$ oc get csv -A
+----
++
+Some operators might not update until after the cluster upgrade completes.
+
+. Approve manually-approved operators if necessary:
++
+If operators are configured with manual approval, approve pending install plans:
++
+[source,terminal]
+----
+$ oc get installplan -A
+----
++
+[source,terminal]
+----
+$ oc patch installplan <install-plan-name> \
+  -n <namespace> \
+  --type merge \
+  -p '{"spec":{"approved":true}}'
+----
+
+. Verify operator health after cluster upgrade:
++
+[source,terminal]
+----
+$ oc get csv -A
+----
++
+All operators should show `Succeeded` phase.
+
+. Check operator pods are running:
++
+[source,terminal]
+----
+$ oc get pods -n openshift-sriov-network-operator
+$ oc get pods -n openshift-ptp
+$ oc get pods -n openshift-performance-addon-operator
+----
+
+. Verify custom resources are reconciled successfully:
++
+Check Performance Profiles:
++
+[source,terminal]
+----
+$ oc get performanceprofile -o jsonpath='{range .items[*]}{.metadata.name}{"\t"}{.status.conditions[?(@.type=="Applied")].status}{"\n"}{end}'
+----
++
+Check PTP configurations:
++
+[source,terminal]
+----
+$ oc get ptpconfig -n openshift-ptp
+----
++
+Check SR-IOV network node policies:
++
+[source,terminal]
+----
+$ oc get sriovnetworknodepolicy -n openshift-sriov-network-operator
+----
++
+All custom resources should show expected status.
+
+. Review operator considerations specific to your deployment:
++
+--
+* *Performance add-on Operator*: The Performance add-on Operator is deprecated starting with {product-title} 4.20. The Node Tuning Operator now provides performance tuning capabilities. If upgrading to 4.20 or later, plan to migrate from Performance add-on Operator to Node Tuning Operator.
+* *SR-IOV Network Operator*: The SR-IOV Network Operator might require node reboots when upgrading to new versions. Schedule operator upgrades during maintenance windows to avoid unexpected node reboots.
+* *PTP Operator*: PTP configurations are sensitive to version changes. Validate PTP synchronization after operator upgrades.
+--
++
+Check for pending SR-IOV node reboots:
++
+[source,terminal]
+----
+$ oc get sriovnetworknodepolicy -n openshift-sriov-network-operator -o jsonpath='{range .items[*]}{.metadata.name}{"\t"}{.status.syncStatus}{"\n"}{end}'
+----
++
+Validate PTP synchronization:
++
+[source,terminal]
+----
+$ oc get pods -n openshift-ptp -l app=linuxptp-daemon -o wide
+$ oc logs -n openshift-ptp <linuxptp-daemon-pod>
+----
+
+.Verification
+
+. Verify all operators are at expected versions:
++
+[source,terminal]
+----
+$ oc get csv -A
+----
+
+. Verify operator pods are running without errors:
++
+[source,terminal]
+----
+$ oc get pods -A | grep -E "openshift-sriov|openshift-ptp|openshift-performance"
+----
+
+. Verify custom resources are applied successfully:
++
+[source,terminal]
+----
+$ oc get performanceprofile,ptpconfig,sriovnetworknodepolicy -A
+----
+
+.Troubleshooting
+
+* If an operator blocks the cluster upgrade, update the operator subscription channel before upgrading the cluster.
+* If an operator is stuck in `Installing` phase, check catalog source availability:
++
+[source,terminal]
+----
+$ oc get catalogsource -n openshift-marketplace
+----
+
+* If a custom resource is not reconciling, check operator logs:
++
+[source,terminal]
+----
+$ oc logs -n <operator-namespace> deployment/<operator-deployment>
+----
+
+* If operator pods are in `CrashLoopBackOff`, check for compatibility issues with the new cluster version.
+
+.Additional resources
+
+// xrefs moved to assembly per vale rules
+// * xref:../../../operators/understanding/olm/olm-understanding-olm.adoc#olm-understanding-olm[Understanding Operator Lifecycle Manager]
+// * xref:../../../post_installation_configuration/day_2_core_cnf_clusters/updating/update-cnf-update-prep.adoc#update-cnf-update-prep[Preparing CNF clusters for upgrades]
