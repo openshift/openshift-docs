@@ -1,0 +1,210 @@
+// Module included in the following assemblies:
+//
+// * configuring/configuring-log-forwarding.adoc
+
+:_mod-docs-content-type: REFERENCE
+[id="clf-pipelines-reference_{context}"]
+= ClusterLogForwarder pipelines
+
+[role="_abstract"]
+Pipelines define the routing logic that connects log sources to destinations. A pipeline binds one or more inputs to one or more outputs, with optional filters applied in between. Pipelines are the central orchestration mechanism that determines which logs flow where and how they are transformed along the way.
+
+`name`:: A unique identifier for the pipeline. Use descriptive names that indicate the pipeline's purpose, such as `app-logs-to-splunk` or `audit-to-s3`.
+
+`inputRefs`:: A list of input names to include in this pipeline. You can reference the built-in inputs (`application`, `infrastructure`, `audit`) or custom inputs you have defined in the `spec.inputs` section. The collector gathers logs from all referenced inputs and sends them through this pipeline.
++
+[IMPORTANT]
+====
+You can only reference inputs for log types that the collector service account is authorized to access through `ClusterRoleBindings`. If you reference an unauthorized log type, the Operator removes the collector `DaemonSet` and stops all log collection.
+====
+
+`outputRefs`:: A list of output names where the pipeline sends logs. You can send logs to multiple destinations simultaneously by listing multiple outputs. The collector duplicates the log stream and forwards a copy to each output.
++
+[NOTE]
+====
+If you send the same log record to multiple outputs and one output fails, the collector continues forwarding to other outputs. Each output operates independently.
+====
+
+`filterRefs`:: An optional list of filter names to apply to log records passing through this pipeline. Filters are applied sequentially in the order you specify. If a filter drops a log record, subsequent filters in the list do not process that record.
++
+Common filter ordering patterns:
++
+--
+* **Drop before prune**: Apply `drop` filters first to remove unwanted log records, then apply `prune` filters to remove fields from the remaining records. This reduces processing work.
+* **Parse before filter**: Apply `parse` filters early to convert JSON strings into structured fields, then apply `drop` or `prune` filters that operate on those structured fields.
+* **Label last**: Apply `openshiftLabels` filters after other transformations to add routing metadata that downstream systems can use.
+--
+
+== Pipeline examples
+
+The following examples demonstrate common pipeline patterns tailored to the needs of different stakeholders: developers who need application-specific log access, site reliability engineers (SREs) who need operational visibility, and security officers who need compliance and audit trails.
+
+Developer use case - Application logs to familiar tools::
+Developers need quick access to their application logs in tools they already know. This pipeline forwards application logs to a Splunk instance where development teams can troubleshoot issues:
++
+[source,yaml]
+----
+pipelines:
+- name: apps-to-splunk
+  inputRefs:
+  - application
+  outputRefs:
+  - splunk-prod
+----
+
+SRE use case - Operational visibility::
+Site reliability engineers need comprehensive operational visibility across application and infrastructure components. This pipeline forwards both log types to a single LokiStack for short-term troubleshooting and performance monitoring:
++
+[source,yaml]
+----
+pipelines:
+- name: all-logs-to-loki
+  inputRefs:
+  - application
+  - infrastructure
+  outputRefs:
+  - default-lokistack
+----
+
+Security officer use case - Compliance and real-time monitoring::
+Security officers must balance compliance requirements with operational needs. This pipeline sends audit logs to both an S3 bucket for long-term immutable retention and CloudWatch for real-time security alerting:
++
+[source,yaml]
+----
+pipelines:
+- name: audit-to-archive-and-monitor
+  inputRefs:
+  - audit
+  outputRefs:
+  - s3-compliance
+  - cloudwatch-alerts
+----
+
+Security officer use case - Data sovereignty and PII protection::
+Security officers must ensure personally identifiable information (PII) does not leave the cluster for third-party SaaS providers. This pipeline drops noisy logs and prunes sensitive fields before forwarding to an external system:
++
+[source,yaml]
+----
+pipelines:
+- name: filtered-apps
+  inputRefs:
+  - application
+  filterRefs:
+  - drop-marketplace-logs
+  - prune-annotations
+  outputRefs:
+  - external-aggregator
+----
+
+Multi-stakeholder use case - Serving developers, SREs, and security officers::
+Organizations typically need to serve all three stakeholders simultaneously. This configuration defines separate pipelines for each persona's needs: developers get application logs in LokiStack, SREs get infrastructure logs in Elasticsearch for performance analysis, and security officers get audit logs with sensitive fields pruned for compliance archival:
++
+[source,yaml]
+----
+pipelines:
+- name: apps-to-loki
+  inputRefs:
+  - application
+  outputRefs:
+  - lokistack
+- name: infrastructure-to-elasticsearch
+  inputRefs:
+  - infrastructure
+  outputRefs:
+  - elasticsearch-infra
+- name: audit-to-s3
+  inputRefs:
+  - audit
+  filterRefs:
+  - prune-sensitive-fields
+  outputRefs:
+  - s3-compliance
+----
+
+[IMPORTANT]
+====
+If you do not define a pipeline for a log type, the collector drops logs of that type. For example, if you create pipelines for `application` and `audit` logs but not for `infrastructure` logs, the collector does not collect infrastructure logs.
+====
+
+== Complete example
+
+This example shows a complete `ClusterLogForwarder` CR with inputs, filters, outputs, and pipelines:
+
+[source,yaml]
+----
+apiVersion: observability.openshift.io/v1
+kind: ClusterLogForwarder
+metadata:
+  name: instance
+  namespace: openshift-logging
+spec:
+  serviceAccount:
+    name: collector
+  inputs:
+  - name: high-priority-apps
+    type: application
+    application:
+      selector:
+        matchLabels:
+          priority: high
+  filters:
+  - name: drop-debug-logs
+    type: drop
+    drop:
+    - test:
+      - field: .level
+        matches: debug
+  - name: remove-annotations
+    type: prune
+    prune:
+      in:
+      - .kubernetes.annotations
+  outputs:
+  - name: lokistack
+    type: lokiStack
+    lokiStack:
+      authentication:
+        token:
+          from: serviceAccount
+      target:
+        name: logging-loki
+        namespace: openshift-logging
+    tls:
+      ca:
+        configMapName: logging-loki-gateway-ca-bundle
+        key: service-ca.crt
+  - name: splunk-prod
+    type: splunk
+    splunk:
+      authentication:
+        token:
+          secretName: splunk-token
+      url: https://splunk.example.com:8088
+  pipelines:
+  - name: priority-apps-to-splunk
+    inputRefs:
+    - high-priority-apps
+    filterRefs:
+    - drop-debug-logs
+    outputRefs:
+    - splunk-prod
+  - name: all-apps-to-loki
+    inputRefs:
+    - application
+    filterRefs:
+    - remove-annotations
+    outputRefs:
+    - lokistack
+  - name: infrastructure-to-loki
+    inputRefs:
+    - infrastructure
+    outputRefs:
+    - lokistack
+----
+
+[role="_additional-resources"]
+.Additional resources
+
+* xref:../configuring/configuring-log-forwarding.adoc#configuring-inputs_{context}[Configuring inputs]
+* xref:../configuring/configuring-log-forwarding.adoc#configuring-filters_{context}[Configuring filters]
+* xref:../configuring/configuring-log-forwarding.adoc#configuring-outputs_{context}[Configuring outputs]
