@@ -1,0 +1,165 @@
+// Module included in the following assemblies:
+//
+// * nodes/nodes/nodes-nodes-additional-crio-storage.adoc
+
+:_mod-docs-content-type: PROCEDURE
+[id="nodes-nodes-additional-crio-storage-configuring_{context}"]
+= Configuring additional storage locations for CRI-O
+
+[role="_abstract"]
+To reduce application startup time and make your applications run more efficiently, you can configure additional storage locations for the CRI-O container engine to store OCI objects by using the `ContainerRuntimeConfig` custom resource (CR).
+
+Use the `additionalArtifactStores`, `additionalImageStores`, and `additionalLayerStores` fields in a `ContainerRuntimeConfig` to specify read-only locations where CRI-O stores and resolves OCI artifacts, container images, or container image layers. CRI-O checks these locations in order before falling back to the default storage location.
+
+[IMPORTANT]
+====
+When using multiple `ContainerRuntimeConfig` resources, merge all additional storage configurations into a single `ContainerRuntimeConfig` for each machine config pool. Multiple `ContainerRuntimeConfig` resources affecting the same configuration file might result in only a subset of the changes taking effect.
+====
+
+.Prerequisites
+
+* You enabled the required Technology Preview features for your cluster by adding the `TechPreviewNoUpgrade` feature set to the `FeatureGate` CR named `cluster`. For information about enabling Feature Gates, see "Enabling features using feature gates".
++
+[WARNING]
+====
+Enabling the `TechPreviewNoUpgrade` feature set on your cluster cannot be undone and prevents minor version updates. This feature set allows you to enable these Technology Preview features on test clusters, where you can fully test them. Do not enable this feature set on production clusters.
+====
+
+* If you are configuring the `additionalImageStores` or `additionalLayerStores` field, the target storage paths must exist and be accessible on the nodes and the container image or layers must be present in the directory. For network storage, ensure the paths are mounted before applying the configuration.
+
+* If you are configuring the `additionalLayerStores` field, you must meet the following additional prerequisites:  
+
+** A supported storage plugin binary must be installed on each node, such as Stargz Store or Nydus Storage Plugin. See "Stargz Store plugin" or "Nydus Storage Plugin" for more information. You must have installed the plugin by using one of the following methods:
+*** Use a daemon set to run the plugin as a privileged container.
+*** Use a machine config to install the binary and configure it as a systemd service.
+*** Use Image mode for OpenShift to install the plugin in a custom {op-system} image.
+
+** You converted the container images to a lazy-pull-compatible format, such as eStargz or Nydus. See "eStargz format" or "Nydus format" for more information.
+** Your container registry must support HTTP range requests.
+
+.Procedure
+
+. Create a YAML file for the `ContainerRuntimeConfig` CR similar to the following example:
++
+[source,yaml]
+----
+apiVersion: machineconfiguration.openshift.io/v1
+kind: ContainerRuntimeConfig
+metadata:
+  name: crio-additional-stores
+spec:
+  machineConfigPoolSelector:
+    matchLabels:
+      pools.operator.machineconfiguration.openshift.io/worker: ""
+  containerRuntimeConfig:
+    additionalArtifactStores:
+      - path: /mnt/ssd-artifacts
+      - path: /mnt/nfs-shared-artifacts
+    additionalImageStores:
+      - path: /mnt/nfs-image-cache
+      - path: /mnt/ssd-images
+    additionalLayerStores:
+      - path: /var/lib/stargz-store
+----
+where:
++
+--
+`spec.machineConfigPoolSelector.matchLabels`:: Specifies a label associated with the nodes that you want to update.
+`spec.containerRuntimeConfig.additionalArtifactStores.path`:: Optional: Specifies the path to the directory that contains OCI artifacts. CRI-O searches for content in an `artifacts/` subdirectory within this path. You can specify up to 10 directories.
+`spec.containerRuntimeConfig.additionalImageStores.path`:: Optional: Specifies the path to an NFS share or other location that contains pre-populated container images. You can specify up to 10 directories.
+`spec.containerRuntimeConfig.additionalLayerStores.path`:: Optional: Specifies the path to the directory that contains lazy-pull-compatible-formatted container image layers. You can specify up to 5 directories.
+--
++
+The specified path must meet the following criteria:
++
+--
+* Contains between 1 and 256 characters
+* Is an absolute path, starting with the `/` character
+* Contains only alphanumeric characters: `a-z`, `A-Z`, `0-9`, `/`, `.`, `_`, and `-`
+* Cannot contain consecutive forward slashes
+--
++
+You can configure any combination of these three additional CRI-O storage locations. 
++
+For a layer store, the MCO automatically appends the `:ref` suffix to the path when writing to the `storage.conf` file. This suffix switches the container storage library from storing actual image layers (blobs) to storing references (pointers) to where those layers can be found, which is required for the lazy-pulling plugins. You do not need to include the suffix in the `ContainerRuntimeConfig` path.
++
+[NOTE]
+====
+If a path does not exist or is inaccessible at runtime, CRI-O generates a warning and continues with the remaining stores. The default storage location is always used as a fallback.
+====
+
+. Create the `ContainerRuntimeConfig` CR by running the following command:
++
+[source,terminal]
+----
+$ oc create -f <container_runtime_config>.yaml
+----
++
+Replace `<container_runtime_config>` with the name of the YAML file.
++
+After you configure any of these new storage locations, the Machine Config Operator (MCO) reboots the affected nodes with the new configuration. 
+
+.Verification
+
+. After the nodes have returned to the `Ready` status, check that the new stores have been added to the node configuration:
+
+.. Start a debug pod by running the following command:
++
+[source,terminal]
+----
+$ oc debug node/<node_name>
+----
++
+where `<node_name>` specifies the name of one of the nodes in the affected machine config pool.
+
+.. Set `/host` as the root directory within the debug shell by running the following command:
++
+[source,terminal]
+----
+sh-5.1# chroot /host
+----
+
+** For an artifact store, review the contents of the `/etc/crio/crio.conf.d/01-ctrcfg-additionalArtifactStores` file by running the following command:
++
+[source,terminal]
+----
+sh-5.1# cat /etc/crio/crio.conf.d/01-ctrcfg-additionalArtifactStores
+----
++
+.Example output
+[source,terminal]
+----
+[crio]
+  [crio.runtime]
+    additional_artifact_stores = ["/mnt/ssd-artifacts", "/mnt/nfs-shared-artifacts"]
+----
+
+** For an image store, review the contents of the `/etc/containers/storage.conf` file by running the following command:
++
+[source,terminal]
+----
+sh-5.1# cat /etc/containers/storage.conf
+----
++
+.Example output
+[source,terminal]
+----
+[storage]
+  [storage.options]
+   additionalimagestores = ["/mnt/nfs-image-cache", "/mnt/ssd-images"]
+----
+
+** For a layer store, review the contents of the `/etc/containers/storage.conf` file by running the following command:
++
+[source,terminal]
+----
+sh-5.1# cat /etc/containers/storage.conf
+----
++
+.Example output
+[source,terminal]
+----
+[storage]
+  [storage.options]
+   additionallayerstores = ["/var/lib/stargz-store:ref"]
+----	
