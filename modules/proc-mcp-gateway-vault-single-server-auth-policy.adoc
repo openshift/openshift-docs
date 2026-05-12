@@ -1,0 +1,124 @@
+// Module included in the following assemblies:
+//
+// *mcp_gateway_config/mcp-gateway-vault.adoc
+
+:_mod-docs-content-type: PROCEDURE
+[id="proc-mcp-gateway-vault-single-server-auth-policy_{context}"]
+= Creating a single-server-scoped AuthPolicy CR for Vault
+
+[role="_abstract"]
+Create an `AuthPolicy` custom resource (CR) to connect an external OIDC Identity Provider (IdP) with HashiCorp Vault (Vault). The `AuthPolicy` CR enables getting a Vault token on behalf of the user or service that needs access to the MCP server data.
+
+The following example `AuthPolicy` CR is scoped to a single MCP server. Single-server scoping creates granular security. For example, you can configure the Authorino service to examine individual secret-containing paths for each MCP server in your backend. You can also specify customized role-based logic for each MCP server.
+
+.Prerequisites
+
+* You installed the {oc-first}.
+* You are logged into an {ocp} cluster as an administrator.
+* You have a central authorization tool that uses standard protocols such as OpenID Connect or OAuth 2.0.
+* You have an MCP server ready to connect.
+* You set up a trust relationship between Authorino and HashiCorp Vault.
+
+.Procedure
+
+. Create an `AuthPolicy` CR targeting a single MCP server by using the following example:
++
+.Example single MCP server `AuthPolicy` CR
+[source,yaml,subs="+quotes"]
+----
+apiVersion: kuadrant.io/v1
+kind: AuthPolicy
+metadata:
+  name: _<vault_policy_mcpserver1>_
+  namespace: _<mcpserver1>_
+spec:
+  targetRef:
+    group: gateway.networking.k8s.io
+    kind: HTTPRoute
+    name: _<mcp_server_route>_
+  rules:
+    authentication:
+      "mcp-clients":
+        jwt:
+          issuerUrl: _<issuer_URL>_
+    metadata:
+      "oauth-token":
+        priority: 0
+        http:
+          url: _<oauth_token_issuer_endpoint>_
+          method: POST
+          credentials:
+            authorizationHeader:
+              prefix: Basic
+          sharedSecretRef:
+            name: authorino-oauth-client
+            key: client_secret
+          bodyParameters:
+            grant_type:
+              value: client_credentials
+            scope:
+              value: openid
+        cache:
+          key:
+            value: 'singleton'
+          ttl: 1800
+      "vault-login":
+        priority: 1
+        when:
+        - predicate: auth.metadata.exists(p, p == "oauth-token") && has(auth.metadata["oauth-token"].access_token)
+        http:
+          url: https://vault.vault.svc.cluster.local:8200/v1/auth/jwt/login
+          method: POST
+          body:
+            expression: |
+              "{\"role\": \"authorino\", \"jwt\": \"" + auth.metadata["oauth-token"].access_token + "\"}"
+        cache:
+          key:
+            value: 'singleton'
+          ttl: 3600
+      "vault":
+        priority: 2
+        when:
+        - predicate: auth.metadata.exists(p, p == "vault-login") && has(auth.metadata["vault-login"].auth ) && has(auth.metadata["vault-login"].auth.client_token)
+        http:
+          urlExpression: |
+            "https://vault.vault.svc.cluster.local:8200/v1/secret/data/mcp-gateway/" + auth.identity.sub
+          method: GET
+          headers:
+            "X-Vault-Token":
+              expression: auth.metadata["vault-login"].auth.client_token
+    authorization:
+      "found-vault-secret":
+        patternMatching:
+          patterns:
+          - predicate: |
+              has(auth.metadata.vault.data) && has(auth.metadata.vault.data.data) && has(auth.metadata.vault.data.data.test_server2_pat) && type(auth.metadata.vault.data.data.test_server2_pat) == string
+    response:
+      success:
+        headers:
+          "Authorization":
+            plain:
+              expression: |
+                "Bearer " + auth.metadata.vault.data.data.test_server2_pat
+      ---
+apiVersion: v1
+kind: Secret
+metadata:
+  name: authorino-oauth-client
+  namespace: kuadrant-system
+stringData:
+  client_secret: _<secret_value>_
+type: Opaque
+----
++
+* See the "Parameter values for a single-server-scoped `AuthPolicy` CR" reference for information about user-replaceable values.
+* The `authorino-oauth-client` `Secret` must be applied in the `kuadrant-system` namespace for the AuthPolicy CR to work.
+
+. Apply the `AuthPolicy` CR by running the following command:
++
+[source,terminal,subs="+quotes"]
+----
+$ oc apply -f _<auth_policy_vault.yaml>_
+----
++
+Replace `_<auth_policy_vault.yaml>_` with the name of your `AuthPolicy` YAML.
