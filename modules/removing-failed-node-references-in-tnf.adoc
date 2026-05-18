@@ -1,0 +1,299 @@
+// Module included in the following assemblies:
+//
+// * installing/installing_two_node_cluster/installing_tnf/replacing-a-failed-control-plane-node-in-tnf.adoc
+
+:_mod-docs-content-type: PROCEDURE
+[id="removing-failed-node-references-in-tnf_{context}"]
+= Removing failed node references in TNF
+
+[role="_abstract"]
+When you are done with replacing a failed node in a cluster, you can delete node references. 
+
+.procedure
+
+. Delete the Kubernetes node object:
++
+[source,terminal]
+----
+$ oc delete node <failed-node-name>
+----
+
+. Delete the `BareMetalHost` resource and wait for deletion to complete. Ironic deprovisions the host during this step:
++
+[source,terminal]
+----
+$ oc delete bmh -n openshift-machine-api <bmh-name>
+----
+
+. Delete the `Machine` resource:
++
+[source,terminal]
+----
+$ oc delete machine -n openshift-machine-api <machine-name>
+----
+
+. Delete stale installer pods in the static-pod operator namespaces. This step is critical when replacing a node with the same name, because existing completed installer pods block new pod installations:
++
+[source,terminal]
+----
+$ oc delete pod -n openshift-etcd -l app=installer \
+  --field-selector spec.nodeName=<failed-node-name>
+$ oc delete pod -n openshift-kube-apiserver -l app=installer \
+  --field-selector spec.nodeName=<failed-node-name>
+$ oc delete pod -n openshift-kube-controller-manager -l app=installer \
+  --field-selector spec.nodeName=<failed-node-name>
+$ oc delete pod -n openshift-kube-scheduler -l app=installer \
+  --field-selector spec.nodeName=<failed-node-name>
+----
++
+The operators schedule fresh installer pods when the replacement node becomes `Ready`.
+
+[id="tnf-phase4-provision-replacement_{context}"]
+== Phase 4: Provision the replacement node
+
+. Provision the replacement node hardware:
++
+--
+* For VM-based deployments: Restore the VM from backup or provision a fresh one using `virsh define`. Ensure the MAC address matches the original.
+* For physical hardware: Prepare hardware matching the original specifications.
+--
+
+. Ensure the MAC address matches the original node. This is required for `BareMetalHost` binding.
+
+. Power on the node.
+
+. Create a new `BareMetalHost` resource without the detached annotation. Replace all placeholder values before applying:
++
+[source,yaml]
+----
+apiVersion: metal3.io/v1alpha1
+kind: BareMetalHost
+metadata:
+  name: <bmh-name>                    # <1>
+  namespace: openshift-machine-api
+  labels:
+    installer.openshift.io/role: control-plane
+  finalizers:
+  - baremetalhost.metal3.io
+spec:
+  online: true
+  bootMACAddress: <mac-address>       # <2>
+  bmc:
+    address: redfish+https://<bmc-ip>:<port>/redfish/v1/Systems/<uuid>
+    credentialsName: <bmc-secret-name>
+    disableCertificateVerification: true
+  bootMode: UEFI
+  automatedCleaningMode: metadata
+  customDeploy:
+    method: install_coreos
+  userData:
+    name: master-user-data-managed
+    namespace: openshift-machine-api
+  rootDeviceHints:
+    deviceName: /dev/sda              # <3>
+----
+<1> Use the original BMH name to reuse the same node identity.
+<2> Must match the hardware MAC address exactly.
+<3> Adjust the device path to match your hardware configuration.
++
+Apply the resource and wait for provisioning to complete:
++
+[source,terminal]
+----
+$ oc create -f bmh.yaml
+$ oc get bmh -n openshift-machine-api <bmh-name> -w
+----
++
+Wait until `status.provisioning.state` shows `provisioned`.
+
+. After provisioning is complete, apply the detached annotation to prevent cluster-api from managing the `BareMetalHost` during replacement:
++
+[source,terminal]
+----
+$ oc annotate bmh -n openshift-machine-api <bmh-name> \
+  baremetalhost.metal3.io/detached=
+----
+
+. Create a new `Machine` resource. Replace all placeholder values before applying:
++
+[source,yaml]
+----
+apiVersion: machine.openshift.io/v1beta1
+kind: Machine
+metadata:
+  name: <machine-name>                # <1>
+  namespace: openshift-machine-api
+  labels:
+    machine.openshift.io/cluster-api-cluster: ostest-<cluster-hash>
+    machine.openshift.io/cluster-api-machine-role: master
+    machine.openshift.io/cluster-api-machine-type: master
+  annotations:
+    metal3.io/BareMetalHost: openshift-machine-api/<bmh-name>
+  finalizers:
+  - machine.machine.openshift.io
+spec:
+  authoritativeAPI: MachineAPI
+  providerSpec:
+    value:
+      apiVersion: baremetal.cluster.k8s.io/v1alpha1
+      kind: BareMetalMachineProviderSpec
+      customDeploy:
+        method: install_coreos
+      userData:
+        name: master-user-data-managed
+----
+<1> Use the original Machine name.
++
+To find the cluster hash, run the following command against the surviving node's Machine resource:
++
+[source,terminal]
+----
+$ oc get machine -n openshift-machine-api <survivor-machine-name> \
+  -o jsonpath='{.metadata.labels.machine\.openshift\.io/cluster-api-cluster}'
+----
++
+Apply the resource:
++
+[source,terminal]
+----
+$ oc create -f machine.yaml
+----
+
+[id="tnf-phase5-node-registration_{context}"]
+== Phase 5: Wait for node registration and recovery
+
+. Monitor the node until it becomes `Ready`:
++
+[source,terminal]
+----
+$ oc get node <node-name> -w
+----
+
+. Verify that node certificates are approved. The `cluster-machine-approver` should approve CSRs automatically:
++
+[source,terminal]
+----
+$ oc get csr | grep <node-name>
+----
++
+[NOTE]
+====
+Manual CSR approval is only needed if the node registered from a backup image before Ironic reprovisioned it. See xref:tnf-special-recovery-node-registers-from-backup_{context}[Node registers from backup before reprovisioning] for details.
+====
+
+. Monitor cluster operator status. Deleting the stale installer pods in Phase 3 should trigger new installer pod scheduling automatically:
++
+[source,terminal]
+----
+$ oc get co kube-apiserver kube-controller-manager kube-scheduler etcd
+----
+
+. If installer pods do not trigger automatically, force a static pod revision bump as a fallback:
++
+[source,terminal]
+----
+$ oc patch kubeapiserver cluster --type=merge -p '{"spec":{"logLevel":"Trace"}}'
+----
++
+Wait for the rollout, then revert:
++
+[source,terminal]
+----
+$ oc patch kubeapiserver cluster --type=merge -p '{"spec":{"logLevel":"Normal"}}'
+----
++
+Repeat this process for `kube-controller-manager` and `kube-scheduler` if required.
+
+. Check east-west connectivity by verifying `PodNetworkConnectivityCheck` success for survivor-to-replacement paths:
++
+[source,terminal]
+----
+$ oc get podnetworkconnectivitycheck
+----
+
+[id="tnf-phase6-restore-pacemaker_{context}"]
+== Phase 6: Restore pacemaker cluster
+
+. Monitor the CEO-managed jobs that configure the replacement node:
++
+[source,terminal]
+----
+$ oc get jobs -n openshift-etcd
+----
++
+The following jobs run automatically after the node becomes `Ready`:
++
+--
+* `tnf-auth-<nodename>`: Configures authentication for the replacement node.
+* `tnf-update-setup-<survivor-name>`: Updates pacemaker on the surviving node for the new peer.
+* `tnf-update-setup-<nodename>`: Configures pacemaker on the replacement node.
+--
+
+. Verify that the pacemaker cluster is online. SSH to the replacement node and check status:
++
+[source,terminal]
+----
+$ sudo pcs status
+----
++
+Both nodes must show as online, with etcd and kubelet resources started.
+
+. If needed, clean the pacemaker fencing state:
++
+[source,terminal]
+----
+$ sudo pcs resource cleanup
+$ sudo pcs stonith cleanup
+----
+
+[id="tnf-phase7-verification_{context}"]
+== Phase 7: Verify the replacement
+
+. Verify all cluster operators are available:
++
+[source,terminal]
+----
+$ oc get co
+----
++
+All operators must show `Available=True`, `Degraded=False`, and `Progressing=False`.
+
+. Check the etcd operator and `PacemakerCluster` status:
++
+[source,terminal]
+----
+$ oc get co etcd -o yaml
+$ oc get pacemakercluster cluster -o yaml
+----
++
+Verify the following in the `PacemakerCluster` resource:
++
+--
+* `status.conditions` shows `Healthy`, `InService`, and `NodeCountAsExpected`.
+* `status.nodes[].conditions` shows per-node conditions such as `Online` and `FencingAvailable`.
+--
++
+The etcd operator condition `PacemakerHealthCheckDegraded` reflects the overall `PacemakerCluster` status.
+
+. Verify the etcd member list. Because etcd runs as a podman container in a TNF cluster, you must SSH to the surviving node to run this check:
++
+[source,terminal]
+----
+$ ssh core@<survivor-ip>
+$ sudo podman exec etcd etcdctl member list -w table
+----
++
+Both members must show as `started`.
+
+. SSH to both nodes and verify pacemaker resource status:
++
+[source,terminal]
+----
+$ sudo pcs status
+----
++
+--
+* Both nodes must show as online.
+* etcd and kubelet resources must show as `Started` on both nodes.
+* Fencing devices must be configured and operational.
+--
