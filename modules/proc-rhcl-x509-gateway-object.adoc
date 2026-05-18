@@ -1,0 +1,150 @@
+// Module included in the following assemblies:
+//
+// *deployment/rhcl-using-x509-crypt-id-verify.adoc
+
+:_mod-docs-content-type: PROCEDURE
+[id="proc-rhcl-x509-gateway-object_{context}"]
+= Creating a Gateway object for use with the X.509 format
+
+[role="_abstract"]
+To use the X.509 format for certificates, after you have your certificate authorities (CAs) and client certificates set up, you must create a `Gateway` object without front-end TLS validation and associated required resources. Not configuring front-end TLS in your Gateway passes authentication to your two-step X.509-based validation.
+
+You create the following custom resources by using the following procedure:
+
+* A Gateway object configured for use with the X.509 certificate format.
+* A `cert-manager` Issuer: Self-signed certificate issuer for the `Gateway` object's server certificate.
+* A `TLSPolicy` CR: Kuadrant policy to manage the `Gateway` object's server TLS certificate.
+
+.Prerequisites
+
+* You are logged into {ocp} as a cluster administrator.
+* You installed {prodname} using Istio as your `Gateway` object controller.
+* You created your CAs and X.509-formatted certificates.
+
+.Procedure
+
+. Create the mTLS `Gateway` object by using the following example:
++
+[source,yaml]
+----
+apiVersion: gateway.networking.k8s.io/v1
+kind: Gateway
+metadata:
+  name: mtls-gateway
+  namespace: gateway-system
+spec:
+  gatewayClassName: istio
+  listeners:
+  - name: https
+    protocol: HTTPS
+    port: 443
+    hostname: "*.nip.io"
+    allowedRoutes:
+      namespaces:
+        from: All
+    tls:
+      mode: Terminate
+      certificateRefs:
+      - name: gateway-tls-cert
+        kind: Secret
+----
+
+//The only other Gateway example we have in the current doc is the main one: https://docs.redhat.com/en/documentation/red_hat_connectivity_link/1.3/html/deploying_red_hat_connectivity_link/rhcl-config-deploy-gateway-policies#rhcl-create-gateway-object_rhcl-config-deploy-gateway-policies. Looks quite different.
+
+. Apply the mTLS Gateway CR by running the following command:
++
+[source,terminal]
+----
+$ oc apply -f mtls-gateway.yaml
+----
+
+. Create the cert-manager `Issuer` by using the following example:
++
+[source,yaml]
+----
+apiVersion: cert-manager.io/v1
+kind: Issuer
+metadata:
+  name: gateway-cert-issuer
+  namespace: gateway-system
+spec:
+  selfSigned: {}
+----
+
+. Apply the cert-manager `Issuer` object by running the following command:
++
+[source,terminal]
+----
+$ oc apply - f gateway-cert-issuer.yaml
+----
+
+. Create the `TLSPolicy` object by using the following example:
++
+[source,yaml]
+----
+apiVersion: kuadrant.io/v1
+kind: TLSPolicy
+metadata:
+  name: mtls-gateway-tls
+  namespace: gateway-system
+spec:
+  targetRef:
+    group: gateway.networking.k8s.io
+    kind: Gateway
+    name: mtls-gateway
+    sectionName: https
+  issuerRef:
+    group: cert-manager.io
+    kind: Issuer
+    name: gateway-cert-issuer
+----
+
+. Apply the `TLSPolicy` object by running the following command:
++
+[source,terminal]
+----
+$ oc apply -f mtls-gateway-tls.yaml
+----
+
+//Q: would we create this filter manually on OpenShift, or just use the Gateway or AuthPolicy? (no, openshift with ossm would call it in the gateway object; openshift with standard ingress might use a passthrough route)
+
+. Create an EnvoyFilter to configure Envoy's DownstreamTlsContext for client certificate validation:
++
+[source,yaml]
+----
+apiVersion: networking.istio.io/v1alpha3
+kind: EnvoyFilter
+metadata:
+  name: mtls-validation
+  namespace: gateway-system
+spec:
+  targetRefs:
+  - group: gateway.networking.k8s.io
+    kind: Gateway
+    name: mtls-gateway
+  configPatches:
+  - applyTo: FILTER_CHAIN
+    match:
+      context: GATEWAY
+      listener:
+        portNumber: 443
+    patch:
+      operation: MERGE
+      value:
+        transport_socket:
+          name: envoy.transport_sockets.tls
+          typed_config:
+            "@type": type.googleapis.com/envoy.extensions.transport_sockets.tls.v3.DownstreamTlsContext
+            commonTlsContext:
+              validationContext:
+                trustedCa:
+                  filename: /etc/certs/ca.crt
+            requireClientCertificate: true
+----
+
+. Apply the filter by running the following command:
++
+[source,terminal]
+----
+$ oc apply -f mtls-validation.yaml
+----
