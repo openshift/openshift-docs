@@ -1,0 +1,389 @@
+:_mod-docs-content-type: PROCEDURE
+[id="core-cluster-upgrade-cgu-configuration_{context}"]
+= Configure ClusterGroupUpgrade custom resources
+
+[role="_abstract"]
+You can configure ClusterGroupUpgrade (CGU) custom resources to orchestrate cluster upgrades with {cgu-operator-full} ({cgu-operator}).
+A CGU defines which clusters to upgrade, which policies to apply, and how to manage batching and concurrency.
+
+.Prerequisites
+
+* {cgu-operator} is installed and configured on the {rh-rhacm} hub cluster.
+* Upgrade policies are defined and applied to {rh-rhacm}.
+* Target clusters are labeled and grouped according to your upgrade strategy.
+
+.Procedure
+
+. Create a basic ClusterGroupUpgrade CR for a z-stream upgrade:
++
+[source,yaml]
+----
+apiVersion: ran.openshift.io/v1alpha1
+kind: ClusterGroupUpgrade
+metadata:
+  name: core-zstream-upgrade-4.20.1
+  namespace: openshift-upgrade-policies
+spec:
+  clusters:
+  - spoke1
+  - spoke2
+  managedPolicies:
+  - core-upgrade-4.20.1-policy
+  enable: false
+  remediationStrategy:
+    maxConcurrency: 2
+    timeout: 3600
+----
++
+Replace the following values:
++
+--
+* `core-zstream-upgrade-4.20.1`: Name for your CGU
+* `spoke1`, `spoke2`: Names of your target clusters
+* `core-upgrade-4.20.1-policy`: Name of your upgrade policy
+* `maxConcurrency`: Number of clusters to upgrade simultaneously (use `1` for canary testing, `2-5` for production rollouts, or higher for large fleets with proven procedures)
+* `timeout`: Maximum time in seconds to wait for each cluster upgrade
+--
++
+Calculate appropriate timeout values based on your environment:
++
+--
+* Base timeout: 3600 seconds (60 minutes) for z-stream upgrades, 7200 seconds (120 minutes) for y-stream upgrades
+* Add 1800 seconds (30 minutes) for each additional worker node beyond 3
+* Add 3600 seconds (60 minutes) for disconnected environments
+* Add 1800 seconds (30 minutes) for clusters with large image registries
+--
++
+For example, for a y-stream upgrade in a disconnected environment with 5 worker nodes:
++
+[source,text]
+----
+timeout = 7200 (base) + ((5-3) * 1800) (extra workers) + 3600 (disconnected) = 14400 seconds (4 hours)
+----
+
+. Configure sequential batching for a canary upgrade:
++
+[source,yaml]
+----
+apiVersion: ran.openshift.io/v1alpha1
+kind: ClusterGroupUpgrade
+metadata:
+  name: core-canary-upgrade
+  namespace: openshift-upgrade-policies
+spec:
+  clusterSelector:
+  - upgrade-wave=1
+  managedPolicies:
+  - core-upgrade-4.20-policy
+  enable: false
+  remediationStrategy:
+    canaries:
+    - spoke-canary
+    maxConcurrency: 1
+    timeout: 7200
+----
++
+This configuration upgrades the canary cluster first, waits for success, and then proceeds with other clusters in wave 1.
+
+. Add blocking custom resources for pre-upgrade checks:
++
+[source,yaml]
+----
+apiVersion: ran.openshift.io/v1alpha1
+kind: ClusterGroupUpgrade
+metadata:
+  name: core-upgrade-with-checks
+  namespace: openshift-upgrade-policies
+spec:
+  clusters:
+  - spoke1
+  managedPolicies:
+  - core-upgrade-4.20-policy
+  enable: false
+  remediationStrategy:
+    maxConcurrency: 1
+    timeout: 7200
+  beforeEnable:
+    addClusterLabels:
+      pre-upgrade-check: pending
+  blockingCRs:
+  - name: etcd-backup
+    namespace: default
+    kind: ConfigMap
+    conditions:
+    - type: BackupComplete
+      status: "True"
+----
++
+The upgrade waits until the `etcd-backup` ConfigMap has the `BackupComplete` condition set to `True`.
+
+. Configure post-upgrade actions:
++
+[source,yaml]
+----
+apiVersion: ran.openshift.io/v1alpha1
+kind: ClusterGroupUpgrade
+metadata:
+  name: core-upgrade-with-actions
+  namespace: openshift-upgrade-policies
+spec:
+  clusters:
+  - spoke1
+  managedPolicies:
+  - core-upgrade-4.20-policy
+  enable: false
+  remediationStrategy:
+    maxConcurrency: 1
+    timeout: 7200
+  afterCompletion:
+    addClusterLabels:
+      upgraded-to: "4.20"
+      upgrade-status: complete
+    removeClusterLabels:
+    - pre-upgrade-check
+----
+
+. For EUS-to-EUS upgrades, create chained CGUs that use `blockingCRs` and `actions` to orchestrate a multi-step upgrade:
++
+[source,yaml]
+----
+---
+apiVersion: ran.openshift.io/v1alpha1
+kind: ClusterGroupUpgrade
+metadata:
+  name: upgrade-20to21
+  namespace: upgrade
+spec:
+  actions:
+    afterCompletion:
+      deleteClusterLabels:
+        upgrade-version-to-4-21: ""
+      deleteObjects: true
+      addClusterLabels:
+        unpause-workers-4-22: ""
+  backup: false
+  clusters:
+  - my-cluster
+  enable: true
+  managedPolicies:
+    - prep-20to22
+    - upgrade-ocp-20to21
+    - upgrade-olm-20to21
+    - upgrade-validate-21
+  preCaching: false
+  preCachingConfigRef: {}
+  remediationStrategy:
+    maxConcurrency: 1
+    timeout: 480
+---
+apiVersion: ran.openshift.io/v1alpha1
+kind: ClusterGroupUpgrade
+metadata:
+  name: upgrade-21to22
+  namespace: upgrade
+spec:
+  actions:
+    afterCompletion:
+      deleteClusterLabels:
+        upgrade-version-4-22: ""
+        unpause-workers-4-22: ""
+      deleteObjects: true
+  backup: false
+  clusters:
+  - my-cluster
+  enable: true
+  managedPolicies:
+    - upgrade-ocp-21to22
+    - upgrade-olm-21to22
+    - upgrade-validate-22
+    - upgrade-worker-1
+    - upgrade-worker-2
+  preCaching: false
+  preCachingConfigRef: {}
+  remediationStrategy:
+    maxConcurrency: 1
+    timeout: 480
+  blockingCRs:
+  - name: upgrade-20to21
+    namespace: upgrade
+----
++
+The chained CGU configuration uses:
++
+--
+* The `actions` section to change cluster labels as each step completes. This removes temporary upgrade labels and unbinds completed upgrade policies from the cluster.
+* The `blockingCRs` section to require the first CGU to complete before the second CGU begins enforcing its policies.
+* Separate unpause policies (`upgrade-worker-1`, `upgrade-worker-2`) for each MCP. Your cluster might have more MCPs, requiring additional policies.
+--
+
+. Apply the ClusterGroupUpgrade CR:
++
+[source,terminal]
+----
+$ oc apply -f CGU-EUS-upgrade.yaml
+----
++
+.Example output
+[source,terminal]
+----
+clustergroupupgrade.ran.openshift.io/upgrade-20to21 created
+clustergroupupgrade.ran.openshift.io/upgrade-21to22 created
+----
++
+NOTE: The output varies depending on the names of your CGUs.
+
+. Enable the CGU to start the upgrade:
++
+[source,terminal]
+----
+$ oc patch cgu core-zstream-upgrade-4.20.1 \
+  -n openshift-upgrade-policies \
+  --type merge \
+  -p '{"spec":{"enable":true}}'
+----
+
+. Monitor the CGU status:
++
+[source,terminal]
+----
+$ oc get cgu core-zstream-upgrade-4.20.1 -n openshift-upgrade-policies -o yaml
+----
++
+Check the `status` section for upgrade progress:
++
+[source,yaml]
+----
+status:
+  conditions:
+  - message: Upgrade is progressing
+    reason: InProgress
+    status: "True"
+    type: Progressing
+  managedPoliciesForUpgrade:
+  - name: core-upgrade-4.20.1-policy
+    namespace: openshift-upgrade-policies
+  remediationPlan:
+  - - spoke1
+    - spoke2
+  status:
+    spoke1: complete
+    spoke2: inprogress
+----
+
+. Watch the CGU progress in real time:
++
+[source,terminal]
+----
+$ oc get cgu core-zstream-upgrade-4.20.1 -n openshift-upgrade-policies -w
+----
+
+.Verification
+
+. Verify the CGU entered the expected state:
++
+[source,terminal]
+----
+$ oc get cgu -n openshift-upgrade-policies
+----
++
+.Example output
+[source,terminal]
+----
+NAME                             AGE   STATE        DETAILS
+core-zstream-upgrade-4.20.1     5m    InProgress   Remediating non-compliant policies
+----
+
+. Check detailed status for each cluster:
++
+[source,terminal]
+----
+$ oc get cgu core-zstream-upgrade-4.20.1 -n openshift-upgrade-policies -o jsonpath='{.status.clusters}' | jq
+----
+
+. Monitor the progress of the CGUs through the CLI:
++
+[source,terminal]
+----
+$ oc get cgu -n upgrade
+----
++
+.Example output
+[source,terminal]
+----
+NAME              AGE    STATE                  DETAILS
+unpause-workers   4s     IncompleteBlockingCR   Blocking CRs that are not completed: [upgrade-21to22]
+upgrade-20to21    138m   Completed              All clusters are compliant with all the managed policies
+upgrade-21to22    138m   InProgress             Remediating non-compliant policies
+----
+
+. Monitor the cluster upgrade in detail:
++
+[source,terminal]
+----
+$ watch "oc get clusterversion; echo; oc get co | head -1; oc get co | grep 4.22; oc get co | grep 4.21; oc get co | grep 4.20; echo; oc get no; echo; oc get po -A | grep -E -iv 'running|complete'; echo; oc get mcp -o custom-columns=NAME:.metadata.name,PAUSE:.spec.paused"
+----
+
+. When the cluster is fully upgraded and the state of all CGUs shows `Completed`, verify that all CGUs are complete:
++
+[source,terminal]
+----
+$ oc get cgu -n upgrade
+----
++
+.Example output
+[source,terminal]
+----
+NAME             AGE    STATE       DETAILS
+upgrade-20to21   5d2h   Completed   All clusters are compliant with all the managed policies
+upgrade-21to22   5d     Completed   All clusters are compliant with all the managed policies
+----
+
+. Verify that all policies show `Compliant`:
++
+[source,terminal]
+----
+$ oc get policies -n <cluster-name>
+----
++
+.Example output
+[source,terminal]
+----
+NAME                        REMEDIATION ACTION   COMPLIANCE STATE   AGE
+upgrade.upgrade-ocp-21to22  inform               Compliant          1h
+upgrade.upgrade-olm-21to22  inform               Compliant          10m
+----
+
+. Delete the completed CGUs from the upgrade namespace:
++
+[source,terminal]
+----
+$ oc delete cgu -n upgrade upgrade-20to21
+----
++
+.Example output
+[source,terminal]
+----
+clustergroupupgrade.ran.openshift.io "upgrade-20to21" deleted
+----
++
+[source,terminal]
+----
+$ oc delete cgu -n upgrade upgrade-21to22
+----
++
+.Example output
+[source,terminal]
+----
+clustergroupupgrade.ran.openshift.io "upgrade-21to22" deleted
+----
+
+.Troubleshooting
+
+* If the CGU is stuck in `Preparing` state, verify that all managed policies exist and are bound to target clusters.
+* If the CGU fails with a timeout error, increase the `timeout` value in the `remediationStrategy` section.
+
+.Additional resources
+
+// xref moved to assembly per vale rules
+// * xref:../../../edge_computing/cnf-talm-for-cluster-upgrades.adoc#cnf-topology-aware-lifecycle-manager-about-cgu-crs_cnf-topology-aware-lifecycle-manager[About the ClusterGroupUpgrade CR]
+* link:https://github.com/openshift-kni/cluster-group-upgrades-operator/tree/main/examples[ClusterGroupUpgrade examples on GitHub]

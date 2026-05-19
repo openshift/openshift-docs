@@ -1,0 +1,336 @@
+:_mod-docs-content-type: PROCEDURE
+[id="core-cluster-upgrade-worker-node-management_{context}"]
+= Manage worker nodes during bare metal Core cluster upgrades
+
+[role="_abstract"]
+You can pause worker nodes before upgrading the control plane to enable control-plane-only upgrades.
+After the control plane upgrade completes, you can unpause worker nodes to apply the upgrade to compute resources during a separate maintenance window.
+
+Pausing worker nodes prevents the MachineConfigPool from updating worker nodes while the control plane upgrades, minimizing workload disruption.
+
+.Prerequisites
+
+* Understanding of MachineConfigPool (MCP) concepts.
+* Access to clusters with cluster-admin privileges.
+* {cgu-operator} installed for policy-based pause operations (optional).
+
+.Procedure
+
+. *To pause worker nodes by using {cgu-operator}*, create a {rh-rhacm} policy for each `MachineConfigPool` (MCP) that needs to be paused during the upgrade:
++
+[source,yaml]
+----
+apiVersion: policy.open-cluster-management.io/v1
+kind: Policy
+metadata:
+  name: pause-mcp-1
+  namespace: upgrade
+spec:
+  disabled: false
+  policy-templates:
+    - objectDefinition:
+        apiVersion: policy.open-cluster-management.io/v1
+        evaluationInterval:
+          compliant: never
+        kind: ConfigurationPolicy
+        metadata:
+          name: pause-mcp-1
+        spec:
+          object-templates:
+            - complianceType: musthave
+              objectDefinition:
+                apiVersion: machineconfiguration.openshift.io/v1
+                kind: MachineConfigPool
+                metadata:
+                  name: mcp-1
+                spec:
+                  paused: true
+          remediationAction: inform
+          severity: low
+  remediationAction: inform
+----
++
+Replace the following values:
++
+--
+* `kind`: Set to `MachineConfigPool`.
+* `name: mcp-1`: Specify the machine config pool name, for example `mcp-1`.
+* `paused: true`: Set the `paused` field to `true`.
+* `remediationAction: inform`: Set to `inform` so that {cgu-operator} controls when the policy is applied through a `ClusterGroupUpgrade` CR.
+--
++
+IMPORTANT: Create a separate policy for each MCP that you need to pause during the cluster upgrade. If the MCP is not paused, any machine configuration change triggers a node reboot. Pausing the MCP allows all configuration changes to be applied in a single reboot when the MCP is unpaused.
+
+. Apply the policy to {rh-rhacm}:
++
+[source,terminal]
+----
+$ oc apply -f pause-mcp-1-policy.yaml
+----
+
+. Include the pause policy in your ClusterGroupUpgrade CR before the upgrade policy:
++
+[source,yaml]
+----
+apiVersion: ran.openshift.io/v1alpha1
+kind: ClusterGroupUpgrade
+metadata:
+  name: core-ystream-upgrade-4.20
+  namespace: default
+spec:
+  clusters:
+  - spoke1
+  managedPolicies:
+  - core-pause-worker-nodes
+  - core-upgrade-4.20-policy
+  enable: false
+  remediationStrategy:
+    maxConcurrency: 1
+    timeout: 7200
+----
++
+{cgu-operator} applies the pause policy before applying the upgrade policy, ensuring workers remain paused during the control plane upgrade.
+
+. *To pause worker nodes manually*, patch the worker MachineConfigPool directly on the target cluster:
++
+[source,terminal]
+----
+$ oc patch mcp worker --type merge -p '{"spec":{"paused":true}}'
+----
+
+. Verify the worker MachineConfigPool is paused:
++
+[source,terminal]
+----
+$ oc get mcp worker -o jsonpath='{.spec.paused}'
+----
++
+.Example output
+[source,terminal]
+----
+true
+----
+
+. Monitor the paused worker status during the control plane upgrade:
++
+[source,terminal]
+----
+$ oc get mcp worker
+----
++
+.Example output
+[source,terminal]
+----
+NAME     CONFIG                                             UPDATED   UPDATING   DEGRADED   MACHINECOUNT   READYMACHINECOUNT   UPDATEDMACHINECOUNT   DEGRADEDMACHINECOUNT   AGE
+worker   rendered-worker-abc123                             True      False      False      3              3                   3                     0                      30d
+----
++
+The worker MCP should show `paused=true` and workers should remain at the previous version.
+
+. Verify that workloads continue running on worker nodes during the control plane upgrade:
++
+[source,terminal]
+----
+$ oc get pods -A -o wide | grep worker
+----
+
+. After the control plane upgrade completes and you are ready to upgrade worker nodes, create an unpause policy for each MCP:
++
+[source,yaml]
+----
+apiVersion: policy.open-cluster-management.io/v1
+kind: Policy
+metadata:
+  name: unpause-mcp-1
+  namespace: upgrade
+spec:
+  disabled: false
+  policy-templates:
+    - objectDefinition:
+        apiVersion: policy.open-cluster-management.io/v1
+        evaluationInterval:
+          compliant: never
+        kind: ConfigurationPolicy
+        metadata:
+          name: unpause-mcp-1
+        spec:
+          object-templates:
+            - complianceType: musthave
+              objectDefinition:
+                apiVersion: machineconfiguration.openshift.io/v1
+                kind: MachineConfigPool
+                metadata:
+                  name: mcp-1
+                spec:
+                  paused: false
+          remediationAction: inform
+          severity: low
+  remediationAction: inform
+----
++
+The unpause policies for each MCP (`upgrade-worker-1`, `upgrade-worker-2`, and so on) are included as managed policies in the final `ClusterGroupUpgrade` CR. When {cgu-operator} enforces these policies, the MCPs unpause and all accumulated configuration changes are applied in a single reboot per node.
+
+. Apply the unpause policy using a ClusterGroupUpgrade CR:
++
+[source,yaml]
+----
+apiVersion: ran.openshift.io/v1alpha1
+kind: ClusterGroupUpgrade
+metadata:
+  name: core-unpause-workers-4.20
+  namespace: default
+spec:
+  clusters:
+  - spoke1
+  managedPolicies:
+  - core-unpause-worker-nodes
+  enable: false
+  remediationStrategy:
+    maxConcurrency: 1
+----
+
+. Apply the unpause CGU:
++
+[source,terminal]
+----
+$ oc apply -f core-unpause-workers-cgu.yaml
+----
+
+. Enable the CGU to unpause workers:
++
+[source,terminal]
+----
+$ oc patch cgu core-unpause-workers-4.20 \
+  -n default \
+  --type merge \
+  -p '{"spec":{"enable":true}}'
+----
+
+. *To unpause worker nodes manually*, patch the worker MachineConfigPool on the target cluster:
++
+[source,terminal]
+----
+$ oc patch mcp worker --type merge -p '{"spec":{"paused":false}}'
+----
+
+. Monitor worker node upgrades after unpausing:
++
+[source,terminal]
+----
+$ oc get mcp worker -w
+----
++
+The MachineConfigPool status shows the rolling upgrade progress:
++
+[source,terminal]
+----
+NAME     CONFIG                                             UPDATED   UPDATING   DEGRADED   MACHINECOUNT   READYMACHINECOUNT   UPDATEDMACHINECOUNT   DEGRADEDMACHINECOUNT   AGE
+worker   rendered-worker-def456                             False     True       False      3              2                   2                     0                      30d
+----
++
+Nodes upgrade in a rolling fashion based on the `maxUnavailable` setting.
+The default `maxUnavailable` is 1 or 33% of workers, whichever is smaller.
+
+. Watch individual worker node status:
++
+[source,terminal]
+----
+$ oc get nodes -l node-role.kubernetes.io/worker= -w
+----
++
+Nodes transition through these states:
++
+--
+* `Ready,SchedulingDisabled`: Node is being drained
+* `NotReady,SchedulingDisabled`: Node is rebooting with new configuration
+* `Ready`: Node upgrade complete
+--
+
+.Verification
+
+. Verify all worker nodes are at the target version:
++
+[source,terminal]
+----
+$ oc get nodes
+----
++
+.Example output
+[source,terminal]
+----
+NAME                   STATUS   ROLES                  AGE   VERSION
+master-0.example.com   Ready    control-plane,master   30d   v1.30.1
+worker-0.example.com   Ready    worker                 30d   v1.30.1
+worker-1.example.com   Ready    worker                 30d   v1.30.1
+worker-2.example.com   Ready    worker                 30d   v1.30.1
+----
+
+. Verify the worker MachineConfigPool is fully updated:
++
+[source,terminal]
+----
+$ oc get mcp worker
+----
++
+.Example output
+[source,terminal]
+----
+NAME     CONFIG                                             UPDATED   UPDATING   DEGRADED   MACHINECOUNT   READYMACHINECOUNT   UPDATEDMACHINECOUNT   DEGRADEDMACHINECOUNT   AGE
+worker   rendered-worker-def456                             True      False      False      3              3                   3                     0                      30d
+----
++
+Verify `MACHINECOUNT` = `READYMACHINECOUNT` = `UPDATEDMACHINECOUNT`.
+
+. Verify workload health after worker upgrades:
++
+[source,terminal]
+----
+$ oc get pods -A | grep -v Running | grep -v Completed
+----
+
+.Troubleshooting
+
+* If the pause policy does not take effect, verify the policy is enforced in {rh-rhacm}:
++
+[source,terminal]
+----
+$ oc get policy core-pause-worker-nodes -n default
+----
+
+* If workers upgrade despite being paused, check for manual MachineConfigPool edits that override the policy.
+
+* If a worker node upgrade gets stuck, check the node status:
++
+[source,terminal]
+----
+$ oc describe node <worker-node-name>
+----
+
+* Common issues include Pod Disruption Budgets blocking node draining, pods with local storage that cannot be evicted, or node cordoning preventing new pods from scheduling.
++
+To identify blocking PDBs:
++
+[source,terminal]
+----
+$ oc get pdb -A -o json | jq -r '.items[] | select(.status.disruptionsAllowed == 0) | "\(.metadata.namespace)\t\(.metadata.name)\t\(.spec.minAvailable // .spec.maxUnavailable)"'
+----
++
+.Example output
+[source,terminal]
+----
+cnf-workloads	cnf-workload-pdb	3
+----
++
+If a PDB shows zero disruptions allowed and is blocking node draining, you have these options:
++
+--
+* Wait for the application to scale up replicas to allow disruptions
+* Temporarily adjust the PDB during the maintenance window (coordinate with application owners)
+* Schedule worker node upgrades during a maintenance window when the application can tolerate disruption
+--
+
+.Additional resources
+
+// xrefs moved to assembly per vale rules
+// * xref:../../../post_installation_configuration/day_2_core_cnf_clusters/updating/update-completing-the-control-plane-only-update.adoc#update-completing-the-control-plane-only-update[Control-plane-only updates for bare metal Core clusters]
+// * xref:../../../nodes/nodes/nodes-nodes-working.adoc#nodes-nodes-working[Working with nodes]
