@@ -1,0 +1,374 @@
+:_mod-docs-content-type: PROCEDURE
+[id="telco-cluster-upgrade-talm-setup_{context}"]
+= Set up TALM for cluster upgrades
+
+[role="_abstract"]
+You can set up Topology Aware Lifecycle Manager (TALM) on your Red Hat Advanced Cluster Management (RHACM) hub cluster to enable policy-based upgrades for your Telco Core clusters.
+This setup includes installing the TALM operator, configuring RHACM for policy management, and organizing your Git repository for upgrade policies.
+
+.Prerequisites
+
+* RHACM hub cluster deployed and managing target Telco Core clusters.
+* Git repository for storing upgrade policies with appropriate access controls.
+* Cluster-admin privileges on the RHACM hub cluster.
+* The `oc` CLI tool is installed and configured.
+
+.Procedure
+
+. Verify RHACM is installed and managing spoke clusters:
++
+Verify RHACM installation:
++
+[source,terminal]
+----
+$ oc get csv -n open-cluster-management | grep advanced-cluster-management
+----
++
+.Example output
+[source,terminal]
+----
+advanced-cluster-management.v2.12.0   Red Hat Advanced Cluster Management   2.12.0   Succeeded
+----
++
+Verify spoke clusters are managed:
++
+[source,terminal]
+----
+$ oc get managedclusters
+----
++
+.Example output
+[source,terminal]
+----
+NAME     HUB ACCEPTED   MANAGED CLUSTER URLS                       JOINED   AVAILABLE   AGE
+spoke1   true           https://spoke1.example.com:6443            True     True        30d
+spoke2   true           https://spoke2.example.com:6443            True     True        30d
+spoke3   true           https://spoke3.example.com:6443            True     True        30d
+----
++
+Verify spoke cluster status is Available:
++
+[source,terminal]
+----
+$ oc get managedclusters -o jsonpath='{range .items[*]}{.metadata.name}{"\t"}{.status.conditions[?(@.type=="ManagedClusterConditionAvailable")].status}{"\n"}{end}'
+----
++
+.Example output
+[source,terminal]
+----
+spoke1	True
+spoke2	True
+spoke3	True
+----
++
+All managed clusters must show `True` for Available status before proceeding.
+
+. Install the TALM operator from OperatorHub using the web console:
+.. In the RHACM hub cluster web console, navigate to *Operators* -> *OperatorHub*.
+.. Search for "Topology Aware Lifecycle Manager" and select the operator.
+.. Click *Install* and select the *openshift-operators* namespace.
+.. Select the update channel and approval strategy according to your requirements.
+.. Click *Install* to create the operator subscription.
+
+. Alternatively, install the TALM operator using the CLI by creating a subscription:
++
+[source,yaml]
+----
+apiVersion: operators.coreos.com/v1alpha1
+kind: Subscription
+metadata:
+  name: openshift-cluster-group-upgrades
+  namespace: openshift-operators
+spec:
+  channel: stable
+  name: cluster-group-upgrades-operator
+  source: redhat-operators
+  sourceNamespace: openshift-marketplace
+  installPlanApproval: Automatic
+----
++
+Apply the subscription:
++
+[source,terminal]
+----
+$ oc apply -f talm-subscription.yaml
+----
+
+. Verify the TALM operator installation:
++
+[source,terminal]
+----
+$ oc get csv -n openshift-operators -o json | \
+  jq -r '.items[] | select(.spec.displayName | contains("Topology Aware Lifecycle Manager")) | .metadata.name, .status.phase'
+----
++
+.Example output
+[source,terminal]
+----
+cluster-group-upgrades-operator.v4.20.0
+Succeeded
+----
++
+The output shows the CSV name and phase.
+The phase must be `Succeeded`.
+
+. Create a namespace for upgrade policies:
++
+[source,terminal]
+----
+$ oc create namespace openshift-upgrade-policies
+----
+
+. Configure RBAC for policy management by creating a ClusterRole:
++
+[source,yaml]
+----
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: upgrade-policy-manager
+rules:
+- apiGroups: ["policy.open-cluster-management.io"]
+  resources: ["policies", "placementbindings", "placementrules"]
+  verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
+- apiGroups: ["apps.open-cluster-management.io"]
+  resources: ["placementrules"]
+  verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
+- apiGroups: ["cluster.open-cluster-management.io"]
+  resources: ["managedclusters"]
+  verbs: ["get", "list", "watch"]
+----
++
+Apply the ClusterRole:
++
+[source,terminal]
+----
+$ oc apply -f upgrade-policy-clusterrole.yaml
+----
+
+. Create a ClusterRoleBinding to grant permissions to your GitOps service account:
++
+[source,yaml]
+----
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: upgrade-policy-manager-binding
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: upgrade-policy-manager
+subjects:
+- kind: ServiceAccount
+  name: gitops-service-account
+  namespace: openshift-gitops
+----
++
+Apply the ClusterRoleBinding:
++
+[source,terminal]
+----
+$ oc apply -f upgrade-policy-binding.yaml
+----
+
+. Prepare your Git repository structure for upgrade policies:
++
+Create the following directory structure in your Git repository:
++
+[source,text]
+----
+upgrade-policies/
+├── policies/
+│   ├── zstream/
+│   │   └── upgrade-4.20.1-policy.yaml
+│   ├── ystream/
+│   │   └── upgrade-4.20-policy.yaml
+│   └── eus/
+│       └── upgrade-4.20-eus-policy.yaml
+└── cgu/
+    ├── telco-zstream-upgrade.yaml
+    ├── telco-ystream-upgrade.yaml
+    └── telco-eus-upgrade.yaml
+----
++
+NOTE: If you are using Kustomize for policy management with ArgoCD or Flux, you can add a `kustomization.yaml` file to manage policy overlays.
+This file is optional if you apply policies directly with `oc apply`.
+
+. Create cluster labels for upgrade batching:
++
+Label clusters by upgrade wave to control rollout order:
++
+[source,terminal]
+----
+$ oc label managedcluster spoke1 upgrade-wave=1
+$ oc label managedcluster spoke2 upgrade-wave=1
+$ oc label managedcluster spoke3 upgrade-wave=2
+----
++
+Label clusters by site location for topology awareness:
++
+[source,terminal]
+----
+$ oc label managedcluster spoke1 site=north
+$ oc label managedcluster spoke2 site=south
+$ oc label managedcluster spoke3 site=east
+----
+
+. Create a ManagedClusterSet for upgrade targets:
++
+[source,yaml]
+----
+apiVersion: cluster.open-cluster-management.io/v1beta2
+kind: ManagedClusterSet
+metadata:
+  name: telco-core-clusters
+spec:
+  clusterSelector:
+    selectorType: LabelSelector
+    labelSelector:
+      matchLabels:
+        cluster-type: telco-core
+----
++
+Apply the ManagedClusterSet:
++
+[source,terminal]
+----
+$ oc apply -f managedclusterset.yaml
+----
+
+. Configure resource limits for the TALM operator:
++
+[source,terminal]
+----
+$ oc patch deployment cluster-group-upgrades-controller-manager \
+  -n openshift-operators \
+  --type merge \
+  -p '{"spec":{"template":{"spec":{"containers":[{"name":"manager","resources":{"limits":{"cpu":"200m","memory":"256Mi"},"requests":{"cpu":"100m","memory":"128Mi"}}}]}}}}'
+----
++
+Verify the resource limits were applied:
++
+[source,terminal]
+----
+$ oc get deployment cluster-group-upgrades-controller-manager \
+  -n openshift-operators \
+  -o jsonpath='{.spec.template.spec.containers[0].resources}' | jq
+----
++
+.Example output
+[source,terminal]
+----
+{
+  "limits": {
+    "cpu": "200m",
+    "memory": "256Mi"
+  },
+  "requests": {
+    "cpu": "100m",
+    "memory": "128Mi"
+  }
+}
+----
++
+Verify the pods restarted with the new resource limits:
++
+[source,terminal]
+----
+$ oc get pods -n openshift-operators | grep cluster-group-upgrades
+----
++
+.Example output
+[source,terminal]
+----
+cluster-group-upgrades-controller-manager-5d7b9c8f7d-xyz99   2/2     Running   0          1m
+----
+
+. Test TALM connectivity and policy propagation:
++
+Create a test policy:
++
+[source,yaml]
+----
+apiVersion: policy.open-cluster-management.io/v1
+kind: Policy
+metadata:
+  name: test-policy
+  namespace: default
+spec:
+  remediationAction: inform
+  disabled: false
+  policy-templates:
+  - objectDefinition:
+      apiVersion: policy.open-cluster-management.io/v1
+      kind: ConfigurationPolicy
+      metadata:
+        name: test-config
+      spec:
+        severity: low
+        object-templates:
+        - complianceType: musthave
+          objectDefinition:
+            apiVersion: v1
+            kind: ConfigMap
+            metadata:
+              name: test-configmap
+              namespace: default
+            data:
+              message: "TALM is working"
+----
++
+Apply the test policy:
++
+[source,terminal]
+----
+$ oc apply -f test-policy.yaml
+----
+
+. Verify policy compliance in RHACM:
++
+[source,terminal]
+----
+$ oc get policy test-policy -n default
+----
++
+.Example output
+[source,terminal]
+----
+NAME          REMEDIATION ACTION   COMPLIANCE STATE   AGE
+test-policy   inform               Compliant          1m
+----
+
+.Verification
+
+. Verify the TALM operator is running:
++
+[source,terminal]
+----
+$ oc get pods -n openshift-operators | grep cluster-group-upgrades
+----
++
+.Example output
+[source,terminal]
+----
+cluster-group-upgrades-controller-manager-5d7b9c8f7d-abc12   2/2     Running   0          5m
+----
+
+. Verify cluster labels are applied:
++
+[source,terminal]
+----
+$ oc get managedclusters --show-labels
+----
+
+. Verify the ManagedClusterSet exists:
++
+[source,terminal]
+----
+$ oc get managedclusterset telco-core-clusters
+----
+
+.Additional resources
+
+* xref:../../../edge_computing/cnf-talm-for-cluster-upgrades.adoc#cnf-installing-topology-aware-lifecycle-manager-using-cli_cnf-topology-aware-lifecycle-manager[Installing the Topology Aware Lifecycle Manager using the CLI]
+* link:https://access.redhat.com/documentation/en-us/red_hat_advanced_cluster_management_for_kubernetes/[Red Hat Advanced Cluster Management documentation]

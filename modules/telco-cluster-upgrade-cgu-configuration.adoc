@@ -1,0 +1,255 @@
+:_mod-docs-content-type: PROCEDURE
+[id="telco-cluster-upgrade-cgu-configuration_{context}"]
+= Configure ClusterGroupUpgrade custom resources
+
+[role="_abstract"]
+You can configure ClusterGroupUpgrade (CGU) custom resources to orchestrate cluster upgrades with Topology Aware Lifecycle Manager (TALM).
+A CGU defines which clusters to upgrade, which policies to apply, and how to manage batching and concurrency.
+
+.Prerequisites
+
+* TALM operator is installed and configured on the RHACM hub cluster.
+* Upgrade policies are defined and applied to RHACM.
+* Target clusters are labeled and grouped according to your upgrade strategy.
+
+.Procedure
+
+. Create a basic ClusterGroupUpgrade CR for a z-stream upgrade:
++
+[source,yaml]
+----
+apiVersion: ran.openshift.io/v1alpha1
+kind: ClusterGroupUpgrade
+metadata:
+  name: telco-zstream-upgrade-4.20.1
+  namespace: openshift-upgrade-policies
+spec:
+  clusters:
+  - spoke1
+  - spoke2
+  managedPolicies:
+  - telco-upgrade-4.20.1-policy
+  enable: false
+  remediationStrategy:
+    maxConcurrency: 2
+    timeout: 3600
+----
++
+Replace the following values:
++
+--
+* `telco-zstream-upgrade-4.20.1`: Name for your CGU
+* `spoke1`, `spoke2`: Names of your target clusters
+* `telco-upgrade-4.20.1-policy`: Name of your upgrade policy
+* `maxConcurrency`: Number of clusters to upgrade simultaneously (use `1` for canary testing, `2-5` for production rollouts, or higher for large fleets with proven procedures)
+* `timeout`: Maximum time in seconds to wait for each cluster upgrade
+--
++
+Calculate appropriate timeout values based on your environment:
++
+--
+* Base timeout: 3600 seconds (60 minutes) for z-stream upgrades, 7200 seconds (120 minutes) for y-stream upgrades
+* Add 1800 seconds (30 minutes) for each additional worker node beyond 3
+* Add 3600 seconds (60 minutes) for disconnected environments
+* Add 1800 seconds (30 minutes) for clusters with large image registries
+--
++
+.Example timeout calculation
+For a y-stream upgrade in a disconnected environment with 5 worker nodes:
++
+[source,text]
+----
+timeout = 7200 (base) + ((5-3) * 1800) (extra workers) + 3600 (disconnected) = 14400 seconds (4 hours)
+----
+
+. Configure sequential batching for a canary upgrade:
++
+[source,yaml]
+----
+apiVersion: ran.openshift.io/v1alpha1
+kind: ClusterGroupUpgrade
+metadata:
+  name: telco-canary-upgrade
+  namespace: openshift-upgrade-policies
+spec:
+  clusterSelector:
+  - upgrade-wave=1
+  managedPolicies:
+  - telco-upgrade-4.20-policy
+  enable: false
+  remediationStrategy:
+    canaries:
+    - spoke-canary
+    maxConcurrency: 1
+    timeout: 7200
+----
++
+This configuration upgrades the canary cluster first, waits for success, and then proceeds with other clusters in wave 1.
+
+. Add blocking custom resources for pre-upgrade checks:
++
+[source,yaml]
+----
+apiVersion: ran.openshift.io/v1alpha1
+kind: ClusterGroupUpgrade
+metadata:
+  name: telco-upgrade-with-checks
+  namespace: openshift-upgrade-policies
+spec:
+  clusters:
+  - spoke1
+  managedPolicies:
+  - telco-upgrade-4.20-policy
+  enable: false
+  remediationStrategy:
+    maxConcurrency: 1
+    timeout: 7200
+  beforeEnable:
+    addClusterLabels:
+      pre-upgrade-check: pending
+  blockingCRs:
+  - name: etcd-backup
+    namespace: default
+    kind: ConfigMap
+    conditions:
+    - type: BackupComplete
+      status: "True"
+----
++
+The upgrade waits until the `etcd-backup` ConfigMap has the `BackupComplete` condition set to `True`.
+
+. Enable pre-caching for disconnected environments:
++
+[source,yaml]
+----
+apiVersion: ran.openshift.io/v1alpha1
+kind: ClusterGroupUpgrade
+metadata:
+  name: telco-upgrade-precache
+  namespace: openshift-upgrade-policies
+spec:
+  clusters:
+  - spoke1
+  - spoke2
+  managedPolicies:
+  - telco-upgrade-4.20-policy
+  enable: false
+  preCaching: true
+  remediationStrategy:
+    maxConcurrency: 2
+    timeout: 7200
+----
++
+TALM downloads upgrade images to target clusters before starting the upgrade, reducing upgrade time in disconnected environments.
+
+. Configure post-upgrade actions:
++
+[source,yaml]
+----
+apiVersion: ran.openshift.io/v1alpha1
+kind: ClusterGroupUpgrade
+metadata:
+  name: telco-upgrade-with-actions
+  namespace: openshift-upgrade-policies
+spec:
+  clusters:
+  - spoke1
+  managedPolicies:
+  - telco-upgrade-4.20-policy
+  enable: false
+  remediationStrategy:
+    maxConcurrency: 1
+    timeout: 7200
+  afterCompletion:
+    addClusterLabels:
+      upgraded-to: "4.20"
+      upgrade-status: complete
+    removeClusterLabels:
+    - pre-upgrade-check
+----
+
+. Apply the ClusterGroupUpgrade CR:
++
+[source,terminal]
+----
+$ oc apply -f cgu-upgrade.yaml
+----
+
+. Enable the CGU to start the upgrade:
++
+[source,terminal]
+----
+$ oc patch cgu telco-zstream-upgrade-4.20.1 \
+  -n openshift-upgrade-policies \
+  --type merge \
+  -p '{"spec":{"enable":true}}'
+----
+
+. Monitor the CGU status:
++
+[source,terminal]
+----
+$ oc get cgu telco-zstream-upgrade-4.20.1 -n openshift-upgrade-policies -o yaml
+----
++
+Check the `status` section for upgrade progress:
++
+[source,yaml]
+----
+status:
+  conditions:
+  - message: Upgrade is progressing
+    reason: InProgress
+    status: "True"
+    type: Progressing
+  managedPoliciesForUpgrade:
+  - name: telco-upgrade-4.20.1-policy
+    namespace: openshift-upgrade-policies
+  remediationPlan:
+  - - spoke1
+    - spoke2
+  status:
+    spoke1: complete
+    spoke2: inprogress
+----
+
+. Watch the CGU progress in real time:
++
+[source,terminal]
+----
+$ oc get cgu telco-zstream-upgrade-4.20.1 -n openshift-upgrade-policies -w
+----
+
+.Verification
+
+. Verify the CGU entered the desired state:
++
+[source,terminal]
+----
+$ oc get cgu -n openshift-upgrade-policies
+----
++
+.Example output
+[source,terminal]
+----
+NAME                             AGE   STATE        DETAILS
+telco-zstream-upgrade-4.20.1     5m    InProgress   Remediating non-compliant policies
+----
+
+. Check detailed status for each cluster:
++
+[source,terminal]
+----
+$ oc get cgu telco-zstream-upgrade-4.20.1 -n openshift-upgrade-policies -o jsonpath='{.status.clusters}' | jq
+----
+
+.Troubleshooting
+
+* If the CGU is stuck in `Preparing` state, verify that all managed policies exist and are bound to target clusters.
+* If the CGU fails with a timeout error, increase the `timeout` value in the `remediationStrategy` section.
+* If pre-caching fails, check network connectivity from target clusters to the image registry.
+
+.Additional resources
+
+* xref:../../../edge_computing/cnf-talm-for-cluster-upgrades.adoc#cnf-topology-aware-lifecycle-manager-about-cgu-crs_cnf-topology-aware-lifecycle-manager[About the ClusterGroupUpgrade CR]
+* link:https://github.com/openshift-kni/cluster-group-upgrades-operator/tree/main/examples[ClusterGroupUpgrade examples on GitHub]

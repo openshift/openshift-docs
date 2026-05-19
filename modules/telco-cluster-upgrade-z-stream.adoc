@@ -1,0 +1,285 @@
+:_mod-docs-content-type: PROCEDURE
+[id="telco-cluster-upgrade-z-stream_{context}"]
+= Upgrade Telco Core clusters with z-stream releases
+
+[role="_abstract"]
+You can upgrade Telco Core clusters to z-stream patch releases using GitOps policies and Topology Aware Lifecycle Manager (TALM).
+Z-stream upgrades apply security fixes and bug patches with minimal risk and should be performed regularly to maintain cluster security.
+
+Apply z-stream upgrades as soon as they become available to address critical vulnerabilities and maintain security compliance.
+
+.Prerequisites
+
+* Pre-upgrade health check completed successfully.
+* TALM operator is installed and configured on the RHACM hub cluster.
+* Z-stream patch release is available in the Red Hat errata.
+* Recent etcd backup exists (within 24 hours).
+
+.Procedure
+
+. Verify the current cluster version:
++
+[source,terminal]
+----
+$ oc get clusterversion
+----
++
+.Example output
+[source,terminal]
+----
+NAME      VERSION   AVAILABLE   PROGRESSING   SINCE   STATUS
+version   4.20.0    True        False         30d     Cluster version is 4.20.0
+----
+
+. Check for available z-stream updates:
++
+[source,terminal]
+----
+$ oc adm upgrade
+----
++
+.Example output
+[source,terminal]
+----
+Cluster version is 4.20.0
+
+Upstream is unset, so the cluster will use an appropriate default.
+Channel: stable-4.20 (available channels: candidate-4.20, eus-4.20, fast-4.20, stable-4.20)
+
+Recommended updates:
+
+  VERSION     IMAGE
+  4.20.1      quay.io/openshift-release-dev/ocp-release@sha256:abc123...
+  4.20.2      quay.io/openshift-release-dev/ocp-release@sha256:def456...
+----
+
+. Review the z-stream release notes for the target version:
++
+Navigate to the {product-title} documentation and review the release notes for security fixes and bug fixes included in the z-stream release.
+
+. Create a GitOps policy for the z-stream upgrade:
++
+[source,yaml]
+----
+apiVersion: policy.open-cluster-management.io/v1
+kind: Policy
+metadata:
+  name: telco-upgrade-4.20.1-policy
+  namespace: openshift-upgrade-policies
+spec:
+  remediationAction: enforce
+  disabled: false
+  policy-templates:
+  - objectDefinition:
+      apiVersion: policy.open-cluster-management.io/v1
+      kind: ConfigurationPolicy
+      metadata:
+        name: upgrade-cluster-version
+      spec:
+        severity: high
+        object-templates:
+        - complianceType: musthave
+          objectDefinition:
+            apiVersion: config.openshift.io/v1
+            kind: ClusterVersion
+            metadata:
+              name: version
+            spec:
+              channel: stable-4.20
+              desiredUpdate:
+                version: 4.20.1
+----
++
+Replace `4.20.1` with your target z-stream version.
+
+. Commit the policy to your Git repository and apply it to the RHACM hub cluster:
++
+[source,terminal]
+----
+$ oc apply -f telco-upgrade-4.20.1-policy.yaml
+----
++
+Verify the policy was created:
++
+[source,terminal]
+----
+$ oc get policy telco-upgrade-4.20.1-policy -n openshift-upgrade-policies
+----
++
+.Example output
+[source,terminal]
+----
+NAME                           REMEDIATION ACTION   COMPLIANCE STATE   AGE
+telco-upgrade-4.20.1-policy    enforce              NonCompliant       30s
+----
++
+Verify the policy has placement (either PlacementBinding or PlacementRule):
++
+[source,terminal]
+----
+$ oc get placementbinding -n openshift-upgrade-policies
+$ oc get placementrule -n openshift-upgrade-policies
+----
++
+If no PlacementBinding or PlacementRule exists, the policy will not apply to any clusters.
+Create appropriate placement resources for your target clusters.
+
+. Create a ClusterGroupUpgrade CR for the z-stream upgrade:
++
+[source,yaml]
+----
+apiVersion: ran.openshift.io/v1alpha1
+kind: ClusterGroupUpgrade
+metadata:
+  name: telco-zstream-upgrade-4.20.1
+  namespace: openshift-upgrade-policies
+spec:
+  clusters:
+  - spoke1
+  - spoke2
+  managedPolicies:
+  - telco-upgrade-4.20.1-policy
+  enable: false
+  remediationStrategy:
+    maxConcurrency: 2
+    timeout: 3600
+----
++
+Adjust the following values:
++
+--
+* `clusters`: List your target cluster names
+* `maxConcurrency`: Number of clusters to upgrade simultaneously
+* `timeout`: Maximum time in seconds (3600 = 1 hour per cluster)
+--
+
+. Apply the ClusterGroupUpgrade CR:
++
+[source,terminal]
+----
+$ oc apply -f telco-zstream-cgu.yaml
+----
+
+. Enable the CGU to start the upgrade:
++
+[source,terminal]
+----
+$ oc patch cgu telco-zstream-upgrade-4.20.1 \
+  -n openshift-upgrade-policies \
+  --type merge \
+  -p '{"spec":{"enable":true}}'
+----
+
+. Monitor the CGU progress:
++
+[source,terminal]
+----
+$ oc get cgu telco-zstream-upgrade-4.20.1 -n openshift-upgrade-policies -w
+----
++
+The CGU progresses through these states:
++
+--
+* `Preparing`: TALM validates cluster readiness
+* `InProgress`: Clusters are upgrading
+* `Complete`: All clusters successfully upgraded
+--
+
+. Monitor the cluster version on a target cluster:
++
+[source,terminal]
+----
+$ oc --context=spoke1 get clusterversion -w
+----
++
+The cluster version progresses through the upgrade, showing `PROGRESSING=True` during the upgrade.
+
+. Monitor cluster operator status during the upgrade:
++
+[source,terminal]
+----
+$ oc --context=spoke1 get co
+----
++
+Operators update sequentially during the z-stream upgrade.
+
+.Verification
+
+. Verify the cluster version updated successfully:
++
+[source,terminal]
+----
+$ oc --context=spoke1 get clusterversion -o jsonpath='{.items[0].status.desired.version}'
+----
++
+.Example output
+[source,terminal]
+----
+4.20.1
+----
+
+. Verify all cluster operators are available and not degraded:
++
+[source,terminal]
+----
+$ oc --context=spoke1 get co
+----
++
+All operators should show `AVAILABLE=True`, `PROGRESSING=False`, `DEGRADED=False`.
+
+. Check workload health:
++
+[source,terminal]
+----
+$ oc --context=spoke1 get pods -A | grep -v Running | grep -v Completed
+----
++
+No pods should show unexpected failures or crash loops.
+
+. Validate Telco-specific custom resources:
++
+[source,terminal]
+----
+$ oc --context=spoke1 get performanceprofile
+$ oc --context=spoke1 get ptpconfig -n openshift-ptp
+$ oc --context=spoke1 get sriovnetworknodepolicy -n openshift-sriov-network-operator
+----
++
+All resources should show expected status.
+
+. Run smoke tests for critical workloads to ensure functionality after the upgrade.
+
+.Troubleshooting
+
+* If the CGU is stuck in `Preparing` state, check policy compliance in RHACM:
++
+[source,terminal]
+----
+$ oc get policy telco-upgrade-4.20.1-policy -n openshift-upgrade-policies
+----
+
+* If a cluster operator becomes degraded during the upgrade, check operator logs:
++
+[source,terminal]
+----
+$ oc --context=spoke1 logs -n openshift-<operator-namespace> deployment/<operator-deployment>
+----
+
+* If the upgrade exceeds the timeout, investigate slow nodes or image pull issues:
++
+[source,terminal]
+----
+$ oc --context=spoke1 get events -A --sort-by='.lastTimestamp' | tail -20
+----
+
+.Next steps
+
+* Document the successful upgrade in your change management system.
+* Update cluster inventory with the new version.
+* Schedule the next z-stream check for the following week.
+
+.Additional resources
+
+* xref:../../../post_installation_configuration/day_2_core_cnf_clusters/updating/update-completing-the-z-stream-update.adoc#update-completing-the-z-stream-update[Completing a z-stream update]
+* xref:telco-cluster-upgrade-troubleshooting_{context}[Troubleshoot Telco Core cluster upgrades]
+* xref:telco-cluster-upgrade-rollback_{context}[Roll back Telco Core cluster upgrades]
