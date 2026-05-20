@@ -28,26 +28,26 @@ The following example demonstrates using a Kuadrant `AuthPolicy` custom resource
 {
   "resource_access": {
     "mcp-ns/arithmetic-mcp-server": {
-      "roles": ["add", "sum", "multiply", "divide"]
+      "roles": ["add", "sum", "multiply", "divide", "prompt:math_tutor"]
     },
     "mcp-ns/geometry-mcp-server": {
-      "roles": ["area", "distance", "volume"]
+      "roles": ["area", "distance", "volume", "prompt:calculate_area"]
     }
   }
 }
 ----
 +
 * The `"mcp-ns/arithmetic-mcp-server"` specification must match the namespaced name of the `MCPServerRegistration` CR in the format `{namespace}/{name}`. For example, if your `MCPServerRegistration` CR is named `arithmetic-mcp-server` and is applied in the `mcp-ns` namespace, the {keycloak} client ID must be `mcp-ns/arithmetic-mcp-server`.
-* The `"roles": ["add", "sum", "multiply", "divide"]` parameter and values specify the roles representing the allowed tools.
+* The `"roles": ["add", "sum", "multiply", "divide", "prompt:<value>"]` parameter and values specify the roles representing the allowed tools and prompts.
 
-. Configure tool-level authorization by creating an `AuthPolicy` CR that enforces tool-level access control on the `mcps` listener, as shown in the following example:
+. Configure authorization by creating an `AuthPolicy` CR that enforces access control on the `mcps` listener, as shown in the following example:
 +
 [IMPORTANT]
 ====
 The authorization `AuthPolicy` CR must target the `mcps` listener, not the `mcp` listener. The `mcp` listener only handles public traffic and has an authentication-only `AuthPolicy` CR.
 ====
 +
-.Example tool-level access control AuthPolicy
+.Example tool and prompt access control AuthPolicy
 [source,yaml,subs="+quotes"]
 ----
 apiVersion: kuadrant.io/v1
@@ -68,10 +68,19 @@ spec:
           issuerUrl: https://_<keycloak.example.com>_/realms/mcp
     authorization:
       'tool-access-check':
+        when:
+          - predicate: "request.headers.exists(h, h == 'x-mcp-toolname')"
         patternMatching:
           patterns:
             - predicate: |
                 request.headers['x-mcp-toolname'] in (has(auth.identity.resource_access) && auth.identity.resource_access.exists(p, p == request.headers['x-mcp-servername']) ? auth.identity.resource_access[request.headers['x-mcp-servername']].roles : [])
+        'prompt-access-check':
+        when:
+          - predicate: "request.headers.exists(h, h == 'x-mcp-promptname')"
+        patternMatching:
+          patterns:
+            - predicate: |
+                ('prompt:' + request.headers['x-mcp-promptname']) in (has(auth.identity.resource_access) && auth.identity.resource_access.exists(p, p == request.headers['x-mcp-servername']) ? auth.identity.resource_access[request.headers['x-mcp-servername']].roles : [])
     response:
       unauthenticated:
         headers:
@@ -81,6 +90,7 @@ spec:
           value: |
             {
               "error": "Unauthorized",
+              "message": "MCP Access denied: Authentication required."
               "message": "MCP Tool Access denied: Authentication required."
             }
       unauthorized:
@@ -88,7 +98,7 @@ spec:
           value: |
             {
               "error": "Forbidden",
-              "message": "MCP Tool Access denied: Insufficient permissions for this tool."
+              "message": "MCP Access denied: Insufficient permissions."
             }
 ----
 +
@@ -97,20 +107,77 @@ spec:
 * Replace `spec.targetRef.name:` with the name of the `Gateway` CR.
 * The `spec.targetRef.sectionName:` value must be `mcps`, which is the internal listener for `tool/call` authorization. This listener must exist on your `Gateway` object.
 * Authentication: Validates the JWT token using the configured issuer URL. Replace `_<keycloak.example.com>_` with your identity provider hostname.
-* Authorization Logic: CEL expression checks if user's roles allow access to the requested tool
+* Authorization Logic: CEL expressions check if the user role allows access to the requested tool or prompt. The appropriate check is triggered based on the presence of the `x-mcp-toolname` or `x-mcp-promptname` header.
 * CEL Breakdown:
-** `request.headers['x-mcp-toolname']`: The name of the requested MCP tool, stripped from prefix.
+** `request.headers['x-mcp-toolname']`: The name of the requested MCP tool.
 ** `request.headers['x-mcp-servername']`: The namespaced name of the MCP server matching the `MCPServerRegistration` CR.
-** `auth.identity.resource_access`: The JWT claim containing all roles representing each allowed tool the user can access, grouped by MCP server.
+** `request.headers['x-mcp-promptname']`: The name of the requested MCP prompt.
+** `auth.identity.resource_access`: The JWT claim containing all roles representing each allowed capability, tool or prompt, that the user can access, grouped by MCP server.
 * Response handling: Custom `401` and `403` responses for unauthenticated and unauthorized access attempts.
 
-. Apply the AuthPolicy CR by running the following command:
+. Apply the `AuthPolicy` CR by running the following command:
 +
 [source,terminal,subs="+quotes"]
 ----
 $ oc apply -f _<mcp_tool_auth_policy.yaml>_
 ----
-* Replace `_<mcp_tool_auth_policy.yaml>_` with the name of the `AuthPolicy` YAML filename.
++
+Replace `_<mcp_tool_auth_policy.yaml>_` with the name of the `AuthPolicy` YAML filename.
+
+. Optional. Configure authorization by creating an `AuthPolicy` CR using an Open Policy Agent (OPA) rule, as shown in the following example:
++
+.Example `AuthPolicy` with an OPA rule
+[source,yaml,subs="+quotes"]
+----
+apiVersion: kuadrant.io/v1
+kind: AuthPolicy
+metadata:
+  name: _<mcp_tool_auth_policy>_
+  namespace: _<gateway_system>_
+spec:
+  targetRef:
+    group: gateway.networking.k8s.io
+    kind: Gateway
+    name: _<mcp_gateway>_
+    sectionName: _<mcps>_
+  rules:
+    authentication:
+      'sso-server':
+        jwt:
+          issuerUrl: https://_<keycloak.example.com>_/realms/mcp
+    authorization:
+      'authorized-capabilities':
+        opa:
+          rego: |
+            allow = true
+            capabilities = {
+              "tools": { server: tools |
+                server := object.keys(input.auth.identity.resource_access)[_]
+                tools := [substring(r, count("tool:"), -1) |
+                  r := input.auth.identity.resource_access[server].roles[_]
+                  startswith(r, "tool:")
+                ]
+              },
+              "prompts": { server: prompts |
+                server := object.keys(input.auth.identity.resource_access)[_]
+                prompts := [substring(r, count("prompt:"), -1) |
+                  r := input.auth.identity.resource_access[server].roles[_]
+                  startswith(r, "prompt:")
+                ]
+              }
+            }
+          allValues: true
+#...
+----
+
+. Apply the OPA `AuthPolicy` CR by running the following command:
++
+[source,terminal,subs="+quotes"]
+----
+$ oc apply -f _<mcp_tool_auth_policy.yaml>_
+----
++
+Replace `_<mcp_tool_auth_policy.yaml>_` with the name of the `AuthPolicy` YAML filename.
 
 .Verification
 
