@@ -1,0 +1,190 @@
+// Module included in the following assemblies:
+//
+// *mcp_gateway_config/mcp-gateway-observe.adoc
+
+:_mod-docs-content-type: PROCEDURE
+[id="proc-mcp-gateway-config-authpolicy-with-id-injection_{context}"]
+= Configuring an AuthPolicy with identity injection
+
+[role="_abstract"]
+To capture authenticated user identities in access logs for all request types, you must create an `AuthPolicy` custom resource (CR) for each of the MCP gateway's two listeners.
+
+The MCP gateway uses the two following listeners:
+
+* `mcp`: This listener handles client requests such as `initialize` and `tools/list`.
+* `mcps`: This listener handles tool call routing to the backend MCP servers.
+
+When you have configured the `AuthPolicy` CRs, after Authorino validates the JWT, it extracts the `preferred_username` field value from the token claims and injects it as the `x-auth-identity` request header. This header is trustworthy because Authorino strips any client-supplied value and sets it from the validated token. With both policies in place, the `mcp_user_id` field is displayed in access log entries for all MCP request types.
+
+.Prerequisites
+
+* You installed the MCP gateway.
+* You installed {prodname}.
+* You created a `Gateway` object.
+* You set up an identity provider.
+* You configured Istio as the Gateway API provider.
+//Q: I thought Istio is automatic? what does an openshift customer need to do here?
+
+.Procedure
+
+. Create an `AuthPolicy` CR for the client-facing listener, `mcp`, by using the following example:
++
+.Client-facing listener AuthPolicy CR
+[source,yaml,subs="+quotes"]
+----
+apiVersion: kuadrant.io/v1
+kind: AuthPolicy
+metadata:
+  name: _<audit_auth_client_listener>_
+  namespace: _<gateway_namespace>_
+spec:
+  targetRef:
+    group: gateway.networking.k8s.io
+    kind: Gateway
+    name: _<mcp_gateway>_
+    sectionName: mcp
+  defaults:
+    when:
+      - predicate: "!request.path.contains('/.well-known')"
+    rules:
+      authentication:
+        'keycloak':
+          jwt:
+            issuerUrl: https://keycloak.example.com:8002/realms/mcp
+      response:
+        success:
+          headers:
+            "x-auth-identity":
+              plain:
+                selector: auth.identity.preferred_username
+        unauthenticated:
+          code: 401
+          headers:
+            'WWW-Authenticate':
+              value: Bearer resource_metadata=http://mcp.example.com:8001/.well-known/oauth-protected-resource/mcp
+          body:
+            value: |
+              {
+                "error": "Unauthorized",
+                "message": "Authentication required."
+              }
+----
++
+* Replace `_<mcp_gateway>_` with the name of your MCP gateway deployment.
+* Replace `_<gateway_namespace>_` with the namespace where you applied your `Gateway` object.
++
+[NOTE]
+====
+This `mcp` listener `AuthPolicy` CR validates JSON web tokens (JWTs) on client requests and injects the authenticated username as a request header.
+====
+
+. Apply the client-listener `AuthPolicy` CR by running the following command:
++
+[source,terminal,subs="+quotes"]
+----
+$ oc apply -f _<audit_auth_client_listener.yaml>_
+----
++
+Replace `_<audit_auth_client_listener.yaml>_` with the filename that you used.
+
+. Create an `AuthPolicy` CR for the backend-facing listener, `mcps`, by using the following example:
++
+.Client-facing listener AuthPolicy CR
+[source,yaml,subs="+quotes"]
+----
+apiVersion: kuadrant.io/v1
+kind: AuthPolicy
+metadata:
+  name: _<audit_auth_backend_listener>_
+  namespace: _<gateway_namespace>_
+spec:
+  targetRef:
+    group: gateway.networking.k8s.io
+    kind: Gateway
+    name: _<mcp_gateway>_
+    sectionName: mcps
+  defaults:
+    rules:
+      authentication:
+        'keycloak':
+          jwt:
+            issuerUrl: https://keycloak.example.com:8002/realms/mcp
+      response:
+        success:
+          headers:
+            "x-auth-identity":
+              plain:
+                selector: auth.identity.preferred_username
+        unauthenticated:
+          code: 401
+          headers:
+            'WWW-Authenticate':
+              value: Bearer resource_metadata=http://mcp.example.com:8001/.well-known/oauth-protected-resource/mcp
+          body:
+            value: |
+              {
+                "error": "Unauthorized",
+                "message": "Authentication required."
+              }
+----
+* Replace `_<mcp_gateway>_` with the name of your MCP gateway deployment.
+* Replace `_<gateway_namespace>_` with the namespace where you applied your `Gateway` object.
+* Replace the `preferred_username` field value with `sub` or another claim depending on both your identity provider and what you want as the audit identity. For {keycloak}, the `preferred_username` field value gives a human-readable username but requires the `profile` scope in the token request.
++
+[NOTE]
+====
+This `mcps` listener policy validates the same JWT on tool call requests routed to backend servers and injects the identity header there, too.
+====
+
+. Apply the backend-listener `AuthPolicy` CR by running the following command:
++
+[source,terminal,subs="+quotes"]
+----
+$ oc apply -f _<audit_auth_backend_listener.yaml>_
+----
++
+Replace `_<audit_auth_backend_listener.yaml>_` with the filename that you used.
+
+.Verification
+
+. Verify that the identity header is being injected by calling a tool and checking what the backend receives by using the following steps:
+
+. Get a token by running the following command:
++
+[source,terminal]
+----
+$ TOKEN=$(curl -s -X POST "https://keycloak.example.com:8002/realms/mcp/protocol/openid-connect/token" \
+  -d "grant_type=password&client_id=mcp-gateway&client_secret=secret&username=mcp&password=mcp&scope=openid+profile" \
+  | jq -r '.access_token')
+----
++
+Adjust this command for your identity provider.
+
+. Initialize a session by running the following command:
++
+[source,terminal]
+----
+$ SESSION_ID=$(curl -si http://mcp.example.com:8001/mcp \
+  -H "Authorization: Bearer $TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-03-26","capabilities":{},"clientInfo":{"name":"audit-test","version":"0.0.1"}}}' \
+  | grep -i 'mcp-session-id:' | awk '{print $2}' | tr -d '\r')
+----
++
+The expected output is the session ID returned in the response header.
+//Can we show a sample output?
+
+. Call the headers tool to see which headers reach the backend by running the following command:
++
+[source,terminal]
+----
+$ curl -s http://mcp.example.com:8001/mcp \
+  -H "Authorization: Bearer $TOKEN" \
+  -H "Content-Type: application/json" \
+  -H "Mcp-Session-Id: $SESSION_ID" \
+  -d '{"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"test1_headers","arguments":{}}}' \
+  | jq '.result.content[0].text' | grep -i "x-auth-identity"
+----
++
+The expected output is the `x-auth-identity` header that lists the Keycloak username in the response.
+//Can we show a sample output?
