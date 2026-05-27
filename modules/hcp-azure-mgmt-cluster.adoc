@@ -1,0 +1,224 @@
+//Module included in the following assemblies:
+// hosted_control_planes/hcp-deploy/hcp-deploy-azure.adoc
+
+:_mod-docs-content-type: PROCEDURE
+[id="hcp-azure-mgmt-cluster_{context}"]
+= Configuring an {azure-short} management cluster for {hcp}
+
+[role="_abstract"]
+To configure the management cluster for {hcp} on {azure-short}, you need to ensure that external DNS and the HyperShift Operator are set up on the cluster.
+
+The configuration steps include configuring the DNS zone, delegating the DNS records for your cluster, and creating a dedicated service principal for external DNS.
+
+.Prerequisites
+
+* You installed the {mce-short} 2.5 or later on an {product-title} cluster. You can install {mce-short} as an Operator from the {product-title} software catalog. Or, if you already use {rh-rhacm-title}, the Operator is automatically installed. The HyperShift Operator is enabled by default in the operator package for {mce-short}.
+
+* The {azure-short} command-line interface (CLI) is installed and configured.
+
+* The {oc-first} is installed.
+
+* You have an {product-title} management cluster on {azure-short}.
+
+* If you are using external DNS, the `jq` command-line JSON processor is installed.
+
+.Procedure
+
+. Set the DNS configuration variables as shown in the following example:
++
+[source,bash]
+----
+PARENT_DNS_RG="<my_parent_dns_resource_group>"
+PARENT_DNS_ZONE="<my_parent.dns.zone.com>"
+DNS_RECORD_NAME="<my_subdomain>"
+RESOURCE_GROUP_NAME="<my_resource_group>"
+DNS_ZONE_NAME="<my_subdomain.my_parent.dns.zone.com>"
+LOCATION="<my_region>"
+----
+
+. Create the {azure-short} group by entering the following command:
++
+[source,terminal]
+----
+$ az group create \
+  --name $RESOURCE_GROUP_NAME \
+  --location $LOCATION 
+----
+
+. Create the {azure-short} DNS zone by entering the following command:
++
+[source,terminal]
+----
+$ az network dns zone create \
+  --resource-group $RESOURCE_GROUP_NAME \
+  --name $DNS_ZONE_NAME  
+----
+
+. If an existing name server record exists, delete it by entering the following command:
++
+[source,terminal]
+----
+$ az network dns record-set ns delete \
+  --resource-group $PARENT_DNS_RG \
+  --zone-name $PARENT_DNS_ZONE \
+  --name $DNS_RECORD_NAME -y
+----
+
+. Get the name servers from your DNS zone by entering the following command:
++
+[source,bash]
+----
+name_servers=$(az network dns zone show \
+  --resource-group $RESOURCE_GROUP_NAME \
+  --name $DNS_ZONE_NAME \
+  --query nameServers \
+  --output tsv)
+----
+
+. Create an array of name servers as shown in the following example:
++
+[source,bash]
+----
+ns_array=()
+while IFS= read -r ns; do
+    ns_array+=("$ns")
+done <<< "$name_servers"
+----
+
+. Add name server records to the parent zone as shown in the following example:
++
+[source,bash]
+----
+for ns in "${ns_array[@]}"; do
+    az network dns record-set ns add-record \
+        --resource-group $PARENT_DNS_RG \
+        --zone-name $PARENT_DNS_ZONE \
+        --record-set-name $DNS_RECORD_NAME \
+        --nsdname "$ns"
+done
+----
+
+. Set the external DNS configuration variables as shown in the following example:
++
+[source,bash]
+----
+EXTERNAL_DNS_NEW_SP_NAME="<external_dns_service_principal>"
+SERVICE_PRINCIPAL_FILEPATH="<path_to_azure_mgmt_json_file>"
+RESOURCE_GROUP_NAME="<my_resource_group>"
+----
+
+. Create the service principal for external DNS by entering the following command:
++
+[source,bash]
+----
+DNS_SP=$(az ad sp create-for-rbac --name ${EXTERNAL_DNS_NEW_SP_NAME})
+EXTERNAL_DNS_SP_APP_ID=$(echo "$DNS_SP" | jq -r '.appId')
+EXTERNAL_DNS_SP_PASSWORD=$(echo "$DNS_SP" | jq -r '.password')
+----
+
+. Get the DNS zone ID by entering the following command:
++
+[source,bash]
+----
+DNS_ID=$(az network dns zone show \
+  --name ${DNS_ZONE_NAME} \
+  --resource-group ${RESOURCE_GROUP_NAME} \
+  --query "id" \
+  --output tsv)
+----
+
+. Assign the `Reader` role to the service principal by entering the following command:
++
+[source,terminal]
+----
+$ az role assignment create \
+  --role "Reader" \
+  --assignee "${EXTERNAL_DNS_SP_APP_ID}" \
+  --scope "${DNS_ID}"
+----
+
+. Assign the `Contributor` role to the service principal by entering the following command:
++
+[source,terminal]
+----
+$ az role assignment create \
+  --role "Contributor" \
+  --assignee "${EXTERNAL_DNS_SP_APP_ID}" \
+  --scope "${DNS_ID}"
+----
+
+. Create the content for the {azure-short} credentials file as shown in the following example:
++
+[source,json]
+----
+{
+  "tenantId": "$(az account show --query tenantId -o tsv)",
+  "subscriptionId": "$(az account show --query id -o tsv)",
+  "resourceGroup": "$RESOURCE_GROUP_NAME",
+  "aadClientId": "$EXTERNAL_DNS_SP_APP_ID",
+  "aadClientSecret": "$EXTERNAL_DNS_SP_PASSWORD"
+}
+----
+
+. Create the credentials file by entering the following command:
++
+[source,terminal]
+----
+$ oc apply -f <service_principal_filepath>.json
+----
+
+. If an existing Kubernetes secret for the {azure-short} credentials exists, delete it by entering the following command:
++
+[source,terminal]
+----
+$ oc delete secret/azure-config-file --namespace "default" || true
+----
+
+. Create the Kubernetes secret for the {azure-short} credentials by entering the following command:
++
+[source,terminal]
+----
+$ oc create secret generic azure-config-file \
+  --namespace "default" \
+  --from-file ${SERVICE_PRINCIPAL_FILEPATH}
+----
+
+. Configure the HyperShift Operator to use external DNS by creating the following `ConfigMap` object:
++
+[source,yaml]
+----
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: hypershift-operator-install-flags
+  namespace: local-cluster
+data:
+  installFlagsToAdd: "--external-dns-provider=azure --external-dns-credentials <secret> --external-dns-domain-filter <dns_zone>"
+  installFlagsToRemove: ""
+----
++
+The `data.installFlagsToAdd` parameter specifies the flags to pass to the Operator so it detects the DNS.
+
+. Apply the config map by entering the following command:
++
+[source,terminal]
+----
+$ oc apply -f hypershift-operator-install-flags.yaml
+----
+
+.Verification
+
+* Verify that both the HyperShift Operator and the external DNS are running by entering the following command:
++
+[source,terminal]
+----
+$ oc get pods -n hypershift
+----
++
+.Example output
+[source,terminal]
+----
+NAME                           READY   STATUS    RESTARTS   AGE
+external-dns-xxxxx-xxxxx       1/1     Running   0          1m
+operator-xxxxx-xxxxx           1/1     Running   0          1m
+----
