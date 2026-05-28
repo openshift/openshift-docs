@@ -1,0 +1,118 @@
+// Module included in the following assemblies:
+//
+// *deployment/rhcl-using-x509-crypt-id-verify.adoc
+
+:_mod-docs-content-type: PROCEDURE
+[id="proc-rhcl-x509-auth-prep-cas-and-certs_{context}"]
+= Prepare certificate authorites and client certificates
+
+[role="_abstract"]
+To set up authentication for clients with provider-specific TLS validation, you must first have certificate authorities (CAs) and client certificates.
+
+You can use the following procedure to manually generate resources, or you can provision certificates by using an existing certificate manager or other automated process. Whichever method you select, you must complete the following tasks to use X.509 validation with {prodname}:
+
+* Include the `extendedKeyUsage=clientAuth` parameter in your client certificates.
+* Mount the root CA certificate into the `Gateway` object pods. This enables network-level verification. The `Gateway` object requires the CA bundle to allow the TLS connection to establish.
+* Store the CA used to sign the client certificate in a Secret and label the Secret for discovery by Authorino. This enables policy-level verification. Authorino requires the CA bundle to perform deep packet inspection of the identity. Then Authorino can grant or deny the specific client's access a specific API.
+
+.Prerequisites
+
+* You are logged into {ocp} as a cluster administrator.
+* You installed {prodname}.
+
+.Procedure
+
+. On your local host, generate your certificate authority (CA) by running the following command:
++
+[source,terminal]
+----
+$ openssl req -x509 -sha512 -nodes \
+  -days 365 \
+  -newkey rsa:4096 \
+  -subj "/CN=Test CA/O=Kuadrant/C=US" \
+  -addext basicConstraints=CA:TRUE \
+  -addext keyUsage=digitalSignature,keyCertSign \
+  -keyout /tmp/ca.key \
+  -out /tmp/ca.crt
+----
+
+. On your local host, create X.509 v3 extensions for your client certificate by running the following command:
++
+[source,terminal]
+----
+$ cat > /tmp/x509v3.ext << EOF
+authorityKeyIdentifier=keyid,issuer
+basicConstraints=CA:FALSE
+keyUsage=digitalSignature,nonRepudiation,keyEncipherment,dataEncipherment
+extendedKeyUsage=clientAuth
+EOF
+----
+
+. Generate the client certificate on your local host by running the following commands:
+
+.. Generate your Private Key. This is the secret file that stays on the client. Run the following command:
++
+[source,terminal]
+----
+$ openssl genrsa -out /tmp/client.key 4096
+----
+
+.. Create a Certificate Signing Request (CSR). The following command uses your private key and identity information to create a request for a certificate:
++
+[source,terminal]
+----
+$ openssl req -new \
+  -subj "/CN=test-client/O=Kuadrant/C=US" \
+  -key /tmp/client.key \
+  -out /tmp/client.csr
+----
+
+.. Sign the certificate. This command takes your request, looks at your internal CA, and issues the final Public Certificate, the `client.crt`:
++
+[source,terminal]
+----
+$ openssl x509 -req -sha512 \
+  -days 365 \
+  -CA /tmp/ca.crt \
+  -CAkey /tmp/ca.key \
+  -CAcreateserial \
+  -extfile /tmp/x509v3.ext \
+  -in /tmp/client.csr \
+  -out /tmp/client.crt
+----
+
+. If you do not have a CA that you use to issue and sign client certificates, create the self-signed CA certificate in your cluster by running the following commands:
+
+.. Create the ConfigMap for `Gateway` TLS validation by running the following command:
++
+[source,terminal]
+----
+$ oc create configmap gateway-client-ca \
+  -n gateway-system \
+  ----from-file=trust-bundle.crt=/tmp/ca.crt
+----
++
+The ConfigMap must be in the same namespace as the `Gateway` object.
+Your `Gateway` object listener `clientCertificateRefs` must point to this ConfigMap.
+
+.. Create the Authorino validation `Secret` by running the following command:
++
+[source,terminal]
+----
+$ oc create secret generic authorino-ca-validation \
+  -n kuadrant-system \
+  --from-file=ext-auth-ca.crt=/tmp/ca.crt
+----
++
+The `Secret` must be in the same namespace as Authorino.
+//AI said, "Never upload your CA private key to the cluster unless you are running a certificate issuer (like cert-manager)." and suggested using only the public key here b/c Authorino does not need the private key WDYT?
+
+.. Label the Secret so that Authorino can find its trusted anchors by running the following command:
++
+[source,terminal]
+----
+$ oc label secret authorino-ca-validation \
+  -n kuadrant-system \
+  authorino.kuadrant.io/managed-by=authorino \
+  app.kubernetes.io/name=kuadrant-auth
+----
