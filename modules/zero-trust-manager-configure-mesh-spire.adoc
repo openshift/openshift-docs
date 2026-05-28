@@ -1,0 +1,179 @@
+// Module included in the following assemblies:
+//
+// * service_mesh/v3/ossm-integrations.adoc
+
+:_mod-docs-content-type: PROCEDURE
+[id="zero-trust-manager-configure-mesh-spire_{context}"]
+= Configuring {SMProductName} to use SPIRE certificates
+
+[role="_abstract"]
+Configure {SMProductName} to use SPIRE-issued certificates by enabling the external Secret Discovery Service (SDS) in Istio custom resources and mounting the SPIRE Agent socket into the service mesh workloads.
+
+
+.Prerequisites
+
+* You have deployed SPIRE.
+* You have installed the {SMProduct} 3.x Operator (`servicemeshoperator3`).
+* You have cluster administrator permissions.
+
+.Procedure
+
+. Create the `IstioCNI` custom resource:
++
+[source,yaml]
+----
+apiVersion: sailoperator.io/v1alpha1
+kind: IstioCNI
+metadata:
+  name: default
+spec:
+  version: v1.27.3
+  namespace: istio-cni
+----
+
+. Create the `Istio` custom resource with SPIRE integration settings:
++
+[source,yaml]
+----
+apiVersion: sailoperator.io/v1alpha1
+kind: Istio
+metadata:
+  name: default
+spec:
+  version: v1.27.3
+  namespace: istio-system
+  values:
+    global:
+      pilotCertProvider: istiod
+    pilot:
+      env:
+        PILOT_ENABLE_XDS_IDENTITY_CHECK: "false"
+    meshConfig:
+      defaultConfig:
+        proxyMetadata:
+          CREDENTIAL_SOCKET_EXISTS: "true"
+          SPIFFE_ENDPOINT_SOCKET: "unix:///tmp/spire-agent/public/spire-agent.sock"
+----
++
+* The `spec.values.global.pilotCertProvider` field contains the default `istiod` provider. The `pilotCertProvider: spire` option is not implemented in Istio v1.27.3.
+
+* The `spec.values.pilot.env.PILOT_ENABLE_XDS_IDENTITY_CHECK` field contains the optional setting for basic integration. Set this field to `"true"` for production deployments to enforce identity verification.
+
+* The `spec.values.meshConfig.defaultConfig.proxyMetadata.CREDENTIAL_SOCKET_EXIST` field tells Envoy to use an external SDS provider (SPIRE) instead of Istio's built-in CA.
+
+* The `spec.values.meshConfig.defaultConfig.proxyMetadata.SPIFFE_ENDPOINT_SOCKET` field contains the path to the SPIRE Agent UNIX domain socket that is mounted via the SPIFFE CSI Driver.
+
+. Create a test namespace with sidecar injection enabled by running the following command:
++
+[source,terminal]
+----
+$ oc create namespace mesh-test
+$ oc label namespace mesh-test istio-injection=enabled
+----
+
+. Create a `ClusterSPIFFEID` custom resource to define SPIFFE ID templates for workloads:
++
+[source,yaml]
+----
+apiVersion: spire.openshift.io/v1alpha1
+kind: ClusterSPIFFEID
+metadata:
+  name: mesh-test-workloads
+spec:
+  spiffeIDTemplate: "spiffe://example.org/ns/{{ .PodMeta.Namespace }}/sa/{{ .PodSpec.ServiceAccountName }}"
+  podSelector:
+    matchLabels:
+      istio.io/rev: default
+  namespaceSelector:
+    matchLabels:
+      istio-injection: enabled
+  workloadSelectorTemplates:
+    - "k8s:ns:{{ .PodMeta.Namespace }}"
+    - "k8s:sa:{{ .PodSpec.ServiceAccountName }}"
+----
++
+* The `spec.podSelector.matchLabels.istion.io/rev`field selects only those pods with Istio sidecars injected.
+
+. Deploy test applications with annotations to mount the SPIRE socket:
++
+[source,yaml]
+----
+apiVersion: v1
+kind: Pod
+metadata:
+  name: backend
+  namespace: mesh-test
+  annotations:
+    sidecar.istio.io/userVolume: '{"spire-agent-socket":{"csi":{"driver":"csi.spiffe.io","readOnly":true}}}'
+    sidecar.istio.io/userVolumeMount: '{"spire-agent-socket":{"mountPath":"/tmp/spire-agent/public","readOnly":true}}'
+spec:
+  serviceAccountName: backend
+  containers:
+  - name: backend
+    image: registry.access.redhat.com/ubi9/ubi-minimal:latest
+    command: ["/bin/sh", "-c", "while true; do echo 'Backend running'; sleep 30; done"]
+----
++
+* The `metadata.annotations.sidecar.istio.io/userVolume` field defines a CSI volume using the SPIFFE CSI Driver.
+
+* The `metadata.annotations.sidecar.istio.io/userVolumeMount` field mounts the SPIRE socket at the expected path for Envoy.
++
+[NOTE]
+====
+In {SMProduct} 3.x (Istio v1.27.3), you must use the `sidecar.istio.io/userVolume` and `sidecar.istio.io/userVolumeMount` annotations instead of directly modifying the pod injection template to avoid template conflicts.
+====
+
+.Verification
+
+. Verify that the workload pod has the SPIRE socket mounted by running the following command:
++
+[source,terminal]
+----
+$ oc exec -n mesh-test backend -c istio-proxy -- ls -l /tmp/spire-agent/public/
+----
++
+.Example output
+[source,terminal]
+----
+srwxrwxrwx 1 root root 0 May 20 10:15 spire-agent.sock
+----
+
+. Verify that the Envoy sidecar has the correct environment variables by running the following command:
++
+[source,terminal]
+----
+$ oc exec -n mesh-test backend -c istio-proxy -- env | grep -E 'CREDENTIAL_SOCKET|SPIFFE_ENDPOINT'
+----
++
+.Example output
+[source,terminal]
+----
+CREDENTIAL_SOCKET_EXISTS=true
+SPIFFE_ENDPOINT_SOCKET=unix:///tmp/spire-agent/public/spire-agent.sock
+----
+
+. Verify that the workload certificate has a SPIFFE ID issued by SPIRE by running the following command:
++
+[source,terminal]
+----
+$ oc exec -n mesh-test backend -c istio-proxy -- \
+    openssl s_client -connect localhost:15000 -showcerts < /dev/null 2>/dev/null | \
+    openssl x509 -noout -text | grep -A1 "Subject Alternative Name"
+----
++
+.Example output
+[source,terminal]
+----
+Subject Alternative Name:
+    URI:spiffe://example.org/ns/mesh-test/sa/backend
+----
++
+The SPIFFE ID format confirms that SPIRE issued the certificate.
+
+. Check SPIRE Agent SDS statistics to confirm certificate requests by running the following command:
++
+[source,terminal]
+----
+$ oc exec -n openshift-spire spire-agent-<pod-id> -- \
+    /opt/spire/bin/spire-agent api fetch x509 -socketPath /run/spire/agent-sockets/spire-agent.sock
+----

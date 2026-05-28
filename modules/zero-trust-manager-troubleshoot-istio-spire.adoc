@@ -1,0 +1,296 @@
+// Module included in the following assemblies:
+//
+// * service_mesh/v3x/ossm-ztwim-integration.adoc
+
+:_mod-docs-content-type: REFERENCE
+[id="zero-trust-manager-troubleshoot-istio-spire_{context}"]
+= Troubleshooting {zero-trust-full} and Istio integration
+
+[role="_abstract"]
+Common issues and solutions for troubleshooting SPIRE and Istio integration with {zero-trust-full}. Use this reference to diagnose and resolve problems with workload identity attestation, certificate issuance, and mTLS connectivity.
+
+== SPIRE Agent socket not available
+
+*Symptom*: Pods fail to start or sidecar containers cannot communicate with SPIRE.
+
+*Possible causes*:
+
+* SPIFFE CSI driver not running
+
+* Incorrect socket path configuration
+
+* Missing CSI volume in pod specification
+
+*Resolution*:
+
+. Verify the SPIFFE CSI driver is running:
++
+[source,terminal]
+----
+$ oc get daemonset/spire-spiffe-csi-driver -n zero-trust-workload-identity-manager
+----
+
+. Check that pods include the CSI volume by running the following command:
++
+[source,terminal]
+----
+$ oc get pod <pod-name> -n <namespace> -o yaml | grep -A 5 "csi.spiffe.io"
+----
+
+. Verify the socket path matches the SPIRE Agent configuration by running the following command:
++
+[source,terminal]
+----
+$ oc get spireagent cluster -o jsonpath='{.spec.socketPath}'
+----
+
+== Workloads not receiving SPIRE certificates
+
+*Symptom*: Istio proxies fail to obtain certificates or fall back to Istio CA.
+
+*Possible causes*:
+
+* Missing sidecar injection template annotation
+
+* SPIRE Agent not attesting workloads
+
+* Incorrect trust domain configuration
+
+*Resolution*:
+
+. Verify the pod has the correct injection template annotation by running the following command:
++
+[source,terminal]
+----
+$ oc get pod <pod-name> -n <namespace> -o jsonpath='{.metadata.annotations.inject\.istio\.io/templates}'
+----
++
+Expected output: `sidecar,spire`
+
+. Check SPIRE registration entries by running the following command:
++
+[source,terminal]
+----
+$ oc exec -n zero-trust-workload-identity-manager spire-server-0 -c spire-server -- /opt/spire/bin/spire-server entry show -socketPath /tmp/spire-server/private/api.sock
+----
+
+. Verify the trust domain in Istio matches {zero-trust-full} by running the following commands:
++
+[source,terminal]
+----
+$ oc get istio default -n istio-system -o jsonpath='{.spec.values.meshConfig.trustDomain}'
+----
+
+[source,terminal]
+----
+$ oc get spireserver cluster -o jsonpath='{.spec.trustDomain}'
+----
+
+. Check the proxy configuration for the certificates by running the following command:
++
+[source,terminal]
+----
+$ istioctl proxy-config secret <pod-name> -n <namespace>
+----
+
+== mTLS connections failing between services
+
+*Symptom*: Services cannot communicate, receiving connection refused or certificate errors.
+
+*Possible causes*:
+
+* Missing `DestinationRule` configuration
+
+* `PeerAuthentication` mode mismatch
+
+* Certificate validation failures
+
+*Resolution*:
+
+. Verify that the `PeerAuthentication` is configured by running the following command:
++
+[source,terminal]
+----
+$ oc get peerauthentication -n <namespace>
+----
+
+. Check that the `DestinationRule` specifies `ISTIO_MUTUAL` by running the following command:
++
+[source,terminal]
+----
+$ oc get destinationrule -n <namespace> -o yaml
+----
++
+Verify that the `trafficPolicy.tls.mode: ISTIO_MUTUAL` is set.
+
+. Verify both workloads have SPIRE-issued certificates by running the following command:
++
+[source,terminal]
+----
+$ istioctl proxy-config secret <pod-name> -n <namespace> -o json | jq -r '.dynamicActiveSecrets[0].secret.tlsCertificate.certificateChain.inlineBytes' | base64 --decode | openssl x509 -noout -issuer
+----
++
+Look for `O=SPIRE` in the issuer.
+
+. Check the Envoy access logs for certificate errors by running the following command:
++
+[source,terminal]
+----
+$ oc logs <pod-name> -n <namespace> -c istio-proxy
+----
+
+== SPIRE Server not issuing certificates
+
+*Symptom*: SPIRE Server logs show errors or workloads cannot fetch SVIDs.
+
+*Possible causes*:
+
+* SPIRE Server not running or unhealthy
+
+* Database connection issues
+
+* Certificate authority expired
+
+*Resolution*:
+
+. Check the SPIRE Server pod status by running the following command:
++
+[source,terminal]
+----
+$ oc get pods -n zero-trust-workload-identity-manager -l app.kubernetes.io/name=spire-server
+----
+
+. Review the SPIRE Server logs by running the following command:
++
+[source,terminal]
+----
+$ oc logs -n zero-trust-workload-identity-manager spire-server-0 -c spire-server
+----
+
+. Verify the CA certificate validity by running the following command:
++
+[source,terminal]
+----
+$ oc exec -n zero-trust-workload-identity-manager spire-server-0 -c spire-server -- /opt/spire/bin/spire-server bundle show -socketPath /tmp/spire-server/private/api.sock
+----
+
+. Check datastore connectivity by running the following command:
++
+[source,terminal]
+----
+$ oc get spireserver cluster -o jsonpath='{.spec.datastore}'
+----
+
+== Istio Gateway not using SPIRE certificates
+
+*Symptom*: Gateway pods use Istio CA instead of SPIRE-issued certificates.
+
+*Possible causes*:
+
+* Missing `spireGateway` injection template
+
+* CSI volume not mounted
+
+* Incorrect pod annotations
+
+*Resolution*:
+
+. Verify the gateway pod annotations by running the following command:
++
+[source,terminal]
+----
+$ oc get pod -n istio-system -l istio=gateway -o jsonpath='{.items[0].metadata.annotations.inject\.istio\.io/templates}'
+----
++
+Expected output: `gateway,spireGateway`
+
+. Check the CSI volume mount by running the following command:
++
+[source,terminal]
+----
+$ oc get pod -n istio-system -l istio=gateway -o yaml | grep -A 5 "csi.spiffe.io"
+----
+
+. Recreate the gateway deployment with correct annotations by running the following command:
++
+[source,terminal]
+----
+$ helm upgrade istio-gateway -n istio-system istio/gateway --set-json 'podAnnotations={"inject.istio.io/templates":"gateway,spireGateway"}'
+----
+
+== OIDC discovery provider failing
+
+*Symptom*: JWT-SVID validation fails or OIDC discovery endpoints are unreachable.
+
+*Possible causes*:
+
+* OIDC provider not running
+
+* Route not created or misconfigured
+
+* Certificate issues with OIDC serving certificate
+
+*Resolution*:
+
+. Verify OIDC provider deployment by running the following command:
++
+[source,terminal]
+----
+$ oc get deployment spire-spiffe-oidc-discovery-provider -n zero-trust-workload-identity-manager
+----
+
+. Check the OIDC discovery route by running the following command:
++
+[source,terminal]
+----
+$ oc get route -n zero-trust-workload-identity-manager
+----
+
+. Test the OIDC discovery endpoint by running the following command:
++
+[source,terminal]
+----
+$ curl -k https://oidc-discovery.$(oc get ingresses.config/cluster -o jsonpath={.spec.domain})/.well-known/openid-configuration
+----
+
+. Verify that the OIDC serving certificate exists by running the following command:
++
+[source,terminal]
+----
+$ oc get secret oidc-serving-cert -n zero-trust-workload-identity-manager -o jsonpath='{.data.tls\.crt}' | base64 -d | openssl x509 -noout -dates
+----
+
+== ZTWIM Operator in CREATE_ONLY mode not working
+
+*Symptom*: Manual changes to SPIRE Agent are overwritten by the Operator.
+
+*Possible causes*:
+
+* Subscription not patched correctly
+
+* Operator pods not restarted after patch
+
+*Resolution*:
+
+. Verify the subscription configuration by running the following command:
++
+[source,terminal]
+----
+$ oc get subscription openshift-zero-trust-workload-identity-manager -n zero-trust-workload-identity-manager -o jsonpath='{.spec.config.env}'
+----
++
+Expected output should include `CREATE_ONLY_MODE=true`.
+
+. Restart {zero-trust-full} by running the following command:
++
+[source,terminal]
+----
+$ oc delete pod -n zero-trust-workload-identity-manager -l app.kubernetes.io/name=zero-trust-workload-identity-manager-operator
+----
+
+. Add the create-only annotation to specific resources by running the following command:
++
+[source,terminal]
+----
+$ oc annotate spireagent cluster ztwim.openshift.io/create-only="true"
+----
