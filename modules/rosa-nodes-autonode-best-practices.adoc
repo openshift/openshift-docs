@@ -1,0 +1,543 @@
+// Module included in the following assemblies:
+//
+// * rosa_cluster_admin/rosa_nodes/rosa-nodes-autonode-managing.adoc
+
+:_mod-docs-content-type: CONCEPT
+[id="rosa-nodes-autonode-best-practices_{context}"]
+= {autonode} best practices
+
+[role="_abstract"]
+Recommendations for configuring and operating {autonode} effectively in {product-title} environments.
+
+[id="rosa-nodes-autonode-bp-when-to-use_{context}"]
+== Choosing between {autonode} and machine pools
+
+{autonode} and machine pools serve different use cases. Understanding when to use each approach helps you optimize both cost and operational efficiency.
+
+Use {autonode} for::
++
+--
+* *Variable workloads*: Applications with unpredictable demand patterns or periodic batch jobs
+* *Development and testing*: Environments where usage varies throughout the day
+* *Cost optimization*: Workloads where reducing idle capacity is a priority
+* *Diverse instance requirements*: Applications with different CPU, memory, or GPU requirements
+* *Spot instance usage*: Fault-tolerant workloads that can benefit from significant cost savings
+--
+
+Use machine pools for::
++
+--
+* *Stable baseline capacity*: Long-running applications with predictable resource requirements
+* *Minimum guaranteed capacity*: When you need to ensure a specific number of nodes are always available
+* *Persistent local storage*: Applications that store data on instance local disks
+* *Specific instance type requirements*: When workloads must run on particular instance families
+* *Regulatory or compliance requirements*: When node lifecycle must be explicitly controlled
+--
+
+Hybrid approach::
++
+Many production environments use both {autonode} and machine pools:
++
+--
+* Machine pools for baseline capacity and critical long-running workloads
+* {autonode} for burst capacity and variable workloads
+* Node selectors and taints to control workload placement
+--
+
+[id="rosa-nodes-autonode-bp-resource-limits_{context}"]
+== Setting appropriate resource limits
+
+Resource limits prevent {autonode} from provisioning unlimited capacity in response to workload demand. Setting appropriate limits protects against unexpected costs and quota exhaustion.
+
+CPU and memory limits::
++
+Set limits based on your maximum acceptable cost and Amazon Web Services (AWS) service quotas:
++
+[source,yaml]
+----
+spec:
+  limits:
+    cpu: "500"        # Maximum 500 vCPUs
+    memory: 2000Gi    # Maximum 2000 GiB
+----
++
+Consider:
++
+--
+* Peak workload requirements during busy periods
+* AWS service quotas for Amazon Elastic Compute Cloud (Amazon EC2) instances in your region
+* Cost budget for compute resources
+* Cluster-wide resource consumption across all NodePools
+--
+
+Multiple NodePools with different limits::
++
+Create separate NodePools for different workload types with appropriate limits for each:
++
+[source,yaml]
+----
+# Production workload NodePool
+apiVersion: karpenter.sh/v1
+kind: NodePool
+metadata:
+  name: production
+spec:
+  limits:
+    cpu: "400"
+    memory: 1600Gi
+  weight: 100  # Higher priority
+---
+# Development workload NodePool
+apiVersion: karpenter.sh/v1
+kind: NodePool
+metadata:
+  name: development
+spec:
+  limits:
+    cpu: "100"
+    memory: 400Gi
+  weight: 50   # Lower priority
+----
+
+[id="rosa-nodes-autonode-bp-disruption_{context}"]
+== Configuring disruption settings
+
+Disruption settings control when {autonode} can replace or remove nodes. Proper configuration balances cost optimization with workload stability.
+
+Consolidation policy::
++
+Choose based on workload tolerance for disruption:
++
+--
+* `WhenEmptyOrUnderutilized` (default): Maximizes cost savings by consolidating underutilized nodes. Use for workloads that tolerate frequent rescheduling.
+* `WhenEmpty`: Only removes empty nodes. Use for workloads sensitive to disruption or when pod eviction must be minimized.
+--
+
+Consolidation delay::
++
+Add a delay before consolidating nodes to prevent rapid scaling cycles:
++
+[source,yaml]
+----
+spec:
+  disruption:
+    consolidationPolicy: WhenEmptyOrUnderutilized
+    consolidateAfter: 5m  # Wait 5 minutes before consolidating
+----
++
+Longer delays reduce churn but may increase costs from underutilized nodes.
+
+Pod disruption budgets::
++
+Always configure pod disruption budgets for critical applications:
++
+[source,yaml]
+----
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: critical-app
+spec:
+  minAvailable: 2
+  selector:
+    matchLabels:
+      app: critical-app
+----
++
+Pod disruption budgets limit the number of pods that can be disrupted simultaneously during node consolidation.
+
+Node expiration::
++
+Use node expiration to force regular node rotation for security updates:
++
+[source,yaml]
+----
+spec:
+  template:
+    spec:
+      expireAfter: 720h  # 30 days
+----
++
+[WARNING]
+====
+Node expiration does not respect pod disruption budgets. Balance security requirements against workload stability.
+====
+
+[id="rosa-nodes-autonode-bp-instance-selection_{context}"]
+== Instance type selection strategies
+
+Carefully selecting which instance types {autonode} can provision affects cost, performance, and availability.
+
+Broad instance type selection::
++
+Allow multiple instance families and generations for better availability and cost optimization:
++
+[source,yaml]
+----
+spec:
+  template:
+    spec:
+      requirements:
+        - key: karpenter.k8s.aws/instance-category
+          operator: In
+          values: ["c", "m", "r"]  # Compute, general-purpose, memory-optimized
+        - key: karpenter.k8s.aws/instance-generation
+          operator: Gt
+          values: ["4"]  # Generation 5 and newer
+----
++
+Broader selection increases the likelihood that {autonode} can provision capacity during high demand periods.
+
+Instance type restrictions::
++
+Restrict instance types when workloads have specific requirements:
++
+[source,yaml]
+----
+spec:
+  template:
+    spec:
+      requirements:
+        # GPU workloads
+        - key: karpenter.k8s.aws/instance-category
+          operator: In
+          values: ["g", "p"]
+        # High memory workloads
+        - key: karpenter.k8s.aws/instance-category
+          operator: In
+          values: ["r", "x"]
+----
+
+Avoid burstable instances for production::
++
+Exclude `t` family instances for production workloads to ensure consistent performance:
++
+[source,yaml]
+----
+spec:
+  template:
+    spec:
+      requirements:
+        - key: karpenter.k8s.aws/instance-category
+          operator: NotIn
+          values: ["t"]
+----
+
+[id="rosa-nodes-autonode-bp-cost-optimization_{context}"]
+== Cost optimization
+
+{autonode} provides several mechanisms for reducing infrastructure costs.
+
+Spot instances::
++
+Use spot instances for fault-tolerant workloads to achieve significant cost savings:
++
+[source,yaml]
+----
+spec:
+  template:
+    spec:
+      requirements:
+        - key: karpenter.sh/capacity-type
+          operator: In
+          values: ["spot"]
+----
++
+Best practices for spot instances:
++
+--
+* Use for batch jobs, data processing, and stateless applications
+* Configure applications to handle interruptions gracefully
+* Allow multiple instance types to reduce interruption rates
+* Set appropriate pod disruption budgets
+* Consider a hybrid approach: prefer spot but allow on-demand fallback
+--
+
+Consolidation::
++
+Enable consolidation to reduce the number of nodes by packing workloads more efficiently:
++
+[source,yaml]
+----
+spec:
+  disruption:
+    consolidationPolicy: WhenEmptyOrUnderutilized
+----
++
+Monitor consolidation activity to ensure it does not cause excessive pod rescheduling.
+
+Right-sizing::
++
+Set accurate resource requests on pods to ensure {autonode} provisions appropriately sized nodes:
++
+[source,yaml]
+----
+containers:
+  - name: app
+    resources:
+      requests:
+        cpu: "500m"      # Actual CPU needed
+        memory: "1Gi"    # Actual memory needed
+      limits:
+        cpu: "1000m"
+        memory: "2Gi"
+----
++
+Oversized requests waste capacity; undersized requests cause performance issues.
+
+[id="rosa-nodes-autonode-bp-security_{context}"]
+== Security considerations
+
+{autonode} introduces dynamic node provisioning that requires additional security considerations.
+
+IAM permissions::
++
+Follow the principle of least privilege for the {autonode} IAM role:
++
+--
+* Use the documented IAM policy without modification
+* Do not grant additional permissions unless required
+* Regularly review IAM permissions for compliance
+* Use AWS IAM Access Analyzer to identify unused permissions
+--
+
+Instance metadata service::
++
+Configure node classes to require IMDSv2 for enhanced security:
++
+[source,yaml]
+----
+spec:
+  metadataOptions:
+    httpEndpoint: enabled
+    httpTokens: required  # Require IMDSv2
+    httpPutResponseHopLimit: 2
+----
+
+Custom AMIs::
++
+If using custom AMIs, ensure they follow security best practices:
++
+--
+* Base images on Red Hat Enterprise Linux CoreOS (RHCOS)
+* Apply security patches regularly
+* Scan images for vulnerabilities
+* Test compatibility with {product-title} before production use
+* Use node expiration to ensure regular AMI updates
+--
+
+Network isolation::
++
+Use security groups and network policies to restrict network access:
++
+--
+* Tag security groups appropriately for {autonode} discovery
+* Configure security group rules to allow only required traffic
+* Use Kubernetes network policies for pod-to-pod communication control
+* Place nodes in private subnets with controlled internet access
+--
+
+[id="rosa-nodes-autonode-bp-monitoring_{context}"]
+== Monitoring and observability
+
+Effective monitoring helps you understand {autonode} behavior and identify issues quickly.
+
+Key metrics to monitor::
++
+--
+* *Node count by NodePool*: Track capacity provisioned for each NodePool
+* *Pending pods*: Identify workloads waiting for capacity
+* *Node utilization*: Monitor CPU and memory usage across {autonode}-provisioned nodes
+* *Provisioning latency*: Measure time from pod creation to node readiness
+* *Consolidation events*: Track how often nodes are consolidated or removed
+* *Spot interruptions*: Monitor spot instance interruption rates
+--
+
+NodePool and NodeClaim resources::
++
+Regularly check NodePool and NodeClaim status:
++
+[source,terminal]
+----
+$ oc get nodepool
+$ oc get nodeclaim
+----
++
+Watch for:
++
+--
+* NodePools with `READY=False`
+* NodeClaims stuck in `Unknown` state
+* Nodes that do not reach `Ready` state within expected time
+--
+
+Karpenter controller logs::
++
+Monitor Karpenter controller logs for provisioning decisions and errors:
++
+[source,terminal]
+----
+$ oc logs -n kube-system -l app.kubernetes.io/name=karpenter --tail=100
+----
++
+Key log messages:
++
+--
+* `"launching node"`: Provisioning activity
+* `"consolidation delete"`: Node removal for optimization
+* `"could not schedule pod"`: Provisioning failures
+* `"discovered subnets"`: Successful resource discovery
+--
+
+Cost monitoring::
++
+Track costs associated with {autonode}:
++
+--
+* Use AWS Cost Explorer to monitor Amazon EC2 costs by tag
+* Tag nodes with cost center or project identifiers
+* Compare costs before and after {autonode} adoption
+* Set up AWS budgets and alerts for unexpected cost increases
+--
+
+[id="rosa-nodes-autonode-bp-testing_{context}"]
+== Testing and validation
+
+Test {autonode} configurations in non-production environments before deploying to production.
+
+Test scenarios::
++
+--
+* Deploy workloads with varying resource requests to verify appropriate instance selection
+* Scale deployments up and down to verify provisioning and deprovisioning behavior
+* Test spot instance interruption handling with fault-injection tools
+* Verify consolidation behavior under different load patterns
+* Test resource limit enforcement by attempting to exceed configured limits
+--
+
+Gradual rollout::
++
+Adopt {autonode} gradually in production environments:
++
+--
+1. Start with development and testing environments
+2. Deploy {autonode} for non-critical batch workloads
+3. Expand to fault-tolerant applications
+4. Carefully evaluate before using for critical workloads
+--
+
+[id="rosa-nodes-autonode-bp-workload-labels_{context}"]
+== Workload targeting with labels and node selectors
+
+Use labels and node selectors to control which workloads run on {autonode}-provisioned nodes.
+
+Label NodePools::
++
+Add meaningful labels to NodePools:
++
+[source,yaml]
+----
+spec:
+  template:
+    metadata:
+      labels:
+        workload-type: batch
+        cost-optimization: spot
+        environment: production
+----
+
+Use node selectors in pods::
++
+Target specific NodePools with node selectors:
++
+[source,yaml]
+----
+spec:
+  nodeSelector:
+    workload-type: batch
+    cost-optimization: spot
+----
+
+Combine with taints and tolerations::
++
+Use taints to dedicate nodes to specific workloads:
++
+[source,yaml]
+----
+# NodePool with taint
+spec:
+  template:
+    spec:
+      taints:
+        - key: workload-type
+          value: batch
+          effect: NoSchedule
+---
+# Pod with toleration
+spec:
+  tolerations:
+    - key: workload-type
+      operator: Equal
+      value: batch
+      effect: NoSchedule
+----
+
+[id="rosa-nodes-autonode-bp-multi-nodepool_{context}"]
+== Multiple NodePool strategies
+
+Using multiple NodePools provides flexibility for different workload requirements.
+
+By capacity type::
++
+Separate on-demand and spot instances:
++
+[source,yaml]
+----
+# On-demand NodePool for critical workloads
+apiVersion: karpenter.sh/v1
+kind: NodePool
+metadata:
+  name: on-demand-critical
+spec:
+  template:
+    spec:
+      requirements:
+        - key: karpenter.sh/capacity-type
+          operator: In
+          values: ["on-demand"]
+  weight: 100
+---
+# Spot NodePool for batch workloads
+apiVersion: karpenter.sh/v1
+kind: NodePool
+metadata:
+  name: spot-batch
+spec:
+  template:
+    spec:
+      requirements:
+        - key: karpenter.sh/capacity-type
+          operator: In
+          values: ["spot"]
+  weight: 50
+----
+
+By environment::
++
+Separate production and non-production workloads:
++
+--
+* Different resource limits for each environment
+* Different consolidation policies
+* Different instance type restrictions
+--
+
+By workload type::
++
+Separate compute-intensive, memory-intensive, and general-purpose workloads:
++
+--
+* Compute-intensive: Allow only `c` family instances
+* Memory-intensive: Allow only `r` and `x` family instances
+* General-purpose: Allow `c`, `m`, and `r` family instances
+--
