@@ -1,0 +1,371 @@
+// Module included in the following assemblies:
+//
+// * migrating/ossm-migrating-sidecar-to-ambient.adoc
+
+:_mod-docs-content-type: PROCEDURE
+[id="ossm-migrating-sidecar-to-ambient-migrate-policies_{context}"]
+= Migrating traffic and security policies
+
+[role="_abstract"]
+
+In ambient mode, L7 traffic management is handled by waypoint proxies rather than sidecar proxies. This section describes how to convert your existing sidecar mode traffic and security policies for use in ambient mode.
+
+[TIP]
+====
+You can skip this section if all of the following conditions apply:
+
+* You use only L4 `AuthorizationPolicy` rules source principal, namespace, or IP matching with no `methods`, `paths`, or `headers` matching.
+* You have no `VirtualService` or `DestinationRule` resources.
+* You have no `EnvoyFilter`, `WasmPlugin`, or `RequestAuthentication` resources.
+
+Your existing policies will work in ambient mode without changes. Proceed directly to "Enabling ambient mode".
+====
+
+.Prerequisites
+
+* You have completed "Installing ambient mode components".
+* You have deployed waypoint proxies for namespaces requiring L7 features.
+
+.Procedure
+
+. Audit your existing policies:
+
+.. List all `VirtualService` and `DestinationRule` resources in the cluster:
++
+[source,terminal]
+----
+$ oc get virtualservice,destinationrule -A
+----
+
+.. Identify `AuthorizationPolicy` resources that require a waypoint because they use L7 rules or `CUSTOM` and `AUDIT` actions:
++
+[source,terminal]
+----
+$ oc get authorizationpolicy -A --no-headers | while read ns name rest; do
+    if oc get authorizationpolicy "$name" -n "$ns" -o yaml | grep -qE "(methods:|paths:|headers:|action: CUSTOM|action: AUDIT)"; then
+      echo "$ns/$name"
+    fi
+  done
+----
+
+.. Identify `DestinationRule` resources that define subsets, which require version specific Services when migrating to `HTTPRoute`:
++
+[source,terminal]
+----
+$ oc get destinationrule -A --no-headers | while read ns name rest; do
+    if oc get destinationrule "$name" -n "$ns" -o yaml | grep -q "subsets:"; then
+      echo "$ns/$name"
+    fi
+  done
+----
+
+. Migrate `VirtualService` resources to `HTTPRoute`:
++
+[WARNING]
+====
+`VirtualService` support with waypoints is Technology Preview and may not be stable in future releases. Migrate your `VirtualService` resources to `HTTPRoute` before completing the migration. Do not leave both `VirtualService` and `HTTPRoute` resources targeting the same workload, as this leads to undefined behavior.
+====
++
+`HTTPRoute` is the stable, supported L7 routing API for ambient mode.
+
+.. If your `VirtualService` resources reference `DestinationRule` subsets, create version specific Services for each subset. The following example creates Services for three versions of the `reviews` application:
++
+[source,yaml]
+----
+apiVersion: v1
+kind: Service
+metadata:
+  name: reviews-v1
+  namespace: <namespace>
+spec:
+  selector:
+    app: reviews
+    version: v1
+  ports:
+  - port: 9080
+    name: http
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: reviews-v2
+  namespace: <namespace>
+spec:
+  selector:
+    app: reviews
+    version: v2
+  ports:
+  - port: 9080
+    name: http
+----
+
+.. Replace each `VirtualService` with an equivalent `HTTPRoute`. The following example shows a `VirtualService` before migration and the corresponding `HTTPRoute` after migration:
++
+Before migration:
++
+[source,yaml]
+----
+apiVersion: networking.istio.io/v1
+kind: VirtualService
+metadata:
+  name: reviews
+  namespace: <namespace>
+spec:
+  hosts:
+  - reviews
+  http:
+  - match:
+    - headers:
+        end-user:
+          exact: jason
+    route:
+    - destination:
+        host: reviews
+        subset: v2
+  - route:
+    - destination:
+        host: reviews
+        subset: v1
+----
++
+After migration:
++
+[source,yaml]
+----
+apiVersion: gateway.networking.k8s.io/v1
+kind: HTTPRoute
+metadata:
+  name: reviews
+  namespace: <namespace>
+spec:
+  parentRefs:
+  - group: ""
+    kind: Service
+    name: reviews
+    port: 9080
+  rules:
+  - matches:
+    - headers:
+      - name: end-user
+        value: jason
+    backendRefs:
+    - name: reviews-v2
+      port: 9080
+  - backendRefs:
+    - name: reviews-v1
+      port: 9080
+----
++
+[NOTE]
+====
+The `HTTPRoute` attaches to the `reviews` Service using `kind: Service` as the `parentRef`. This is the correct attachment model for ambient mode, the waypoint uses the Service as the routing anchor. Replace version specific subset references with the version-specific Services you created in the previous step.
+====
+
+. Migrate `AuthorizationPolicy` resources for L7 rules:
++
+In sidecar mode, `AuthorizationPolicy` resources use a `selector` to target pods directly. In ambient mode, L7 authorization policies must be enforced by a waypoint proxy and must use `targetRefs` to target the waypoint's parent `Service` or the `Gateway` resource itself.
+
+.. L4 `AuthorizationPolicy` resources that only match on source principals, namespaces, or IP ranges work in ambient mode without modification. They are enforced by ztunnel and require no changes. The following example shows an L4 policy that requires no changes:
++
+[source,yaml]
+----
+apiVersion: security.istio.io/v1
+kind: AuthorizationPolicy
+metadata:
+  name: allow-frontend
+  namespace: <namespace>
+spec:
+  selector:
+    matchLabels:
+      app: reviews
+  action: ALLOW
+  rules:
+  - from:
+    - source:
+        principals: ["cluster.local/ns/<namespace>/sa/<service-account>"]
+----
+
+.. For L7 policies, replace the workload `selector` with a `targetRefs` field pointing to a `Service` or `Gateway`. The following example shows a policy before and after migration:
++
+[WARNING]
+====
+Migrating L7 policies involves a brief enforcement gap. Old selector based policies must be removed before or at pod restart, and new waypoint based policies take effect immediately once created. Between these two operations, L7 rules are not applied. If continuous L7 policy enforcement is required, plan a maintenance window.
+====
++
+Before migration:
++
+[source,yaml]
+----
+apiVersion: security.istio.io/v1
+kind: AuthorizationPolicy
+metadata:
+  name: allow-get-reviews
+  namespace: <namespace>
+spec:
+  selector:
+    matchLabels:
+      app: reviews
+  action: ALLOW
+  rules:
+  - to:
+    - operation:
+        methods: ["GET"]
+----
++
+After migration, targeting a `Service` (recommended for single service policies):
++
+[source,yaml]
+----
+apiVersion: security.istio.io/v1
+kind: AuthorizationPolicy
+metadata:
+  name: allow-get-reviews
+  namespace: <namespace>
+spec:
+  targetRefs:
+  - kind: Service
+    group: ""
+    name: reviews
+  action: ALLOW
+  rules:
+  - to:
+    - operation:
+        methods: ["GET"]
+----
++
+Alternatively, target the waypoint `Gateway` directly to apply the policy to all traffic processed by the waypoint, regardless of destination Service:
++
+[source,yaml]
+----
+apiVersion: security.istio.io/v1
+kind: AuthorizationPolicy
+metadata:
+  name: allow-get-reviews
+  namespace: <namespace>
+spec:
+  targetRefs:
+  - kind: Gateway
+    group: gateway.networking.k8s.io
+    name: waypoint
+  action: ALLOW
+  rules:
+  - to:
+    - operation:
+        methods: ["GET"]
+----
++
+[NOTE]
+====
+Targeting a `Service` is the more precise option and is recommended when the policy should apply to a single service. Targeting the `Gateway` is useful when the policy should apply to all services in the namespace.
+====
+
+. Migrate `RequestAuthentication` resources to target waypoints:
++
+[WARNING]
+====
+`RequestAuthentication` resources for JWT validation are not enforced by ztunnel in ambient mode. Existing resources that use a workload `selector` do not apply to ambient workloads. You must update them to target the waypoint proxy using `targetRefs`.
+====
++
+Before migration:
++
+[source,yaml]
+----
+apiVersion: security.istio.io/v1
+kind: RequestAuthentication
+metadata:
+  name: jwt-auth
+  namespace: <namespace>
+spec:
+  selector:
+    matchLabels:
+      app: <service-name>
+  jwtRules:
+  - issuer: "https://example.com"
+    jwksUri: "https://example.com/.well-known/jwks.json"
+----
++
+After migration:
++
+[source,yaml]
+----
+apiVersion: security.istio.io/v1
+kind: RequestAuthentication
+metadata:
+  name: jwt-auth
+  namespace: <namespace>
+spec:
+  targetRefs:
+  - kind: Gateway
+    group: gateway.networking.k8s.io
+    name: waypoint
+  jwtRules:
+  - issuer: "https://example.com"
+    jwksUri: "https://example.com/.well-known/jwks.json"
+----
+
+. Optional: Add a waypoint bypass prevention policy to ensure workloads cannot be reached without going through the waypoint.
++
+[WARNING]
+====
+Do not use `targetRefs` for this bypass prevention policy. A `targetRefs` based DENY policy is enforced by the waypoint, which sees the original client identity, not the waypoint's own identity. This would cause the waypoint to deny all client traffic before the ALLOW policy can run.
+====
++
+Because this policy only checks the source principal an L4 attribute, ztunnel can enforce it correctly using a workload `selector`.
+
+.. Look up the service account used by your waypoint by running the following command:
++
+[source,terminal]
+----
+$ oc get pod -n <namespace> -l gateway.istio.io/managed=istio.io-mesh-controller \
+    -o jsonpath='{.items[0].spec.serviceAccountName}'
+----
+
+.. Choose the bypass prevention option that matches your migration state, and apply the corresponding configuration:
++
+*Option 1* — Use this option after all source workloads are migrated to ambient mode. This is the simpler approach when you control all callers:
++
+[source,yaml]
+----
+apiVersion: security.istio.io/v1
+kind: AuthorizationPolicy
+metadata:
+  name: deny-waypoint-bypass
+  namespace: <namespace>
+spec:
+  selector:
+    matchLabels:
+      app: <service-name>
+  action: DENY
+  rules:
+  - from:
+    - source:
+        notPrincipals:
+        - "cluster.local/ns/<namespace>/sa/waypoint"
+----
++
+*Option 2* — Use this option during an incremental migration where some source workloads are still in sidecar mode. Include the sidecar service account principals in the exception list and remove each entry as the corresponding workload is migrated:
++
+[source,yaml]
+----
+apiVersion: security.istio.io/v1
+kind: AuthorizationPolicy
+metadata:
+  name: deny-waypoint-bypass
+  namespace: <namespace>
+spec:
+  selector:
+    matchLabels:
+      app: <service-name>
+  action: DENY
+  rules:
+  - from:
+    - source:
+        notPrincipals:
+        - "cluster.local/ns/<namespace>/sa/waypoint"
+        - "cluster.local/ns/<namespace>/sa/<sidecar-service-account>"
+----
++
+[WARNING]
+====
+Keep your existing sidecar `AuthorizationPolicy` resources active until pods have been restarted without sidecars. Delete them immediately after the pod restart, do not wait for full validation. Any `AuthorizationPolicy` that uses a workload `selector` with L7 rules HTTP methods, paths, or headers that remains active after sidecars are removed is evaluated by ztunnel, which cannot enforce L7 rules. Ztunnel converts such a policy into a deny-all policy for that workload.
+====
