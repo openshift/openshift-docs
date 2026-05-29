@@ -1,0 +1,439 @@
+// Module included in the following assemblies:
+//
+// * post_installation_configuration/day_2_core_cnf_clusters/updating/update-rhacm-talm-troubleshooting.adoc
+
+:_mod-docs-content-type: PROCEDURE
+[id="core-cluster-upgrade-troubleshooting_{context}"]
+= Troubleshooting cluster updates with {cgu-operator}
+
+[role="_abstract"]
+You can diagnose and resolve common issues that occur during cluster updates managed by {cgu-operator-full} ({cgu-operator}).
+This procedure helps you identify the root cause of update failures and take corrective action.
+
+Use this procedure when updates get stuck, fail, or result in degraded cluster operators.
+
+.Prerequisites
+
+* Update is in progress or has failed.
+* Access to clusters with cluster-admin privileges.
+* Access to {rh-rhacm-first} hub cluster for {cgu-operator}-based updates.
+
+.Procedure
+
+. Diagnose {cgu-operator} `ClusterGroupUpgrade` stuck in `Preparing` state:
++
+Check the `ClusterGroupUpgrade` status by running the following command:
++
+[source,terminal]
+----
+$ oc get cgu <cgu_name> -n <namespace> -o yaml
+----
++
+Look for error messages in the `status.conditions` section.
++
+Common causes:
++
+--
+* Managed policies do not exist or are not bound to target clusters
+* Target clusters are not in a ready state
+* Blocking custom resources are not ready
+--
++
+Check policy compliance in {rh-rhacm} by running the following command:
++
+[source,terminal]
+----
+$ oc get policy <policy_name> -n <namespace>
+----
++
+If the policy shows `NonCompliant`, check policy details by running the following command:
++
+[source,terminal]
+----
+$ oc describe policy <policy_name> -n <namespace>
+----
++
+Resolve policy compliance issues before the `ClusterGroupUpgrade` resource can proceed.
+
+. Diagnose {cgu-operator} `ClusterGroupUpgrade` failed on some clusters:
++
+Check detailed cluster status in the `ClusterGroupUpgrade` resource by running the following command:
++
+[source,terminal]
+----
+$ oc get cgu <cgu_name> -n <namespace> -o jsonpath='{.status.clusters}'
+----
++
+.Example output
+[source,json]
+----
+{
+  "spoke1": "complete",
+  "spoke2": "failed",
+  "spoke3": "inprogress"
+}
+----
++
+For failed clusters, check {cgu-operator} logs by running the following command:
++
+[source,terminal]
+----
+$ oc logs -n openshift-operators deployment/cluster-group-upgrades-controller-manager
+----
++
+Check policy violation events on the failed cluster by running the following command:
++
+[source,terminal]
+----
+$ oc --context=<failed_cluster> get events -A --sort-by='.lastTimestamp' | tail -20
+----
+
+. Diagnose cluster operator degraded during update:
++
+Identify degraded operators by running the following command:
++
+[source,terminal]
+----
+$ oc get co | grep -v "True.*False.*False"
+----
++
+.Example output
+[source,terminal]
+----
+NAME                                       VERSION   AVAILABLE   PROGRESSING   DEGRADED   SINCE   MESSAGE
+authentication                             4.20.0    True        False         True       5m      APIServerDeploymentDegraded: ...
+----
++
+Check operator details by running the following command:
++
+[source,terminal]
+----
+$ oc describe co authentication
+----
++
+Look for error messages in the `status.conditions` section.
++
+Check operator pod logs by running the following command:
++
+[source,terminal]
+----
+$ oc logs -n openshift-authentication deployment/oauth-openshift
+----
++
+Common degraded operators during updates:
++
+--
+* `authentication`: Check OAuth pod logs and certificate validity
+* `console`: Check console pod logs and route accessibility
+* `monitoring`: Check Prometheus and Alertmanager pod status
+* `network`: Check Container Network Interface (CNI) plugin pods on all nodes
+--
+
+. Diagnose update stuck in "Working towards" state:
++
+Check `ClusterVersion` status by running the following command:
++
+[source,terminal]
+----
+$ oc get clusterversion -o yaml
+----
++
+Look for the `status.conditions` section to identify blocking resources.
++
+Check which operators are still progressing by running the following command:
++
+[source,terminal]
+----
+$ oc get co | grep "True"
+----
++
+Any operator showing `PROGRESSING=True` is still updating.
++
+Check `ClusterVersion` history by running the following command:
++
+[source,terminal]
+----
+$ oc get clusterversion -o jsonpath='{.status.history}'
+----
++
+Verify the update has not timed out (updates typically complete within 90-180 minutes).
+
+. Diagnose worker nodes stuck in `NotReady` state:
++
+Identify `NotReady` nodes by running the following command:
++
+[source,terminal]
+----
+$ oc get nodes | grep NotReady
+----
++
+Check node conditions by running the following command:
++
+[source,terminal]
+----
+$ oc describe node <node_name> | grep -A 10 Conditions
+----
++
+Common conditions causing `NotReady`:
++
+--
+* `DiskPressure`: Node is low on disk space
+* `MemoryPressure`: Node is low on memory
+* `NetworkUnavailable`: Node network is not configured correctly
+* `PIDPressure`: Too many processes running on the node
+--
++
+Debug the node by running the following command:
++
+[source,terminal]
+----
+$ oc debug node/<node_name>
+----
++
+Check kubelet logs by running the following command:
++
+[source,terminal]
+----
+$ chroot /host journalctl -u kubelet -n 100
+----
+
+. Diagnose worker node update stuck:
++
+Check the `MachineConfigPool` resource status by running the following command:
++
+[source,terminal]
+----
+$ oc get mcp worker -o yaml
+----
++
+Look for degraded machine configs in the status.
++
+Common issues:
++
+--
+* Node stuck draining due to pod disruption budgets
+* Machine config daemon failing to apply configuration
+* Node reboot failure
+--
++
+Check pod disruption budgets by running the following command:
++
+[source,terminal]
+----
+$ oc get pdb -A
+----
++
+If a pod disruption budget (PDB) shows `ALLOWED DISRUPTIONS` of 0, adjust the PDB configuration.
++
+Check machine-config-daemon logs on the stuck node by running the following command:
++
+[source,terminal]
+----
+$ oc logs -n openshift-machine-config-operator <machine_config_daemon_pod>
+----
+
+. Diagnose etcd issues during control plane updates:
++
+Check etcd cluster health by running the following command:
++
+[source,terminal]
+----
+$ oc get etcd -o yaml
+----
++
+Look for the `EtcdMembersAvailable` condition.
++
+Check etcd pod status by running the following command:
++
+[source,terminal]
+----
+$ oc get pods -n openshift-etcd -l app=etcd
+----
++
+All etcd pods should be running.
++
+View etcd member status by running the following command:
++
+[source,terminal]
+----
+$ oc rsh -n openshift-etcd <etcd_pod> etcdctl member list -w table
+----
++
+Monitor etcd logs for errors by running the following command:
++
+[source,terminal]
+----
+$ oc logs -n openshift-etcd <etcd_pod> etcd
+----
+
+. Diagnose image pull failures during updates:
++
+Check image pull status on nodes by running the following command:
++
+[source,terminal]
+----
+$ oc get events -A --field-selector reason=Failed --sort-by='.lastTimestamp' | grep -i image
+----
++
+Common causes:
++
+--
+* Registry connectivity issues
+* Image not mirrored to disconnected registry
+* Image pull authentication failures
+--
++
+For disconnected environments, verify image mirroring by running the following command:
++
+[source,terminal]
+----
+$ oc get imagecontentsourcepolicy
+----
++
+Test image pull from a node by running the following command:
++
+[source,terminal]
+----
+$ oc debug node/<node_name> -- chroot /host podman pull <image_url>
+----
+
+. Diagnose update timeout exceeded:
++
+If {cgu-operator} reports timeout exceeded, check cluster resource utilization by running the following command:
++
+[source,terminal]
+----
+$ oc adm top nodes
+----
++
+High CPU or memory usage can slow updates.
++
+Check for slow image pulls by running the following command:
++
+[source,terminal]
+----
+$ oc get events -A --sort-by='.lastTimestamp' | grep -i "pull"
+----
++
+Check network latency between nodes and registries.
++
+Increase the `ClusterGroupUpgrade` timeout if the cluster is healthy but updating slowly by running the following command:
++
+[source,terminal]
+----
+$ oc patch cgu <cgu_name> -n <namespace> --type merge -p '{"spec":{"remediationStrategy":{"timeout":14400}}}'
+----
+
+. Resolve {cgu-operator} holding at a noncompliant policy:
++
+During the update, {cgu-operator} verifies the status of `ClusterVersion` (for the {product-title} update) and `Subscription` (for OLM operators). If errors occur during those updates, the status does not change to the expected value and the policies do not become compliant. {cgu-operator} holds at that point waiting for compliance.
++
+If you are monitoring the update, you can fix the issue on the target cluster and the update continues automatically once the policy becomes compliant.
++
+If the `ClusterGroupUpgrade` resource times out, all policies revert to `inform` mode, leaving the cluster at the point where the issue occurred. After the issue is fixed, delete the timed-out `ClusterGroupUpgrade` resource by running the following command:
++
+[source,terminal]
+----
+$ oc delete cgu <timed_out_cgu_name> -n <namespace>
+----
++
+Re-create the `ClusterGroupUpgrade` resource to resume the update by running the following command:
++
+[source,terminal]
+----
+$ oc apply -f <cgu_file>.yaml
+----
++
+If during debugging you determine that the policies or {cgu-operator} are conflicting with changes you need to make, delete the `ClusterGroupUpgrade` resource to revert all policies to `inform` mode by running the following command:
++
+[source,terminal]
+----
+$ oc delete cgu <cgu_name> -n <namespace>
+----
++
+After the policies revert to `inform` mode, they do not enforce changes on the cluster. Fix the issue, then re-create the `ClusterGroupUpgrade` resource to resume the update.
+
+. Collect diagnostic information for Red{nbsp}Hat support:
++
+Collect must-gather data by running the following command:
++
+[source,terminal]
+----
+$ oc adm must-gather
+----
++
+For {cgu-operator}-specific issues, collect {rh-rhacm} must-gather by running the following command:
++
+[source,terminal]
+----
+$ oc adm must-gather --image=registry.redhat.io/rhacm2/must-gather-rhel8
+----
++
+Collect `ClusterVersion` history by running the following command:
++
+[source,terminal]
+----
+$ oc get clusterversion -o jsonpath='{.status.history}' > clusterversion-history.json
+----
++
+Collect `ClusterGroupUpgrade` status by running the following command:
++
+[source,terminal]
+----
+$ oc get cgu <cgu_name> -n <namespace> -o yaml > cgu-status.yaml
+----
+
+. Use the following decision tree to identify the appropriate troubleshooting step:
++
+--
+* Is the update not starting? Check `ClusterGroupUpgrade` status and policy compliance (Step 1).
+* Is the update stuck on the control plane? Check cluster operators and etcd health (Steps 3, 7).
+* Are worker nodes not updating? Check the `MachineConfigPool` resource status and pod disruption budgets (Steps 5, 6).
+* Did the update complete but the cluster is degraded? Check operator status and logs (Step 3).
+* None of the above? Collect must-gather and contact Red{nbsp}Hat support (Step 10).
+--
+
+.Verification
+
+. After resolving issues, verify cluster operator status by running the following command:
++
+[source,terminal]
+----
+$ oc get co
+----
++
+Verify node status by running the following command:
++
+[source,terminal]
+----
+$ oc get nodes
+----
++
+Verify machine config pool status by running the following command:
++
+[source,terminal]
+----
+$ oc get mcp
+----
+
+. Verify the update resumed or completed successfully.
++
+Verify cluster version by running the following command:
++
+[source,terminal]
+----
+$ oc get clusterversion
+----
++
+Verify `ClusterGroupUpgrade` status by running the following command:
++
+[source,terminal]
+----
+$ oc get cgu <cgu_name> -n <namespace>
+----
+
+.Next steps
+
+* If troubleshooting does not resolve the issue, contact Red{nbsp}Hat support for guidance on recovery options.
+* If the update succeeds after troubleshooting, document the issue and resolution for future reference.
+
