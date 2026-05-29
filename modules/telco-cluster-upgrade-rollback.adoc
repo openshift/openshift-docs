@@ -1,0 +1,300 @@
+:_mod-docs-content-type: PROCEDURE
+[id="telco-cluster-upgrade-rollback_{context}"]
+= Roll back Telco Core cluster upgrades
+
+[role="_abstract"]
+You can roll back failed Telco Core cluster upgrades when troubleshooting does not resolve upgrade issues.
+Rollback procedures restore clusters to a previous version using etcd backups or by reverting worker node configurations.
+
+WARNING: Rollback is a high-risk operation that can result in data loss.
+Attempt troubleshooting before proceeding with rollback.
+
+.Prerequisites
+
+* Failed upgrade that cannot be resolved through troubleshooting.
+* Recent etcd backup exists from before the upgrade started (critical for control plane rollback).
+* Understanding of the risks associated with cluster rollback.
+
+== When rollbacks are appropriate
+
+Consider rollback only when:
+
+* The cluster upgrade failed and the cluster is severely degraded.
+* Critical workloads are affected and cannot be restored through troubleshooting.
+* Unexpected behavior occurs after upgrade that cannot be resolved.
+* You have exhausted all troubleshooting options.
+
+WARNING: Rollback should be a last resort.
+Work with Red Hat support before performing rollback in production environments.
+
+== Rollback limitations by upgrade type
+
+Different upgrade types have different rollback options:
+
+.Rollback limitations
+[cols="2,3",options="header"]
+|===
+|Upgrade type
+|Rollback capability
+
+|Z-stream
+|Cannot rollback via {product-title} update mechanism.
+Requires etcd restore from backup.
+
+|Y-stream
+|Cannot rollback via {product-title} update mechanism.
+Requires etcd restore from backup.
+
+|EUS-to-EUS
+|Cannot rollback control plane.
+Requires etcd restore from backup.
+
+|Worker nodes only
+|Can re-apply previous MachineConfig (limited rollback).
+Cannot rollback kubelet version.
+|===
+
+== Verify etcd backup before rollback
+
+.Procedure
+
+. Verify an etcd backup exists from before the upgrade started:
++
+Check your backup storage location for recent backup files.
++
+Verify the backup timestamp is from before the upgrade began.
+
+. Validate backup integrity:
++
+Check the backup file size and verify checksums if available.
++
+.Example backup files
+[source,text]
+----
+snapshot_2026-03-30_100000.db
+snapshot_2026-03-30_100000.db.sha256
+static_kuberesources_2026-03-30_100000.tar.gz
+static_kuberesources_2026-03-30_100000.tar.gz.sha256
+----
+
+. If no valid etcd backup exists:
++
+WARNING: Without a valid etcd backup, control plane rollback is not possible.
++
+Contact Red Hat support immediately for guidance.
++
+Consider fresh cluster deployment as an alternative.
+
+== Roll back control plane using etcd restore
+
+WARNING: This is a destructive operation that affects the entire cluster.
+All data created after the backup timestamp will be lost.
+
+.Prerequisites
+
+* Valid etcd backup from before the upgrade.
+* Access to all control plane nodes.
+* Cluster is severely degraded and troubleshooting has failed.
+
+.Procedure
+
+. Stop the cluster upgrade by disabling the ClusterGroupUpgrade:
++
+[source,terminal]
+----
+$ oc patch cgu <cgu-name> -n <namespace> --type merge -p '{"spec":{"enable":false}}'
+----
+
+. Remove the upgrade policy from RHACM:
++
+[source,terminal]
+----
+$ oc delete policy <upgrade-policy-name> -n <namespace>
+----
+
+. Access the etcd backup and follow the etcd restore procedure:
++
+The etcd restore procedure is complex and requires stopping all control plane nodes except one, restoring the etcd snapshot, and rejoining the cluster.
++
+NOTE: Replace `/home/core/assets/backup` with your actual backup location as configured during backup creation.
+The backup path may vary based on where you created the etcd backup.
++
+For detailed etcd restore steps, see the {product-title} backup and restore documentation.
+
+. After etcd restore completes, verify cluster health:
++
+[source,terminal]
+----
+$ oc get clusterversion
+$ oc get co
+$ oc get nodes
+----
+
+. Verify workload health:
++
+[source,terminal]
+----
+$ oc get pods -A | grep -v Running | grep -v Completed
+----
+
+== Roll back worker nodes
+
+You can roll back worker node configurations in limited scenarios without affecting the control plane.
+
+WARNING: You cannot rollback the kubelet version on worker nodes.
+You can only revert machine configuration changes.
+
+.Prerequisites
+
+* Worker node upgrade failed but control plane is healthy.
+* Previous MachineConfig is available.
+
+.Procedure
+
+. Pause the worker MachineConfigPool to stop further upgrades:
++
+[source,terminal]
+----
+$ oc patch mcp worker --type merge -p '{"spec":{"paused":true}}'
+----
+
+. Identify the previous working MachineConfig:
++
+[source,terminal]
+----
+$ oc get mc | grep rendered-worker
+----
++
+.Example output
+[source,terminal]
+----
+rendered-worker-abc123   4.19.10   30d
+rendered-worker-def456   4.20.0    5m
+----
++
+The previous config is `rendered-worker-abc123`.
+
+. If the issue is a configuration change (not kubelet version), you can manually revert specific configuration changes.
++
+WARNING: Reverting to a previous MachineConfig does not change the kubelet version.
+
+. After making configuration changes, unpause the MachineConfigPool:
++
+[source,terminal]
+----
+$ oc patch mcp worker --type merge -p '{"spec":{"paused":false}}'
+----
+
+== Roll back TALM ClusterGroupUpgrade
+
+.Procedure
+
+. Disable the ClusterGroupUpgrade to stop further upgrades:
++
+[source,terminal]
+----
+$ oc patch cgu <cgu-name> -n <namespace> --type merge -p '{"spec":{"enable":false}}'
+----
+
+. Remove upgrade policies from affected clusters:
++
+[source,terminal]
+----
+$ oc delete policy <upgrade-policy-name> -n <namespace>
+----
+
+. Revert policies in your Git repository:
++
+[source,terminal]
+----
+$ git revert <commit-hash>
+$ git push
+----
+
+. For clusters that already upgraded successfully, follow the etcd restore procedure if rollback is required.
+
+== Alternative to rollback: Fresh cluster deployment
+
+For severely degraded clusters, deploying a fresh cluster may be faster and safer than attempting rollback.
+
+.Procedure
+
+. Back up all workload data from the existing cluster.
+
+. Document all cluster configurations and custom resources.
+
+. Deploy a new cluster at the previous version.
+
+. Restore workload configurations to the new cluster.
+
+. Migrate workloads to the new cluster.
+
+. Decommission the failed cluster after validating the new cluster.
+
+This approach provides a clean state and avoids risks associated with etcd restore.
+
+== Prevent need for rollbacks
+
+Follow these best practices to minimize rollback scenarios:
+
+* *Always run pre-upgrade health checks*:
++
+Use xref:telco-cluster-upgrade-health-check_{context}[Perform health checks before Telco Core cluster upgrades].
+
+* *Test upgrades on non-production clusters first*:
++
+Validate upgrade procedures in a test environment before applying to production.
+
+* *Use TALM batching to limit blast radius*:
++
+Upgrade a single canary cluster before rolling out to the fleet.
+
+* *Maintain automated daily etcd backups*:
++
+Ensure recent backups are always available for rollback scenarios.
+
+* *Monitor upgrades in real time*:
++
+Catch issues early before they affect all clusters.
+
+* *Follow the upgrade procedures exactly*:
++
+Do not skip steps or deviate from documented procedures.
+
+.Verification
+
+. After rollback, verify cluster version:
++
+[source,terminal]
+----
+$ oc get clusterversion
+----
+
+. Verify all cluster operators are Available:
++
+[source,terminal]
+----
+$ oc get co
+----
+
+. Verify workload health:
++
+[source,terminal]
+----
+$ oc get pods -A
+----
+
+. Run health checks:
++
+Follow xref:telco-cluster-upgrade-health-check_{context}[Perform health checks before Telco Core cluster upgrades].
+
+. Document the rollback in your change management system:
++
+Include the reason for rollback and lessons learned.
+
+.Additional resources
+
+* xref:../../../backup_and_restore/control_plane_backup_and_restore/backing-up-etcd.adoc#backup-etcd_backup-etcd[Backing up etcd]
+* xref:../../../backup_and_restore/control_plane_backup_and_restore/disaster_recovery/scenario-2-restoring-cluster-state.adoc#dr-restoring-cluster-state[Restoring cluster state after disaster]
+* xref:telco-cluster-upgrade-troubleshooting_{context}[Troubleshoot Telco Core cluster upgrades]
+* link:https://access.redhat.com/support[Red Hat Support]
