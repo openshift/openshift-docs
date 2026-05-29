@@ -1,0 +1,162 @@
+// Module included in the following assemblies:
+//
+// * migrating/ossm-migrating-sidecar-to-ambient.adoc
+
+:_mod-docs-content-type: PROCEDURE
+[id="ossm-migrating-sidecar-to-ambient-before-you-begin_{context}"]
+= Before you begin
+
+[role="_abstract"]
+
+Review the following considerations, prerequisites, and audit steps before migrating workloads from sidecar mode to ambient mode.
+
+[WARNING]
+====
+If your workloads use L7 policies, migration is not straightforward and has known limitations:
+
+* During migration, there is a window where L7 policies may not be enforced. Old selector based policies must be removed, and new waypoint based equivalents must take their place. There is no atomic handoff between the two.
+* While some source workloads are still in sidecar mode, traffic from those workloads bypasses waypoints entirely. L7 policies on the waypoint are not enforced for that traffic path until the source workload is also migrated.
+
+Zero downtime migration with L7 policies is not currently supported. Plan a maintenance window.
+
+If your workloads only use L4 `AuthorizationPolicy` rules: source principal, namespace, or IP matching, with no HTTP methods, paths, or headers, this does not apply and the migration requires no policy changes.
+====
+
+[id="ossm-migrating-sidecar-to-ambient-policy-enforcement_{context}"]
+== How policy enforcement changes
+
+Understanding how policy enforcement changes between sidecar mode and ambient mode helps you plan your migration.
+
+In sidecar mode:
+
+* Policies use a `selector` to target pods by label.
+* The destination sidecar proxy enforces both L4 and L7 policies.
+* A single `AuthorizationPolicy` can match on source principal, HTTP method, path, or header.
+
+In ambient mode:
+
+* L4 enforcement is handled by ztunnel, which runs on every node.
+* L7 enforcement requires a waypoint proxy deployed per namespace or service.
+* Policies enforced by a waypoint must use `targetRefs` pointing to a `Service` or `Gateway`, not a pod `selector`.
+* `VirtualService` is Technology Preview in ambient mode. Migrating to `HTTPRoute` is required for stable L7 traffic management.
+
+.Prerequisites
+
+* {ocp-product-title} 4.19 or later.
+* {SMProductName} Operator 3.1.0 or later installed in the cluster.
+* {istio} v1.27 or later for ambient mode support on {ocp-product-title}.
+* Cluster admin access, which is required for namespace labeling and resource creation.
+* {istio} control plane installed and running in sidecar mode.
+* Gateway API CRDs installed. Required for waypoint proxies. Gateway API CRDs are available by default on {ocp-product-title} 4.19 and later.
+
+[id="ossm-migrating-sidecar-to-ambient-verify-installation_{context}"]
+== Verify your current installation
+
+Before migrating, confirm the state of your existing {istio} installation and identify which namespaces have sidecar injection enabled.
+
+. Verify that the {istio} control plane is running:
++
+[source,terminal]
+----
+$ oc get pods -n istio-system
+----
+
+. Check for namespaces with label based sidecar injection:
++
+[source,terminal]
+----
+$ oc get namespaces -l istio-injection=enabled
+----
+
+. Check for namespaces with revision based sidecar injection:
++
+[source,terminal]
+----
+$ oc get namespaces -l 'istio.io/rev'
+----
+
+[id="ossm-migrating-sidecar-to-ambient-audit-resources_{context}"]
+== Audit existing resources
+
+Identify which {istio} resources are in use and flag any that require action before or during migration.
+
+. List all {istio} resources across all namespaces:
++
+[source,terminal]
+----
+$ oc get virtualservice,destinationrule,authorizationpolicy,requestauthentication,peerauthentication,envoyfilter,wasmplugin -A
+----
+
+. Check which `AuthorizationPolicy` resources contain L7 rules. These require waypoint proxies in ambient mode:
++
+[source,terminal]
+----
+$ oc get authorizationpolicy -A --no-headers | while read ns name rest; do
+    if oc get authorizationpolicy "$name" -n "$ns" -o yaml | grep -qE "(methods:|paths:|headers:|action: CUSTOM|action: AUDIT)"; then
+      echo "$ns/$name"
+    fi
+  done
+----
+
+. Check for `PeerAuthentication` resources with `mode: DISABLE`:
++
+[source,terminal]
+----
+$ oc get peerauthentication -A -o yaml | grep -A2 "mtls:"
+----
++
+[NOTE]
+====
+Any `PeerAuthentication` with `mode: DISABLE` must be removed or updated before migration. Ambient mode always enforces mTLS. `PeerAuthentication` resources with `STRICT` or `PERMISSIVE` mode are not blockers, but they become redundant after migration.
+====
+
+. Check for `EnvoyFilter` resources. `EnvoyFilter` resources are not supported on waypoint proxies and are a migration blocker if they cannot be replaced with a supported alternative:
++
+[source,terminal]
+----
+$ oc get envoyfilter -A
+----
+
+. Check for `DestinationRule` resources that define subsets. Subsets require version specific `Services` when migrating to `HTTPRoute`:
++
+[source,terminal]
+----
+$ oc get destinationrule -A --no-headers | while read ns name rest; do
+    if oc get destinationrule "$name" -n "$ns" -o yaml | grep -q "subsets:"; then
+      echo "$ns/$name"
+    fi
+  done
+----
+
+. Check for primary-remote multicluster configuration. Primary-remote multicluster is a migration blocker; multi-primary is supported:
++
+[source,terminal]
+----
+$ oc get istio -A -o yaml | grep -i "remote\|multiCluster"
+----
+
+[id="ossm-migrating-sidecar-to-ambient-backup_{context}"]
+== Back up your configuration
+
+Export your current {istio} configuration before making any changes.
+
+. Export all {istio} resources:
++
+[source,terminal]
+----
+$ oc get virtualservice,destinationrule,authorizationpolicy,requestauthentication,peerauthentication,gateway,httproute,telemetry -A -o yaml > istio-config-backup.yaml
+----
+
+. Export all namespace definitions:
++
+[source,terminal]
+----
+$ oc get namespaces -o yaml > namespace-backup.yaml
+----
+
+Store these backups in a location outside the cluster.
+
+[WARNING]
+====
+Rolling back by running `oc apply -f istio-config-backup.yaml` restores the original sidecar style resources, but also overwrites any new ambient resources such as `HTTPRoute` rules and `targetRefs`-based `AuthorizationPolicy` resources that share the same name. Before applying the backup, delete the ambient resources first, or use selective `oc apply` on individual resources rather than the full backup file.
+====
