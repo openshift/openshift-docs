@@ -1,0 +1,123 @@
+// Module included in the following assemblies:
+//
+// * migrating/ossm-migrating-sidecar-to-ambient.adoc
+
+:_mod-docs-content-type: CONCEPT
+[id="ossm-migrating-sidecar-to-ambient-about_{context}"]
+= About migrating from sidecar mode to ambient mode
+
+[role="_abstract"]
+
+Migrating from sidecar mode to ambient mode is a three phase process you can perform incrementally. Each phase is independently reversible and you do not need to migrate all namespaces at once.
+
+[id="ossm-migrating-sidecar-to-ambient-about-strategy_{context}"]
+== Migration strategy
+
+The migration consists of the following phases:
+
+. *Install ambient components.* Add ztunnel and update the CNI plugin to support ambient mode. Existing sidecar workloads continue to run without interruption during this phase.
+
+. *Migrate policies.* Convert `VirtualService` resources to `HTTPRoute`, update `AuthorizationPolicy` resources that use L7 rules to target waypoints using `targetRefs`, and attach `RequestAuthentication` resources to waypoints. If your workloads use only L4 policies, you can skip this phase.
+
+. *Enable ambient mode per namespace.* Label each namespace for ambient mode, activate waypoints where needed, remove sidecar injection labels, and restart pods to release sidecar proxies.
+
+[WARNING]
+====
+Zero-downtime migration is not currently possible when L7 policies are in use. During the transition, there is a window where L7 policies are unenforced: existing selector based policies must be removed from the sidecar side before new waypoint based equivalents take effect. Between those two operations, L7 rules are not applied. Plan a maintenance window if continuous L7 policy enforcement is required.
+====
+
+[id="ossm-migrating-sidecar-to-ambient-about-waypoints_{context}"]
+== Do you need waypoint proxies?
+
+Waypoint proxies are optional. If your workloads use only mTLS and L4 authorization policies, you can migrate to ztunnel without deploying waypoints and without changing any existing policies.
+
+You need waypoint proxies if your workloads use any of the following:
+
+* L7 `AuthorizationPolicy` rules that match on HTTP methods, paths, or headers
+* L7 traffic routing via `HTTPRoute` (if you currently use `VirtualService`, you must migrate to `HTTPRoute`, `VirtualService` support in ambient mode is Technology Preview)
+* `RequestAuthentication` for JWT validation
+* L7 telemetry enrichment
+
+[TIP]
+====
+Start by migrating namespaces that use only L4 policies. Those namespaces require no policy changes and complete migration fastest, giving you operational confidence before tackling L7 dependent namespaces.
+====
+
+[id="ossm-migrating-sidecar-to-ambient-about-resource-table_{context}"]
+== Resource migration reference
+
+The following table describes the action required for each {istio} resource type during migration.
+
+[cols="1,2", options="header"]
+|===
+|Sidecar resource |Action in ambient mode
+
+|`VirtualService`
+|Migrate to `HTTPRoute`. `VirtualService` support is Technology Preview in ambient mode.
+
+|`DestinationRule` (traffic policies: connection pool, outlier detection, TLS)
+|No change required. Waypoints apply traffic policies automatically.
+
+|`DestinationRule` (routing subsets used with `HTTPRoute`)
+|Create version specific {k8s} `Service` resources and reference them as `backendRefs` in `HTTPRoute`.
+
+|`AuthorizationPolicy` with L4 rules
+|No change required. ztunnel enforces L4 policies directly.
+
+|`AuthorizationPolicy` with L7 rules
+|Attach to a waypoint using `targetRefs`.
+
+|`RequestAuthentication`
+|Attach to a waypoint using `targetRefs`.
+
+|`EnvoyFilter`
+|Not supported on waypoints. Evaluate `WasmPlugin` as an alternative.
+
+|`WasmPlugin`
+|Attach to a waypoint using `targetRefs`.
+
+|`Gateway` (`networking.istio.io/v1`)
+|No change required. Add the `istio.io/ingress-use-waypoint` label to route ingress traffic through a waypoint.
+|===
+
+[id="ossm-migrating-sidecar-to-ambient-about-blockers_{context}"]
+== Migration blockers
+
+The following configurations are incompatible with ambient mode and must be resolved before you begin migration:
+
+* *VM workloads in the mesh.* Virtual machine based workloads cannot join the ambient mesh.
+
+* *SPIRE as the certificate provider.* Ambient mode does not support SPIRE integration.
+
+* *`PeerAuthentication` with `mode: DISABLE`.* Ambient mode always enforces mTLS between mesh workloads. Policies that set `mode: DISABLE` are incompatible and must be removed or updated before migration.
+
+* *Primary-remote multicluster configurations.* Only multiple primary cluster configurations are supported in ambient mode.
+
+[id="ossm-migrating-sidecar-to-ambient-about-limitations_{context}"]
+== Known limitations
+
+The following limitations apply during and after migration but do not block the migration process:
+
+* *`EnvoyFilter` resources targeting waypoints are not supported.*
++
+[WARNING]
+====
+If you rely on `EnvoyFilter` for advanced Envoy configuration, those configurations cannot be carried over to waypoints. Evaluate `WasmPlugin` as an alternative before proceeding. Do not proceed if no ambient compatible alternative exists.
+====
+
+* *Traffic from sidecar mode workloads bypasses waypoint proxies.* During incremental migration, if a sidecar mode workload sends traffic to an ambient mode workload that has a waypoint, the traffic bypasses the waypoint entirely. L7 policies on the waypoint are not enforced for that traffic until the source workload is also migrated to ambient mode.
+
+* *Ingress gateways bypass waypoints by default.* You can configure an ingress gateway to route traffic through a waypoint by adding the `istio.io/ingress-use-waypoint` label to the `Gateway` resource.
+
+* *Mixing `VirtualService` and `HTTPRoute` for the same workload is not supported* and leads to undefined behavior. Migrate each workload fully to one API before proceeding.
+
+[id="ossm-migrating-sidecar-to-ambient-about-observability_{context}"]
+== Post-migration observability changes
+
+Migrating to ambient mode changes how metrics and traces are generated. Review the following changes before migration and update dashboards, alerting rules, and SLOs accordingly.
+
+Metrics:: In sidecar mode, metrics use `reporter="source"` and `reporter="destination"`. In ambient mode, ztunnel metrics use `reporter="source"` while waypoint metrics use `reporter="waypoint"`. Update any dashboards or alerting rules that filter or aggregate on the `reporter` label.
+
+Metrics merging:: Prometheus metrics merging, which merges {istio} and application metrics into a single scrape target using `prometheus.io` annotations, is not available in ambient mode. Configure Prometheus to scrape ztunnel and waypoint pods as separate targets from application pods.
+
+Tracing:: In sidecar mode, each hop generates two spans. In ambient mode with waypoints, one span is generated per waypoint. Update any trace based SLOs that assume the sidecar mode span count.
