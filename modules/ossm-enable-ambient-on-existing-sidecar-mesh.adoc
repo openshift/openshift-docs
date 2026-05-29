@@ -1,0 +1,188 @@
+// Module included in the following assemblies:
+//
+// * service-mesh-docs-main/install/ossm-ambient-sidecar-coexistence.adoc
+
+:_mod-docs-content-type: PROCEDURE
+[id="ossm-enable-ambient-on-existing-sidecar-mesh_{context}"]
+= Enable ambient mode on an existing sidecar mesh
+
+[role="_abstract"]
+Add ambient workloads to an existing sidecar-mode {SMProduct} installation by updating the control plane configuration and deploying the ztunnel proxy. After completing this procedure, you can run sidecar and ambient workloads in separate namespaces within the same mesh.
+
+.Prerequisites
+
+* You have an existing {SMProduct} installation (version 3.2 or later) in sidecar mode on {ocp-product-title}.
+* You are logged in to the {ocp-product-title} cluster as a user with the `cluster-admin` role.
+
+.Procedure
+
+. Update the existing `{istio}` CR to set `profile: ambient` and configure the trusted `ztunnel` namespace, as shown in the following example. Save the configuration to a file named `istio_ambient.yaml`.
++
+[source,yaml]
+----
+apiVersion: sailoperator.io/v1
+kind: Istio
+metadata:
+  name: default
+spec:
+  namespace: istio-system
+  profile: ambient
+  values:
+    pilot:
+      trustedZtunnelNamespace: ztunnel
+----
++
+[IMPORTANT]
+====
+You must set `spec.profile` to `ambient` and configure `spec.values.pilot.trustedZtunnelNamespace` to `ztunnel`. This is the namespace where you install the `ZTunnel` resource.
+====
+
+. Apply the updated `{istio}` CR by running the following command:
++
+[source,terminal]
+----
+$ oc apply -f istio_ambient.yaml
+----
+
+. Update the `IstioCNI` resource to enable the ambient profile, as shown in the following example. Save the configuration to a file named `istiocni_ambient.yaml`.
++
+[source,yaml]
+----
+apiVersion: sailoperator.io/v1
+kind: IstioCNI
+metadata:
+  name: default
+spec:
+  profile: ambient
+----
+
+. Apply the updated `IstioCNI` resource by running the following command:
++
+[source,terminal]
+----
+$ oc apply -f istiocni_ambient.yaml
+----
+
+. Confirm that the `IstioCNI` resource is ready by running the following command:
++
+[source,terminal]
+----
+$ oc wait --for=condition=Ready istiocnis/default --timeout=3m
+----
+
+. Create the `ztunnel` namespace by running the following command:
++
+[source,terminal]
+----
+$ oc create namespace ztunnel
+----
+
+. Create a file named `ztunnel.yaml` that has the `ZTunnel` resource. For example:
++
+[source,yaml]
+----
+apiVersion: sailoperator.io/v1
+kind: ZTunnel
+metadata:
+  name: default
+spec:
+  namespace: ztunnel
+  targetRef:
+    kind: Istio
+    name: default
+----
++
+[NOTE]
+====
+The `spec.targetRef` field associates the `ZTunnel` instance with an {istio} control plane. When you set this field, the system automatically copies values relevant for `ZTunnel`, such as `global`, `meshConfig`, and `revision`, from the referenced `Istio` or `IstioRevision` resource. Values that you set in the `ZTunnel` `spec.values` field take precedence over inherited values.
+====
+
+. Apply the `ZTunnel` CR by running the following command:
++
+[source,terminal]
+----
+$ oc apply -f ztunnel.yaml
+----
+
+. Confirm that the `ZTunnel` resource is ready by running the following command:
++
+[source,terminal]
+----
+$ oc wait --for=condition=Ready ztunnels/default --timeout=3m
+----
+
+. Confirm that the {istio} control plane is ready by running the following command:
++
+[source,terminal]
+----
+$ oc wait --for=condition=Ready istios/default --timeout=3m
+----
+
+. Restart existing sidecar pods in each namespace that has sidecar workloads. Run the following command for each namespace:
++
+[source,terminal,subs="+quotes"]
+----
+$ oc rollout restart deployment -n _<sidecar_namespace>_
+----
++
+The restart re-injects the pods with the `ISTIO_META_ENABLE_HBONE` setting enabled. Without this setting, the sidecar proxies cannot communicate with workloads in the ambient data plane. If you have a large number of sidecar pods, consider restarting them in small batches or one at a time to avoid disruption.
+
+. Create a namespace for your ambient workloads by running the following command:
++
+[source,terminal,subs="+quotes"]
+----
+$ oc create namespace _<ambient_namespace>_
+----
+
+. Label the namespace to enable ambient mode by running the following command:
++
+[source,terminal,subs="+quotes"]
+----
+$ oc label namespace _<ambient_namespace>_ istio.io/dataplane-mode=ambient
+----
+
+. Deploy your application workloads to `_<ambient_namespace>_`. 
++
+The mesh uses the ztunnel proxy to intercept traffic for pods in this namespace. You do not need to change your workload manifests. 
+ 
+.Verification
+
+. Verify that your ambient workloads run without a sidecar proxy:
++
+[source,terminal,subs="+quotes"]
+----
+$ oc get pods -n _<ambient_namespace>_
+----
++
+Example output:
++
+[source,terminal]
+----
+NAME                        READY   STATUS    RESTARTS   AGE
+my-app-6d8f94b7c9-xk2pj    1/1     Running   0          45s
+----
++
+Pods in an ambient namespace show `1/1` containers in the `READY` column. This output confirms that the mesh did not inject a sidecar proxy into the pod.
+
+. Verify that ztunnel registered your ambient workloads and configured HBONE. Run the following command:
++
+[source,terminal,subs="+quotes"]
+----
+$ istioctl ztunnel-config workloads --namespace ztunnel --workload-namespace _<ambient_namespace>_
+----
++
+The output lists the mesh workloads:
++
+[source,terminal]
+----
+NAMESPACE          POD NAME                                IP          NODE                  WAYPOINT PROTOCOL
+example            example-gateway-istio-59dd7c96db-q9k6v 10.244.1.11 ambient-worker        None     TCP
+example            example-app-cf74bb974-5sqkp            10.244.1.5  ambient-worker        None     HBONE
+----
++
+Confirm that the PROTOCOL column displays HBONE for your new ambient pods. This protocol value indicates that ztunnel configured HBONE.
+
+[NOTE]
+====
+When a sidecar pod sends traffic to an ambient pod, the traffic bypasses the waypoint proxy of the destination. As a result, the mesh enforces only L4 authorization policies on this path; L7 policies do not apply.
+====
