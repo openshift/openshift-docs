@@ -1,0 +1,255 @@
+// Module included in the following assemblies:
+//
+// * security/zero_trust_workload_identity_manageer/zero-trust-manager-oidc-federation.adoc
+
+:_mod-docs-content-type: PROCEDURE
+[id="zero-trust-manager-configure-spire-mesh-multi-cluster_{context}"]
+= Configuring {SMProductName} for multi-cluster SPIRE integration
+
+[role="_abstract"]
+Configure {SMproductName} on each cluster with federation settings, East-West Gateways, and Remote Secrets to enable cross-cluster service communication by using SPIRE-issued certificates.
+
+.Prerequisites
+
+* You have deployed SPIRE with federation on all clusters.
+* You have installed the OpenShift Service Mesh 3 Operator on all clusters.
+* You have configured SPIRE federation and trust bundle exchange between clusters.
+* You have cluster administrator permissions on all clusters.
+
+.Procedure
+
+. On each cluster, create the `Istio` custom resource (CR) with SPIRE integration and multi-cluster settings:
++
+[source,yaml]
+----
+apiVersion: sailoperator.io/v1alpha1
+kind: Istio
+metadata:
+  name: default
+spec:
+  version: v1.27.3
+  namespace: istio-system
+  values:
+    global:
+      pilotCertProvider: istiod
+      multiCluster:
+        clusterName: cluster-a
+    pilot:
+      env:
+        PILOT_ENABLE_XDS_IDENTITY_CHECK: "false"
+    meshConfig:
+      trustDomain: cluster-a.example.org
+      trustDomainAliases:
+        - spiffe://cluster-b.example.org
+        - spiffe://cluster-c.example.org
+      defaultConfig:
+        proxyMetadata:
+          CREDENTIAL_SOCKET_EXISTS: "true"
+          SPIFFE_ENDPOINT_SOCKET: "unix:///tmp/spire-agent/public/socket"
+      meshNetworks:
+        network-cluster-b:
+          endpoints:
+          - fromRegistry: cluster-b
+          gateways:
+          - address: eastwest-gateway.istio-system.svc.cluster.local
+            port: 15443
+        network-cluster-c:
+          endpoints:
+          - fromRegistry: cluster-c
+          gateways:
+          - address: eastwest-gateway.istio-system.svc.cluster.local
+            port: 15443
+----
++
+where:
+
+`spec.values.global.multiCluster.clusterName`:: Specifies the unique cluster name for each cluster in the mesh.
+
+`spec.meshConfig.trustDomain`:: Specifies the SPIFFE trust domain for this cluster.
+
+`spec.meshConfig.trustDomainAliases`:: Specifies the list all federated trust domains from remote clusters.
+
+`spec.values.meshConfig.defaultConfig.proxyMetadata.SPIFFE_ENDPOINT_SOCKET`:: Specifies that the socket path must match the SPIRE Agent configuration filename `socket`.
+
+ `spec.values.meshNetworks`:: Specifies the mesh networks for each remote cluster.
+
+. On each cluster, create an East-West Gateway for cross-cluster traffic:
++
+[source,yaml]
+----
+apiVersion: v1
+kind: Service
+metadata:
+  name: eastwest-gateway
+  namespace: istio-system
+spec:
+  type: LoadBalancer
+  selector:
+    istio: eastwestgateway
+  ports:
+  - port: 15443
+    name: tls
+    protocol: TCP
+    targetPort: 15443
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: eastwest-gateway
+  namespace: istio-system
+spec:
+  selector:
+    matchLabels:
+      istio: eastwestgateway
+  template:
+    metadata:
+      labels:
+        istio: eastwestgateway
+      annotations:
+        inject.istio.io/templates: gateway
+    spec:
+      containers:
+      - name: istio-proxy
+        image: auto
+---
+apiVersion: networking.istio.io/v1beta1
+kind: Gateway
+metadata:
+  name: cross-network-gateway
+  namespace: istio-system
+spec:
+  selector:
+    istio: eastwestgateway
+  servers:
+  - port:
+      number: 15443
+      name: tls
+      protocol: TLS
+    tls:
+      mode: PASSTHROUGH
+    hosts:
+    - "*.local"
+----
++
+where:
+
+`spec.servers.tls.mode`:: Specifies that the TLS Passthrough mode preserves SPIRE-issued certificates for end-to-end mTLS.
+
+. Create Remote Secrets to enable cross-cluster service discovery. From Cluster A, create a secret for Cluster B by running the following command:
++
+[source,terminal]
+----
+$ istioctl create-remote-secret \
+    --context=cluster-b \
+    --name=cluster-b | \
+    oc apply -f - --context=cluster-a
+----
++
+Repeat this step for each cluster pair to enable bidirectional service discovery.
+
+. On each cluster, create a `ClusterSPIFFEID` CR with federation settings:
++
+[source,yaml]
+----
+apiVersion: spire.openshift.io/v1alpha1
+kind: ClusterSPIFFEID
+metadata:
+  name: federated-workloads
+spec:
+  className: zero-trust-workload-identity-manager-spire
+  spiffeIDTemplate: "spiffe://cluster-a.example.org/ns/{{ .PodMeta.Namespace }}/sa/{{ .PodSpec.ServiceAccountName }}"
+  federatesWith:
+    - spiffe://cluster-b.example.org
+    - spiffe://cluster-c.example.org
+  podSelector:
+    matchLabels:
+      istio.io/rev: default
+  namespaceSelector:
+    matchLabels:
+      istio-injection: enabled
+  workloadSelectorTemplates:
+    - "k8s:ns:{{ .PodMeta.Namespace }}"
+    - "k8s:sa:{{ .PodSpec.ServiceAccountName }}"
+----
++
+where:
+
+`spec.className`:: Specifies that the `className` field is required when using `federatesWith`.
+
+`spec.federatesWith`:: Specifies the list of all federated trust domains.
+
+. Deploy test workloads with the required annotations for SPIRE socket mounting:
++
+[source,yaml]
+----
+apiVersion: v1
+kind: Pod
+metadata:
+  name: helloworld
+  namespace: sample
+  annotations:
+    sidecar.istio.io/userVolume: '{"spire-agent-socket":{"csi":{"driver":"csi.spiffe.io","readOnly":true}}}'
+    sidecar.istio.io/userVolumeMount: '{"spire-agent-socket":{"mountPath":"/tmp/spire-agent/public","readOnly":true}}'
+spec:
+  serviceAccountName: helloworld
+  containers:
+  - name: helloworld
+    image: registry.access.redhat.com/ubi9/ubi-minimal:latest
+    ports:
+    - containerPort: 8080
+----
+
+.Verification
+
+. Verify that workloads have federated trust bundles in their X.509 SVIDs by running the following command:
++
+[source,terminal]
+----
+$ oc exec -n openshift-spire spire-agent-<pod-id> -- \
+    /opt/spire/bin/spire-agent api fetch x509 \
+    -socketPath /run/spire/agent-sockets/socket
+----
++
+The output should show multiple CA certificates in the trust bundle.
+
+. Verify that Envoy has the federated trust bundles by running the following command:
++
+[source,terminal]
+----
+$ oc exec -n sample helloworld -c istio-proxy -- \
+    curl localhost:15000/config_dump | \
+    jq '.configs[] | select(.["@type"] | contains("SecretsConfigDump"))'
+----
++
+Check for multiple CA certificates in the validation context.
+
+. Verify cross-cluster service discovery by running the following command:
++
+[source,terminal]
+----
+$ oc exec -n sample helloworld -c istio-proxy -- \
+    curl localhost:15000/clusters | grep <remote-service-name>
+----
++
+You should see endpoints for services in remote clusters.
+
+. Test cross-cluster connectivity by running the following command:
++
+[source,terminal]
+----
+$ oc exec -n sample helloworld -- \
+    curl -v http://<remote-service>.<namespace>.svc.cluster.local:8080
+----
++
+Check the curl output for successful TLS handshake by using SPIRE-issued certificates.
+
+. Verify SPIRE registration entries include federation by running the following command:
++
+[source,terminal]
+----
+$ oc exec -n openshift-spire spire-server-0 -- \
+    /opt/spire/bin/spire-server entry show -output json | \
+    jq '.entries[] | select(.federates_with | length > 0)'
+----
++
+Entries should show the `federates_with` field containing remote trust domains.

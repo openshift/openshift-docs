@@ -1,0 +1,143 @@
+// Module included in the following assemblies:
+//
+// * security/zero_trust_workload_identity_manageer/zero-trust-manager-oidc-federation.adoc
+
+:_mod-docs-content-type: PROCEDURE
+[id="zero-trust-manager-deploy-spire-multi-cluster_{context}"]
+= Deploying SPIRE with federation for multi-cluster integration
+
+[role="_abstract"]
+Deploy SPIRE with federation capabilities on each cluster to enable cross-cluster trust bundle exchange and workload identity validation across multiple (product-name) clusters.
+
+.Prerequisites
+
+* You have deployed SPIRE on each cluster using the {zero-trust-full} Operator.
+* You have cluster administrator permissions on all clusters.
+* You have the `oc` CLI installed.
+* Each cluster has a unique SPIFFE trust domain. For example, `cluster-a.example.org`, `cluster-b.example.org`, and so on.
+
+.Procedure
+
+. On each cluster, enable `CREATE_ONLY_MODE` on {zero-trust-full} to prevent it from overwriting manual ConfigMap changes by running the following command:
++
+[source,terminal]
+----
+$ oc set env deployment/ztwim-operator-controller-manager \
+    -n openshift-spire-operator \
+    CREATE_ONLY_MODE=true
+----
+
+. On each cluster, patch the SPIRE Agent ConfigMap to configure the socket path and SDS settings for federation by running the following command:
++
+[source,terminal]
+----
+$ oc patch configmap spire-agent -n openshift-spire --type=json -p='[
+  {
+    "op": "replace",
+    "path": "/data/agent.conf",
+    "value": "server_address = \"spire-server.openshift-spire.svc.cluster.local\"\nserver_port = \"8081\"\ntrust_domain = \"cluster-a.example.org\"\n\nplugins {\n  KeyManager \"disk\" {\n    plugin_data {\n      directory = \"/run/spire/data\"\n    }\n  }\n  NodeAttestor \"k8s_psat\" {\n    plugin_data {\n      cluster = \"openshift-cluster\"\n    }\n  }\n  WorkloadAttestor \"k8s\" {\n    plugin_data {}\n  }\n  WorkloadAttestor \"unix\" {\n    plugin_data {}\n  }\n  WorkloadAPI \"socket\" {\n    plugin_cmd = \"/opt/spire/bin/spire-agent\"\n    plugin_data {\n      socket_path = \"/run/spire/agent-sockets/socket\" \n    }\n  }\n  SDS \"unix\" {\n    plugin_cmd = \"/opt/spire/bin/spire-agent\"\n    plugin_data {\n      default_bundle_name = \"null\"\n      default_all_bundles_name = \"ROOTCA\"  <2>\n    }\n  }\n}\n"
+  }
+]'
+----
+The `socket_path = \"/run/spire/agent-sockets/socket\"` where the socket filename must be `socket` for Istio compatibility.
+The `default_all_bundles_name = \"ROOTCA\"` serves all federated trust bundles under the name `ROOTCA`.
+
+. On each cluster, create a `ClusterFederatedTrustDomain` custom resource to define the remote clusters to federate with:
++
+[source,yaml]
+----
+apiVersion: spire.openshift.io/v1alpha1
+kind: ClusterFederatedTrustDomain
+metadata:
+  name: cluster-b-federation
+spec:
+  trustDomain: spiffe://cluster-b.example.org
+  bundleEndpointURL: https://spire-server.openshift-spire.svc.cluster.local:8443
+  bundleEndpointProfile:
+    type: https_spiffe
+----
++
+where
+
+`spec.trustdomain`:: Specifies the SPIFFE trust domain of the remote cluster.
+
+`spec.bundleEndpointURL`:: Specifies the URL where the remote SPIRE Server exposes its trust bundle.
+
+`spec.bundleEnpointProfile.type`:: Specifies that the `https_spiffe` profile is used for secure bundle exchange.
++
+Repeat this step for each remote cluster you want to federate with.
+
+. Export the trust bundle from each cluster by running the following command:
++
+[source,terminal]
+----
+$ oc exec -n openshift-spire spire-server-0 -- \
+    /opt/spire/bin/spire-server bundle show -format spiffe > cluster-a-bundle.json
+----
++
+Save the bundle file for each cluster.
+
+. Bootstrap federation by manually loading remote trust bundles into each SPIRE Server by running the following command:
++
+[source,terminal]
+----
+$ oc exec -n openshift-spire spire-server-0 -i -- \
+    /opt/spire/bin/spire-server bundle set \
+    -format spiffe \
+    -id spiffe://cluster-b.example.org < cluster-b-bundle.json
+----
++
+Replace `cluster-b-bundle.json` with the trust domain and bundle file from the remote cluster.
++
+Repeat this step on each cluster for all remote clusters.
+
+. Restart the SPIRE Agent `DaemonSet`` on each cluster to apply the ConfigMap changes by running the following command:
++
+[source,terminal]
+----
+$ oc rollout restart daemonset/spire-agent -n openshift-spire
+----
+
+. Restart the SPIRE Server StatefulSet on each cluster to activate federation by running the following command:
++
+[source,terminal]
+----
+$ oc rollout restart statefulset/spire-server -n openshift-spire
+----
+
+.Verification
+
+. Verify that the SPIRE Server has the federated trust bundles by running the following command:
++
+[source,terminal]
+----
+$ oc exec -n openshift-spire spire-server-0 -- \
+    /opt/spire/bin/spire-server bundle list
+----
++
+The output should show trust bundles for both the local trust domain and all federated trust domains.
+
+. Verify that the SPIRE Agent socket is correctly named by running the following command:
++
+[source,terminal]
+----
+$ oc exec -n openshift-spire spire-agent-<pod-id> -- \
+    ls -l /run/spire/agent-sockets/
+----
++
+.Example output
+[source,terminal]
+----
+srwxrwxrwx 1 root root 0 May 20 10:15 socket
+----
++
+The socket must be named `socket`, not `spire-agent.sock`.
+
+. Check the SPIRE Server logs for federation activity by running the following command:
++
+[source,terminal]
+----
+$ oc logs -n openshift-spire spire-server-0 | grep -i federation
+----
++
+Look for messages indicating successful bundle retrieval from federated trust domains.

@@ -1,0 +1,590 @@
+// Module included in the following assemblies:
+//
+// * security/zero_trust_workload_identity_manageer/zero-trust-manager-oidc-federation.adoc
+
+:_mod-docs-content-type: REFERENCE
+[id="zero-trust-manager-limits-troubleshooting_{context}"]
+= Known limitations and troubleshooting for multi-cluster SPIRE integration
+
+[role="_abstract"]
+This reference provides known technical limitations, configuration constraints, and troubleshooting procedures for integrating SPIRE federation with multi-cluster {SMProductName} deployments.
+
+[id="spire-multicluster-known-limitations_{context}"]
+== Known limitations
+
+The following describes known limitations and critical requirements when integrating SPIRE federation with multi-cluster {SMProductName} deployments.
+
+[id="spire-socket-filename-requirement_{context}"]
+SPIRE Agent socket filename requirement::
++
+The SPIRE Agent must create a socket file named exactly `socket`, not `spire-agent.sock` or any other name, for proper integration with Istio's pilot-agent.
++
+The socket filename must be configured as `/run/spire/agent-sockets/socket` in the SPIRE Agent WorkloadAPI plugin configuration.
++
+*Impact*: If the socket filename is incorrect, Envoy cannot connect to the SPIRE Agent SDS API. The Istio injection templates and CSI Driver expect the socket at `/tmp/spire-agent/public/socket`.
++
+For troubleshooting missing sockets, see <<missing-socket-in-workload-pod_{context}>>.
+
+[id="classname-required-with-federateswith_{context}"]
+className required when using federatesWith::
++
+When a `ClusterSPIFFEID` custom resource includes the `federatesWith` field to enable cross-cluster authentication, the `className` field is mandatory and must be set to `zero-trust-workload-identity-manager-spire`.
++
+*Impact*: Without the `className` field, SPIRE Server does not issue certificates with federated trust bundles, causing cross-cluster mTLS authentication to fail. Workloads cannot validate certificates from remote clusters.
++
+*Error symptom*: No federated bundles appear in the workload's X.509 SVID when inspecting with `spire-agent api fetch x509`.
++
+For troubleshooting, see <<federated-bundles-not-loaded_{context}>>.
+
+[id="readonly-filesystem-error_{context}"]
+Read-only filesystem error with pilot-agent::
++
+The Istio pilot-agent process might encounter read-only filesystem errors when attempting to create a socket in the CSI-mounted directory.
++
+*Cause*: The CSI volume mount is read-only, but pilot-agent expects to create files in that location.
++
+*Resolution*: Ensure the SPIRE Agent creates the socket before pilot-agent starts. The socket must already exist in the CSI-mounted path when the Envoy sidecar initializes.
++
+Configure the CSI mount path and SPIRE Agent socket path to align as follows:
++
+* SPIRE Agent: `socket_path = "/run/spire/agent-sockets/socket"`
+
+* CSI Driver: Mounts `/run/spire/agent-sockets` to `/tmp/spire-agent/public` in pods
+
+[id="sds-rootca-bundle-requirement_{context}"]
+SDS ROOTCA bundle configuration for federation::
++
+In multi-cluster deployments, the SPIRE Agent SDS configuration must include `default_all_bundles_name: "ROOTCA"` to serve federated trust bundles to Envoy.
++
+*Impact*: Without this setting, Envoy receives only the local cluster's trust bundle. Cross-cluster certificate validation fails because Envoy cannot verify certificates issued by remote SPIRE Servers.
++
+For verification procedures, see <<envoy-rejecting-remote-certificates_{context}>>.
+
+[id="federation-bootstrap-manual-bundle_{context}"]
+Federation bootstrap requires manual trust bundle loading::
++
+SPIRE federation requires manual initialization of the remote cluster's trust bundle before automatic bundle exchange can begin.
++
+*Bootstrap problem*: Each SPIRE Server needs the remote server's CA certificate to validate the remote server's SVID when retrieving bundles. This creates a circular dependency.
++
+*Resolution*: Manually export the trust bundle from each remote cluster and load it into the local SPIRE Server by using the `spire-server bundle set` command.
++
+*Impact*: Federation does not function until this bootstrap process completes on all clusters. Automated bundle refresh begins after the initial bundle is loaded.
++
+For detailed procedures, see <<spire-bundle-endpoint-unreachable_{context}>>.
+
+[id="trustdomain-aliases-required_{context}"]
+trustDomainAliases required for cross-cluster validation::
++
+The Istio `meshConfig` must include `trustDomainAliases` that map federated trust domains to their SPIFFE trust domain URIs.
++
+*Impact*: Without `trustDomainAliases`, Envoy rejects certificates from remote clusters even if the federated trust bundles are present. The trust domain must be explicitly mapped for Envoy to validate remote certificates.
++
+For troubleshooting missing trust domain aliases, see <<cross-cluster-connection-failures_{context}>>.
+
+[id="eastwest-gateway-tls-passthrough_{context}"]
+East-West Gateway requires TLS Passthrough mode::
++
+East-West Gateways in multi-cluster SPIRE deployments must use TLS Passthrough mode `PASSTHROUGH`, not TLS Termination modes `SIMPLE` or `MUTUAL`.
++
+*Reason*: TLS Termination would replace SPIRE-issued certificates with gateway certificates, breaking end-to-end mutual TLS. Passthrough preserves the original workload certificates for peer authentication.
++
+*Impact*: If the gateway uses TLS Termination, cross-cluster services cannot authenticate using SPIFFE identities. The receiving cluster sees the gateway's certificate instead of the originating workload's certificate.
++
+For verification, see <<envoy-rejecting-remote-certificates_{context}>>.
+
+[id="remote-secrets-service-discovery_{context}"]
+Remote Secrets required for cross-cluster service discovery::
++
+Multi-cluster service discovery requires Remote Secrets that allow one cluster's Istio control plane to access the Kubernetes API of remote clusters.
++
+*Impact*: Without Remote Secrets, Cluster A's control plane cannot discover services in Cluster B. Workloads in Cluster A do not receive endpoint information for remote services, causing connection failures even if SPIRE federation is configured correctly.
++
+For troubleshooting, see <<cross-cluster-connection-failures_{context}>>.
+
+[id="meshnetworks-gateway-configuration_{context}"]
+meshNetworks configuration for gateway routing::
++
+The Istio `meshConfig` must include the `meshNetworks` configuration that defines how to route traffic through East-West Gateways.
++
+*Impact*: Without the `meshNetworks` configuration, Istio attempts direct pod-to-pod communication across clusters, which fails due to network isolation. Traffic must be routed through gateways.
++
+For troubleshooting, see <<eastwest-gateway-503-errors_{context}>>.
+
+[id="version-specific-multicluster-integration_{context}"]
+Version-specific implementation details::
++
+The multi-cluster SPIRE integration procedures are specific to {SMProductName} 3.x Istio v1.27.3 and the {zero-trust-full}. 
++
+*Recommendation*: Verify all configuration requirements against the specific versions of {SMproductName}, Istio, and {zero-trust-full} in your environment.
+
+[id="spire-multicluster-troubleshooting-procedures_{context}"]
+== Troubleshooting procedures
+
+The following provides procedures to resolve common issues encountered when integrating SPIRE federation with multi-cluster OpenShift Service Mesh deployments.
+
+[id="cross-cluster-connection-failures_{context}"]
+Cross-cluster service connection failures::
++
+*Symptom*
++
+Workloads in one cluster cannot connect to services in another cluster, even though SPIRE federation is configured.
++
+*Possible causes and resolutions*
++
+*Missing Remote Secrets*
++
+. Verify that Remote Secrets exist on each cluster by running the following command:
++
+[source,terminal]
+----
+$ oc get secrets -n istio-system -l istio/multiCluster=true
+----
++
+. If Remote Secrets are missing, create them using `istioctl` by running the following command:
++
+[source,terminal]
+----
+$ istioctl create-remote-secret \
+    --context=cluster-b \
+    --name=cluster-b | \
+    oc apply -f - --context=cluster-a
+----
+
+*Missing trustDomainAliases*
++
+. Verify that the Istio `meshConfig` includes all federated trust domains by running the following command:
++
+[source,terminal]
+----
+$ oc get istio default -n istio-system -o jsonpath='{.spec.values.meshConfig.trustDomainAliases}'
+----
++
+. Add missing trust domains to the Istio CR:
++
+[source,yaml]
+----
+spec:
+  values:
+    meshConfig:
+      trustDomainAliases:
+        - spiffe://cluster-b.example.org
+        - spiffe://cluster-c.example.org
+----
+
+*Gateway routing issues*
++
+. Check that East-West Gateways are running and accessible by running the following commands:
++
+[source,terminal]
+----
+$ oc get pods -n istio-system -l istio=eastwestgateway
+----
++
+[source,terminal]
+----
+$ oc get svc -n istio-system eastwest-gateway
+----
++
+Verify that the gateway has an external IP assigned for `LoadBalancer` type services.
+
+[id="federated-bundles-not-loaded_{context}"]
+Federated trust bundles not loaded in workload certificates::
++
+*Symptom*
++
+Workloads have SPIRE-issued certificates, but the certificates do not include federated trust bundles. Cross-cluster authentication fails.
++
+*Cause*
++
+The `ClusterSPIFFEID` resource is missing the `className` field or the `federatesWith` field is not properly configured.
++
+*Resolution*
+
+. Verify the `ClusterSPIFFEID` configuration by running the following command:
++
+[source,terminal]
+----
+$ oc get clusterspiffeid -o yaml
+----
+
+. Ensure the `className` field is set when using `federatesWith`:
++
+[source,yaml]
+----
+apiVersion: spire.openshift.io/v1alpha1
+kind: ClusterSPIFFEID
+metadata:
+  name: federated-workloads
+spec:
+  className: zero-trust-workload-identity-manager-spire
+  federatesWith:
+    - spiffe://cluster-b.example.org
+    - spiffe://cluster-c.example.org
+  spiffeIDTemplate: "spiffe://cluster-a.example.org/ns/{{ .PodMeta.Namespace }}/sa/{{ .PodSpec.ServiceAccountName }}"
+----
++
+The `className` field must be set to `zero-trust-workload-identity-manager-spire`.
+
+. Check SPIRE Server registration entries for federation:
++
+[source,terminal]
+----
+$ oc exec -n openshift-spire spire-server-0 -- \
+    /opt/spire/bin/spire-server entry show -output json | \
+    jq '.entries[] | select(.federates_with | length > 0)'
+----
+
+. If entries do not show `federates_with`, delete and re-create the workload pods to trigger re-registration.
+
+[id="spire-bundle-endpoint-unreachable_{context}"]
+SPIRE federation bundle endpoint unreachable::
++
+*Symptom*
++
+SPIRE Server logs show errors retrieving trust bundles from remote clusters:
++
+[source,text]
+----
+Failed to fetch bundle from remote endpoint: connection refused
+----
++
+*Possible causes and resolutions*
+
+*Incorrect bundle endpoint URL*
++
+* Verify that the `bundleEndpointURL` is in the `ClusterFederatedTrustDomain` resource by running the following command:
++
+[source,terminal]
+----
+$ oc get clusterfederatedtrustdomain -o yaml
+----
++
+The URL should point to the SPIRE Server's federation endpoint (default port 8443).
+
+*Network connectivity issues*
++
+* Test connectivity from one cluster's SPIRE Server to another cluster's federation endpoint by running the following command:
++
+[source,terminal]
+----
+$ oc exec -n openshift-spire spire-server-0 -- \
+    curl -k https://spire-server.openshift-spire.svc.cluster-b.local:8443/
+----
++
+If the test fails, check the network policies, firewall rules, and DNS resolution.
+
+*Federation not enabled on SPIRE Server*
++
+* Verify that the SPIRE Server is configured to expose the federation endpoint by running the following command:
++
+[source,terminal]
+----
+$ oc logs -n openshift-spire spire-server-0 | grep -i "bundle endpoint"
+----
++
+Look for messages indicating the bundle endpoint is listening on port 8443.
+
+*Manual trust bundle bootstrap required*
++
+. Manually load the initial trust bundle from the remote cluster:
+
+.. Export the trust bundle from Cluster B by running the following command:
++
+[source,terminal]
+----
+$ oc exec -n openshift-spire spire-server-0 -- \
+    /opt/spire/bin/spire-server bundle show -format spiffe > cluster-b-bundle.json
+----
+
+.. Load the bundle into Cluster A's SPIRE Server by running the following command:
++
+[source,terminal]
+----
+$ oc exec -n openshift-spire spire-server-0 -i -- \
+    /opt/spire/bin/spire-server bundle set -format spiffe -id spiffe://cluster-b.example.org < cluster-b-bundle.json
+----
+
+[id="envoy-rejecting-remote-certificates_{context}"]
+Envoy rejecting certificates from federated clusters::
++
+*Symptom*
++
+Cross-cluster connections fail during TLS handshake. Envoy logs show certificate validation errors:
++
+[source,text]
+----
+TLS error: 268435703:SSL routines:OPENSSL_internal:WRONG_VERSION_NUMBER
+----
++
+*Cause*
+=
+Envoy does not have the federated trust bundle, or the East-West Gateway is using TLS Termination instead of TLS Passthrough.
++
+*Resolution*
+
+. Verify that Envoy has federated trust bundles by running the following command:
++
+[source,terminal]
+----
+$ oc exec -n <namespace> <pod> -c istio-proxy -- \
+    curl localhost:15000/config_dump | \
+    jq '.configs[] | select(.["@type"] | contains("SecretsConfigDump")) | .dynamic_active_secrets[0].secret.validation_context.trusted_ca.inline_bytes' | \
+    base64 -d | \
+    openssl crl2pkcs7 -nocrl -certfile /dev/stdin | \
+    openssl pkcs7 -print_certs -noout
+----
++
+The output should show multiple CA certificates, local and federated.
+
+. Verify that the East-West Gateway uses TLS Passthrough by running the following command:
++
+[source,terminal]
+----
+$ oc get gateway cross-network-gateway -n istio-system -o jsonpath='{.spec.servers[0].tls.mode}'
+----
++
+The output should be `PASSTHROUGH`, not `SIMPLE` or `MUTUAL`.
++
+. If the mode is incorrect, update the Gateway configuration as follows:
++
+[source,yaml]
+----
+spec:
+  servers:
+  - port:
+      number: 15443
+      name: tls
+      protocol: TLS
+    tls:
+      mode: PASSTHROUGH  <1>
+    hosts:
+    - "*.local"
+----
++
+The `TLS mode` field must be `PASSTHROUGH`, not `SIMPLE` or `MUTUAL`.
+
+. Check that the SPIRE Agent SDS configuration includes `default_all_bundles_name: "ROOTCA"` by running the following command:
++
+[source,terminal]
+----
+$ oc get configmap spire-agent -n openshift-spire -o yaml | grep -A5 SDS
+----
++
+The configuration should include the following code:
++
+[source,text]
+----
+SDS "unix" {
+  plugin_data {
+    default_bundle_name = "null"
+    default_all_bundles_name = "ROOTCA"  <1>
+  }
+}
+----
++
+The `defalut_all_bundles_name` field serves all trust bundles, both local and federated, under the name `ROOTCA`.
+
+[id="workload-identity-mismatch_{context}"]
+Workload identity mismatch in cross-cluster communication::
++
+*Symptom*
++
+Cross-cluster connections fail with authorization errors. SPIRE logs show identity validation failures.
++
+*Cause*
++
+The SPIFFE ID template generates different identities than what the receiving cluster expects, or the trust domains do not match the configured federation.
++
+*Resolution*
+
+. Verify the SPIFFE ID format of the source workload by running the following command:
++
+[source,terminal]
+----
+$ oc exec -n <namespace> <pod> -c istio-proxy -- \
+    openssl s_client -connect localhost:15000 -showcerts < /dev/null 2>/dev/null | \
+    openssl x509 -noout -text | grep -A1 "Subject Alternative Name"
+----
+
+. Verify the SPIFFE ID template in the `ClusterSPIFFEID` resource by running the following command: 
++
+[source,terminal]
+----
+$ oc get clusterspiffeid -o jsonpath='{.items[*].spec.spiffeIDTemplate}'
+----
+
+. Ensure the trust domain in the SPIFFE ID matches the local cluster's trust domain by running the following command:
++
+[source,text]
+----
+spiffe://<local-trust-domain>/ns/<namespace>/sa/<service-account>
+----
++
+Check that both clusters use compatible SPIFFE ID templates for service accounts.
+
+[id="missing-socket-in-workload-pod_{context}"]
+SPIRE socket not present in workload pod::
++
+*Symptom*
++
+The SPIRE socket is not mounted at `/tmp/spire-agent/public/socket` in workload pods.
++
+*Cause*
++
+The required `userVolume` and `userVolumeMount` annotations are missing from the pod specification.
++
+*Resolution*
+
+. Verify the socket is present by running the following command:
++
+[source,terminal]
+----
+$ oc exec -n <namespace> <pod-name> -c istio-proxy -- ls -l /tmp/spire-agent/public/
+----
++
+The output should show a file named `socket`, not `spire-agent.sock`.
+
+. Add the required annotations to the pod or deployment:
++
+[source,yaml]
+----
+metadata:
+  annotations:
+    sidecar.istio.io/userVolume: '{"spire-agent-socket":{"csi":{"driver":"csi.spiffe.io","readOnly":true}}}'
+    sidecar.istio.io/userVolumeMount: '{"spire-agent-socket":{"mountPath":"/tmp/spire-agent/public","readOnly":true}}'
+----
+
+. Delete and re-create the pod to apply the annotations.
+
+. Verify the SPIRE Agent WorkloadAPI configuration uses the correct socket path by running the following command:
++
+[source,text]
+----
+plugins {
+  WorkloadAPI "socket" {
+    plugin_cmd = "/opt/spire/bin/spire-agent"
+    plugin_data {
+      socket_path = "/run/spire/agent-sockets/socket"
+    }
+  }
+}
+----
+The `socket_path` filename must be `socket`, not `spire-agent.sock`.
+
+[id="eastwest-gateway-503-errors_{context}"]
+East-West Gateway returning 503 Service Unavailable::
++
+*Symptom*
++
+Cross-cluster requests fail with HTTP 503 errors at the East-West Gateway.
++
+*Possible causes and resolutions*
++
+*No healthy endpoints for remote service*
++
+. Check the gateway's endpoint status by running the following command:
++
+[source,terminal]
+----
+$ oc exec -n istio-system <eastwest-gateway-pod> -c istio-proxy -- \
+    curl localhost:15000/clusters | grep <remote-service>
+----
++
+If no healthy endpoints appear, verify that:
++
+* Remote Secrets are correctly configured
+* Services exist in the remote cluster
+* The remote cluster's Istio control plane is running
++
+*meshNetworks misconfiguration*
++
+. Verify the `meshNetworks` configuration points to the correct gateway by running the following command:
++
+[source,terminal]
+----
+$ oc get istio default -n istio-system -o jsonpath='{.spec.values.meshConfig.meshNetworks}'
+----
++
+Ensure the gateway address matches the actual East-West Gateway service or external IP.
++
+. If the configuration is missing or incorrect, update the Istio CR as follows:
++
+[source,yaml]
+----
+spec:
+  values:
+    meshConfig:
+      meshNetworks:
+        network-cluster-b:
+          endpoints:
+          - fromRegistry: cluster-b
+          gateways:
+          - address: eastwest-gateway.istio-system.svc.cluster.local
+            port: 15443
+----
+
+[id="verifying-multicluster-spire-integration_{context}"]
+Verifying multi-cluster SPIRE integration::
++
+To confirm that multi-cluster SPIRE integration is working correctly:
++
+. Verify that the federated trust bundles are in the SPIRE Server by running the following command:
++
+[source,terminal]
+----
+$ oc exec -n openshift-spire spire-server-0 -- \
+    /opt/spire/bin/spire-server bundle list
+----
++
+The output should show trust bundles for all federated trust domains.
++
+. Verify that the workload X.509 SVIDs include federated bundles by running the following command:
++
+[source,terminal]
+----
+$ oc exec -n openshift-spire spire-agent-<pod-id> -- \
+    /opt/spire/bin/spire-agent api fetch x509 \
+    -socketPath /run/spire/agent-sockets/socket
+----
++
+Look for multiple CA certificates in the trust bundle section.
++
+. Verify that Envoy has federated bundles by running the following command:
++
+[source,terminal]
+----
+$ oc exec -n <namespace> <pod> -c istio-proxy -- \
+    curl localhost:15000/config_dump | \
+    jq '.configs[] | select(.["@type"] | contains("SecretsConfigDump"))'
+----
++
+The output should show multiple CA certificates in the validation context if federation is working correctly.
++
+. Test the cross-cluster connectivity with verbose output by running the following command:
++
+[source,terminal]
+----
+$ oc exec -n <namespace> <pod> -- \
+    curl -v http://<service>.<namespace>.svc.cluster.local:8080
+----
++
+Check the TLS handshake details for SPIFFE identities.
++
+. Verify East-West Gateway traffic by running the following command:
++
+[source,terminal]
+----
+$ oc logs -n istio-system <eastwest-gateway-pod> -c istio-proxy
+----
++
+Look for TLS passthrough connections to remote clusters.
++
+. Check the SPIRE federation health by running the following command:
++
+[source,terminal]
+----
+$ oc logs -n openshift-spire spire-server-0 | grep -i "bundle refresh"
+----
++
+Look for successful bundle refresh messages from federated trust domains.
