@@ -1,0 +1,138 @@
+// Module included in the following assemblies:
+//
+// * nodes/clusters/nodes-cluster-enabling-features.adoc
+
+:_mod-docs-content-type: CONCEPT
+[id="nodes-cluster-enabling-features-manifest-inclusion_{context}"]
+= Understanding feature-gate-based manifest inclusion
+
+[role="_abstract"]
+Starting in {product-title} 4.22, the Cluster Version Operator (CVO) uses the `release.openshift.io/feature-gate` annotation on release payload manifests to conditionally include or exclude cluster resources based on which feature gates are enabled. When you enable or disable a feature gate, CVO automatically re-evaluates all annotated manifests and applies or stops managing the affected resources.
+
+[id="nodes-cluster-enabling-features-manifest-inclusion-how_{context}"]
+== How feature-gate-based manifest inclusion works
+
+Each release payload contains manifests for all cluster components, including components that are gated behind specific feature gates. CVO reads the `release.openshift.io/feature-gate` annotation on each manifest to determine whether to include it during reconciliation:
+
+* If the annotation specifies a feature gate that is **enabled** on the cluster, CVO includes the manifest and applies the resource.
+* If the annotation specifies a feature gate that is **not enabled**, CVO excludes the manifest and does not apply the resource.
+* If a manifest has no `release.openshift.io/feature-gate` annotation, CVO always includes it.
+
+When you toggle a feature gate at runtime using the `FeatureGate` custom resource (CR), CVO detects the change, re-reads the payload, and re-evaluates all gated manifests. Resources whose gate conditions are now met are applied. Resources whose gate conditions are no longer met are no longer managed by CVO.
+
+[id="nodes-cluster-enabling-features-manifest-inclusion-syntax_{context}"]
+== Annotation syntax
+
+The `release.openshift.io/feature-gate` annotation supports the following formats:
+
+.Annotation syntax for feature-gate-based manifest inclusion
+[cols="1a,2a,2a",options="header"]
+|===
+|Format |Meaning |Example
+
+|`GateName`
+|Include this manifest only when `GateName` is enabled.
+|`release.openshift.io/feature-gate: ClusterAPIMachineManagement`
+
+|`-GateName`
+|Include this manifest only when `GateName` is disabled. This is used for legacy resources that should be removed when a new feature replaces them.
+|`release.openshift.io/feature-gate: -ClusterAPIMachineManagement`
+
+|`-Gate1,-Gate2`
+|Include this manifest only when **all** listed gates are disabled (AND logic). The manifest is excluded if any of the listed gates is enabled.
+|`release.openshift.io/feature-gate: -ClusterAPIMachineManagement,-MachineAPIMigration`
+|===
+
+[NOTE]
+====
+The annotation name is singular: `feature-gate` (not `feature-gates`). Using the plural form will have no effect.
+====
+
+[id="nodes-cluster-enabling-features-manifest-inclusion-gated_{context}"]
+== Identifying gated manifests in a release
+
+You can discover which manifests in a release payload are gated behind feature gates by extracting the payload and searching for the annotation.
+
+.Prerequisites
+
+* You have installed the {oc-first}.
+* You have access to the release image for your cluster version.
+
+.Procedure
+
+. Extract the release payload manifests to a local directory:
++
+[source,terminal]
+----
+$ oc adm release extract --to=/tmp/release-manifests \
+  $(oc get clusterversion version -o jsonpath='{.status.desired.image}')
+----
+
+. Search for manifests with the `release.openshift.io/feature-gate` annotation:
++
+[source,terminal]
+----
+$ grep -rl "release.openshift.io/feature-gate" /tmp/release-manifests/
+----
+
+. To see which feature gates each manifest requires, display the annotation values:
++
+[source,terminal]
+----
+$ grep -r "release.openshift.io/feature-gate" /tmp/release-manifests/ \
+  | sed 's|/tmp/release-manifests/||'
+----
++
+.Example output
+[source,terminal]
+----
+0000_30_cluster-api_11_deployment.yaml:    release.openshift.io/feature-gate: ClusterAPIMachineManagement
+0000_30_cluster-api_04_crd.core-cluster-api.yaml:    release.openshift.io/feature-gate: -ClusterAPIMachineManagement
+0000_20_crd-compatibility-checker_11_deployment.yaml:    release.openshift.io/feature-gate: CRDCompatibilityRequirementOperator
+----
+
+[id="nodes-cluster-enabling-features-manifest-inclusion-orphaned_{context}"]
+== Orphaned resources when a gate is disabled
+
+When CVO stops managing a manifest because its feature gate condition is no longer met, the previously applied resources **remain on the cluster**. CVO does not delete them.
+
+For example, if you enable the `CRDCompatibilityRequirementOperator` feature gate, CVO creates the associated namespace, deployment, CRD, and RBAC resources. If you later remove `CRDCompatibilityRequirementOperator` from `customNoUpgrade.enabled`, CVO stops managing those resources but does not delete them. The namespace, deployment, and other resources continue to exist.
+
+[IMPORTANT]
+====
+If you disable a feature gate after enabling it, you must manually remove any orphaned resources that are no longer needed. Use `oc delete` to remove the namespace and other resources that were created by the gated manifests.
+====
+
+[id="nodes-cluster-enabling-features-manifest-inclusion-logs_{context}"]
+== Viewing CVO manifest inclusion logs
+
+CVO logs information about excluded and included gated manifests. You can view these messages to understand which manifests are affected by your feature gate configuration.
+
+.Procedure
+
+. View CVO logs for feature gate manifest exclusion messages:
++
+[source,terminal]
+----
+$ oc logs -n openshift-cluster-version deployment/cluster-version-operator \
+  | grep "feature gate"
+----
++
+.Example output for excluded manifests
+[source,terminal]
+----
+I0601 04:02:58.501447  1 payload.go:217] excluding Filename: "0000_30_cluster-api_11_deployment.yaml"
+  Group: "apps" Kind: "Deployment" Namespace: "openshift-cluster-api"
+  Name: "capi-controllers": feature gate ClusterAPIMachineManagement is required but not enabled
+----
++
+.Example output when a gated manifest is included because the gate is enabled
+[source,terminal]
+----
+I0601 04:54:27.510394  1 payload.go:217] excluding Filename: "0000_30_cluster-api_04_crd.core-cluster-api.yaml"
+  Group: "apiextensions.k8s.io" Kind: "CustomResourceDefinition"
+  Name: "ipaddressclaims.ipam.cluster.x-k8s.io":
+  feature gate ClusterAPIMachineManagement is enabled but manifest requires it to be disabled
+----
++
+The second message indicates a manifest that is annotated with `-ClusterAPIMachineManagement` (negated) and is being excluded because the gate is now enabled. This is expected behavior for legacy resources that are superseded by the feature.
