@@ -60,7 +60,7 @@ Copy each original callout sentence, then apply only the minimum edits required 
 
 ### OpenShift rules (in addition to PR #102276)
 
-- **`where:` / description list:** Pattern E—copy source text after `::`; apply the **Specifies** opening rules above; keep the rest of the sentence intact.
+- **`where:` / description list (Pattern E):** After `where:`, each entry is `` `full.path`:: Specifies … `` on its own line—**no** leading `*`. Do **not** use `* \`term\`::`; `*` plus `::` breaks AsciiDoc list parsing and is not in [PR #102276](https://github.com/openshift/openshift-docs/pull/102276). Pattern **F** (output only) uses `*` bullets with plain sentences (for example `` * `my-lws-0` is the leader pod for the first group. ``), never `::`.
 - **Terms (full notation):** Use the **full dotted path** for the left side of `::` (for example `` `spec.backupLocations.velero.provider` ``), built from the YAML in the example. Do **not** use a short key alone (`provider`, `bucket`).
 - **Placeholders as terms:** Use `` `<bucket_name>` `` (or similar) as the term **only** when **every** callout in that example block documents user-defined placeholders and no real field paths are mixed in. Otherwise use the full path even when the value in YAML is `<bucket_name>`.
 - **Procedure steps:** Connect replacements with `+` when they follow a procedure step (see ruleset *Connection to procedure steps*).

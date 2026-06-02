@@ -257,8 +257,8 @@ spec:
 +
 where:
 +
-* `spec.tolerations.key`:: Specifies the key that you added to the node.
-* `spec.tolerations.value`:: Specifies the value of the key-value pair taint that you added to the node.
+`spec.tolerations.key`:: Specifies the key that you added to the node.
+`spec.tolerations.value`:: Specifies the value of the key-value pair taint that you added to the node.
 ```
 
 #### Term (left side of `::`) — full notation (OpenShift)
@@ -280,8 +280,8 @@ Build the path from the YAML structure in the block:
 **Exception — placeholder-only blocks:** If **every** callout in the same example documents **only** user-defined placeholders (for example `<bucket_name>`, `<bucket_prefix>`) and not mixed real field names, you may use the placeholder as the term:
 
 ```asciidoc
-* `<bucket_name>`:: Specifies the bucket name; for example, `oadp-backup`.
-* `<bucket_prefix>`:: Specifies the bucket prefix; for example, `hcp`.
+`<bucket_name>`:: Specifies the bucket name; for example, `oadp-backup`.
+`<bucket_prefix>`:: Specifies the bucket prefix; for example, `hcp`.
 ```
 
 If the block mixes placeholders and real fields (for example `provider` and `<bucket_name>`), use **full notation for all terms**, including paths to `objectStorage.bucket` and `objectStorage.prefix` rather than `` `<bucket_name>` ``.
@@ -309,10 +309,22 @@ For field, parameter, and key callouts in Pattern E:
 becomes:
 
 ```asciidoc
-* `spec.backupLocations.velero.objectStorage.bucket`:: Specifies the bucket name; for example, `oadp-backup`.
+`spec.backupLocations.velero.objectStorage.bucket`:: Specifies the bucket name; for example, `oadp-backup`.
 ```
 
 —not a newly written sentence about buckets.
+
+#### Do not prefix Pattern E entries with `*` (required)
+
+Pattern E uses a **`where:`** block with a **description list**: the term and `::` start the line. Do **not** prefix entries with `*` (for example, `* \`spec.foo\`:: …`).
+
+In AsciiDoc, `*` begins an unordered list and `::` defines a description-list entry. Combining them (`* \`term\`::`) nests lists incorrectly and does not match [PR #102276](https://github.com/openshift/openshift-docs/pull/102276).
+
+| Use (Pattern E) | Do not use |
+| --- | --- |
+| `` `spec.tolerations.key`:: Specifies the key… `` | `` * `spec.tolerations.key`:: Specifies the key… `` |
+
+Pattern **F** (command **output**) uses `*` bullets with **plain sentences**—no `::` on the line—for example `` * `my-lws-0` is the leader pod for the first group. ``. That is output interpretation, not a `where:` field list.
 
 When converting callouts that began with **Replace**, use Pattern A for a **single** placeholder and keep the **Replace** wording. For **multiple** callouts in one block, use Pattern E with **Specifies** at the start of each `::` definition when the source used **Specify**.
 
@@ -378,7 +390,7 @@ When the code block is part of a numbered procedure step (`. Create …`), conne
 +
 where:
 
-* `spec.backupLocations.velero.provider`:: Specifies the provider for Velero.
+`spec.backupLocations.velero.provider`:: Specifies the provider for Velero.
 ```
 
 - Do **not** put a lone `+` between an example block title (`.Example output`) and `[source,…]` — only between the step and the title, or after the closing `----` of the block.
@@ -398,6 +410,8 @@ where:
 | Paraphrase callout explanations | Preserve original callout text; allow only minimal opening edits for **Specifies** (see [Preserve source wording](#preserve-source-wording-required)) |
 | Add or remove `ifdef`, `ifndef`, `ifeval`, or other conditionals | Keep all conditional directives and block boundaries unchanged; edit only callout markers and replacement prose inside existing blocks |
 | Nest `[source,…]` inside `[%collapsible]` / `====` for DITA | Remove collapsible wrapper; keep example title + source block (see `/fix-dita-vale`) |
+| Prefix Pattern E `where:` lines with `*` (`* \`spec.foo\`:: …`) | Use description-list lines only: `` `spec.foo`:: Specifies … `` under `where:` (see [Do not prefix Pattern E entries with `*`](#do-not-prefix-pattern-e-entries-with-required)) |
+| Use `::` on Pattern F output bullets | Use `` * `pod-name` is … `` prose bullets without `::` |
 
 ---
 
