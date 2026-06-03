@@ -1,0 +1,405 @@
+// Module included in the following assemblies:
+//
+// * networking/advanced_networking/bgp_evpn_udn/about-bgp-evpn-user-defined-networks.adoc
+
+:_mod-docs-content-type: PROCEDURE
+[id="nw-enabling-bgp-evpn-primary-cudn_{context}"]
+= Enabling BGP EVPN on a primary ClusterUserDefinedNetwork CR
+
+[role="_abstract"]
+To connect primary `ClusterUserDefinedNetwork` (CUDN) custom resource (CR) traffic to an external BGP EVPN fabric in {product-title}, you create `FRRConfiguration`, `VTEP`, `RouteAdvertisements`, and `ClusterUserDefinedNetwork` resources. Use these resources to establish BGP EVPN toward peers on your provider network and to advertise labeled CUDNs that use EVPN transport.
+
+////
+Two common patterns for the `VTEP` are *Managed* mode (OVN-Kubernetes allocates an address from a dedicated IPv4 CIDR) and *Unmanaged* mode (the node already has an address in the CIDR on some interface, and OVN-Kubernetes *discovers* that address, for example via netlink, instead of assigning it). For Unmanaged mode you can pre-provision that address with a `NodeNetworkConfigurationPolicy` (NNCP) from the Kubernetes NMState Operator, or the address can already be present (for example when the CIDR is your node network and the node’s primary address lies inside the range). Choose one path in the *Create a* `VTEP` *object* step.
+////
+
+.Prerequisites
+
+* You have enabled route advertisements in the Cluster Network Operator configuration. For more information, see "Enabling route advertisements".
+* You have set `gatewayConfig.routingViaHost` to `true` and `gatewayConfig.ipForwarding` to `Global` in the Cluster Network Operator configuration. BGP EVPN for primary CUDNs is only supported with this gateway configuration. For more information, see "Configuring a gateway".
+* You have logged in to the {product-title} cluster as an administrator.
+* You have the autonomous system numbers (ASNs), BGP neighbor addresses, expected virtual network identifiers (VNIs), and route targets if you set them explicitly. If you omit route targets, the implementation derives default values from your ASN and VNI.
+** VNIs must be unique and unused across multiple IP-VRF or MAC-VRF instances.
+////
+* For Managed `VTEP`:
+** Ensure that the IPv4 CIDR reserved for VTEP addresses is unique and does not conflict with any existing address used in the cluster. This CIDR must be routable on the underlay to allow remote VTEPs to encapsulate traffic to your nodes. Note that IPv6 VTEP CIDRs are currently unsupported.
+////
+* For Unmanaged `VTEP`:
+** The Kubernetes NMState Operator is available if you choose the NNCP option for Unmanaged VTEP addresses.
+
+.Procedure
+
+. Create an `FRRConfiguration` object that establishes BGP peering toward your provider network. The manifest must define at least one BGP router in the default VRF that will act as the EVPN underlay. Multiple routers can be defined for redundancy. OVN-Kubernetes reads neighbors from that router to enable EVPN toward the fabric.
+
+.. Use the following example as a template when creating the `FRRConfiguration` object. Use a descriptive label so `RouteAdvertisements` can select this configuration in a subsequent step.
++
+[source,yaml]
+----
+apiVersion: frrk8s.metallb.io/v1beta1
+kind: FRRConfiguration
+metadata:
+  name: <frrconfiguration_evpn_name>
+  namespace: openshift-frr-k8s
+  labels:
+    <frr_label_key>: <frr_label_value>
+spec:
+  nodeSelector: {}
+  bgp:
+    routers:
+      - asn: <cluster_asn>
+        neighbors:
+          - address: <peer_address>
+            asn: <peer_asn>
+----
++
+where:
++
+--
+`<frrconfiguration_evpn_name>`:: Specifies the name of the `FRRConfiguration` object.
+`<frr_label_key>` and `<frr_label_value>`:: Specifies a label key and value on the `FRRConfiguration` object that must match `frrConfigurationSelector.matchLabels` in the `RouteAdvertisements` object.
+`spec.nodeSelector`:: Specifies a `nodeSelector` so the configuration applies to the nodes where you want FRR to establish BGP toward the fabric.
+`<cluster_asn>`:: Specifies the autonomous system number (ASN) of the {product-title} cluster.
+`<peer_address>`:: Specifies the address of the BGP neighbor on the provider fabric.
+`<peer_asn>`:: Specifies the ASN of the BGP neighbor on the provider fabric.
+--
+
+.. Apply the `FRRConfiguration` object by entering the following command:
++
+[source,terminal]
+----
+$ oc apply -f <frrconfiguration_evpn_name>.yaml
+----
+
+. Create a VXLAN tunnel endpoint, or `VTEP`, object in `Unmanaged` mode. The `VTEP` custom resource defines VTEP IPs.
+
+.. Use the following example as a template when creating the `VTEP` object:
++
+[source,yaml]
+----
+apiVersion: k8s.ovn.org/v1
+kind: VTEP
+metadata:
+  name: <evpn_vtep_name>
+spec:
+  mode: Unmanaged
+  cidrs:
+    - <vtep_cidr>
+----
++
+where:
++
+--
+`<evpn_vtep_name>`:: Specifies the name of the `VTEP` object.
+
+`Unmanaged`:: Must be set to `Unmanaged` mode. `Managed` mode is unsupported for this release.
+
+`<vtep_cidr>`:: Specifies an IPv4 prefix that includes the VTEP primary address on each participating node. On every such node, configure one IPv4 address from this range as the primary address on an interface. OVN-Kubernetes discovers that address and uses it as the VTEP IP for that node. For how the address is used and how to configure the interface, see the following note.
+--
++
+[NOTE]
+====
+In `Unmanaged` mode, OVN-Kubernetes does not allocate a VTEP address. Consider the following when configuring the VTEP IP:
+
+* Each node needs one IPv4 address from `<vtep_cidr>` configured as the primary address of an interface on that node.
+
+* OVN-Kubernetes discovers the IPv4 address configured on the interface and uses it as the VTEP IP for that node. OVN-Kubernetes then advertises the VTEP IP on the BGP EVPN underlay so that it is reachable from other nodes.
+
+* Avoid using an interface associated with a physical link carrier when using redundant BGP peering. Instead, use a dummy interface where the IP is configured as the primary address.
+
+See the following optional step to configure a dummy interface and assign a primary IPv4 address from `<vtep_cidr>` by using the Kubernetes NMState Operator.
+====
+
+... Optional. Configure a dummy interface with a `NodeNetworkConfigurationPolicy` (NNCP) object from the Kubernetes NMState Operator. Assign a primary IPv4 address on it that falls within the VTEP CIDR. Use the following manifest as a template.
++
+[source,yaml]
+----
+apiVersion: nmstate.io/v1
+kind: NodeNetworkConfigurationPolicy
+metadata:
+  name: <nncp_evpn_vtep_name>
+spec:
+  nodeSelector: {}
+  desiredState:
+    interfaces:
+      - name: <evpn_vtep_dummy_name>
+        type: dummy
+        state: up
+        ipv4:
+          enabled: true
+          address:
+            - ip: <vtep_ipv4>
+              prefix-length: 32
+          dhcp: false
+        ipv6:
+          enabled: false
+----
++
+where:
++
+--
+`<nncp_evpn_vtep_name>`:: Specifies the name of the `NodeNetworkConfigurationPolicy` object.
+`spec.nodeSelector`:: Specifies a `nodeSelector` so the policy applies to the node or nodes you expect to host EVPN workloads.
+`<evpn_vtep_dummy_name>`:: Specifies the name for the dummy device on the node.
+`<vtep_ipv4>`:: Specifies an IPv4 address from `<vtep_cidr>` for this node. Use a different address on each node.
+--
++
+For information about applying and verifying the `NodeNetworkConfigurationPolicy` object, see "Managing the NodeNetworkConfigurationPolicy manifest file".
+
+.. Apply the `VTEP` object by entering the following command:
++
+[source,terminal]
+----
+$ oc apply -f <evpn_vtep_name>.yaml
+----
+
+.. Verify that the `VTEP` CR is created and accepted by entering the following command. A healthy VTEP has a valid VTEP IP and reports `Accepted: True` and `Reason: Allocated`.
++
+[source,terminal]
+----
+$ oc get vtep
+----
++
+.Example output
+[source,terminal]
+----
+NAME                ACCEPTED   REASON
+<evpn_vtep_name>    True       Allocated
+----
++
+If `Accepted` is `False`, check node annotations. 
+
+. Create a `RouteAdvertisements` object. 
+
+.. Use the following example as a template when creating the `RouteAdvertisements` object. Ensure that the `RouteAdvertisements` object selects a labeled `FRRConfiguration` object and labeled primary `ClusterUserDefinedNetwork` objects so that the pod network is advertised for EVPN.
++
+[source,yaml]
+----
+apiVersion: k8s.ovn.org/v1
+kind: RouteAdvertisements
+metadata:
+  name: <routeadvertisements_evpn_name>
+spec:
+  targetVRF: auto
+  advertisements:
+    - PodNetwork
+  nodeSelector: {}
+  frrConfigurationSelector:
+    matchLabels:
+      <frr_label_key>: <frr_label_value>
+  networkSelectors:
+    - networkSelectionType: ClusterUserDefinedNetworks
+      clusterUserDefinedNetworkSelector:
+        networkSelector:
+          matchLabels:
+            <cudn_label_key>: <cudn_label_value>
+----
++
+where:
++
+--
+`spec.targetVRF`:: Specifies the target VRF. Each CUDN is advertised in its own IP-VRF by design.
+
+`spec.advertisements`:: Specifies the advertisements to configure. Only pod IP advertisements are supported. Egress IP advertisements are not supported for EVPN.
+
+`spec.nodeSelector`:: Specifies the nodes from which advertisements are propagated. Pod IP advertisements are supported only from all nodes. This limitation is not specific to EVPN and applies to `RouteAdvertisements` objects.
+
+`<routeadvertisements_evpn_name>`:: Specifies the name of the `RouteAdvertisements` object.
+
+`<frr_label_key>` and `<frr_label_value>`:: Specifies a label key and value on the `FRRConfiguration` object that must match `frrConfigurationSelector.matchLabels` in the `RouteAdvertisements` object. The selected `FRRConfiguration` must define at least a default VRF BGP router; OVN-Kubernetes uses neighbors from that router to enable EVPN for those peers.
+
+`<cudn_label_key>` and `<cudn_label_value>`:: Specifies a label key and value on the `ClusterUserDefinedNetwork` object that must match `networkSelectors.clusterUserDefinedNetworkSelector.networkSelector.matchLabels` in the `RouteAdvertisements` object. For example, the key `evpn` with the value `enabled` selects every CUDN labeled `evpn: enabled`.
+--
++
+For IP-VRF primary CUDNs, if the `FRRConfiguration` defines a VRF-specific BGP router whose name matches the CUDN name, the IP-VRF EVPN router is derived from that router. If that router does not exist, the IP-VRF EVPN router is derived from the underlay (default VRF) router.
+
+.. Apply the `RouteAdvertisements` object by entering the following command:
++
+[source,terminal]
+----
+$ oc apply -f <routeadvertisements_evpn_name>.yaml
+----
+
+.. Verify that the `RouteAdvertisements` CR is created and accepted by entering the following command. A healthy `RouteAdvertisements` CR reports `Accepted: True` and `Reason: Accepted`.
++
+[source,terminal]
+----
+$ oc get routeadvertisements -o \
+    custom-columns='NAME:.metadata.name,ACCEPTED:.status.conditions[?(@.type=="Accepted")].status,REASON:.status.conditions[?(@.type=="Accepted")].reason'
+----
++
+.Example output
+[source,terminal]
+----
+NAME                               ACCEPTED   REASON
+<routeadvertisements_evpn_name>    True       Accepted
+----
++
+If `Accepted` is `False`, check that the `networkSelectors` field matches an existing `ClusterUserDefinedNetwork` resource, that the `frrConfigurationSelector` object matches an existing `FRRConfiguration` resource, and that the `FRRConfiguration` contains at least a default VRF router with neighbors.
+
+. Create a Layer 2 or Layer 3 primary `ClusterUserDefinedNetwork` object. 
++
+[IMPORTANT]
+====
+You cannot retroactively enable EVPN on an existing `ClusterUserDefinedNetwork` object whose specification is immutable. You must create a new `ClusterUserDefinedNetwork` object for EVPN workloads instead.
+====
+
+.. Create a Layer 2 primary CUDN object across the EVPN network as a MAC-VRF. Use the following example as a template:
++
+[source,yaml]
+----
+apiVersion: k8s.ovn.org/v1
+kind: ClusterUserDefinedNetwork
+metadata:
+  name: <l2_cudn_name>
+  labels:
+    <cudn_label_key>: <cudn_label_value>
+spec:
+  namespaceSelector:
+    matchLabels:
+      kubernetes.io/metadata.name: <namespace_label_value>
+  network:
+    topology: Layer2
+    layer2:
+      role: Primary
+      subnets:
+        - <cudn_subnet>
+    transport: EVPN
+    evpn:
+      vtep: <evpn_vtep_name>
+      macVRF:
+        vni: <mac_vrf_vni>
+        routeTarget: <mac_vrf_rt>
+----
++
+where:
++
+--
+`<l2_cudn_name>`:: Specifies the name of the Layer 2 `ClusterUserDefinedNetwork` object.
+
+`<cudn_label_key>` and `<cudn_label_value>`:: Specifies a label key and value on the CUDN that must match `networkSelectors` in the `RouteAdvertisements` object.
+
+`<namespace_label_value>`:: Specifies the value of the label so that the CUDN applies to the namespace or namespaces that you expect to host EVPN workloads.
+
+`<cudn_subnet>`:: Specifies the subnet for the CUDN, for example, `10.0.10.0/24`.
+
+`<evpn_vtep_name>`:: Specifies the `metadata.name` of the `VTEP` object that this CUDN uses for EVPN transport. It must match the name you set when you created the `VTEP` object.
+
+`<mac_vrf_vni>`:: Specifies the VNI for the MAC VRF, for example, `100`.
+
+`<mac_vrf_rt>`:: Optional. Specifies the route target for the MAC VRF, for example, `65000:100`.
+--
+
+.. Optional. Add an IP-VRF on top of the MAC-VRF. This enables Layer 3 routing for the same network, allowing pods to reach external routed destinations via the IP-VRF while maintaining Layer 2 reachability via the MAC VRF. Use the following example as a template:
++
+[source,yaml]
+----
+# ...
+    evpn:
+      vtep: <evpn_vtep_name>
+      macVRF:
+        vni: <mac_vrf_vni>
+        routeTarget: <mac_vrf_rt>
+      ipVRF:
+        vni: <ip_vrf_vni>
+        routeTarget: <ip_vrf_rt>
+# ...
+----
++
+where:
++
+--
+`<ip_vrf_vni>`:: Specifies the VNI for the IP VRF, for example, `101`.
+`<ip_vrf_rt>`:: Optional. Specifies the route target for the IP VRF, for example, `65000:200`.
+--
+
+.. Create a Layer 3 primary CUDN object that uses routing via the IP-VRF. In the following Layer 3 topology, each node maintains its own local Layer 2 domain (per-node subnets), and inter-node communication is handled via EVPN Type 5 routes to advertise these IP prefixes across the fabric. Use the following example as a template:
++
+[source,yaml]
+----
+apiVersion: k8s.ovn.org/v1
+kind: ClusterUserDefinedNetwork
+metadata:
+  name: <l3_cudn_name>
+  labels:
+    <cudn_label_key>: <cudn_label_value>
+spec:
+  namespaceSelector:
+    matchLabels:
+      kubernetes.io/metadata.name: <namespace_label_value>
+  network:
+    topology: Layer3
+    layer3:
+      role: Primary
+      subnets:
+        - cidr: <cudn_subnet>
+          hostSubnet: 24
+    transport: EVPN
+    evpn:
+      vtep: <evpn_vtep_name>
+      ipVRF:
+        vni: <ip_vrf_vni>
+        routeTarget: <ip_vrf_rt>
+----
++
+where:
++
+--
+`<l3_cudn_name>`:: Specifies the name of the Layer 3 `ClusterUserDefinedNetwork` object.
+`<cudn_label_key>` and `<cudn_label_value>`:: Specifies a label key and value on the CUDN that must match `networkSelectors` in the `RouteAdvertisements` object.
+`<namespace_label_value>`:: Specifies the value of the label so that the CUDN applies to the namespace or namespaces that you expect to host EVPN workloads.
+`<cudn_subnet>`:: Specifies the subnet for the CUDN, for example, `10.0.20.0/16`.
+`<evpn_vtep_name>`:: Specifies the name of the `VTEP` object that this CUDN uses for EVPN transport. It must match the name you set when you created the `VTEP` object.
+`<ip_vrf_vni>`:: Specifies the VNI for the IP VRF, for example, `200`.
+`<ip_vrf_rt>`:: Optional. Specifies the route target for the IP VRF, for example, `65000:101`.
+--
+
+.. Apply the Layer 2 or Layer 3 `ClusterUserDefinedNetwork` object by entering the following command:
++
+[source,terminal]
+----
+$ oc apply -f <clusteruserdefinednetwork_name>.yaml
+----
+
+.. Verify that the `ClusterUserDefinedNetwork` CR is created and accepted by entering the following command. A healthy `ClusterUserDefinedNetwork` CR reports `Accepted: True` and `Reason: EVPNTransportAccepted`.
++
+Check the `ClusterUserDefinedNetwork` status by entering the following command:
++
+[source,terminal]
+----
+$ oc get clusteruserdefinednetwork <clusteruserdefinednetwork_name> -o \
+    custom-columns='NAME:.metadata.name,ACCEPTED:.status.conditions[?(@.type=="clusteruserdefinednetwork")].status,REASON:.status.conditions[?(@.type=="clusteruserdefinednetwork")].reason'
+----
++
+.Example output
+[source,terminal]
+----
+NAME                                ACCEPTED   REASON
+<clusteruserdefinednetwork_name>    True       EVPNTransportAccepted
+----
++
+If `Accepted` is `False`, check that the referenced `VTEP` CR exists and is itself accepted.
+
+.Verification
+
+* Ensure that pods in a selected namespace can reach peers on the same CUDN and, where your design allows, endpoints on the external EVPN fabric.
+
+//Comment command will be moved into the procedure in a future PR
+
+////
+Create a `VTEP` object using either `Managed` or `Unmanaged` mode depending on whether OVN-Kubernetes should allocate a VTEP address per node or use an address that you or the fabric provider have already placed on the host.
+
+* Create a `VTEP` object in `Managed` mode. When using `managed` mode, OVN-Kubernetes assigns a VTEP IPv4 for each node from a dedicated CIDR you list in `spec.cidrs`. The CIDR must be IPv4. For example:
++
+[source,yaml]
+----
+apiVersion: k8s.ovn.org/v1
+kind: VTEP
+metadata:
+  name: <evpn_vtep_name>
+spec:
+  mode: Managed
+  cidrs:
+    - <vtep_cidr>
+----
+////
+
