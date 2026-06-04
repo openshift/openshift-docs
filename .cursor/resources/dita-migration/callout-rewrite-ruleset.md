@@ -113,10 +113,13 @@ Use the original callout text and how many markers the block had.
 | **1** | `For <placeholder>, specify …` / explains one flag or argument | **B — For sentence** |
 | **1** | `In this example, …` / general note on the command | **C — Explanatory sentence** |
 | **1** | `<placeholder>` is the path/name … (defines one placeholder) | **D — Placeholder lead-in** |
+| **1** | Documents one field, flag, or placeholder with **Specify** / **Specifies** wording (not Replace / For / In this example) | **D — Placeholder lead-in** or **B — For sentence** (see below; **not** Pattern E) |
 | **2+** | Documents fields, keys, placeholders, or YAML keys | **E — `where:` description list** |
 | **2+** | Interprets lines in command **output** (not input) | **F — Output bullet list** |
 
 If a procedure step continues after the explanation, prefix the replacement with `+` on its own line (see [Connection to procedure steps](#connection-to-procedure-steps)).
+
+**Do not use Pattern E for a single callout.** One marker → Pattern A, B, C, or D only (`+` then a lead-in sentence). Pattern E requires **two or more** callouts in the same example block ([PR #102276](https://github.com/openshift/openshift-docs/pull/102276) `customize-certificates-replace-default-router.adoc` uses `+` + plain sentence for one placeholder, and `+` + `where:` only when three placeholders are documented together).
 
 ---
 
@@ -228,7 +231,44 @@ $ oc create configmap custom-ca \
 
 ### Pattern E — Multiple callouts: `where:` description list
 
-Use for **two or more** callouts that document parameters, placeholders, or configuration keys in the **same** preceding example.
+Use for **two or more** callouts that document parameters, placeholders, or configuration keys in the **same** preceding example. **Never** use Pattern E when the block had only one callout.
+
+#### Correct `where:` structure (required)
+
+`where:` is a **labeled block** on its own line. The description-list entries (`term::` definitions) follow on **separate lines**. Do **not** write `where::` (that merges the label and the list opener and is invalid for [PR #102276](https://github.com/openshift/openshift-docs/pull/102276)).
+
+**Correct (procedure step; three callouts — see PR `customize-certificates-replace-default-router.adoc`):**
+
+```asciidoc
+----
+$ oc create secret tls <secret> \
+--cert=</path/to/cert.crt> \
+--key=</path/to/cert.key> \
+-n openshift-ingress
+----
++
+where:
+
+`<secret>`:: Specifies the name of the secret that will contain the certificate chain and private key.
+`</path/to/cert.crt>`:: Specifies the path to the certificate chain on your local file system.
+`</path/to/cert.key>`:: Specifies the private key associated with this certificate.
+```
+
+**Correct (one callout in the same PR — Pattern D, not `where:`):**
+
+```asciidoc
+----
+--from-file=ca-bundle.crt=</path/to/example-ca.crt>
+----
++
+`</path/to/example-ca.crt>` is the path to the root CA certificate file on your local file system. For example, `/etc/pki/ca-trust/source/anchors`.
+```
+
+| Do not | Do instead |
+| --- | --- |
+| `where::` on one line | `where:` on its own line, then blank line, then `` `term`:: Specifies … `` entries |
+| `where::` with a single `` `term`:: … `` entry | `+` then a Pattern A–D lead-in sentence (no `where:`) |
+| `* \`term\`:: Specifies …` under `where:` | `` `term`:: Specifies … `` only (no leading `*`) |
 
 **Before:**
 
@@ -411,6 +451,7 @@ where:
 | Add or remove `ifdef`, `ifndef`, `ifeval`, or other conditionals | Keep all conditional directives and block boundaries unchanged; edit only callout markers and replacement prose inside existing blocks |
 | Nest `[source,…]` inside `[%collapsible]` / `====` for DITA | Remove collapsible wrapper; keep example title + source block (see `/fix-dita-vale`) |
 | Prefix Pattern E `where:` lines with `*` (`* \`spec.foo\`:: …`) | Use description-list lines only: `` `spec.foo`:: Specifies … `` under `where:` (see [Do not prefix Pattern E entries with `*`](#do-not-prefix-pattern-e-entries-with-required)) |
+| Write `where::` (one line) or use `where:` for a **single** callout | Use `where:` only for **2+** callouts; put `where:` on its own line after `+`; use Pattern A–D for one callout (see [Correct `where:` structure](#correct-where-structure-required)) |
 | Use `::` on Pattern F output bullets | Use `` * `pod-name` is … `` prose bullets without `::` |
 
 ---

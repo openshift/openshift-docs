@@ -105,7 +105,7 @@ grep -E '^(//)?include::' installing/installing_azure_stack_hub/installing-azure
 | Command | Purpose |
 | --- | --- |
 | `/fix-dita-vale` | Run Vale and fix AsciiDocDITA rule violations |
-| `/fix-dita-callouts` | Apply `callout-rewrite-ruleset.md`; preserve callout wording and all conditionals; Pattern E opens with **Specifies** (minimal opening edit when needed) |
+| `/fix-dita-callouts` | Apply `callout-rewrite-ruleset.md`; preserve callout wording and all conditionals; **one callout** → Pattern A–D (`+` + lead-in sentence, no `where:`); **2+ callouts** → Pattern E: `+`, then `where:` on its own line (never `where::`), then `` `term`:: Specifies … `` lines; Pattern E opens with **Specifies** (minimal opening edit when needed) |
 | `/fix-content-type` | Correct **`:_mod-docs-content-type:`** only when it mismatches content (no abstract writing) |
 | `/check-doc-style` | IBM/RH supplementary and OCP structural checks |
 | `/write-dita-abstract` | **Required in step 2**—rewrite short descriptions (not label-only); also used when Vale reports **ShortDescription** |
