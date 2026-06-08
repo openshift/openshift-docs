@@ -1,0 +1,198 @@
+// Module included in the following assemblies:
+//
+// *deployment/rhcl-using-x509-crypt-id-verify.adoc
+
+:_mod-docs-content-type: PROCEDURE
+[id="proc-rhcl-x509-gateway-object_{context}"]
+= Creating a Gateway object for use with the X.509 format
+
+[role="_abstract"]
+To use the X.509 format for certificates, after you have your certificate authorities (CAs) and client certificates set up, you must create a `Gateway` object without front-end TLS validation and associated required resources. Not configuring front-end TLS in your Gateway passes authentication to your two-step X.509-based validation.
+
+You create the following custom resources by using the following procedure:
+
+* A Gateway object configured for use with the X.509 certificate format.
+* A `cert-manager` Issuer: Self-signed certificate issuer for the `Gateway` object's server certificate.
+* A `TLSPolicy` CR: Kuadrant policy to manage the `Gateway` object's server TLS certificate.
+
+.Prerequisites
+
+* You are logged into {ocp} as a cluster administrator.
+* You installed {prodname} using Istio as your `Gateway` object controller.
+* You created your CAs and X.509-formatted certificates.
+
+.Procedure
+
+. Create the cert-manager `Issuer` custom resource (CR) by using the following example:
++
+[source,yaml,subs="+quotes"]
+----
+apiVersion: cert-manager.io/v1
+kind: Issuer
+metadata:
+  name: gateway-cert-issuer
+  namespace: _<gateway_system>_
+spec:
+  selfSigned: {}
+----
++
+* Replace `_<gateway_system>_` with the namespace of your `Gateway` object.
+
+. Apply the cert-manager `Issuer` object by running the following command:
++
+[source,terminal]
+----
+$ oc apply - f gateway-cert-issuer.yaml
+----
+
+. Create the `TLSPolicy` object by using the following example:
++
+[source,yaml,subs="+quotes"]
+----
+apiVersion: kuadrant.io/v1
+kind: TLSPolicy
+metadata:
+  name: mtls-gateway-tls
+  namespace: _<gateway_system>_
+spec:
+  targetRef:
+    group: gateway.networking.k8s.io
+    kind: Gateway
+    name: mtls-gateway
+    sectionName: https
+  issuerRef:
+    group: cert-manager.io
+    kind: Issuer
+    name: gateway-cert-issuer
+----
++
+* Replace the value of the `metadata.namespace` parameter with the namespace where your `Gateway` object is applied.
+
+. Apply the `TLSPolicy` object by running the following command:
++
+[source,terminal]
+----
+$ oc apply -f mtls-gateway-tls.yaml
+----
+
+. On your local host, create an infrastructure customization `ConfigMap` CR to inject the client CA volume mounts into the managed Istio proxy pods by using the following example:
++
+.Example `ConfigMap` CR for use with an X.509 `Gateway` object
+[source,yaml,subs="+quotes"]
+----
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: mtls-gateway-config
+  namespace: _<gateway_system>_
+data:
+  deployment: |
+    spec:
+      template:
+        spec:
+          volumes:
+          - name: client-ca
+            configMap:
+              name: gateway-client-ca
+          containers:
+          - name: istio-proxy
+            volumeMounts:
+            - name: client-ca
+              mountPath: /etc/certs
+              readOnly: true
+----
++
+* Replace the value of the `metadata.namespace` parameter with the namespace where your `Gateway` object is applied.
+
+. Apply the infrastructure customization `ConfigMap` CR by running the following command:
++
+[source,terminal]
+----
+$ oc apply -f mtls-gateway-config.yaml
+----
+
+. Create the mTLS `Gateway` object by using the following example:
++
+[source,yaml,subs="+quotes"]
+----
+apiVersion: gateway.networking.k8s.io/v1
+kind: Gateway
+metadata:
+  name: mtls-gateway
+  namespace: _<gateway_system>_
+spec:
+  gatewayClassName: openshift-default
+  infrastructure:
+    parametersRef:
+      group: ""
+      kind: ConfigMap
+      name: mtls-gateway-config
+  listeners:
+  - name: https
+    protocol: HTTPS
+    port: 443
+    hostname: "_<gateway_hostname>_"
+    allowedRoutes:
+      namespaces:
+        from: All
+    tls:
+      mode: Terminate
+      certificateRefs:
+      - name: _<gateway_name>_-_<listener_name>_-tls
+        kind: Secret
+----
++
+* Replace the value of the `metadata.namespace` parameter with the namespace where your `Gateway` object is applied.
+* Replace the value of the `spec.listeners.hostname` parameter with the name of your `Gateway` object hostname.
+* Replace `spec.listeners.tls.certificateRefs.name` with the name of your `Gateway` object and the name of your mTLS listener in the `_<gateway_name>_-_<listener_name>_-tls` format.
+
+. Apply the mTLS `Gateway` CR by running the following command:
++
+[source,terminal]
+----
+$ oc apply -f mtls-gateway.yaml
+----
+
+. Create an `EnvoyFilter` CR to configure mutual TLS validation by using the following example:
++
+.Example mutual TLS `EnvoyFilter` CR
+[source,yaml,subs="+quotes"]
+----
+apiVersion: networking.istio.io/v1alpha3
+kind: EnvoyFilter
+metadata:
+  name: mtls-validation
+  namespace: _<gateway_system>_
+spec:
+  targetRefs:
+  - group: gateway.networking.k8s.io
+    kind: Gateway
+    name: mtls-gateway
+  configPatches:
+  - applyTo: FILTER_CHAIN
+    match:
+      context: GATEWAY
+      listener:
+        portNumber: 443
+    patch:
+      operation: MERGE
+      value:
+        transport_socket:
+          name: envoy.transport_sockets.tls
+          typed_config:
+            "@type": type.googleapis.com/envoy.extensions.transport_sockets.tls.v3.DownstreamTlsContext
+            commonTlsContext:
+              validationContext:
+                trustedCa:
+                  filename: /etc/certs/ca.crt
+            requireClientCertificate: true
+----
++
+* Replace the value of the `metadata.namespace` parameter with the namespace where your `Gateway` object is applied.
+
+. Apply the `EnvoyFilter` CR by running the following command:
++
+[source,terminal]
+----
+$ oc apply -f mtls-envoyfilter.yaml
+----
