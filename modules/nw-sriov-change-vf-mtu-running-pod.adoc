@@ -1,0 +1,234 @@
+// Module included in the following assemblies:
+//
+// * networking/hardware_networks/configuring-sriov-net-attach.adoc
+
+:_mod-docs-content-type: PROCEDURE
+[id="nw-sriov-change-vf-mtu-running-pod_{context}"]
+= Change the MTU value of a virtual function for a running pod
+
+[role="_abstract"]
+You can change the maximum transmission unit (MTU) of a virtual function (VF) for a running pod by omitting the `mtu` field from the `SriovNetworkNodePolicy` custom resource (CR) and configuring the physical function (PF) MTU by using the Kubernetes NMState Operator.
+
+When the `mtu` field is set in the `SriovNetworkNodePolicy` CR, the SR-IOV Network Operator continuously enforces that MTU value on the VF. This reverts any application-level MTU changes and can trigger a node drain. To avoid this conflict, use the following approach:
+
+* Omit the `mtu` field from the `SriovNetworkNodePolicy` CR. This allows the SR-IOV Network Operator to provision VFs without managing their MTU.
+* Use the Kubernetes NMState Operator to set the MTU of the PF to the required value. A VF cannot have a higher MTU than its parent PF, so you must set the PF MTU first.
+
+With these configurations in place, a pod that has the `NET_ADMIN` Linux capability can safely set its own VF MTU without interference from the SR-IOV Network Operator.
+
+[IMPORTANT]
+====
+If you already configured a value for the `mtu` field in your `SriovNetworkNodePolicy` CR, removing it might trigger a node drain. Perform this change during a scheduled maintenance window.
+====
+
+.Prerequisites
+
+* You installed the {oc-first}.
+* You logged in as a user with `cluster-admin` privileges.
+* You installed the SR-IOV Network Operator.
+* You installed the Kubernetes NMState Operator.
+
+.Procedure
+
+. Verify that the `mtu` field is not present in your `SriovNetworkNodePolicy` CR by running the following command:
++
+[source,terminal]
+----
+$ oc get sriovnetworknodepolicy <policy_name> -n openshift-sriov-network-operator -o jsonpath='{.spec.mtu}'
+----
++
+where:
++
+`<policy_name>`:: Specifies the name of the `SriovNetworkNodePolicy` CR.
++
+If the command returns a value, remove the `mtu` field from the CR by running the following command:
++
+[source,terminal]
+----
+$ oc patch sriovnetworknodepolicy <policy_name> -n openshift-sriov-network-operator \
+  --type=json -p='[{"op": "remove", "path": "/spec/mtu"}]'
+----
++
+The SR-IOV Network Operator reconciles and creates the VFs with the default MTU of 1500.
+
+. Verify that the VFs are created with the default MTU by running the following commands:
++
+[source,terminal]
+----
+$ oc debug node/<node_name>
+----
++
+[source,terminal]
+----
+# chroot /host
+# ip link show <vf_interface>
+----
++
+where:
++
+`<node_name>`:: Specifies the name of the node where the PF is located.
+`<vf_interface>`:: Specifies the VF interface name, for example `ens3f0v0`.
++
+.Example output
+[source,text]
+----
+4: ens3f0v0: <BROADCAST,MULTICAST> mtu 1500 qdisc noop state DOWN mode DEFAULT group default qlen 1000
+    link/ether aa:bb:cc:dd:ee:01 brd ff:ff:ff:ff:ff:ff
+----
+
+. Create a `NodeNetworkConfigurationPolicy` CR to set the MTU of the PF:
+
+.. Create a file named `nncp-set-pf-mtu.yaml` with the following content:
++
+[source,yaml]
+----
+apiVersion: nmstate.io/v1
+kind: NodeNetworkConfigurationPolicy
+metadata:
+  name: set-pf-mtu
+spec:
+  nodeSelector:
+    kubernetes.io/hostname: <node_name>
+  desiredState:
+    interfaces:
+      - name: <pf_interface>
+        type: ethernet
+        state: up
+        mtu: <mtu_value>
+----
++
+where:
++
+`<node_name>`:: Specifies the name of the node where the PF is located.
+`<pf_interface>`:: Specifies the name of the PF interface, for example `ens3f0`.
+`<mtu_value>`:: Specifies the required MTU value for the PF, for example `9000`. This value must be greater than or equal to the MTU that the application sets on the VF.
+
+.. Apply the CR by running the following command:
++
+[source,terminal]
+----
+$ oc apply -f nncp-set-pf-mtu.yaml
+----
+
+. Verify that the NMState policy has been applied successfully by running the following command:
++
+[source,terminal]
+----
+$ oc get nodenetworkconfigurationpolicy set-pf-mtu
+----
++
+.Example output
+[source,text]
+----
+NAME          STATUS      REASON
+set-pf-mtu    Available   SuccessfullyConfigured
+----
++
+Wait until the `STATUS` column shows `Available` before proceeding.
+
+. Verify that the PF MTU has been updated on the node by running the following commands:
++
+[source,terminal]
+----
+$ oc debug node/<node_name>
+----
++
+[source,terminal]
+----
+# chroot /host
+# ip link show <pf_interface>
+----
++
+where:
++
+`<node_name>`:: Specifies the name of the node where the PF is located.
+`<pf_interface>`:: Specifies the name of the PF interface, for example `ens3f0`.
++
+.Example output
+[source,text]
+----
+2: ens3f0: <BROADCAST,MULTICAST,UP,LOWER_UP> mtu 9000 qdisc mq state UP mode DEFAULT group default qlen 1000
+    link/ether aa:bb:cc:dd:ee:ff brd ff:ff:ff:ff:ff:ff
+----
++
+The VFs retain their default MTU of 1500 at this stage.
+
+. Deploy or update the application pod to set the VF MTU at container startup:
+
+.. Create or update the pod spec with a startup command that sets the VF MTU before the application starts:
++
+[source,yaml]
+----
+apiVersion: v1
+kind: Pod
+metadata:
+  name: <pod_name>
+  namespace: <namespace>
+  annotations:
+    k8s.v1.cni.cncf.io/networks: <sriov_network_name>
+spec:
+  containers:
+    - name: <container_name>
+      image: <image>
+      command: ["/bin/sh"]
+      args:
+        - "-c"
+        - "ip link set mtu <mtu_value> dev <vf_interface>; <application_command>"
+      securityContext:
+        capabilities:
+          add: ["NET_ADMIN"]
+      resources:
+        requests:
+          <sriov_resource_name>: "1"
+        limits:
+          <sriov_resource_name>: "1"
+----
++
+where:
++
+`command` and `args`:: Sets the VF MTU to the specified value before running the application command.
+`NET_ADMIN`:: The `NET_ADMIN` Linux capability is required for the container to change network interface settings.
+`<pod_name>`:: Specifies the name of the pod.
+`<namespace>`:: Specifies the namespace where the pod runs.
+`<sriov_network_name>`:: Specifies the name of the `SriovNetwork` CR that provides the VF to the pod.
+`<container_name>`:: Specifies the name of the container.
+`<image>`:: Specifies the container image to use.
+`<mtu_value>`:: Specifies the required MTU value, for example `9000`.
+`<vf_interface>`:: Specifies the VF interface name as it is displayed inside the pod, typically `net1`.
+`<application_command>`:: Specifies the main application command to run after the MTU is set.
+`<sriov_resource_name>`:: Specifies the SR-IOV resource name defined in the `spec.resourceName` field of the `SriovNetworkNodePolicy` CR.
+
+.. Apply the pod spec by running the following command:
++
+[source,terminal]
+----
+$ oc apply -f <pod_spec_file>.yaml
+----
++
+where:
++
+`<pod_spec_file>`:: Specifies the name of the file containing the pod specification.
+
+.Verification
+
+. Verify that the VF MTU inside the pod has been set to the expected value by running the following command:
++
+[source,terminal]
+----
+$ oc exec <pod_name> -n <namespace> -- ip link show <vf_interface>
+----
++
+where:
++
+`<pod_name>`:: Specifies the name of the pod.
+`<namespace>`:: Specifies the namespace where the pod is running.
+`<vf_interface>`:: Specifies the VF interface name inside the pod, for example `net1`.
++
+.Example output
+[source,text]
+----
+3: net1: <BROADCAST,MULTICAST,UP,LOWER_UP> mtu 9000 qdisc mq state UP mode DEFAULT group default qlen 1000
+    link/ether 00:00:5E:00:53:01 brd ff:ff:ff:ff:ff:ff
+----
++
+The example output confirms that the VF MTU matches the value set by the pod startup command. The SR-IOV Network Operator preserves this value because the `SriovNetworkNodePolicy` CR delegates MTU management to the pod.
