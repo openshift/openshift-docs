@@ -1,0 +1,188 @@
+// Module included in the following assemblies:
+//
+// * service-mesh-docs-main/install/ossm-SPIRE.adoc
+
+:_mod-docs-content-type: PROCEDURE
+[id="ossm-SPIRE-istio-integrate_{context}"]
+= Integrate the {istio} CR with SPIRE
+
+[role="_abstract"]
+To implement zero-trust security in your mesh, configure the {istio} CR to integrate with the SPIFFE Runtime Environment (SPIRE). This configuration connects {istio} proxies to the SPIRE agent. Workloads receive SPIFFE identities instead of using default {istio} certificates.
+
+.Prerequisites
+
+* You have deployed a cluster on {ocp-product-title} 4.18 or later.
+
+* You have installed the {SMProduct} Operator.
+
+* You have installed the Zero Trust Workload Identity Manager and deployed the associated components.
+
+* You have deployed an `IstioCNI` CR.
+
+
+.Procedure
+
+. Define environment variables for the {istio} configuration, as shown in the following example:
++
+[source,terminal,subs="+quotes"]
+----
+$ export ZTWIM_NS=zero-trust-workload-identity-manager
+$ export TRUST_DOMAIN=__<apps.mycluster.example.com>__
+$ export JWT_ISSUER="https://oidc-discovery.$(oc get ingresses.config/cluster -o jsonpath={.spec.domain})"
+$ export OSSM_NS=istio-system
+$ export OSSM_CNI=istio-cni
+$ export VERIFY_NS=verify-ossm-ztwim
+$ export EXTRA_ROOT_CA="$(oc get secret oidc-serving-cert \
+                         -n ${ZTWIM_NS} -o json | \
+                         jq -r '.data."tls.crt"' | \
+                         base64 -d | \
+                         sed 's/^/        /')"
+----
+where:
++
+`ZTWIM_NS`:: The namespace where the Zero Trust Workload Identity Manager is deployed. Use the value from your Zero Trust Workload Identity Manager configuration.
+`TRUST_DOMAIN`:: The SPIFFE trust domain for the service mesh, which is the same domain specified in your Zero Trust Workload Identity Manager configuration.
+`JWT_ISSUER`:: The OpenID Connect (OIDC) discovery endpoint URL for the SPIRE OIDC Discovery Provider. SPIRE exposes SPIFFE identities as OIDC-compatible JSON Web Tokens (JWTs) through this endpoint, enabling {istio} to validate workload identities by using standard OIDC authentication protocols. This URL must match the URL specified in your Zero Trust Workload Identity Manager configuration.
+`OSSM_NS`:: The namespace where you deploy the {istio} control plane.
+`OSSM_CNI`:: The namespace where you deployed the {istio} CNI component.
+`VERIFY_NS`:: The namespace for deploying verification workloads.
+`EXTRA_ROOT_CA`:: The root CA certificate from the SPIRE OIDC Discovery Provider. This certificate enables {istio}'s `pilot` component to trust and verify JWTs issued by the SPIRE OIDC provider.
+
+. Create the {istio} CR according to the following example:
++
+[source,terminal]
+----
+$ oc new-project "${OSSM_NS}" 2>/dev/null
+# Create Istiod
+$ cat <<EOF | oc apply -f -
+apiVersion: sailoperator.io/v1
+kind: Istio
+metadata:
+  name: default
+spec:
+  namespace: istio-system
+  updateStrategy:
+    type: InPlace
+  values:
+    pilot:
+      jwksResolverExtraRootCA: |
+${EXTRA_ROOT_CA}
+      env:
+        PILOT_JWT_ENABLE_REMOTE_JWKS: "true"
+    meshConfig:
+      trustDomain: $TRUST_DOMAIN
+      defaultConfig:
+        proxyMetadata:
+          WORKLOAD_IDENTITY_SOCKET_FILE: "spire-agent.sock"
+    sidecarInjectorWebhook:
+      templates:
+        spire: |
+          spec:
+            initContainers:
+            - name: istio-proxy
+              volumeMounts:
+              - name: workload-socket
+                mountPath: /run/secrets/workload-spiffe-uds
+                readOnly: true
+            volumes:
+              - name: workload-socket
+                csi:
+                  driver: "csi.spiffe.io"
+                  readOnly: true
+        spireGateway: |
+          spec:
+            containers:
+            - name: istio-proxy
+              volumeMounts:
+              - name: workload-socket
+                mountPath: /run/secrets/workload-spiffe-uds
+                readOnly: true
+            volumes:
+              - name: workload-socket
+                csi:
+                  driver: "csi.spiffe.io"
+                  readOnly: true
+EOF
+# Wait until it is successfully installed
+until oc get deployment istiod -n "${OSSM_NS}" &> /dev/null; do sleep 3; done
+oc wait --for=condition=Available deployment/istiod -n "${OSSM_NS}" --timeout=300s
+----
+where:
++
+`PILOT_JWT_ENABLE_REMOTE_JWKS`:: Enables Istio's `pilot` component to fetch JSON Web Key Sets (JWKS) from remote OIDC endpoints. Pilot uses these keys to validate JWTs issued by the SPIRE OIDC Discovery Provider.
+`WORKLOAD_IDENTITY_SOCKET_FILE`:: Specifies the UNIX domain socket filename that sidecar proxies use to communicate with the SPIRE agent and obtain SPIFFE identities.
+`sidecarInjectorWebhook.templates.spire`:: Custom injection template for regular workload sidecars. It mounts the SPIFFE CSI driver volume at `/run/secrets/workload-spiffe-uds`. This directory has the UNIX domain socket file that sidecars use to communicate with the SPIRE agent and obtain SPIFFE identities.
+`sidecarInjectorWebhook.templates.spireGateway`:: Custom injection template for ingress and egress gateway pods. It mounts the SPIFFE Container Storage Interface (CSI) driver volume at `/run/secrets/workload-spiffe-uds`. This directory has the UNIX domain socket file that gateways use to communicate with the SPIRE agent and obtain SPIFFE identities.
+`csi.spiffe.io`:: The SPIFFE CSI driver that provides workloads with access to the SPIRE agent's UNIX domain socket for obtaining SPIFFE identities.
+
+.Verification
+
+Deploy a test workload and verify that it receives a SPIFFE identity from SPIRE.
+
+. Create a test namespace with sidecar injection enabled:
++
+[source,terminal]
+----
+$ oc new-project "${VERIFY_NS}"
+$ oc label namespace "${VERIFY_NS}" istio-injection=enabled
+----
+
+. Deploy the httpbin test application and wait for it to become available:
++
+[source,terminal]
+----
+$ cat <<EOF | oc apply -f -
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: httpbin
+  namespace: ${VERIFY_NS}
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: httpbin
+      version: v1
+  template:
+    metadata:
+      annotations:
+        inject.istio.io/templates: "sidecar,spire"
+        spiffe.io/audience: "sky-computing-demo"
+      labels:
+        app: httpbin
+        version: v1
+    spec:
+      containers:
+      - image: docker.io/mccutchen/go-httpbin:v2.15.0
+        imagePullPolicy: IfNotPresent
+        name: httpbin
+        ports:
+        - containerPort: 8080
+EOF
+$ oc wait --for=condition=Available deployment/httpbin -n "${VERIFY_NS}" --timeout=300s
+----
+
+. Verify that the workload received a SPIFFE identity from SPIRE:
++
+[source,terminal]
+----
+$ HTTPBIN_POD=$(oc get pod -l app=httpbin -n "${VERIFY_NS}" -o jsonpath="{.items[0].metadata.name}")
+$ istioctl proxy-config secret "$HTTPBIN_POD" -n "${VERIFY_NS}" -o json \
+  | jq -r '.dynamicActiveSecrets[0].secret.tlsCertificate.certificateChain.inlineBytes' \
+  | base64 --decode > chain.pem
+$ openssl x509 -in chain.pem -text | grep SPIRE
+----
++
+The following output confirms that SPIRE issued the certificate:
++
+[source,terminal]
+----
+Issuer: C=US, O=Sky Computing Corporation, CN=SPIRE Server CA/serialNumber=...
+Subject: C=US, O=SPIRE
+----
++
+[NOTE]
+====
+SPIRE issues two types of identities: X.509 SPIFFE Verifiable Identity Documents (SVIDs) for mTLS communication, and JWT-SVIDs for HTTP-based authentication. This verification confirms X.509 SVID functionality only.
+====
+
