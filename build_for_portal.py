@@ -662,7 +662,7 @@ def scrub_file(info, book_src_dir, src_file, image_files, tag=None, cwd=None):
             base_src_file = base_src_file[https_pos:]
 
         try:
-            response = requests.get(base_src_file)
+            response = requests.get(base_src_file, timeout=30)
             if response:
                 return response.text
             else:
