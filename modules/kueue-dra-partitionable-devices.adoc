@@ -1,0 +1,246 @@
+// Module included in the following assemblies:
+//
+// * ai_workloads/kueue/kueue-dra-integrating-dynamic-resource-allocation.adoc
+
+:_mod-docs-content-type: PROCEDURE
+[id="kueue-dra-partitionable-devices_{context}"]
+= Configuring the partitionable devices
+
+[role="_abstract"]
+You can configure {kueue-name} to manage quota for partitionable devices based on actual device capacity rather than device count. Partitionable devices, such as NVIDIA Multi-Instance GPU (MIG) capable GPUs like the A100 or H100, allow a single GPU to be dynamically subdivided into smaller partitions.
+
+When counter-based quota is configured, {kueue-name} charges quota in capacity units such as GPU memory rather than counting whole devices. For example, a `1g.5gb` MIG partition on an A100-40GB charges `4864Mi` of GPU memory quota, while a whole GPU charges `40320Mi`.
+
+.Prerequisites
+
+* You have cluster administrator permissions.
+* You have installed {kueue-name} by using the {kueue-op}.
+* You have created a `Kueue` CR.
+* Your cluster is running {product-title} 4.22 or later.
+* A DRA driver that publishes `consumesCounters` in `ResourceSlice` objects is installed, for example, `nvidia-dra-driver`.
+* MIG is enabled on the GPU hardware.
+* You have enabled the `DRAPartitionableDevices` Kubernetes feature gate by adding the `CustomNoUpgrade` feature set to the `FeatureGate` CR named `cluster`, as shown in the following example:
++
+[source,yaml]
+----
+apiVersion: config.openshift.io/v1
+kind: FeatureGate
+metadata:
+  name: cluster
+spec:
+  featureSet: CustomNoUpgrade
+  customNoUpgrade:
+    enabled:
+    - DRAPartitionableDevices
+----
++
+[WARNING]
+====
+Enabling the `CustomNoUpgrade` feature set on your cluster cannot be undone and prevents minor version updates. This feature set is not supported on production clusters. For information about enabling feature gates, see "Enabling features using feature gates".
+====
+
+.Procedure
+
+. Verify that your DRA driver publishes counter data by running the following command:
++
+[source,terminal]
+----
+$ oc get resourceslices -o jsonpath='{range .items[*]}{.spec.driver}{"\t"}{range .spec.devices[*]}{.name}: {.consumesCounters}{"\n"}{end}{end}'
+----
++
+.Example output
+[source,terminal]
+----
+gpu.nvidia.com	gpu-0: [{"counterSet":"shared","counters":{"memory":{"value":"40Gi"}}}]
+----
++
+If the output does not show `consumesCounters` data, verify that your DRA driver version supports partitionable devices and that MIG is enabled on the GPU hardware.
+
+. Configure counter-based quota by adding a `deviceClassMappings` entry with a `sources` section to the `config.resources` section of the {kueue-name} CR, as shown in the following example:
++
+[source,yaml]
+----
+apiVersion: kueue.openshift.io/v1
+kind: Kueue
+metadata:
+  name: cluster
+  namespace: openshift-kueue-operator
+spec:
+  config:
+    resources:
+      deviceClassMappings:
+      - name: gpu.memory 
+        deviceClassNames: 
+        - gpu.nvidia.com
+        - mig.nvidia.com
+        sources: 
+        - type: Counter
+          counter:
+            name: memory 
+            driver: gpu.nvidia.com
+            deviceSelector: 
+              type: CEL
+              cel:
+                expression: "device.driver == 'gpu.nvidia.com'"
+# ...
+----
+`name: gpu.memory`:: The logical resource name used in `ClusterQueue` quotas. When counter-based sources are configured, quota is charged in capacity units rather than device count.
+
+`deviceClassNames`:: The `DeviceClass` names that map to this resource. Include both the whole-GPU class (`gpu.nvidia.com`) and the MIG class (`mig.nvidia.com`).
+
+`sources`:: Defines how {kueue-name} computes the quota charge.
+
+`name: memory`:: The counter name must match a counter key published by the DRA driver in `ResourceSlice` devices.
+
+`deviceSelector`:: Scopes which devices are eligible for counter-based quota accounting.
++
+[NOTE]
+====
+The {kueue-name} Operator automatically enables the required {kueue-name} feature gates when it detects the `DRAPartitionableDevices` Kubernetes feature gate and `sources` are configured in `deviceClassMappings`. No manual {kueue-name} feature gate configuration is required.
+====
+
+. Create a `ClusterQueue` with counter-based quota. Set the quota in capacity units rather than device count. Create a file called `pd-queues.yaml` with the following content:
++
+.Example quota configuration for partitionable devices
+[source,yaml]
+----
+apiVersion: kueue.x-k8s.io/v1beta2
+kind: ResourceFlavor
+metadata:
+  name: "default-flavor"
+---
+apiVersion: kueue.x-k8s.io/v1beta2
+kind: ClusterQueue
+metadata:
+  name: "cluster-queue"
+spec:
+  namespaceSelector: {}
+  resourceGroups:
+  - coveredResources: ["cpu", "memory", "gpu.memory"] 
+    flavors:
+    - name: "default-flavor"
+      resources:
+      - name: "cpu"
+        nominalQuota: 40
+      - name: "memory"
+        nominalQuota: 200Gi
+      - name: "gpu.memory" 
+        nominalQuota: 800Gi
+---
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: team-a
+  labels:
+    kueue.openshift.io/managed: "true"
+---
+apiVersion: kueue.x-k8s.io/v1beta2
+kind: LocalQueue
+metadata:
+  namespace: "team-a"
+  name: "user-queue"
+spec:
+  clusterQueue: "cluster-queue"
+----
+`coveredResources: ["cpu", "memory", "gpu.memory"]`:: The `gpu.memory` entry must match the `name` value in `deviceClassMappings`.
+
+`name: "gpu.memory"`:: Sets the total GPU memory quota. For example, `800Gi` accommodates twenty A100-40GB GPUs or equivalent MIG partitions.
++
+[NOTE]
+====
+When `ClusterQueue` objects share a cohort, ensure all queues use the same unit scale for counter resources. {kueue-name} does not validate unit consistency across `ClusterQueue` objects.
+====
+
+. Apply the quota configuration by running the following command:
++
+[source,terminal]
+----
+$ oc apply -f pd-queues.yaml
+----
+
+. Create a workload that requests a MIG partition. Create a file called `pd-job.yaml` with the following content:
++
+.Example workload requesting a MIG partition
+[source,yaml]
+----
+apiVersion: resource.k8s.io/v1
+kind: ResourceClaimTemplate
+metadata:
+  namespace: team-a
+  name: gpu-partition
+spec:
+  spec:
+    devices:
+      requests:
+      - name: gpu
+        exactly:
+          deviceClassName: mig.nvidia.com 
+          count: 1
+          selectors:
+          - cel:
+              expression: "device.attributes['gpu.nvidia.com'].profile == '1g.5gb'" 
+---
+apiVersion: batch/v1
+kind: Job
+metadata:
+  generateName: pd-test-job
+  namespace: team-a
+  labels:
+    kueue.x-k8s.io/queue-name: user-queue 
+spec:
+  template:
+    spec:
+      containers:
+      - name: worker
+        image: registry.k8s.io/e2e-test-images/agnhost:2.53
+        args: ["pause"]
+        resources:
+          claims:
+          - name: gpu
+          requests:
+            cpu: "1"
+            memory: "200Mi"
+      resourceClaims:
+      - name: gpu
+        resourceClaimTemplateName: gpu-partition 
+      restartPolicy: Never
+----
+`deviceClassName:`:: References the MIG `DeviceClass`.
+
+`expression:`:: Selects a specific MIG partition profile. Available profiles depend on the GPU model, for example, `1g.5gb`, `2g.10gb`, `3g.20gb`, or `7g.40gb` for the A100-40GB.
+
+`kueue.x-k8s.io/queue-name:`:: Identifies the local queue to submit the job to.
+
+`resourceClaimTemplateName:`:: References the `ResourceClaimTemplate` defined above. The `ResourceClaimTemplate` must exist in the same namespace as the job.
+
+. Create the workload by running the following command:
++
+[source,terminal]
+----
+$ oc create -f pd-job.yaml
+----
+
+.Verification
+
+. Verify that the workload is admitted and that quota was charged in capacity units by running the following command:
++
+[source,terminal]
+----
+$ oc -n team-a get workloads -o jsonpath='{range .items[*]}{.metadata.name}: {.status.admission.podSetAssignments[0].resourceUsage}{"\n"}{end}'
+----
++
+.Example output
+[source,terminal]
+----
+job-pd-test-job-xxxxx: {"cpu":"1","gpu.memory":"5100273664","memory":"200Mi"}
+----
++
+The `gpu.memory` value reflects the actual memory capacity of the requested MIG partition rather than a device count of `1`.
+
+. If the workload is not admitted, verify the following:
++
+* The `DRAPartitionableDevices` Kubernetes feature gate is enabled on the cluster.
+* The `deviceClassMappings` `name` value matches the resource name in `coveredResources`.
+* The `counter.name` in `sources` matches a counter key in the `ResourceSlice` objects.
+* The `ClusterQueue` has sufficient GPU memory quota for the requested partition size.
+* MIG is enabled on the GPU hardware.
