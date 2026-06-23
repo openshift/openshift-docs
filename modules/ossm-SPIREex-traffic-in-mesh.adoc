@@ -1,0 +1,222 @@
+// Module included in the following assemblies:
+//
+// * service-mesh-docs-main/install/ossm-SPIRE.adoc
+
+:_mod-docs-content-type: PROCEDURE
+[id="ossm-SPIREex-traffic-in-mesh_{context}"]
+= Test mTLS connectivity with SPIRE
+
+[role="_abstract"]
+Deploy test applications and configure strict mTLS to validate secure service-to-service communication within the mesh, enabled by the SPIFFE Runtime Environment (SPIRE).
+
+
+.Prerequisites
+
+* You have integrated the {istio} CR with SPIRE.
+
+.Procedure
+
+. Define environment variables for the test namespace and SPIFFE audience:
++
+[source,terminal]
+----
+$ export TPJ=test-ossm-with-ztwim
+$ export SPIFFE_AUDIENCE="sky-computing-demo"
+----
++
+where:
++
+`TPJ`:: Name of the test namespace where you deploy the sample workloads.
+`SPIFFE_AUDIENCE`:: Intended recipient of the SPIFFE identity. When workloads request identities from SPIRE, the audience value specifies which services or systems can validate and accept those identities. This restriction helps prevent unauthorized services from misusing identities.
+
+. Create a test namespace with sidecar injection enabled:
++
+[source,terminal]
+----
+$ oc create namespace "${TPJ}"
+$ oc label namespace "${TPJ}" istio-injection=enabled
+----
+
+. Deploy an httpbin server application:
++
+[source,terminal]
+----
+$ cat <<EOF | oc apply -f -
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: httpbin
+  namespace: ${TPJ}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: httpbin
+  namespace: ${TPJ}
+  labels:
+    app: httpbin
+    service: httpbin
+spec:
+  ports:
+  - name: http-ex-spiffe
+    port: 443
+    targetPort: 8080
+  - name: http
+    port: 80
+    targetPort: 8080
+  selector:
+    app: httpbin
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: httpbin
+  namespace: ${TPJ}
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: httpbin
+      version: v1
+  template:
+    metadata:
+      annotations:
+        inject.istio.io/templates: "sidecar,spire"
+        spiffe.io/audience: "${SPIFFE_AUDIENCE}"
+      labels:
+        app: httpbin
+        version: v1
+    spec:
+      serviceAccountName: httpbin
+      containers:
+      - image: docker.io/mccutchen/go-httpbin:v2.15.0
+        imagePullPolicy: IfNotPresent
+        name: httpbin
+        ports:
+        - containerPort: 8080
+EOF
+$ oc wait --for=condition=Available deployment/httpbin -n "${TPJ}" --timeout=300s
+----
+
+. Deploy a curl client application:
++
+[source,terminal]
+----
+$ cat <<EOF | oc apply -f -
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: curl
+  namespace: ${TPJ}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: curl
+  namespace: ${TPJ}
+  labels:
+    app: curl
+    service: curl
+spec:
+  ports:
+  - port: 80
+    name: http
+  selector:
+    app: curl
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: curl
+  namespace: ${TPJ}
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: curl
+  template:
+    metadata:
+      annotations:
+        inject.istio.io/templates: "sidecar,spire"
+        spiffe.io/audience: "${SPIFFE_AUDIENCE}"
+      labels:
+        app: curl
+    spec:
+      terminationGracePeriodSeconds: 0
+      serviceAccountName: curl
+      containers:
+      - name: curl
+        image: curlimages/curl:8.16.0
+        command:
+        - /bin/sh
+        - -c
+        - sleep inf
+        imagePullPolicy: IfNotPresent
+EOF
+$ oc wait --for=condition=Available deployment/curl -n "${TPJ}" --timeout=300s
+----
+
+. Test connectivity without mTLS enforcement:
++
+[source,terminal]
+----
+$ CURL_POD=$(oc get pod -l app=curl -n ${TPJ} -o jsonpath="{.items[0].metadata.name}")
+$ oc exec $CURL_POD -n ${TPJ} -it -- curl -s -o /dev/null -w "%{http_code}" http://httpbin
+----
++
+The command returns HTTP status code 200, which confirms basic connectivity in permissive mode.
+
+. Enable strict mTLS and configure destination rules:
++
+[source,terminal]
+----
+$ cat <<EOF | oc apply -f -
+apiVersion: security.istio.io/v1beta1
+kind: PeerAuthentication
+metadata:
+  name: default
+  namespace: ${TPJ}
+spec:
+  mtls:
+    mode: STRICT
+---
+apiVersion: networking.istio.io/v1
+kind: DestinationRule
+metadata:
+  name: curl
+  namespace: ${TPJ}
+spec:
+  host: curl
+  trafficPolicy:
+    tls:
+      mode: ISTIO_MUTUAL
+---
+apiVersion: networking.istio.io/v1
+kind: DestinationRule
+metadata:
+  name: httpbin
+  namespace: ${TPJ}
+spec:
+  host: httpbin
+  trafficPolicy:
+    tls:
+      mode: ISTIO_MUTUAL
+EOF
+----
+
+.Verification
+
+* Verify that mTLS connectivity works with SPIRE-issued identities:
++
+[source,terminal]
+----
+$ CURL_POD=$(oc get pod -l app=curl -n ${TPJ} -o jsonpath="{.items[0].metadata.name}")
+$ oc exec $CURL_POD -n ${TPJ} -it -- curl -s -o /dev/null -w "%{http_code}" http://httpbin
+----
++
+An HTTP 200 response confirms that:
+
+* Both services successfully obtained SPIFFE X.509 SVIDs from SPIRE.
+* The services trust each other's identities.
+* mTLS secures communication between the services.
+
