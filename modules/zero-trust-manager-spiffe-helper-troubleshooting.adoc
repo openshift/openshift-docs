@@ -1,0 +1,69 @@
+// Module included in the following assemblies:
+//
+// * security/zero_trust_workload_identity_manager/zero-trust-manager-spiffe-helper.adoc
+
+:_mod-docs-content-type: REFERENCE
+[id="zero-trust-manager-spiffe-helper-troubleshooting_{context}"]
+= Troubleshooting SPIFFE Helper deployments
+
+[role="_abstract"]
+Resolve common issues when deploying the SPIFFE Helper image with the {zero-trust-full} and workloads such as PostgreSQL.
+
+== Common issues
+
+Certificate output directory is empty::
+SPIFFE Helper cannot reach the Workload API, cannot write to `cert_dir`, or the workload is not registered with SPIRE. Confirm the `ZeroTrustWorkloadIdentityManager` custom resource reports `Ready`, the CSI volume is mounted at the path in `agent_address`, and a matching `ClusterSPIFFEID` exists for the pod namespace and labels. Verify `cert_dir` exists before SPIFFE Helper starts; an `emptyDir` volume satisfies this requirement.
+
+Init container exits but TLS files are missing::
+The init container must run with `-daemon-mode=false`. Check init container logs. If SPIFFE Helper reports configuration warnings about ignored `cmd` or `renew_signal`, that is expected in non-daemon mode. Ensure the certificate volume is shared with the main application container.
+
+Sidecar runs but certificates are not renewed::
+Confirm the sidecar container does not set `-daemon-mode=false`. Check sidecar logs for Workload API or write errors. If writes fail, SPIFFE Helper logs the error and does not run `cmd` or PID-file notification logic.
+
+Application does not pick up renewed certificates::
+SPIFFE Helper overwrites files in `cert_dir`; it does not notify your application unless you configure `cmd`, `pid_file_name`, or the application watches or polls the directory. For sidecar deployments with empty `cmd`, the application must reload TLS from disk. For PostgreSQL, configure the managed-child pattern with `psql` and `pg_reload_conf()` in the server sidecar.
+
+`cmd` or `renew_signal` appears to have no effect::
+In non-daemon mode, SPIFFE Helper ignores `cmd` and `renew_signal`. In daemon mode, `cmd` and PID-file logic run only after a successful X.509 write. JWT bundle or JWT SVID updates do not trigger them. If `renew_signal` is empty while `cmd` is set, the child starts on first write but later renewals send no signal.
+
+Cannot signal the application container from the helper sidecar::
+Containers in the same pod use separate process namespaces by default. `pid_file_name` and `cmd` cannot signal another container unless you set `shareProcessNamespace: true` or run the reload command as a child of SPIFFE Helper. The PostgreSQL example uses `cmd` to run `psql` locally instead of signaling the database container.
+
+Configuration validation fails for `pid_file_name`::
+`renew_signal` is required when `pid_file_name` is set. `pid_file_name` is not valid in non-daemon mode.
+
+Workload API socket is not accessible::
+Verify the CSI volume is mounted and the socket path matches `agent_address`, typically `/spiffe-workload-api/spire-agent.sock`. Confirm the {zero-trust-full} operands are running and the pod service account matches the `ClusterSPIFFEID` selectors.
+
+Permission denied when reading certificate files::
+Check file ownership and permissions on the shared volume. Consider setting `fsGroup` in the pod `securityContext` so the application container can read files written by SPIFFE Helper. Mount the certificate directory read-only in the application container when possible.
+
+Image pull errors for the SPIFFE Helper image::
+Confirm your cluster can pull `registry.redhat.io/zero-trust-workload-identity-manager/spiffe-helper-rhel9:<version>`. If you use a custom image, verify the registry credentials and update the `image` field in the deployment. The PostgreSQL server example uses `<registry>/spiffe-helper-postgresql:latest` for the init container and sidecar; the client example uses the stock SPIFFE Helper image.
+
+PostgreSQL mTLS connection fails after deployment::
+Confirm SPIFFE Helper wrote files to `/opt/postgresql-certs`, the client certificate CN matches the PostgreSQL user, and `pg_hba.conf` requires certificate authentication. Compare server and client SVIDs with `openssl x509 -noout -text`. Confirm the server `ClusterSPIFFEID` includes the DNS name `postgresql-spiffe.postgresql-spiffe.svc` and the client `ClusterSPIFFEID` includes `postgresql_spiffe`. For the full verification procedure, see xref:zero-trust-manager-deploy-spiffe-helper_{context}[Deploying PostgreSQL with SPIFFE Helper].
+
+== Diagnostic commands
+
+Run the following commands to inspect {zero-trust-full}, SPIFFE Helper, and certificate state in the PostgreSQL example namespaces:
+
+[source,terminal]
+----
+$ oc get ZeroTrustWorkloadIdentityManager cluster \
+  -o jsonpath='{.status.conditions[?(@.type=="Ready")].status}{"\n"}'
+$ oc get clusterspiffeid
+$ oc get pods -n postgresql-spiffe
+$ oc get pods -n postgresql-spiffe-client
+$ oc logs -n postgresql-spiffe deployment/postgresql-spiffe -c spiffe-helper-init
+$ oc logs -n postgresql-spiffe deployment/postgresql-spiffe -c spiffe-helper
+$ oc logs -n postgresql-spiffe-client deployment/postgresql-spiffe-client -c spiffe-helper
+$ oc rsh -n postgresql-spiffe deployment/postgresql-spiffe -c postgresql-spiffe \
+  -- ls -la /opt/postgresql-certs
+$ oc rsh -n postgresql-spiffe deployment/postgresql-spiffe -c postgresql-spiffe -- \
+  cat /opt/postgresql-certs/svid.pem | openssl x509 -noout -dates -subject
+----
+
+Replace the namespace, pod, and container names when troubleshooting a different deployment.
+
+When replacing `ghcr.io/spiffe/spiffe-helper` with the {zero-trust-full} SPIFFE Helper image, update the image reference and validate paths in your configuration file. The configuration options, volume mounts, and command-line flags remain compatible with https://github.com/spiffe/spiffe-helper[upstream SPIFFE Helper] behavior.

@@ -1,0 +1,482 @@
+// Module included in the following assemblies:
+//
+// * security/zero_trust_workload_identity_manager/zero-trust-manager-spiffe-helper.adoc
+
+:_mod-docs-content-type: PROCEDURE
+[id="zero-trust-manager-deploy-spiffe-helper_{context}"]
+= Deploying PostgreSQL with SPIFFE Helper
+
+[role="_abstract"]
+Deploy a PostgreSQL server and client that use SPIFFE Helper to fetch X.509 SVID certificates from the SPIFFE Workload API and write them to disk for mutual Transport Layer Security (mTLS). The manifests in this procedure are adapted from the https://github.com/sabre1041/postgresql-spiffe-demo[PostgreSQL SPIFFE demonstration] and use the {zero-trust-full} SPIFFE Helper image.
+
+.Prerequisites
+
+* You have access to the cluster with `cluster-admin` privileges.
+* You have installed the {zero-trust-full}. For more information, see xref:zero-trust-manager-install[Installing the {zero-trust-full}].
+* The `ZeroTrustWorkloadIdentityManager` custom resource reports `Ready`.
+
+== Architecture overview
+
+This example deploys PostgreSQL with mTLS in two namespaces:
+
+* *`postgresql-spiffe`* -- PostgreSQL server. SPIFFE Helper runs as an init container (non-daemon mode) to write initial certificates to a shared volume, then as a sidecar (daemon mode) to renew them. PostgreSQL reads TLS files from that volume and `pg_hba.conf` requires certificate authentication for remote connections.
+* *`postgresql-spiffe-client`* -- Client pod with the stock SPIFFE Helper sidecar. The client uses SPIFFE-issued certificates from the same shared volume pattern when connecting with `psql`.
+
+Each namespace defines a `ClusterSPIFFEID` so SPIRE issues X.509 SVIDs with the correct DNS names: the server identity includes `postgresql-spiffe.postgresql-spiffe.svc`; the client identity includes `postgresql_spiffe`, which must match the PostgreSQL user created during database initialization.
+
+SPIFFE Helper connects to the SPIFFE Workload API through the SPIFFE CSI driver, which mounts the agent socket at `/spiffe-workload-api/spire-agent.sock`. For more information about init and sidecar modes, see xref:zero-trust-manager-spiffe-helper-modes_{context}[SPIFFE Helper modes].
+
+.Procedure
+
+. Build and push a custom SPIFFE Helper image for the PostgreSQL server.
++
+When certificates renew, the server must reload PostgreSQL TLS configuration. Containers in the same pod use separate process namespaces, so the SPIFFE Helper sidecar cannot signal the PostgreSQL container directly. Instead, SPIFFE Helper uses the *managed-child* pattern: in daemon mode it runs `cmd` (`/usr/bin/psql`) with `cmd_args` to execute `SELECT pg_reload_conf();` as a child process inside the helper container whenever X.509 material is updated.
++
+The stock SPIFFE Helper image does not include the `psql` client required for that reload command. Build a custom image that extends the {zero-trust-full} image and adds the PostgreSQL client package.
++
+Create a `Containerfile` with the following contents:
++
+[source,dockerfile]
+----
+FROM registry.redhat.io/zero-trust-workload-identity-manager/spiffe-helper-rhel9:<version>
+
+USER 0
+
+RUN dnf install -y postgresql && \
+    dnf clean all
+
+USER 65534
+----
++
+Replace `<version>` with the tag that matches your {zero-trust-full} installation. Build and push the image by running the following commands:
++
+[source,terminal]
+----
+$ podman build -f Containerfile \
+  -t <registry>/spiffe-helper-postgresql:latest .
+$ podman push <registry>/spiffe-helper-postgresql:latest
+----
++
+Replace `<registry>` with your container registry.
+
+. Deploy the PostgreSQL server resources by running the following command:
++
+[source,terminal]
+----
+$ oc apply -f - << 'EOF'
+---
+kind: Namespace
+apiVersion: v1
+metadata:
+  name: postgresql-spiffe
+---
+kind: ServiceAccount
+apiVersion: v1
+metadata:
+  name: postgresql-spiffe
+  namespace: postgresql-spiffe
+---
+apiVersion: spire.spiffe.io/v1alpha1
+kind: ClusterSPIFFEID
+metadata:
+  name: postgresql-spiffe
+spec:
+  className: zero-trust-workload-identity-manager-spire
+  dnsNameTemplates:
+    - postgresql-spiffe.postgresql-spiffe.svc
+  namespaceSelector:
+    matchLabels:
+      kubernetes.io/metadata.name: postgresql-spiffe
+  podSelector:
+    matchLabels:
+      app: postgresql-spiffe
+  spiffeIDTemplate: 'spiffe://{{ .TrustDomain }}/ns/{{ .PodMeta.Namespace }}/sa/{{ .PodSpec.ServiceAccountName }}'
+---
+kind: ConfigMap
+apiVersion: v1
+metadata:
+  name: postgres-config
+  namespace: postgresql-spiffe
+data:
+  pg_hba.conf: |
+    # TYPE      DATABASE        USER            ADDRESS                 METHOD
+    local       all             all                                     trust
+    host        postgres        postgres        127.0.0.1/32            trust
+    hostnossl   postgres        postgres        127.0.0.1/32            trust
+    hostnossl   all             all             0.0.0.0/0               reject
+    hostssl     all             all             0.0.0.0/0               cert
+  postgresql.conf: |
+    listen_addresses '*'
+    ssl = on
+    ssl_cert_file = '/opt/postgresql-certs/svid.pem'
+    ssl_key_file = '/opt/postgresql-certs/svid.key'
+    ssl_ca_file = '/opt/postgresql-certs/svid_bundle.pem'
+---
+kind: ConfigMap
+apiVersion: v1
+metadata:
+  name: postgresql-init-db
+  namespace: postgresql-spiffe
+data:
+  initdb.sh: |
+    # Copy configuration files
+    cp /opt/pg_hba/pg_hba.conf /var/lib/pgsql/data/userdata
+    # Create postgresql resources
+    psql -U postgres <<!!EOF
+        CREATE DATABASE $SPIFFE_DATABASE;
+        CREATE USER $SPIFFE_USER WITH encrypted password '$SPIFFE_PASSWORD';
+        GRANT ALL privileges ON database $SPIFFE_DATABASE TO $SPIFFE_USER;
+        \c $SPIFFE_DATABASE;
+        CREATE TABLE test_table (
+          id bigserial primary key,
+          name VARCHAR(255) NOT NULL,
+          text VARCHAR(255) NOT NULL
+        );
+        GRANT ALL privileges ON table test_table TO $SPIFFE_USER;
+        GRANT ALL privileges ON sequence test_table_id_seq TO $SPIFFE_USER;
+    !!EOF
+---
+kind: ConfigMap
+apiVersion: v1
+metadata:
+  name: spiffe-helper
+  namespace: postgresql-spiffe
+data:
+  helper.conf: |
+    agent_address = "/spiffe-workload-api/spire-agent.sock"
+    cmd = "/usr/bin/psql"
+    cmd_args = "-U postgres -h 127.0.0.1 -c \"SELECT pg_reload_conf();\""
+    cert_dir = "/opt/postgresql-certs"
+    renew_signal = ""
+    svid_file_name = "svid.pem"
+    svid_key_file_name = "svid.key"
+    svid_bundle_file_name = "svid_bundle.pem"
+---
+kind: Service
+apiVersion: v1
+metadata:
+  name: postgresql-spiffe
+  namespace: postgresql-spiffe
+spec:
+  ports:
+    - protocol: TCP
+      port: 5432
+      targetPort: 5432
+  type: ClusterIP
+  selector:
+    app: postgresql-spiffe
+---
+kind: Deployment
+apiVersion: apps/v1
+metadata:
+  name: postgresql-spiffe
+  namespace: postgresql-spiffe
+  labels:
+    app: postgresql-spiffe
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: postgresql-spiffe
+  template:
+    metadata:
+      labels:
+        app: postgresql-spiffe
+    spec:
+      serviceAccountName: postgresql-spiffe
+      securityContext:
+        runAsNonRoot: true
+        seccompProfile:
+          type: RuntimeDefault
+      initContainers:
+        - name: spiffe-helper-init
+          image: <registry>/spiffe-helper-postgresql:latest
+          args:
+            - '-config'
+            - /etc/spiffe-helper/helper.conf
+            - '-daemon-mode=false'
+          volumeMounts:
+            - name: spiffe-workload-api
+              readOnly: true
+              mountPath: /spiffe-workload-api
+            - name: postgresql-certs
+              mountPath: /opt/postgresql-certs
+            - name: spiffe-helper
+              mountPath: /etc/spiffe-helper
+          securityContext:
+            capabilities:
+              drop:
+                - ALL
+      containers:
+        - name: postgresql-spiffe
+          image: registry.redhat.io/rhel9/postgresql-16:latest
+          env:
+            - name: POSTGRESQL_USER
+              value: user
+            - name: POSTGRESQL_PASSWORD
+              value: wearenotusingthissoIdontworryaboutit
+            - name: SPIFFE_USER
+              value: postgresql_spiffe
+            - name: SPIFFE_PASSWORD
+              value: somealsonotusedpassword
+            - name: SPIFFE_DATABASE
+              value: testdb
+            - name: POSTGRESQL_DATABASE
+              value: sampledb
+          ports:
+            - name: postgresql
+              containerPort: 5432
+              protocol: TCP
+          volumeMounts:
+            - name: postgresql-certs
+              mountPath: /opt/postgresql-certs
+            - name: pg-hba
+              mountPath: /opt/pg_hba
+            - name: postgresql-init-db
+              mountPath: /opt/app-root/src/postgresql-init
+            - name: postgres-config
+              mountPath: /opt/app-root/src/postgresql-cfg
+          securityContext:
+            capabilities:
+              drop:
+                - ALL
+        - name: spiffe-helper
+          image: <registry>/spiffe-helper-postgresql:latest
+          args:
+            - '-config'
+            - /etc/spiffe-helper/helper.conf
+          volumeMounts:
+            - name: spiffe-workload-api
+              readOnly: true
+              mountPath: /spiffe-workload-api
+            - name: postgresql-certs
+              mountPath: /opt/postgresql-certs
+            - name: spiffe-helper
+              mountPath: /etc/spiffe-helper
+          securityContext:
+            capabilities:
+              drop:
+                - ALL
+      volumes:
+        - name: spiffe-workload-api
+          csi:
+            driver: csi.spiffe.io
+            readOnly: true
+        - name: postgresql-certs
+          emptyDir:
+            medium: Memory
+        - name: spiffe-helper
+          configMap:
+            name: spiffe-helper
+        - name: postgresql-init-db
+          configMap:
+            name: postgresql-init-db
+        - name: pg-hba
+          configMap:
+            name: postgres-config
+            items:
+              - key: pg_hba.conf
+                path: pg_hba.conf
+        - name: postgres-config
+          configMap:
+            name: postgres-config
+            items:
+              - key: postgresql.conf
+                path: postgresql.conf
+EOF
+----
++
+Replace both `<registry>` occurrences in the deployment with your container registry.
+
+. Confirm that the SPIFFE Helper configuration matches the PostgreSQL TLS settings by running the following command:
++
+[source,terminal]
+----
+$ oc get configmap spiffe-helper -n postgresql-spiffe \
+  -o jsonpath='{.data.helper\.conf}{"\n"}'
+----
++
+The `cert_dir` and `svid_*` file names must match the `ssl_*_file` paths in `postgresql.conf`. The server `helper.conf` must include settings similar to the following example:
++
+[source]
+----
+agent_address = "/spiffe-workload-api/spire-agent.sock"
+cmd = "/usr/bin/psql"
+cmd_args = "-U postgres -h 127.0.0.1 -c \"SELECT pg_reload_conf();\""
+cert_dir = "/opt/postgresql-certs"
+renew_signal = ""
+svid_file_name = "svid.pem"
+svid_key_file_name = "svid.key"
+svid_bundle_file_name = "svid_bundle.pem"
+----
+
+. Deploy the PostgreSQL client by running the following command:
++
+The client uses the stock SPIFFE Helper image from the {zero-trust-full}. Only the server deployment requires the custom image with the `psql` client.
++
+[source,terminal]
+----
+$ oc apply -f - << 'EOF'
+---
+kind: Namespace
+apiVersion: v1
+metadata:
+  name: postgresql-spiffe-client
+---
+kind: ServiceAccount
+apiVersion: v1
+metadata:
+  name: postgresql-spiffe-client
+  namespace: postgresql-spiffe-client
+---
+kind: ConfigMap
+apiVersion: v1
+metadata:
+  name: spiffe-helper
+  namespace: postgresql-spiffe-client
+data:
+  helper.conf: |
+    agent_address = "/spiffe-workload-api/spire-agent.sock"
+    cmd = ""
+    cmd_args = ""
+    cert_dir = "/opt/postgresql-certs"
+    renew_signal = ""
+    svid_file_name = "svid.pem"
+    svid_key_file_name = "svid.key"
+    svid_bundle_file_name = "svid_bundle.pem"
+---
+apiVersion: spire.spiffe.io/v1alpha1
+kind: ClusterSPIFFEID
+metadata:
+  name: postgresql-spiffe-client
+spec:
+  className: zero-trust-workload-identity-manager-spire
+  dnsNameTemplates:
+    - postgresql_spiffe
+  namespaceSelector:
+    matchLabels:
+      kubernetes.io/metadata.name: postgresql-spiffe-client
+  podSelector:
+    matchLabels:
+      app: postgresql-spiffe-client
+  spiffeIDTemplate: 'spiffe://{{ .TrustDomain }}/ns/{{ .PodMeta.Namespace }}/sa/{{ .PodSpec.ServiceAccountName }}'
+---
+kind: Deployment
+apiVersion: apps/v1
+metadata:
+  name: postgresql-spiffe-client
+  namespace: postgresql-spiffe-client
+  labels:
+    app: postgresql-spiffe-client
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: postgresql-spiffe-client
+  template:
+    metadata:
+      labels:
+        app: postgresql-spiffe-client
+    spec:
+      serviceAccountName: postgresql-spiffe-client
+      securityContext:
+        runAsNonRoot: true
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: postgresql-spiffe-client
+          image: registry.redhat.io/rhel9/postgresql-16:latest
+          command:
+            - /bin/bash
+            - '-c'
+            - sleep infinity
+          volumeMounts:
+            - name: postgresql-certs
+              mountPath: /opt/postgresql-certs
+          securityContext:
+            capabilities:
+              drop:
+                - ALL
+        - name: spiffe-helper
+          image: registry.redhat.io/zero-trust-workload-identity-manager/spiffe-helper-rhel9:<version>
+          args:
+            - '-config'
+            - /etc/spiffe-helper/helper.conf
+          volumeMounts:
+            - name: spiffe-workload-api
+              readOnly: true
+              mountPath: /spiffe-workload-api
+            - name: postgresql-certs
+              mountPath: /opt/postgresql-certs
+            - name: spiffe-helper
+              mountPath: /etc/spiffe-helper
+          securityContext:
+            capabilities:
+              drop:
+                - ALL
+      volumes:
+        - name: spiffe-workload-api
+          csi:
+            driver: csi.spiffe.io
+            readOnly: true
+        - name: postgresql-certs
+          emptyDir:
+            medium: Memory
+        - name: spiffe-helper
+          configMap:
+            name: spiffe-helper
+EOF
+----
++
+Replace `<version>` with the tag that matches your {zero-trust-full} installation.
+
+. Confirm that pods are running in both namespaces by running the following commands:
++
+[source,terminal]
+----
+$ oc get pods -n postgresql-spiffe
+$ oc get pods -n postgresql-spiffe-client
+----
+
+.Verification
+
+. Inspect the server certificate by running the following command:
++
+[source,terminal]
+----
+$ oc rsh -n postgresql-spiffe -c postgresql-spiffe \
+  deployment/postgresql-spiffe \
+  cat /opt/postgresql-certs/svid.pem | openssl x509 -noout -text
+----
++
+The certificate includes the service hostname `postgresql-spiffe.postgresql-spiffe.svc`.
+
+. Inspect the client certificate by running the following command:
++
+[source,terminal]
+----
+$ oc rsh -n postgresql-spiffe-client -c postgresql-spiffe-client \
+  deployment/postgresql-spiffe-client \
+  cat /opt/postgresql-certs/svid.pem | openssl x509 -noout -text
+----
++
+The certificate CN should be `postgresql_spiffe`.
+
+. Connect to PostgreSQL from the client pod by running the following commands:
++
+[source,terminal]
+----
+$ oc rsh -n postgresql-spiffe-client -c postgresql-spiffe-client \
+  deployment/postgresql-spiffe-client
+----
++
+[source,terminal]
+----
+$ psql "host=postgresql-spiffe.postgresql-spiffe.svc port=5432 \
+  user=postgresql_spiffe dbname=testdb sslmode=verify-full \
+  sslcert=/opt/postgresql-certs/svid.pem \
+  sslkey=/opt/postgresql-certs/svid.key \
+  sslrootcert=/opt/postgresql-certs/svid_bundle.pem"
+----
++
+If the deployment succeeded, `psql` connects to the database.
