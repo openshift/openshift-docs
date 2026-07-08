@@ -108,8 +108,9 @@ else
 fi
 
 PREVIEW_URL="https://${GH_USERNAME}.github.io/${GH_REPO}/${BRANCH}/navigation.html"
-STATUS_URL="https://github.com/${GH_USERNAME}/${GH_REPO}/deployments"
+STATUS_URL="https://github.com/${GH_USERNAME}/${GH_REPO}/actions"
 
 echo ""
 echo "Preview:  $PREVIEW_URL"
+echo "Preview may take 5-10 minutes to go live. Check the status link below for the status of the build."
 echo "Status:   $STATUS_URL"
