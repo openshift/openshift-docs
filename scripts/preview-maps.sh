@@ -53,7 +53,7 @@ fi
 
 # Check out gh-pages into a temp worktree
 git fetch origin gh-pages
-git worktree add "$WORKTREE" gh-pages
+git worktree add --detach "$WORKTREE" origin/gh-pages
 
 cleanup() {
   git worktree remove "$WORKTREE" --force 2>/dev/null || true
@@ -104,7 +104,7 @@ if git -C "$WORKTREE" diff --cached --quiet; then
   echo "No changes to commit."
 else
   git -C "$WORKTREE" commit -m "Preview: $GH_REPO/$BRANCH"
-  git -C "$WORKTREE" push origin gh-pages
+  git -C "$WORKTREE" push origin HEAD:gh-pages
 fi
 
 PREVIEW_URL="https://${GH_USERNAME}.github.io/${GH_REPO}/${BRANCH}/navigation.html"
