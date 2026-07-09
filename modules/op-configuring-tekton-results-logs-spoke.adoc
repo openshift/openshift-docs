@@ -1,0 +1,286 @@
+// Module included in the following assemblies:
+//
+// * resource/configuring-tekton-results-multicluster.adoc
+
+:_mod-docs-content-type: PROCEDURE
+[id="op-configuring-tekton-results-logs-spoke_{context}"]
+= Configuring spoke clusters for logs forwarding
+
+You can configure spoke clusters to forward pipeline run logs to the hub cluster's LokiStack deployment.
+
+.Prerequisites
+
+* You have configured the hub cluster for logs storage and obtained the `HUB_LOKI_HOST` and `HUB_LOKI_TOKEN` values.
+* You have access to each spoke cluster using an account with `cluster-admin` permissions.
+* You have installed the `oc` CLI.
+* You have configured the spoke clusters for multicluster support.
+
+.Procedure
+
+Perform the following steps on each spoke cluster.
+
+. Export the hub cluster Loki details obtained from the hub cluster setup:
++
+[source,terminal]
+----
+$ export HUB_LOKI_HOST=<hub_loki_host>
+$ export HUB_LOKI_TOKEN=<hub_loki_token>
+----
++
+Replace `<hub_loki_host>` and `<hub_loki_token>` with the values from the hub cluster setup script.
+
+. Run the following script to configure log forwarding to the hub cluster:
++
+// TODO: OCHROMY - The original .txt file contains a complete bash script. For documentation, should we:
+// 1. Include the complete script inline (as done here)?
+// 2. Provide the script as a downloadable example?
+// 3. Break the script into individual procedural steps?
+// For now, including the complete script inline for accuracy.
++
+[source,bash]
+----
+#!/usr/bin/env bash
+# Simplified script for SPOKE cluster - forwards logs to HUB LokiStack
+
+set -e
+
+# Validate required environment variables
+if [ -z "$HUB_LOKI_HOST" ]; then
+    echo "ERROR: HUB_LOKI_HOST environment variable is required"
+    exit 1
+fi
+
+if [ -z "$HUB_LOKI_TOKEN" ]; then
+    echo "ERROR: HUB_LOKI_TOKEN environment variable is required"
+    exit 1
+fi
+
+# Auto-detect channel
+VERSION=$(oc get clusterversion version -o go-template='{{.status.desired.version}}')
+if [[ $VERSION =~ ^4\.15.*$ ]]; then
+    CHANNEL="stable-6.1"
+elif [[ $VERSION =~ ^(4\.16|4\.17).*$ ]]; then
+    CHANNEL="stable-6.2"
+else
+    CHANNEL="stable-6.3"
+fi
+
+echo "=============================================="
+echo "Setting up Spoke Cluster Log Forwarding"
+echo "=============================================="
+echo "Cluster Version: $VERSION"
+echo "Operator Channel: $CHANNEL"
+echo "Hub Loki Host: $HUB_LOKI_HOST"
+echo "=============================================="
+
+# TODO: OCHROMY - The script auto-detects the OpenShift Logging operator channel based on cluster version.
+# Should we document this version mapping in the docs, or keep the auto-detection logic?
+# Current mapping: 4.15 -> stable-6.1, 4.16-4.17 -> stable-6.2, others -> stable-6.3
+
+# Step 1: Install OpenShift Logging Operator ONLY (no Loki Operator needed)
+echo -e "\nInstalling OpenShift Logging operator"
+oc create namespace openshift-logging 2>/dev/null || true
+
+oc get operatorgroup -n openshift-logging 2>/dev/null | grep -q openshift-logging || cat <<EOF | oc create -f -
+apiVersion: operators.coreos.com/v1
+kind: OperatorGroup
+metadata:
+  name: openshift-logging
+  namespace: openshift-logging
+EOF
+
+cat <<EOF | oc apply -f -
+apiVersion: operators.coreos.com/v1alpha1
+kind: Subscription
+metadata:
+  name: cluster-logging
+  namespace: openshift-logging
+spec:
+  source: redhat-operators
+  sourceNamespace: openshift-marketplace
+  name: cluster-logging
+  channel: $CHANNEL
+EOF
+
+oc label ns openshift-logging openshift.io/cluster-monitoring=true --overwrite
+
+echo "Waiting for Logging operator..."
+for i in {1..150}; do
+    pods=$(oc get pods -n openshift-logging --no-headers -l name=cluster-logging-operator 2>/dev/null | grep -c logging-operator || true)
+    if [[ "${pods:-0}" -ge 1 ]]; then
+        oc wait --for=condition=Ready -n openshift-logging -l name=cluster-logging-operator pod --timeout=5m
+        break
+    fi
+    if [[ "${i}" -eq 150 ]]; then
+        echo "Timeout: operator pod was not created."
+        exit 2
+    fi
+    echo -n "."
+    sleep 2
+done
+echo " Done"
+
+# Step 2: Create secret with hub Loki token
+echo -e "\nCreating secret for hub LokiStack authentication"
+oc create secret generic hub-loki-token -n openshift-logging \
+    --from-literal=token="${HUB_LOKI_TOKEN}" \
+    --dry-run=client -o yaml | oc apply -f -
+
+# Step 3: Create service account and roles
+echo -e "\nCreating collector service account"
+oc create sa collector -n openshift-logging 2>/dev/null || true
+oc adm policy add-cluster-role-to-user collect-application-logs system:serviceaccount:openshift-logging:collector 2>/dev/null || true
+oc adm policy add-cluster-role-to-user collect-infrastructure-logs system:serviceaccount:openshift-logging:collector 2>/dev/null || true
+oc adm policy add-cluster-role-to-user collect-audit-logs system:serviceaccount:openshift-logging:collector 2>/dev/null || true
+
+# Step 4: Create Role and RoleBinding for collector to read the secret
+echo -e "\nGranting collector access to hub-loki-token secret"
+cat <<EOF | oc apply -f -
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: hub-loki-token-reader
+  namespace: openshift-logging
+rules:
+- apiGroups: [""]
+  resources: ["secrets"]
+  resourceNames: ["hub-loki-token"]
+  verbs: ["get", "list", "watch"]
+EOF
+
+cat <<EOF | oc apply -f -
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: collector-hub-loki-token-reader
+  namespace: openshift-logging
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: hub-loki-token-reader
+subjects:
+- kind: ServiceAccount
+  name: collector
+  namespace: openshift-logging
+EOF
+
+# Step 5: Create ClusterLogForwarder with type: loki (NOT lokiStack)
+# NOTE: authentication must be nested INSIDE the loki: block
+echo -e "\nCreating ClusterLogForwarder"
+cat <<EOF | oc apply -f -
+apiVersion: observability.openshift.io/v1
+kind: ClusterLogForwarder
+metadata:
+  name: collector
+  namespace: openshift-logging
+spec:
+  serviceAccount:
+    name: collector
+  inputs:
+  - name: only-tekton
+    type: application
+    application:
+      selector:
+        matchExpressions:
+        - key: app.kubernetes.io/managed-by
+          operator: In
+          values: ["tekton-pipelines", "pipelinesascode.tekton.dev"]
+  outputs:
+  - name: hub-loki
+    type: loki
+    loki:
+      url: "${HUB_LOKI_HOST}/api/logs/v1/application"
+      labelKeys:
+      - kubernetes.namespace_name
+      - kubernetes.pod_name
+      - kubernetes.container_name
+      - log_type
+      authentication:
+        token:
+          from: secret
+          secret:
+            name: hub-loki-token
+            key: token
+    tls:
+      insecureSkipVerify: true
+  pipelines:
+  - name: forward-to-hub
+    inputRefs:
+    - only-tekton
+    outputRefs:
+    - hub-loki
+EOF
+
+echo ""
+echo "=============================================="
+echo "Setup Complete!"
+echo "=============================================="
+
+echo -e "\nWaiting for collector pods to start..."
+sleep 15
+
+echo -e "\nCollector Pod Status:"
+oc get pods -n openshift-logging -l app.kubernetes.io/component=collector -o wide
+
+echo -e "\nClusterLogForwarder Status:"
+oc get clusterlogforwarder collector -n openshift-logging -o jsonpath='{.status.conditions}' 2>/dev/null | jq . || \
+    oc get clusterlogforwarder collector -n openshift-logging -o yaml | grep -A 20 "status:"
+
+echo ""
+echo "=============================================="
+echo "IMPORTANT: Namespace Exclusions"
+echo "=============================================="
+echo "Logs from these namespaces are EXCLUDED by default:"
+echo "  - default"
+echo "  - kube-*"
+echo "  - openshift-*"
+echo ""
+echo "Run PipelineRuns in custom namespaces (e.g., 'tekton-test') for logs to be collected!"
+echo ""
+----
++
+[IMPORTANT]
+====
+By default, logs from the following namespaces are not collected:
+
+* `default`
+* `kube-*` (all namespaces starting with `kube-`)
+* `openshift-*` (all namespaces starting with `openshift-`)
+
+To ensure pipeline run logs are forwarded to the hub cluster, create and run pipeline runs in custom namespaces such as `tekton-test`.
+====
+
+.Verification
+
+. Verify that the collector pods are running by running the following command:
++
+[source,terminal]
+----
+$ oc get pods -n openshift-logging -l app.kubernetes.io/component=collector
+----
++
+.Example output
+[source,terminal]
+----
+NAME                READY   STATUS    RESTARTS   AGE
+collector-abcde     2/2     Running   0          2m
+collector-xyz12     2/2     Running   0          2m
+----
+
+. Verify that the ClusterLogForwarder is configured correctly by running the following command:
++
+[source,terminal]
+----
+$ oc get clusterlogforwarder collector -n openshift-logging -o jsonpath='{.status.conditions}' | jq .
+----
++
+The output should show conditions indicating successful configuration.
+
+. Check that logs are being forwarded to the hub cluster by running the following command:
++
+[source,terminal]
+----
+$ oc exec -n openshift-logging $(oc get pods -n openshift-logging -l app.kubernetes.io/component=collector -o jsonpath='{.items[0].metadata.name}') -- curl -sk https://127.0.0.1:24231/metrics | grep sent.*hub_loki
+----
++
+The output should show metrics indicating that logs are being sent to the hub Loki endpoint.
