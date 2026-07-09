@@ -4,68 +4,103 @@
 
 :_mod-docs-content-type: PROCEDURE
 [id="zero-trust-manager-deploy-istiocni_{context}"]
-= Deploy IstioCNI on both clusters
+= Deploy IstioCNI and configure federated ClusterSPIFFEIDs on both clusters
 
 [role="_abstract"]
-Deploy the IstioCNI custom resource on Cluster A and Cluster B. IstioCNI configures pod networking for {SMProductName} so sidecars can intercept traffic without privileged init containers. Deploy it on both clusters before you install the Istio control plane.
+Deploy the `IstioCNI` custom resource and create federated `ClusterSPIFFEID` resources on Cluster A and Cluster B. IstioCNI configures pod networking for {SMProductName} so sidecars can intercept traffic without privileged init containers. Federated `ClusterSPIFFEID` resources ensure workloads and gateways receive trust bundles from both clusters.
 
 .Procedure
 
-. Define the following environment variables:
+. Deploy IstioCNI on both clusters by running the following commands:
 +
 [source,terminal]
 ----
-$ export CLUSTER_A_KUBECONFIG="path/to/cluster-a/kubeconfig"
-$ export CLUSTER_B_KUBECONFIG="path/to/cluster-b/kubeconfig"
-$ export ZTWIM_NS="zero-trust-workload-identity-manager"
-$ export CLUSTER_A="cluster-a"
-$ export NETWORK_A="network-a"
-$ export CLUSTER_B="cluster-b"
-$ export NETWORK_B="network-b"
-----
+$ for KUBECONFIG in "${CLUSTER_A_KUBECONFIG}" "${CLUSTER_B_KUBECONFIG}"; do
+  oc new-project "${OSSM_CNI}" --kubeconfig="${KUBECONFIG}" 2>/dev/null || true
 
-. Patch the `spire-agent` ConfigMap to add SDS configuration by running the following commands:
-+
-[source,terminal]
-----
-$ for kubeconfig in "${CLUSTER_A_KUBECONFIG}" "${CLUSTER_B_KUBECONFIG}"; do
-  # Get current agent.conf
-  AGENT_CONF=$(oc get configmap spire-agent --kubeconfig "${kubeconfig}" -n "${ZTWIM_NS}" -o jsonpath='{.data.agent\.conf}')
-  # Check if SDS configuration already exists
-  if echo "${AGENT_CONF}" | grep -q '"sds"'; then
-    echo "SDS configuration already exists in spire-agent configmap, skipping patch"
-    continue
-  fi
- 
-$ PATCHED_CONF=$(echo "${AGENT_CONF}" | jq '.agent.sds = {
-    "default_svid_name": "default",
-    "default_bundle_name": "null",
-    "default_all_bundles_name": "ROOTCA"
-  }')
+  oc apply --kubeconfig="${KUBECONFIG}" -f - <<EOF
+apiVersion: sailoperator.io/v1
+kind: IstioCNI
+metadata:
+  name: default
+spec:
+  namespace: ${OSSM_CNI}
+EOF
 
-$ oc patch configmap spire-agent --kubeconfig "${kubeconfig}" -n "${ZTWIM_NS}" --type merge -p "{\"data\":{\"agent.conf\":$(echo "${PATCHED_CONF}" | jq -Rs .)}}"
-
-$ oc rollout restart daemonset/spire-agent --kubeconfig "${kubeconfig}" -n "${ZTWIM_NS}"
-$ oc rollout status daemonset/spire-agent --kubeconfig "${kubeconfig}" -n "${ZTWIM_NS}" --timeout=300s
+  until oc get daemonset/istio-cni-node --kubeconfig="${KUBECONFIG}" -n "${OSSM_CNI}" &> /dev/null; do
+    sleep 3
+  done
+  oc rollout status daemonset/istio-cni-node --kubeconfig="${KUBECONFIG}" -n "${OSSM_CNI}" --timeout=300s
 done
 ----
 
-. Patch the `ClusterSPIFFEID` on Cluster A to federate with Cluster B by running the following command:
+. Create federated `ClusterSPIFFEID` resources on Cluster A:
++
+[NOTE]
+====
+Do not patch the default `ClusterSPIFFEID` (`zero-trust-workload-identity-manager-spire-default`). The {zero-trust-full} operator reconciles and reverts manual changes to it. Create custom `ClusterSPIFFEID` resources for specific namespaces instead.
+====
 +
 [source,terminal]
 ----
-$ kubectl patch clusterspiffeid zero-trust-workload-identity-manager-spire-default \
-  --kubeconfig="${CLUSTER_A_KUBECONFIG}" \
-  --type=merge \
-  -p "{\"spec\":{\"federatesWith\":[\"${CLUSTER_B}\"],\"autoPopulateDNSNames\":true}}"
+$ oc apply --kubeconfig="${CLUSTER_A_KUBECONFIG}" -f - <<EOF
+apiVersion: spire.spiffe.io/v1alpha1
+kind: ClusterSPIFFEID
+metadata:
+  name: sample-federation
+spec:
+  className: zero-trust-workload-identity-manager-spire
+  spiffeIDTemplate: "spiffe://{{ .TrustDomain }}/ns/{{ .PodMeta.Namespace }}/sa/{{ .PodSpec.ServiceAccountName }}"
+  namespaceSelector:
+    matchLabels:
+      kubernetes.io/metadata.name: sample
+  federatesWith:
+    - "${CLUSTER_B_TRUST_DOMAIN}"
+---
+apiVersion: spire.spiffe.io/v1alpha1
+kind: ClusterSPIFFEID
+metadata:
+  name: istio-system-federation
+spec:
+  className: zero-trust-workload-identity-manager-spire
+  spiffeIDTemplate: "spiffe://{{ .TrustDomain }}/ns/{{ .PodMeta.Namespace }}/sa/{{ .PodSpec.ServiceAccountName }}"
+  namespaceSelector:
+    matchLabels:
+      kubernetes.io/metadata.name: istio-system
+  federatesWith:
+    - "${CLUSTER_B_TRUST_DOMAIN}"
+EOF
 ----
 
-. Patch the `ClusterSPIFFEID` on Cluster B to federate with Cluster A by running the following command:
+. Create federated `ClusterSPIFFEID` resources on Cluster B:
 +
 [source,terminal]
 ----
-$ kubectl patch clusterspiffeid zero-trust-workload-identity-manager-spire-default \
-  --kubeconfig="${CLUSTER_B_KUBECONFIG}" \
-  --type=merge \
-  -p "{\"spec\":{\"federatesWith\":[\"${CLUSTER_A}\"],\"autoPopulateDNSNames\":true}}"
+$ oc apply --kubeconfig="${CLUSTER_B_KUBECONFIG}" -f - <<EOF
+apiVersion: spire.spiffe.io/v1alpha1
+kind: ClusterSPIFFEID
+metadata:
+  name: sample-federation
+spec:
+  className: zero-trust-workload-identity-manager-spire
+  spiffeIDTemplate: "spiffe://{{ .TrustDomain }}/ns/{{ .PodMeta.Namespace }}/sa/{{ .PodSpec.ServiceAccountName }}"
+  namespaceSelector:
+    matchLabels:
+      kubernetes.io/metadata.name: sample
+  federatesWith:
+    - "${CLUSTER_A_TRUST_DOMAIN}"
+---
+apiVersion: spire.spiffe.io/v1alpha1
+kind: ClusterSPIFFEID
+metadata:
+  name: istio-system-federation
+spec:
+  className: zero-trust-workload-identity-manager-spire
+  spiffeIDTemplate: "spiffe://{{ .TrustDomain }}/ns/{{ .PodMeta.Namespace }}/sa/{{ .PodSpec.ServiceAccountName }}"
+  namespaceSelector:
+    matchLabels:
+      kubernetes.io/metadata.name: istio-system
+  federatesWith:
+    - "${CLUSTER_A_TRUST_DOMAIN}"
+EOF
 ----
