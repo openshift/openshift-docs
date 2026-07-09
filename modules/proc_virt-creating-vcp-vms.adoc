@@ -64,17 +64,34 @@ This configuration is required when using KubeVirt Redfish for cluster installat
 apiVersion: kubevirt.io/v1
 kind: VirtualMachine
 metadata:
-  name: master-0
+  name: control-plane-0
   namespace: <vm_namespace>
   labels:
     redfish-enabled: "true"
+    vcp-cluster: <cluster_name>
 spec:
   runStrategy: Halted
   template:
     metadata:
       labels:
         redfish-enabled: "true"
+        vcp-cluster: <cluster_name>
     spec:
+      evictionStrategy: None
+      affinity:
+        podAntiAffinity:
+          requiredDuringSchedulingIgnoredDuringExecution:
+            - labelSelector:
+                matchLabels:
+                  vcp-cluster: <cluster_name>
+              topologyKey: kubernetes.io/hostname
+      readinessProbe:
+        guestAgentPing: {}
+        initialDelaySeconds: 120
+        periodSeconds: 20
+        timeoutSeconds: 10
+        failureThreshold: 3
+        successThreshold: 3
       domain:
         rebootPolicy: Terminate
         cpu:
@@ -99,39 +116,69 @@ spec:
       volumes:
         - name: rootdisk
           dataVolume:
-            name: master-0-disk
+            name: control-plane-0-disk
         - name: cloudinitdisk
           cloudInitNoCloud:
             userData: |
               #cloud-config
-              hostname: master-0
+              hostname: control-plane-0
               user: core
+              packages:
+                - qemu-guest-agent
+              runcmd:
+                - [systemctl, enable, --now, qemu-guest-agent]
 ----
 +
 where:
 +
 * `<vm_namespace>` specifies the namespace for the VMs. Must match the namespace specified in the KubeVirt Redfish chassis configuration.
-* `redfish-enabled: "true"` specifies the label that must match the `vm_selector` labels in the KubeVirt Redfish configuration so the VM is exposed through the Redfish API.
+* `redfish-enabled: "true"` is an example label. The label must match the `vm_selector` labels in the KubeVirt Redfish configuration so the VM is exposed through the Redfish API. You can use any label key and value, as long as both the VM and the KubeVirt Redfish configuration use the same label.
+* `vcp-cluster: <cluster_name>` identifies which target cluster a VM belongs to. Replace `<cluster_name>` with the name of your target cluster. This label is used by anti-affinity rules and the pod disruption budget to scope operations to a single target cluster. This is important when a hosting cluster runs VMs for multiple target clusters.
+* `evictionStrategy: None` prevents the hosting cluster from attempting to live-migrate control plane VMs during node drain operations. Live migration is not supported for virtualized control plane VMs.
+* `affinity.podAntiAffinity` distributes control plane VMs across different physical nodes so that a single node failure affects only one VM. The label selector uses the `vcp-cluster` label to scope anti-affinity to VMs belonging to the same target cluster.
+* `readinessProbe.guestAgentPing` verifies that the QEMU guest agent inside the VM is responsive. The hosting cluster uses this probe to determine whether the VM is healthy before allowing operations that affect other VMs.
 * `runStrategy: Halted` specifies that VMs must be powered off initially. The installation powers them on by using the Redfish API.
 * `rebootPolicy: Terminate` specifies the reboot behavior required for Redfish API boot override operations. Ensures the VM terminates cleanly when boot media changes.
 * `cores: 8` and `guest: 16Gi` specify the minimum recommended resources for control plane nodes.
 * `<network_attachment_definition>` specifies the name of a `NetworkAttachmentDefinition` configured on your hosting cluster. All control plane VMs must share the same L2 network segment. Common options include localnet, Linux bridge, or OVN Layer 2 networks.
-+
-[IMPORTANT]
-====
-For production deployments, configure anti-affinity rules to ensure control plane VMs are distributed across different physical nodes.
-This prevents a single node failure from affecting multiple control plane VMs simultaneously.
-Add pod anti-affinity rules or topology spread constraints to the VM specification based on your environment requirements.
-====
+* `packages` and `runcmd` in the cloud-init configuration install and enable the QEMU guest agent at first boot. The guest agent is required for the readiness probe and for graceful shutdown operations.
 
 . Apply the resource by running the following command:
 +
 [source,terminal]
 ----
-$ oc apply -f master-0.yaml
+$ oc apply -f control-plane-0.yaml
 ----
++
+Create further VMs for `control-plane-1` and `control-plane-2` using the same specification, adjusting the `name`, `hostname`, and `dataVolume` name for each VM.
 
-If required, create further VMs for `master-1` and `master-2`, for example.
+. Create a `PodDisruptionBudget` to prevent the hosting cluster from evicting more than one control plane VM at a time:
++
+[source,yaml]
+----
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: vcp-control-plane-pdb
+  namespace: <vm_namespace>
+spec:
+  minAvailable: 2
+  selector:
+    matchLabels:
+      vcp-cluster: <cluster_name>
+----
++
+where:
++
+* `minAvailable: 2` ensures that at least two control plane VMs remain running during node drain operations, which preserves `etcd` quorum. You must use `minAvailable` instead of `maxUnavailable` because the `VirtualMachineInstance` controller does not implement the Kubernetes scale subresource. A PDB with `maxUnavailable` cannot determine the expected pod count for VMs, which causes it to block all evictions.
+* The label selector uses the `vcp-cluster` label to scope the budget to VMs belonging to the same target cluster.
+
+. Apply the resource by running the following command:
++
+[source,terminal]
+----
+$ oc apply -f vcp-control-plane-pdb.yaml
+----
 
 .Verification
 
@@ -142,7 +189,7 @@ If required, create further VMs for `master-1` and `master-2`, for example.
 $ oc get vm -n <vm_namespace>
 ----
 +
-* `vm_namespace` is the namespace of the VMs.
+* `<vm_namespace>` is the namespace of the VMs.
 +
 .Example output
 [source,terminal]
