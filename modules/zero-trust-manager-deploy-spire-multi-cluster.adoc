@@ -1,0 +1,210 @@
+// Module included in the following assemblies:
+//
+// * security/zero_trust_workload_identity_manager/zero-trust-manager-mesh-integration-multi-cluster.adoc.
+
+:_mod-docs-content-type: PROCEDURE
+[id="zero-trust-manager-deploy-spire-multi-cluster_{context}"]
+= Deploying {spire-full} with federation for multi-cluster integration
+
+[role="_abstract"]
+Deploy {spire-full} with federation capabilities on each cluster to enable cross-cluster trust bundle exchange and workload identity validation across multiple {product-title} clusters.
+
+.Prerequisites
+
+* You have two {product-title} clusters (4.x) with network connectivity between them.
+* You have installed {zero-trust-full} on both clusters.
+* You have installed SPIRE federation on both clusters.
+* The `oc` CLI is configured with access to both clusters.
+* You have installed `istioctl`.
+* You have `helm` installed. This is used for gateway deployment.
+* You have Istio version >= 1.29.2
+
+.Procedure
+
+. Define the following environment variables:
++
+[source,terminal]
+----
+$ export ZTWIM_NS=zero-trust-workload-identity-manager
+$ export OSSM_NS=istio-system
+$ export OSSM_CNI=istio-cni
+
+$ export CLUSTER_A_KUBECONFIG="/path/to/cluster-a/kubeconfig"
+$ export CLUSTER_B_KUBECONFIG="/path/to/cluster-b/kubeconfig"
+
+$ export CLUSTER_A_BASE_DOMAIN=$(oc get ingresses.config/cluster \
+  -o jsonpath='{.spec.domain}' --kubeconfig "${CLUSTER_A_KUBECONFIG}")
+$ export CLUSTER_B_BASE_DOMAIN=$(oc get ingresses.config/cluster \
+  -o jsonpath='{.spec.domain}' --kubeconfig "${CLUSTER_B_KUBECONFIG}")
+
+$ export CLUSTER_A_TRUST_DOMAIN="${CLUSTER_A_BASE_DOMAIN}"
+$ export CLUSTER_B_TRUST_DOMAIN="${CLUSTER_B_BASE_DOMAIN}"
+
+$ export CLUSTER_A=cluster-a
+$ export CLUSTER_B=cluster-b
+$ export NETWORK_A=network-a
+$ export NETWORK_B=network-b
+
+$ export FEDERATION_ENDPOINT_A="https://federation.${CLUSTER_A_BASE_DOMAIN}"
+$ export FEDERATION_ENDPOINT_B="https://federation.${CLUSTER_B_BASE_DOMAIN}"
+----
+
+. Deploy SPIRE with federation enabled:
+
+.. Create the `ZeroTrustWorkloadIdentityManager` CR on Cluster A:
++
+[source,terminal]
+----
+$ export KUBECONFIG="${CLUSTER_A_KUBECONFIG}"
+$ export JWT_ISSUER_A="https://oidc-discovery.${CLUSTER_A_BASE_DOMAIN}"
+
+$ oc apply -f - <<EOF
+apiVersion: operator.openshift.io/v1alpha1
+kind: ZeroTrustWorkloadIdentityManager
+metadata:
+  name: cluster
+spec:
+  trustDomain: ${CLUSTER_A_TRUST_DOMAIN}
+  clusterName: ${CLUSTER_A}
+EOF
+----
+
+.. Create the `SpireServer` CR:
++
+[source,yaml]
+----
+$ cat <<EOF | oc apply -f -
+apiVersion: operator.openshift.io/v1alpha1
+kind: SpireServer
+metadata:
+  name: cluster
+spec:
+  logLevel: "info"
+  logFormat: "text"
+  jwtIssuer: $JWT_ISSUER_A
+  caValidity: "24h"
+  defaultX509Validity: "1h"
+  defaultJWTValidity: "5m"
+  caKeytype: “rsa-2048”
+  jwtKeyType: "rsa-2048"
+  keyManager: “”
+  caSubject:
+    country: "US"
+    organization: "RH"
+    commonName: "SPIRE Server CA"
+  persistence:
+    size: "5Gi"
+    accessMode: "ReadWriteOnce"
+  datastore:
+    databaseType: "sqlite3"
+    connectionString: "/run/spire/data/datastore.sqlite3"
+    tlsSecretName: ""
+    maxOpenConns: 100
+    maxIdleConns: 10
+    connMaxLifetime: 0
+    disableMigration: "false"
+  federation:
+    enabled: true
+    bundleEndpoint:
+      address: "0.0.0.0"
+      port: 8443
+EOF
+----
+
+.. Create the `SpireAgent` CR:
++
+[source,yaml]
+----
+$ cat <<EOF | oc apply -f -
+apiVersion: operator.openshift.io/v1alpha1
+kind: SpireAgent
+metadata:
+  name: cluster
+spec:
+  socketPath: "/run/spire/agent-sockets"
+  logLevel: "info"
+  logFormat: "text"
+  nodeAttestor:
+    k8sPSATEnabled: "true"
+  workloadAttestors:
+    k8sEnabled: "true"
+    workloadAttestorsVerification:
+      type: "auto"
+      hostCertBasePath: "/etc/kubernetes"
+      hostCertFileName: "auto"
+    disableContainerSelectors: "true"
+    useNewContainerLocator: "true"
+EOF
+----
+
+.. Create the `SpiffeCSIDriver` CR:
++
+[source,yaml]
+----
+$ cat <<EOF | oc apply -f -
+apiVersion: operator.openshift.io/v1alpha1
+kind: SpiffeCSIDriver
+metadata:
+  name: cluster
+spec:
+  agentSocketPath: "/run/spire/agent-sockets"
+  pluginName: "csi.spiffe.io"
+EOF
+----
+
+.. Create the `SpireOIDCDiscoveryProvider` CR:
++
+[source,yaml]
+----
+$ cat <<EOF | oc apply -f -
+apiVersion: operator.openshift.io/v1alpha1
+kind: SpireOIDCDiscoveryProvider
+metadata:
+  name: cluster
+spec:
+  logLevel: "info"
+  logFormat: "text"
+  csiDriverName: "csi.spiffe.io"
+  jwtIssuer: $JWT_ISSUER_A
+  replicaCount: 1
+  managedRoute: "true"
+EOF
+----
++
+Repeat for Cluster B substituting the `CLUSTER_B_*` variables.
+
+. Wait for SPIRE to be ready on both clusters by running the following command:
++
+[source,terminal]
+----
+$ for KUBECONFIG in "${CLUSTER_A_KUBECONFIG}" "${CLUSTER_B_KUBECONFIG}"; do
+  echo "--- Waiting for SPIRE on $(oc whoami --show-server --kubeconfig=${KUBECONFIG}) ---"
+  oc rollout status statefulset/spire-server --kubeconfig="${KUBECONFIG}" -n ${ZTWIM_NS} --timeout=300s
+  oc rollout status daemonset/spire-agent --kubeconfig="${KUBECONFIG}" -n ${ZTWIM_NS} --timeout=300s
+  oc rollout status daemonset/spire-spiffe-csi-driver --kubeconfig="${KUBECONFIG}" -n ${ZTWIM_NS} --timeout=300s
+  oc wait --for=condition=Available deployment/spire-spiffe-oidc-discovery-provider \
+    --kubeconfig="${KUBECONFIG}" -n ${ZTWIM_NS} --timeout=300s
+done
+----
+
+.Verification
+
+. Verify that the SDS configuration is available by running the following command:
++
+[source,terminal]
+----
+$ for KUBECONFIG in "${CLUSTER_A_KUBECONFIG}" "${CLUSTER_B_KUBECONFIG}"; do
+  echo "--- SDS config ---"
+  oc get cm spire-agent --kubeconfig "${KUBECONFIG}" -n "${ZTWIM_NS}" \
+    -o jsonpath='{.data.agent\.conf}' | grep -A5 '"sds"'
+done
+----
++
+.Example output
+[source,terminal]
+----
+"sds": {
+  "default_all_bundles_name": "ROOTCA",
+  "default_bundle_name": "null"
+},
+----
