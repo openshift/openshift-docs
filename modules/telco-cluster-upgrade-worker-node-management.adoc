@@ -1,0 +1,316 @@
+:_mod-docs-content-type: PROCEDURE
+[id="telco-cluster-upgrade-worker-node-management_{context}"]
+= Manage worker nodes during Telco Core cluster upgrades
+
+[role="_abstract"]
+You can pause worker nodes before upgrading the control plane to enable control-plane-only upgrades.
+After the control plane upgrade completes, you can unpause worker nodes to apply the upgrade to compute resources during a separate maintenance window.
+
+Pausing worker nodes prevents the MachineConfigPool from updating worker nodes while the control plane upgrades, minimizing workload disruption.
+
+.Prerequisites
+
+* Understanding of MachineConfigPool (MCP) concepts.
+* Access to clusters with cluster-admin privileges.
+* TALM operator installed for policy-based pause operations (optional).
+
+.Procedure
+
+. *To pause worker nodes using TALM*, create an RHACM policy:
++
+[source,yaml]
+----
+apiVersion: policy.open-cluster-management.io/v1
+kind: Policy
+metadata:
+  name: telco-pause-worker-nodes
+  namespace: default
+spec:
+  remediationAction: enforce
+  disabled: false
+  policy-templates:
+  - objectDefinition:
+      apiVersion: policy.open-cluster-management.io/v1
+      kind: ConfigurationPolicy
+      metadata:
+        name: pause-worker-mcp
+      spec:
+        severity: high
+        object-templates:
+        - complianceType: musthave
+          objectDefinition:
+            apiVersion: machineconfiguration.openshift.io/v1
+            kind: MachineConfigPool
+            metadata:
+              name: worker
+            spec:
+              paused: true
+----
+
+. Apply the policy to RHACM:
++
+[source,terminal]
+----
+$ oc apply -f telco-pause-worker-policy.yaml
+----
+
+. Include the pause policy in your ClusterGroupUpgrade CR before the upgrade policy:
++
+[source,yaml]
+----
+apiVersion: ran.openshift.io/v1alpha1
+kind: ClusterGroupUpgrade
+metadata:
+  name: telco-ystream-upgrade-4.20
+  namespace: default
+spec:
+  clusters:
+  - spoke1
+  managedPolicies:
+  - telco-pause-worker-nodes
+  - telco-upgrade-4.20-policy
+  enable: false
+  remediationStrategy:
+    maxConcurrency: 1
+    timeout: 7200
+----
++
+TALM applies the pause policy before applying the upgrade policy, ensuring workers remain paused during the control plane upgrade.
+
+. *To pause worker nodes manually*, patch the worker MachineConfigPool directly on the target cluster:
++
+[source,terminal]
+----
+$ oc patch mcp worker --type merge -p '{"spec":{"paused":true}}'
+----
+
+. Verify the worker MachineConfigPool is paused:
++
+[source,terminal]
+----
+$ oc get mcp worker -o jsonpath='{.spec.paused}'
+----
++
+.Example output
+[source,terminal]
+----
+true
+----
+
+. Monitor the paused worker status during the control plane upgrade:
++
+[source,terminal]
+----
+$ oc get mcp worker
+----
++
+.Example output
+[source,terminal]
+----
+NAME     CONFIG                                             UPDATED   UPDATING   DEGRADED   MACHINECOUNT   READYMACHINECOUNT   UPDATEDMACHINECOUNT   DEGRADEDMACHINECOUNT   AGE
+worker   rendered-worker-abc123                             True      False      False      3              3                   3                     0                      30d
+----
++
+The worker MCP should show `paused=true` and workers should remain at the previous version.
+
+. Verify that workloads continue running on worker nodes during the control plane upgrade:
++
+[source,terminal]
+----
+$ oc get pods -A -o wide | grep worker
+----
+
+. After the control plane upgrade completes and you are ready to upgrade worker nodes, create an unpause policy for TALM:
++
+[source,yaml]
+----
+apiVersion: policy.open-cluster-management.io/v1
+kind: Policy
+metadata:
+  name: telco-unpause-worker-nodes
+  namespace: default
+spec:
+  remediationAction: enforce
+  disabled: false
+  policy-templates:
+  - objectDefinition:
+      apiVersion: policy.open-cluster-management.io/v1
+      kind: ConfigurationPolicy
+      metadata:
+        name: unpause-worker-mcp
+      spec:
+        severity: high
+        object-templates:
+        - complianceType: musthave
+          objectDefinition:
+            apiVersion: machineconfiguration.openshift.io/v1
+            kind: MachineConfigPool
+            metadata:
+              name: worker
+            spec:
+              paused: false
+----
+
+. Apply the unpause policy using a ClusterGroupUpgrade CR:
++
+[source,yaml]
+----
+apiVersion: ran.openshift.io/v1alpha1
+kind: ClusterGroupUpgrade
+metadata:
+  name: telco-unpause-workers-4.20
+  namespace: default
+spec:
+  clusters:
+  - spoke1
+  managedPolicies:
+  - telco-unpause-worker-nodes
+  enable: false
+  remediationStrategy:
+    maxConcurrency: 1
+----
+
+. Apply the unpause CGU:
++
+[source,terminal]
+----
+$ oc apply -f telco-unpause-workers-cgu.yaml
+----
+
+. Enable the CGU to unpause workers:
++
+[source,terminal]
+----
+$ oc patch cgu telco-unpause-workers-4.20 \
+  -n default \
+  --type merge \
+  -p '{"spec":{"enable":true}}'
+----
+
+. *To unpause worker nodes manually*, patch the worker MachineConfigPool on the target cluster:
++
+[source,terminal]
+----
+$ oc patch mcp worker --type merge -p '{"spec":{"paused":false}}'
+----
+
+. Monitor worker node upgrades after unpausing:
++
+[source,terminal]
+----
+$ oc get mcp worker -w
+----
++
+The MachineConfigPool status shows the rolling upgrade progress:
++
+[source,terminal]
+----
+NAME     CONFIG                                             UPDATED   UPDATING   DEGRADED   MACHINECOUNT   READYMACHINECOUNT   UPDATEDMACHINECOUNT   DEGRADEDMACHINECOUNT   AGE
+worker   rendered-worker-def456                             False     True       False      3              2                   2                     0                      30d
+----
++
+Nodes upgrade in a rolling fashion based on the `maxUnavailable` setting.
+The default `maxUnavailable` is 1 or 33% of workers, whichever is smaller.
+
+. Watch individual worker node status:
++
+[source,terminal]
+----
+$ oc get nodes -l node-role.kubernetes.io/worker= -w
+----
++
+Nodes transition through these states:
++
+--
+* `Ready,SchedulingDisabled`: Node is being drained
+* `NotReady,SchedulingDisabled`: Node is rebooting with new configuration
+* `Ready`: Node upgrade complete
+--
+
+.Verification
+
+. Verify all worker nodes are at the target version:
++
+[source,terminal]
+----
+$ oc get nodes
+----
++
+.Example output
+[source,terminal]
+----
+NAME                   STATUS   ROLES                  AGE   VERSION
+master-0.example.com   Ready    control-plane,master   30d   v1.30.1
+worker-0.example.com   Ready    worker                 30d   v1.30.1
+worker-1.example.com   Ready    worker                 30d   v1.30.1
+worker-2.example.com   Ready    worker                 30d   v1.30.1
+----
+
+. Verify the worker MachineConfigPool is fully updated:
++
+[source,terminal]
+----
+$ oc get mcp worker
+----
++
+.Example output
+[source,terminal]
+----
+NAME     CONFIG                                             UPDATED   UPDATING   DEGRADED   MACHINECOUNT   READYMACHINECOUNT   UPDATEDMACHINECOUNT   DEGRADEDMACHINECOUNT   AGE
+worker   rendered-worker-def456                             True      False      False      3              3                   3                     0                      30d
+----
++
+Verify `MACHINECOUNT` = `READYMACHINECOUNT` = `UPDATEDMACHINECOUNT`.
+
+. Verify workload health after worker upgrades:
++
+[source,terminal]
+----
+$ oc get pods -A | grep -v Running | grep -v Completed
+----
+
+.Troubleshooting
+
+* If the pause policy does not take effect, verify the policy is enforced in RHACM:
++
+[source,terminal]
+----
+$ oc get policy telco-pause-worker-nodes -n default
+----
+
+* If workers upgrade despite being paused, check for manual MachineConfigPool edits that override the policy.
+
+* If a worker node upgrade gets stuck, check the node status:
++
+[source,terminal]
+----
+$ oc describe node <worker-node-name>
+----
+
+* Common issues include Pod Disruption Budgets blocking node draining, pods with local storage that cannot be evicted, or node cordoning preventing new pods from scheduling.
++
+To identify blocking PDBs:
++
+[source,terminal]
+----
+$ oc get pdb -A -o json | jq -r '.items[] | select(.status.disruptionsAllowed == 0) | "\(.metadata.namespace)\t\(.metadata.name)\t\(.spec.minAvailable // .spec.maxUnavailable)"'
+----
++
+.Example output
+[source,terminal]
+----
+telco-workloads	cnf-workload-pdb	3
+----
++
+If a PDB shows zero disruptions allowed and is blocking node draining, you have these options:
++
+--
+* Wait for the application to scale up replicas to allow disruptions
+* Temporarily adjust the PDB during the maintenance window (coordinate with application owners)
+* Schedule worker node upgrades during a maintenance window when the application can tolerate disruption
+--
+
+.Additional resources
+
+* xref:../../../post_installation_configuration/day_2_core_cnf_clusters/updating/update-completing-the-control-plane-only-update.adoc#update-completing-the-control-plane-only-update[Control-plane-only updates for Telco Core clusters]
+* xref:../../../nodes/nodes/nodes-nodes-working.adoc#nodes-nodes-working[Working with nodes]
