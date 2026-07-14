@@ -1,0 +1,109 @@
+// Module included in the following assemblies:
+//
+// * observability/logging/log_collection_forwarding/cluster-logging-collector.adoc
+
+:_mod-docs-content-type: CONCEPT
+[id="collector-metrics-cardinality-impact_{context}"]
+= Understanding collector metrics cardinality and monitoring impact
+
+[role="_abstract"]
+The Vector log collector exposes Prometheus metrics that track log collection performance and health. In deployments with many inputs, outputs, and pipelines, these metrics can exhibit high cardinality. High cardinality increases resource consumption in the {product-title} monitoring stack.
+
+Understanding how `ClusterLogForwarder` configuration affects metrics cardinality helps you balance tenant isolation requirements with monitoring stack stability.
+
+Metrics cardinality refers to the number of unique time series created by a metric. Each unique combination of metric name and label values creates a separate time series. Prometheus must store and query each time series. For example, if a metric has labels `component_id` and `namespace`, and there are 100 unique `component_id` values and 50 unique `namespace` values, the potential cardinality is 100 × 50 = 5,000 time series for that metric.
+
+High cardinality metrics require the following resources: more memory in Prometheus pods to store time series, more CPU to process queries across many series, more storage to persist historical data, and longer query response times.
+
+The Vector log collector creates internal components for each stage of log processing. Each component is identified by a `component_id` label in Vector metrics. The number of components grows with the complexity of your `ClusterLogForwarder` configuration.
+
+A `ClusterLogForwarder` with the following configuration:
+
+* 3 inputs (application, infrastructure, audit)
+* 2 outputs (LokiStack, Splunk)
+* 2 pipelines (one per output)
+
+Creates these types of components:
+
+* Input source components (3)
+* Metadata enrichment transforms per input (3)
+* Filter transforms if configured (varies)
+* Routing and transformation components (varies)
+* Output sink components (2)
+
+Each input typically requires multiple transformation stages before reaching an output. This creates 5-10 components per input-output path. In this example, you might have 30-50 unique `component_id` values.
+
+In multitenant environments with many separate inputs, outputs, or pipelines for tenant isolation, the number of components can grow to hundreds:
+
+* 100 tenant-specific inputs
+* 50 tenant-specific outputs
+* 100 tenant-specific pipelines
+
+This configuration can create 400-500 unique `component_id` values or more.
+
+The following Vector metrics use the `component_id` label and are most affected by high cardinality:
+
+`vector_component_received_events_count_bucket`:: A histogram that tracks the number of events received by each component. This is typically the highest cardinality metric.
+
+`vector_buffer_send_duration_seconds_bucket`:: A histogram that tracks how long it takes to send events from buffers. This metric exhibits high cardinality because it tracks every component that sends data.
+
+`vector_source_lag_time_seconds_bucket`:: A histogram that tracks lag time for source components.
+
+`vector_adaptive_concurrency_*_bucket`:: Multiple histogram metrics that track adaptive concurrency behavior for outputs that support it. Each output creates multiple series.
+
+Histogram metrics are particularly problematic. They create multiple time series per unique label combination (one per bucket plus sum and count).
+
+A single `component_id` value in a histogram metric with 8 buckets creates:
+
+* 8 bucket series (`le="0.001"`, `le="0.01"`, ... `le="+Inf"`)
+* 1 sum series (`_sum`)
+* 1 count series (`_count`)
+
+Total: 10 time series per `component_id`.
+
+With 450 unique `component_id` values:
+
+* `vector_component_received_events_count_bucket`: 450 × 10 = 4,500 time series
+* `vector_buffer_send_duration_seconds_bucket`: 450 × 10 = 4,500 time series
+* Additional histogram metrics contribute similarly
+
+High cardinality from Vector metrics affects the {product-title} monitoring stack in several ways:
+
+Memory consumption:: Prometheus stores all active time series data in memory. High cardinality can cause Prometheus pods to consume significantly more memory. This can potentially trigger out-of-memory (OOM) conditions.
+
+CPU usage:: Query processing time increases with the number of time series. High cardinality metrics slow down Prometheus queries and dashboard rendering.
+
+Storage growth:: Prometheus persistently stores time series data. High cardinality increases the rate of storage consumption. This can exhaust available storage faster than expected.
+
+Query performance:: Queries that aggregate across all `component_id` values become slower as cardinality increases. This affects monitoring dashboards and alerting evaluation.
+
+Cluster stability:: The monitoring stack is critical for cluster operations including:
++
+--
+* Cluster upgrades
+* Horizontal pod autoscaling (HPA)
+* Vertical pod autoscaling (VPA)
+* Node management
+* Alerting
+--
++
+Monitoring stack instability or resource exhaustion can impact these operations.
+
+Consider reviewing your `ClusterLogForwarder` configuration if:
+
+* You have more than 50 inputs, outputs, or pipelines across all `ClusterLogForwarder` instances
+* You have separate `ClusterLogForwarder` instances per tenant or namespace
+* Prometheus pods are consuming more memory than expected
+* Prometheus storage is growing faster than anticipated
+* Prometheus queries are slow or timing out
+* You observe high cardinality warnings in Prometheus logs
+
+You can check the current cardinality of Vector metrics by using the Prometheus API. See "Troubleshooting high collector metrics cardinality" for diagnostic procedures.
+
+[role="_additional-resources"]
+.Additional resources
+
+* xref:../configuring/cluster-logging-collector.adoc#best-practices-multitenant-logging_cluster-logging-collector[Best practices for multitenant logging configurations]
+* xref:../configuring/cluster-logging-collector.adoc#troubleshooting-collector-metrics-cardinality_cluster-logging-collector[Troubleshooting high collector metrics cardinality]
+* link:https://prometheus.io/docs/practices/naming/#labels[Prometheus metric and label naming best practices]
+* link:https://www.robustperception.io/cardinality-is-key[Understanding cardinality in Prometheus]
