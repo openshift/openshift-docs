@@ -1,0 +1,242 @@
+// Module included in the following assemblies:
+//
+// * observability/logging/log_collection_forwarding/cluster-logging-collector.adoc
+
+:_mod-docs-content-type: PROCEDURE
+[id="troubleshooting-collector-metrics-cardinality_{context}"]
+= Troubleshooting high collector metrics cardinality
+
+[role="_abstract"]
+If you suspect that Vector collector metrics are causing high cardinality in Prometheus, diagnose the issue. Analyze the Prometheus time series database and identify which `ClusterLogForwarder` configurations contribute most to cardinality.
+
+.Prerequisites
+
+* You have access to the cluster as a user with the `cluster-admin` cluster role.
+* You have installed the {oc-first}.
+
+.Procedure
+
+. Analyze the Prometheus time series database to identify metrics with the highest cardinality:
++
+[source,terminal]
+----
+$ oc exec -n openshift-monitoring prometheus-k8s-0 -c prometheus -- \
+  /bin/sh -c "promtool tsdb analyze /prometheus"
+----
++
+.Example output (truncated)
+[source,terminal]
+----
+Block ID: 01ARZ3NDEKTSV4RRFFQ69G5FAV
+Duration: 2h0m0s
+Series: 142853
+Label names: 156
+Label pairs: 3642847
+
+Most common label pairs:
+3642847 endpoint=metrics
+3166018 namespace=openshift-logging
+3116791 container=collector
+3105098 app_kubernetes_io_component=collector
+
+Highest cardinality metric names:
+727740 vector_component_received_events_count_bucket
+719960 vector_buffer_send_duration_seconds_bucket
+166536 etcd_request_duration_seconds_bucket
+150240 vector_source_lag_time_seconds_bucket
+137720 vector_adaptive_concurrency_limit_bucket
+----
++
+The Vector metrics have significantly higher cardinality than other cluster metrics.
+
+. Count the number of unique `component_id` values for Vector metrics:
++
+[source,terminal]
+----
+$ oc exec -n openshift-monitoring prometheus-k8s-0 -- \
+  promtool query instant http://localhost:9090 \
+  'count(sum by (component_id)(rate(vector_component_received_events_count_bucket[1m])))'
+----
++
+.Example output
+[source,terminal]
+----
+484
+----
++
+This output shows that there are 484 unique `component_id` values contributing to cardinality.
+
+. Count how many of these components are inputs:
++
+[source,terminal]
+----
+$ oc exec -n openshift-monitoring prometheus-k8s-0 -- \
+  promtool query instant http://localhost:9090 \
+  'count(sum by (component_id)(rate(vector_component_received_events_count_bucket{component_id=~"input_.*"}[1m])))'
+----
++
+.Example output
+[source,terminal]
+----
+188
+----
++
+This output shows that 188 out of the 484 components are input sources.
+
+. Identify which `ClusterLogForwarder` instances contribute most to cardinality:
++
+[source,terminal]
+----
+$ oc exec -n openshift-monitoring prometheus-k8s-0 -- \
+  promtool query instant http://localhost:9090 \
+  'count(sum by (app_kubernetes_io_instance, component_id)(rate(vector_component_received_events_count_bucket[1m]))) by (app_kubernetes_io_instance)'
+----
++
+This query returns the number of components per `ClusterLogForwarder` instance.
++
+.Example output
+[source,terminal]
+----
+{app_kubernetes_io_instance="instance"} 31
+{app_kubernetes_io_instance="app-logforward-customers"} 453
+----
++
+This output shows that the `app-logforward-customers` ClusterLogForwarder instance creates 453 unique components.
+
+. Retrieve the configuration of the `ClusterLogForwarder` with high component count:
++
+[source,terminal]
+----
+$ oc get clusterlogforwarder app-logforward-customers -n openshift-logging -o yaml
+----
+
+. Count the number of inputs, outputs, and pipelines in the configuration:
++
+[source,terminal]
+----
+$ oc get clusterlogforwarder app-logforward-customers -n openshift-logging -o yaml | \
+  grep -E "^  inputs:|^  outputs:|^  pipelines:" | wc -l
+----
+
+. Analyze the configuration to identify opportunities for consolidation:
++
+--
+* Count the number of inputs:
++
+[source,terminal]
+----
+$ oc get clusterlogforwarder app-logforward-customers -n openshift-logging -o yaml | \
+  yq '.spec.inputs | length'
+----
+
+* Count the number of outputs:
++
+[source,terminal]
+----
+$ oc get clusterlogforwarder app-logforward-customers -n openshift-logging -o yaml | \
+  yq '.spec.outputs | length'
+----
+
+* Count the number of pipelines:
++
+[source,terminal]
+----
+$ oc get clusterlogforwarder app-logforward-customers -n openshift-logging -o yaml | \
+  yq '.spec.pipelines | length'
+----
+--
+
+.Troubleshooting
+
+Based on your diagnosis, apply the appropriate remediation:
+
+Use metrics collection profiles:: Configure the cluster monitoring operator to use the `minimal` metrics collection profile. This is the recommended first step. It reduces the number of metrics that Prometheus collects from the log collector without requiring changes to your `ClusterLogForwarder` configurations.
++
+The minimal profile collects only metrics required for platform alerts, dashboards, telemetry, and autoscaling. It excludes high-cardinality histogram metrics that contribute most to cardinality issues.
++
+See "Configuring metrics collection profiles to reduce cardinality" for the complete procedure.
+
+Consolidate inputs by using label selectors:: If you have many inputs that differ only by namespace or pod labels, replace them with a single input that uses label selectors to include all required pods.
++
+For example, instead of separate inputs for `tenant-a`, `tenant-b`, and so on, create one input with:
++
+[source,yaml]
+----
+inputs:
+  - name: all-tenants
+    type: application
+    application:
+      selector:
+        matchLabels:
+          tenant-logging: "enabled"
+----
++
+See "Best practices for multitenant logging configurations" for detailed examples.
+
+Consolidate outputs to the same destination:: If multiple outputs point to the same destination system, combine them into a single output and use multiple pipelines to route different log streams to it.
++
+For example, instead of `tenant-a-splunk` and `tenant-b-splunk` both pointing to `https://splunk.example.com`, create one `shared-splunk` output.
+
+Reduce the number of pipelines:: Each pipeline adds components for routing. If pipelines differ only in their source namespace or labels, consider:
++
+--
+* Using filters within a single pipeline to route logs
+* Relying on destination system capabilities to separate tenant logs
+* Combining pipelines that share the same input and output
+--
+
+Use fewer ClusterLogForwarder instances:: If you have multiple `ClusterLogForwarder` custom resources that could be combined, consider consolidating them into a single instance. Each `ClusterLogForwarder` instance deploys separate collector pods with their own component sets.
++
+Only use multiple `ClusterLogForwarder` instances when you need:
++
+--
+* Different service accounts for different collection purposes
+* Different security or network policies
+* Completely different processing pipelines
+--
+
+Review filter usage:: While filters are necessary for log processing, excessive filtering can add components. Ensure that filters serve a clear purpose and consider whether filtering can be done at the destination instead.
+
+.Verification
+
+After making configuration changes to reduce cardinality:
+
+. Wait approximately 5-10 minutes for the collector to restart and metrics to stabilize.
+
+. Rerun the diagnostic commands to verify the component count decreased:
++
+[source,terminal]
+----
+$ oc exec -n openshift-monitoring prometheus-k8s-0 -- \
+  promtool query instant http://localhost:9090 \
+  'count(sum by (component_id)(rate(vector_component_received_events_count_bucket[1m])))'
+----
+
+. Monitor Prometheus pod resource usage over the next few hours:
++
+[source,terminal]
+----
+$ oc adm top pod -n openshift-monitoring -l app.kubernetes.io/name=prometheus
+----
++
+The memory usage should stabilize or decrease as old time series expire.
+
+. Check Prometheus storage growth rate using the web console:
++
+--
+.. Navigate to *Observe* -> *Metrics*.
+.. Run the following query to see storage size:
++
+[source,promql]
+----
+prometheus_tsdb_storage_blocks_bytes
+----
+--
+
+[role="_additional-resources"]
+.Additional resources
+
+* xref:../configuring/cluster-logging-collector.adoc#collector-metrics-cardinality-impact_cluster-logging-collector[Understanding collector metrics cardinality and monitoring impact]
+* xref:../configuring/cluster-logging-collector.adoc#best-practices-multitenant-logging_cluster-logging-collector[Best practices for multitenant logging configurations]
+* link:https://prometheus.io/docs/prometheus/latest/storage/[Prometheus storage documentation]
+* link:https://access.redhat.com/solutions/7137995[Red Hat Knowledgebase: Prometheus storage size impacted by high cardinality of Vector metrics]
