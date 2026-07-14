@@ -1,0 +1,252 @@
+// Module included in the following assemblies:
+//
+// * configuring/configuring-log-forwarding.adoc
+
+:_mod-docs-content-type: PROCEDURE
+[id="configuring-multi-pipeline-filtering_{context}"]
+= Configuring multi-pipeline filtering for many teams
+
+[role="_abstract"]
+Different teams require different views of cluster logs. Multi-pipeline filtering routes logs to team-specific destinations with appropriate filtering applied. This ensures that each team sees relevant logs without noise from other teams' workloads.
+
+.Prerequisites
+
+* You have installed the {clo}.
+* You have administrator permissions.
+* You have created a `ClusterLogForwarder` custom resource.
+* You have configured output destinations for each team.
+
+.Procedure
+
+. Edit your `ClusterLogForwarder`:
++
+[source,terminal]
+----
+$ oc edit clusterlogforwarder instance -n openshift-logging
+----
+
+. Configure filters and pipelines for your team routing scenario:
++
+*Basic scenario: Three teams with different requirements*
++
+This configuration routes logs for three teams. The Security team receives all audit logs without filtering. The SRE team receives application and infrastructure logs with debug logs dropped. The Development team receives only logs from their namespaces with health checks dropped.
++
+[source,yaml]
+----
+apiVersion: observability.openshift.io/v1
+kind: ClusterLogForwarder
+metadata:
+  name: instance
+  namespace: openshift-logging
+spec:
+  filters:
+  - name: drop-debug-logs
+    type: drop
+    drop:
+    - test:
+      - field: .level
+        matches: debug
+
+  - name: drop-health-checks
+    type: drop
+    drop:
+    - test:
+      - field: .message
+        matches: 'GET /(health|readiness|liveness)'
+
+  - name: prune-for-dev-team
+    type: prune
+    prune:
+      in:
+      - .kubernetes.labels
+      - .kubernetes.annotations
+      notIn:
+      - .kubernetes.labels.app
+      - .kubernetes.labels.version
+
+  pipelines:
+  - name: security-audit
+    inputRefs:
+    - audit
+    outputRefs:
+    - security-splunk
+
+  - name: sre-operational
+    inputRefs:
+    - application
+    - infrastructure
+    filterRefs:
+    - drop-debug-logs
+    outputRefs:
+    - sre-lokistack
+
+  - name: dev-team-logs
+    inputRefs:
+    - application
+    filterRefs:
+    - drop-health-checks
+    - prune-for-dev-team
+    outputRefs:
+    - dev-team-loki
+
+  outputs:
+  - name: security-splunk
+    type: splunk
+    url: https://splunk-security.example.com:8088
+    secret:
+      name: splunk-security-secret
+
+  - name: sre-lokistack
+    type: lokiStack
+    lokiStack:
+      target:
+        name: logging-loki
+        namespace: openshift-logging
+
+  - name: dev-team-loki
+    type: lokiStack
+    lokiStack:
+      target:
+        name: dev-team-loki
+        namespace: dev-team-logging
+----
++
+The `security-audit` pipeline sends all audit logs to Splunk without filtering. The `sre-operational` pipeline sends application and infrastructure logs to the central `LokiStack` with debug logs dropped. The `dev-team-logs` pipeline sends application logs to a namespace-scoped `LokiStack` with health checks dropped and metadata pruned for cost allocation.
++
+*Advanced scenario: Namespace-based routing with per-team filters*
++
+This configuration shows how to route logs from specific namespaces to team-specific destinations with different filtering rules.
++
+[source,yaml]
+----
+apiVersion: observability.openshift.io/v1
+kind: ClusterLogForwarder
+metadata:
+  name: instance
+  namespace: openshift-logging
+spec:
+  inputs:
+  - name: team-a-apps
+    type: application
+    application:
+      namespaces:
+      - team-a-prod
+      - team-a-staging
+
+  - name: team-b-apps
+    type: application
+    application:
+      namespaces:
+      - team-b-prod
+      - team-b-staging
+
+  filters:
+  - name: team-a-drop-test-logs
+    type: drop
+    drop:
+    - test:
+      - field: .kubernetes.namespace_name
+        matches: team-a-staging
+      - field: .level
+        matches: ^(debug|trace)$
+
+  - name: team-b-prune-metadata
+    type: prune
+    prune:
+      in:
+      - .kubernetes.labels
+      - .kubernetes.annotations
+
+  pipelines:
+  - name: team-a-pipeline
+    inputRefs:
+    - team-a-apps
+    filterRefs:
+    - team-a-drop-test-logs
+    outputRefs:
+    - team-a-s3
+
+  - name: team-b-pipeline
+    inputRefs:
+    - team-b-apps
+    filterRefs:
+    - team-b-prune-metadata
+    outputRefs:
+    - team-b-elasticsearch
+
+  outputs:
+  - name: team-a-s3
+    type: s3
+    url: https://s3.amazonaws.com/team-a-logs
+    secret:
+      name: team-a-s3-secret
+
+  - name: team-b-elasticsearch
+    type: elasticsearch
+    url: https://es.team-b.example.com:9200
+    secret:
+      name: team-b-es-secret
+----
++
+The `team-a-apps` input collects logs from Team A's namespaces only, while the `team-b-apps` input collects logs from Team B's namespaces. Team A's pipeline drops staging debug and trace logs before sending to S3. Team B's pipeline prunes metadata to reduce their Elasticsearch costs.
+
+.Verification
+
+. Check that filters are applied correctly:
++
+[source,terminal]
+----
+$ oc get clusterlogforwarder instance -n openshift-logging \
+  -o jsonpath='{range .spec.pipelines[*]}{.name}{"\t"}{.filterRefs}{"\n"}{end}'
+----
++
+.Example output
+[source,terminal]
+----
+security-audit	[]
+sre-operational	["drop-debug-logs"]
+dev-team-logs	["drop-health-checks","prune-for-dev-team"]
+----
+
+. Verify logs are reaching each destination:
++
+For the Security team using Splunk, confirm that audit logs arrive by searching in the Splunk web console. For the SRE team using `LokiStack`, verify that debug logs are filtered. Query for debug level logs and confirm that no results appear. For the Development team using `LokiStack`, confirm that health checks are filtered and that metadata is pruned.
+
+. Monitor collector logs to confirm filtering is working:
++
+[source,terminal]
+----
+$ oc logs -n openshift-logging -l app.kubernetes.io/component=collector \
+  --tail=100 | grep -E "(drop-debug-logs|drop-health-checks)"
+----
++
+.Example output
+[source,terminal]
+----
+2026-06-23T15:45:12.456Z INFO VectorSink: Records dropped by filter 'drop-debug-logs': 847
+2026-06-23T15:45:12.456Z INFO VectorSink: Records dropped by filter 'drop-health-checks': 1203
+----
+
+. Verify that each pipeline routes to the correct output:
++
+[source,terminal]
+----
+$ oc get clusterlogforwarder instance -n openshift-logging \
+  -o jsonpath='{range .spec.pipelines[*]}{.name}{" -> "}{.outputRefs}{"\n"}{end}'
+----
++
+.Example output
+[source,terminal]
+----
+security-audit -> ["security-splunk"]
+sre-operational -> ["sre-lokistack"]
+dev-team-logs -> ["dev-team-loki"]
+----
+
+[role="_additional-resources"]
+.Additional resources
+
+* xref:../configuring/configuring-log-forwarding.adoc#log-filtering-use-cases_{context}[Understanding log filtering use cases]
+* xref:../configuring/configuring-log-forwarding.adoc#configuring-drop-filters-performance_{context}[Configuring drop filters for performance]
+* xref:../configuring/configuring-log-forwarding.adoc#configuring-prune-filters-cost_{context}[Configuring prune filters for cost optimization]
+* xref:../configuring/configuring-log-forwarding.adoc#clf-pipelines-reference_{context}[`ClusterLogForwarder` pipelines reference]
