@@ -1,0 +1,193 @@
+// Module included in the following assemblies:
+//
+// * networking/changing-cluster-network-mtu.adoc
+
+:_mod-docs-content-type: PROCEDURE
+[id="nw-nmconnection-mtu-preparing_{context}"]
+= Updating MTU in existing nmconnection files
+
+[role="_abstract"]
+If your hardware MTU is already specified in an existing `NetworkManager` connection file (`.nmconnection`), you must update the MTU value directly in that file by using a `MachineConfig` manifest file. The standard `NetworkManager` configuration file approach does not work in this scenario because `.nmconnection` files take precedence over configuration files in `/etc/NetworkManager/conf.d/`.
+
+.Procedure
+
+. Create a script that updates the MTU value in the `.nmconnection` file. Save the following script, replacing `<mtu>` and `<connection_name>` with your values:
++
+[source,bash]
+----
+#!/bin/bash
+set -euo pipefail
+
+MTU_VALUE="<mtu>"
+CONNECTION_NAME="<connection_name>"
+FILE="/etc/NetworkManager/system-connections/${CONNECTION_NAME}.nmconnection"
+
+if [ ! -f "$FILE" ]; then
+  echo "Connection file $FILE not found. Skipping."
+  exit 0
+fi
+
+echo "Inspecting $FILE for MTU=$MTU_VALUE..."
+
+current_mtu=""
+in_ethernet_section=0
+
+while IFS= read -r line; do
+  stripped_line="$(echo "$line" | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')"
+
+  if [[ "$stripped_line" =~ ^\[.*\]$ ]]; then
+    if [[ "$stripped_line" == "[ethernet]" ]]; then
+      in_ethernet_section=1
+    else
+      in_ethernet_section=0
+    fi
+    continue
+  fi
+
+  if [[ $in_ethernet_section -eq 1 ]]; then
+    if [[ "$stripped_line" =~ ^mtu[[:space:]]*=[[:space:]]*([0-9]+) ]]; then
+      current_mtu=$(echo "$stripped_line" | sed -E 's/.*=[[:space:]]*([0-9]+).*/\1/')
+      break
+    fi
+  fi
+done < "$FILE"
+
+echo "Current MTU in file: ${current_mtu:-<none>}"
+
+if [[ "$current_mtu" == "$MTU_VALUE" ]]; then
+  echo "MTU is already set to $MTU_VALUE. No changes needed."
+  exit 0
+fi
+
+cp "$FILE" "${FILE}.bak"
+echo "Backup saved to ${FILE}.bak"
+
+new_lines=()
+in_ethernet_section=0
+mtu_updated=0
+
+while IFS= read -r line; do
+  trimmed_line="$(echo "$line" | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')"
+
+  if [[ "$trimmed_line" =~ ^\[.*\]$ ]]; then
+    if [[ $in_ethernet_section -eq 1 && $mtu_updated -eq 0 ]]; then
+      new_lines+=("mtu=$MTU_VALUE")
+    fi
+    in_ethernet_section=0
+  fi
+
+  if [[ "$trimmed_line" == "[ethernet]" ]]; then
+    in_ethernet_section=1
+    mtu_updated=0
+    new_lines+=("$line")
+    continue
+  fi
+
+  if [[ $in_ethernet_section -eq 1 ]]; then
+    if [[ "$trimmed_line" =~ ^mtu[[:space:]]*= ]]; then
+      if [[ $mtu_updated -eq 0 ]]; then
+        new_lines+=("mtu=$MTU_VALUE")
+        mtu_updated=1
+      fi
+      continue  # Skip original mtu line
+    fi
+  fi
+
+  new_lines+=("$line")
+done < "$FILE"
+
+if [[ $in_ethernet_section -eq 1 && $mtu_updated -eq 0 ]]; then
+  new_lines+=("mtu=$MTU_VALUE")
+fi
+
+printf "%s\n" "${new_lines[@]}" > "$FILE"
+chmod 600 "$FILE"
+
+echo "MTU updated to $MTU_VALUE."
+----
++
+where:
++
+`MTU_VALUE`:: Specifies the new hardware MTU value.
+`CONNECTION_NAME`:: Specifies the connection name (without the `.nmconnection` extension). This is typically the primary network interface connection.
+
+. Encode the script in base64 format:
++
+[source,terminal]
+----
+$ base64 -w0 <script_filename>
+----
+
+. Create a MachineConfig for each machine config pool that includes the encoded script and a systemd service to execute it. The following example shows a MachineConfig for the master machine config pool:
++
+[source,yaml]
+----
+apiVersion: machineconfiguration.openshift.io/v1
+kind: MachineConfig
+metadata:
+  name: 99-master-update-mtu
+  labels:
+    machineconfiguration.openshift.io/role: master
+spec:
+  config:
+    ignition:
+      version: 3.2.0
+    storage:
+      files:
+        - path: /usr/local/bin/update_mtu.sh
+          mode: 493
+          overwrite: true
+          contents:
+            source: data:text/plain;base64,<base64_encoded_script>
+    systemd:
+      units:
+        - name: update-mtu.service
+          enabled: true
+          contents: |
+            [Unit]
+            Wants=network-pre.target
+            Before=network-pre.target NetworkManager.service
+            Requires=local-fs.target
+            After=local-fs.target
+            DefaultDependencies=no
+            [Service]
+            Type=oneshot
+            ExecStart=/usr/local/bin/update_mtu.sh
+            RemainAfterExit=false
+            [Install]
+            WantedBy=multi-user.target
+----
++
+where:
++
+`metadata.name`:: For `worker` machine config pools, use a unique name such as `99-worker-update-mtu`.
+`metadata.name.labels.machineconfiguration.openshift.io/role`:: For `worker` machine config pools, change the role label to match your pool name, such as `worker` or a custom pool name.
+`spec.config.storage.files.contents.source`:: Replace with the base64-encoded script from the previous step.
+
+. Apply the MachineConfig:
++
+[source,terminal]
+----
+$ oc apply -f <machineconfig_filename>
+----
++
+The MachineConfig Operator creates a new rendered configuration and prepares to apply the configuration during the next machine reboot.
+
+. After all nodes reboot during the MTU migration process, verify that the MTU was configured correctly by checking the `ovs-configuration` service output in the journal:
++
+[source,terminal]
+----
+$ oc debug node/<node_name> -- chroot /host journalctl --no-pager --boot | grep "MTU found for iface"
+----
++
+.Example output
+[source,terminal]
+----
+configure-ovs.sh[5446]: + echo 'MTU found for iface: infra-bond.120: 9100'
+configure-ovs.sh[5446]: MTU found for iface: infra-bond.120: 9100
+----
++
+[IMPORTANT]
+====
+To ensure the MTU matches on newly deployed nodes, either update your provisioning configurations or keep the systemd service active.
+====
