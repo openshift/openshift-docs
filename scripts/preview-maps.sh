@@ -122,7 +122,11 @@ done
   echo '  </style>'
   echo '</head>'
   echo '<body>'
+<<<<<<< Updated upstream
   echo "  <h1>${BRANCH}</h1>"
+=======
+  echo "  <h1>${BRANCH} distro list</h1>"
+>>>>>>> Stashed changes
   echo '  <ul>'
   for dir in "$WORKTREE/$BRANCH"/*/; do
     distro_name=$(basename "$dir")
@@ -157,10 +161,20 @@ done
   echo '</html>'
 } > "$WORKTREE/index.html"
 
+<<<<<<< Updated upstream
 # Commit and push
 echo ""
 echo "Pushing to gh-pages..."
 git -C "$WORKTREE" add "$BRANCH" index.html
+=======
+# Disable Jekyll so GitHub Pages serves underscore-prefixed files
+touch "$WORKTREE/.nojekyll"
+
+# Commit and push
+echo ""
+echo "Pushing to gh-pages..."
+git -C "$WORKTREE" add "$BRANCH" index.html .nojekyll
+>>>>>>> Stashed changes
 
 if git -C "$WORKTREE" diff --cached --quiet; then
   echo "No changes to commit."
