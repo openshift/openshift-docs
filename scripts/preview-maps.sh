@@ -2,25 +2,34 @@
 set -euo pipefail
 
 usage() {
-  echo "Usage: $0 [-b branch]"
+  echo "Usage: $0 [-b branch] [-d distro] [-d distro] ..."
   echo ""
-  echo "  -b  Branch name (default: current git branch)"
+  echo "  -b, --branch   Branch name (default: current git branch)"
+  echo "  -d, --distro   Distro to build (default: all distros under maps/)"
+  echo ""
+  echo "Examples:"
+  echo "  $0                                  # all distros, current branch"
+  echo "  $0 -d openshift-enterprise          # one distro"
+  echo "  $0 -d openshift-enterprise -d rosa  # two distros"
   exit 1
 }
 
 BRANCH=""
+DISTROS=()
 
-while getopts "b:h" opt; do
-  case $opt in
-    b) BRANCH="$OPTARG" ;;
-    h) usage ;;
-    *) usage ;;
+while [[ $# -gt 0 ]]; do
+  case $1 in
+    -b|--branch) BRANCH="$2"; shift 2 ;;
+    -d|--distro) DISTROS+=("$2"); shift 2 ;;
+    -h|--help)   usage ;;
+    *)           echo "Unknown option: $1"; usage ;;
   esac
 done
 
-# Validate we're in the openshift-docs repo root
-if [ ! -f "maps/navigation.adoc" ]; then
-  echo "Error: maps/navigation.adoc not found. Run this script from the openshift-docs repo root."
+# Check that asciidoctor-multipage is installed
+if ! ruby -e "require 'asciidoctor-multipage'" 2>/dev/null; then
+  echo "Error: asciidoctor-multipage gem not found. Install it with:"
+  echo "  gem install asciidoctor-multipage"
   exit 1
 fi
 
@@ -33,6 +42,27 @@ if [ -z "$BRANCH" ]; then
   fi
 fi
 
+# Auto-discover distros if none specified
+if [ ${#DISTROS[@]} -eq 0 ]; then
+  for nav in maps/*/navigation.adoc; do
+    if [ -f "$nav" ]; then
+      DISTROS+=("$(basename "$(dirname "$nav")")")
+    fi
+  done
+  if [ ${#DISTROS[@]} -eq 0 ]; then
+    echo "Error: no distros found. Expected maps/<distro>/navigation.adoc"
+    exit 1
+  fi
+fi
+
+# Validate requested distros
+for distro in "${DISTROS[@]}"; do
+  if [ ! -f "maps/$distro/navigation.adoc" ]; then
+    echo "Error: maps/$distro/navigation.adoc not found."
+    exit 1
+  fi
+done
+
 # Derive GitHub username and repo name from origin remote
 GH_REMOTE=$(git remote get-url origin)
 GH_USERNAME=$(echo "$GH_REMOTE" | sed -E 's|.*[:/]([^/]+)/[^/]+$|\1|' | sed 's/\.git$//')
@@ -41,6 +71,7 @@ GH_REPO=$(echo "$GH_REMOTE" | sed -E 's|.*[:/][^/]+/([^/]+)$|\1|' | sed 's/\.git
 WORKTREE="/tmp/gh-pages-$$"
 
 echo "Branch:  $BRANCH"
+echo "Distros: ${DISTROS[*]}"
 echo "Remote:  $GH_USERNAME/$GH_REPO"
 echo ""
 
@@ -64,13 +95,43 @@ trap cleanup EXIT
 rm -rf "${WORKTREE:?}/$BRANCH"
 mkdir -p "$WORKTREE/$BRANCH"
 
-# Build HTML directly into the worktree branch directory
-echo "Building HTML..."
-asciidoctor maps/navigation.adoc \
-  -D "$WORKTREE/$BRANCH" \
-  -a toc=left \
-  -a doctype=book \
-  -a docinfo=shared-footer
+# Build each distro
+for distro in "${DISTROS[@]}"; do
+  echo "Building $distro..."
+  mkdir -p "$WORKTREE/$BRANCH/$distro"
+
+  asciidoctor -r asciidoctor-multipage -b multipage_html5 \
+    "maps/$distro/navigation.adoc" \
+    -D "$WORKTREE/$BRANCH/$distro" \
+    -a toc=left \
+    -a doctype=book \
+    -a docinfo=shared-footer \
+    -a multipage-level=1
+done
+
+# Generate per-branch index listing distros
+{
+  echo '<!DOCTYPE html>'
+  echo '<html>'
+  echo '<head>'
+  echo "  <title>Preview: ${BRANCH}</title>"
+  echo '  <style>'
+  echo '    body { font-family: sans-serif; max-width: 600px; margin: 40px auto; padding: 0 20px; }'
+  echo '    h1 { font-size: 1.4em; }'
+  echo '    ul { line-height: 2; }'
+  echo '  </style>'
+  echo '</head>'
+  echo '<body>'
+  echo "  <h1>${BRANCH}</h1>"
+  echo '  <ul>'
+  for dir in "$WORKTREE/$BRANCH"/*/; do
+    distro_name=$(basename "$dir")
+    echo "    <li><a href=\"${distro_name}/navigation.html\">${distro_name}</a></li>"
+  done
+  echo '  </ul>'
+  echo '</body>'
+  echo '</html>'
+} > "$WORKTREE/$BRANCH/index.html"
 
 # Regenerate root index listing all branch directories
 {
@@ -89,7 +150,7 @@ asciidoctor maps/navigation.adoc \
   echo '  <ul>'
   for dir in "$WORKTREE"/*/; do
     branch_name=$(basename "$dir")
-    echo "    <li><a href=\"${branch_name}/navigation.html\">${branch_name}</a></li>"
+    echo "    <li><a href=\"${branch_name}/index.html\">${branch_name}</a></li>"
   done
   echo '  </ul>'
   echo '</body>'
@@ -97,6 +158,7 @@ asciidoctor maps/navigation.adoc \
 } > "$WORKTREE/index.html"
 
 # Commit and push
+echo ""
 echo "Pushing to gh-pages..."
 git -C "$WORKTREE" add "$BRANCH" index.html
 
@@ -107,10 +169,14 @@ else
   git -C "$WORKTREE" push origin HEAD:gh-pages
 fi
 
-PREVIEW_URL="https://${GH_USERNAME}.github.io/${GH_REPO}/${BRANCH}/navigation.html"
+echo ""
+if [ ${#DISTROS[@]} -eq 1 ]; then
+  PREVIEW_URL="https://${GH_USERNAME}.github.io/${GH_REPO}/${BRANCH}/${DISTROS[0]}/navigation.html"
+else
+  PREVIEW_URL="https://${GH_USERNAME}.github.io/${GH_REPO}/${BRANCH}/index.html"
+fi
 STATUS_URL="https://github.com/${GH_USERNAME}/${GH_REPO}/actions"
 
-echo ""
 echo "Preview:  $PREVIEW_URL"
 echo "Preview may take 5-10 minutes to go live. Check the status link below for the status of the build."
 echo "Status:   $STATUS_URL"
