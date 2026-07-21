@@ -1,0 +1,123 @@
+// Module included in the following assemblies:
+//
+// * infrastructure_lifecycle_management/ocloud-configuring-smo-integration.adoc
+
+:_mod-docs-content-type: PROCEDURE
+[id="ocloud-configuring-mtls-for-o2ims-api_{context}"]
+= Configure mTLS for the O2 IMS API
+
+[role="_abstract"]
+You can configure mutual TLS (mTLS) to secure communications between the SMO and the O-Cloud Manager REST API endpoints. The O-Cloud Manager uses an `IngressController` to terminate incoming TLS sessions, and a TLS client certificate for outgoing connections to the SMO and OAuth2 server.
+
+.Prerequisites
+
+* The O-Cloud Manager Operator is installed and running on the hub cluster.
+* You have a TLS client certificate and private key for the O-Cloud Manager. The certificate must include `server auth` and `client auth` extended key usage.
+* You have the CA certificate used to validate incoming SMO client certificates.
+
+.Procedure
+
+. Create a TLS `Secret` containing the O-Cloud Manager client certificate and private key. The `tls.crt` field must contain the full certificate chain with the device certificate first, intermediate certificates next, and the root certificate last:
++
+Using cert-manager (recommended):
++
+[source,yaml]
+----
+apiVersion: cert-manager.io/v1
+kind: Certificate
+metadata:
+  name: oran-o2ims-tls-certificate
+  namespace: oran-o2ims
+spec:
+  secretName: oran-o2ims-tls-certificate
+  subject:
+    organizations:
+      - ORAN
+  commonName: o2ims.apps.<cluster_domain> <1>
+  usages:
+    - server auth
+    - client auth
+  dnsNames:
+    - o2ims.apps.<cluster_domain> <1>
+  issuerRef:
+    name: <issuer_name> <2>
+    kind: ClusterIssuer
+    group: cert-manager.io
+----
+<1> Replace `<cluster_domain>` with your hub cluster domain name.
+<2> Replace `<issuer_name>` with your cert-manager `ClusterIssuer` name.
++
+Using a manual method:
++
+[source,terminal]
+----
+$ oc create secret tls -n oran-o2ims oran-o2ims-tls-certificate \
+  --cert /path/to/tls.crt \
+  --key /path/to/tls.key
+----
+
+. Create a `ConfigMap` containing the CA certificates used to validate incoming SMO client certificates:
++
+[source,terminal]
+----
+$ oc create configmap -n openshift-ingress ingress-client-ca-certs \
+  --from-file=ca-bundle.crt=/path/to/smo-client-ca.crt
+----
+
+. Configure the `IngressController` to require mTLS for incoming connections. Patch the default `IngressController` or create a secondary controller for the O-Cloud Manager domain:
++
+[source,yaml]
+----
+apiVersion: operator.openshift.io/v1
+kind: IngressController
+metadata:
+  name: default
+  namespace: openshift-ingress-operator
+spec:
+  clientTLS:
+    allowedSubjectPatterns:
+      - "^/C=CA/ST=Ontario/L=Ottawa/O=Red Hat/OU=ORAN/" <1>
+    clientCA:
+      name: ingress-client-ca-certs <2>
+    clientCertificatePolicy: Required <3>
+----
+<1> Optional pattern to restrict access to specific certificate subjects.
+<2> The `ConfigMap` containing CA certificates for validating client certificates.
+<3> Set to `Required` to enforce mTLS. Use `Optional` if the ingress controller is shared with other applications that do not present client certificates, provided OAuth is enabled.
++
+[WARNING]
+====
+If the ingress controller is shared with other applications, setting `clientCertificatePolicy: Required` enforces client certificates on all incoming connections. Consider creating a secondary ingress controller for the O-Cloud Manager domain to avoid impacting other applications.
+====
+
+. Update the `Inventory` custom resource to reference the TLS certificate for both outgoing SMO connections and the ingress endpoint:
++
+[source,yaml]
+----
+spec:
+  smo:
+    tls:
+      secretName: oran-o2ims-tls-certificate
+  ingress:
+    tls:
+      secretName: oran-o2ims-tls-certificate
+----
+
+. Apply the updated configuration:
++
+[source,terminal]
+----
+$ oc apply -f <inventory_filename>.yaml
+----
+
+.Verification
+
+* Verify that the ingress controller is configured for mTLS:
++
+[source,terminal]
+----
+$ oc get ingresscontroller default -n openshift-ingress-operator \
+  -o jsonpath='{.spec.clientTLS}'
+----
++
+The output shows the configured `clientCertificatePolicy`, `clientCA`, and any `allowedSubjectPatterns`.
