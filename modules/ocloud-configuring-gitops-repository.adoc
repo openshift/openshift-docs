@@ -1,0 +1,153 @@
+// Module included in the following assemblies:
+//
+// * infrastructure_lifecycle_management/ocloud-preparing-to-deploy-clusters.adoc
+
+:_mod-docs-content-type: PROCEDURE
+[id="ocloud-configuring-gitops-repository_{context}"]
+= Configure the GitOps repository for O-Cloud Manager resources
+
+[role="_abstract"]
+Configure a Git repository with the directory layout required by the O-Cloud Manager, including cluster templates, configuration policy definitions, hardware profiles, and server inventory. ArgoCD synchronizes this repository content to the hub cluster where the O-Cloud Manager uses it for cluster provisioning.
+
+[NOTE]
+====
+This repository layout differs from the {ztp-first} GitOps layout. In {ztp}, the Git repository contains a `ClusterInstance` CR for each site, representing the full cluster definition. In the O-Cloud Manager flow, the repository contains reusable templates, defaults, and policies. Individual clusters are instantiated by creating a `ProvisioningRequest` CR that references a template and supplies site-specific parameters. The `ProvisioningRequest` CR can be applied directly to the hub cluster or managed through a separate GitOps repository.
+====
+
+.Prerequisites
+
+* The O-Cloud Manager Operator is installed on the hub cluster.
+* The {gitops-title} Operator is installed.
+* You have a Git repository accessible by ArgoCD on the hub cluster.
+
+.Procedure
+
+. Create your Git repository. See the following recommended directory layout:
++
+[source,text]
+----
+├── clustertemplates/
+│   ├── hardwareprofiles/
+│   ├── inventory/
+│   └── version_4.Y.Z/
+│       ├── sno-ran-du/
+│       │   ├── clusterinstance-defaults-v1.yaml
+│       │   ├── policytemplates-defaults-v1.yaml
+│       │   ├── pull-secret.yaml
+│       │   ├── extra-manifest/
+│       │   ├── ns.yaml
+│       │   └── sno-ran-du-v4-Y-Z-1.yaml
+│       └── std-ran-du/
+│           ├── clusterinstance-defaults-v1.yaml
+│           ├── policytemplates-defaults-v1.yaml
+│           ├── pull-secret.yaml
+│           ├── ns.yaml
+│           └── std-ran-du-v4-Y-Z-1.yaml
+└── policytemplates/
+    └── version_4.Y.Z/
+        ├── sno-ran-du/
+        │   ├── ns.yaml
+        │   ├── msc-binding.yaml
+        │   └── sno-ran-du-pg-v4-Y-Z-v1.yaml
+        ├── std-ran-du/
+        │   ├── ns.yaml
+        │   ├── msc-binding.yaml
+        │   └── std-ran-du-pg-v4-Y-Z-v1.yaml
+        └── source-crs/
+----
++
+* `clustertemplates/` contains CRs that define how clusters are provisioned:
+** `hardwareprofiles/` contains `HardwareProfile` custom CRs that define firmware levels and BIOS settings for classes of bare-metal servers.
+** `inventory/` contains `BareMetalHost` CRs for sites where server inventory is managed through GitOps.
+** `version_4.Y.Z/` organizes content by the target {product-title} release version.
+** `sno-ran-du/` and `std-ran-du/` are template directories for single-node and standard multi-node cluster topologies respectively.
+** `sno-ran-du-v4-Y-Z-1.yaml` is a `ClusterTemplate` CR that defines the cluster blueprint, including the parameter schema, node group definitions, and references to default ConfigMaps.
+** `clusterinstance-defaults-v1.yaml` is a `ConfigMap` containing default values for cluster installation parameters such as network configuration, image sets, and node settings. The `ProvisioningRequest` can override or supplement these values with site-specific parameters.
+** `policytemplates-defaults-v1.yaml` is a `ConfigMap` containing default values for Day-2 configuration policy parameters such as CPU allocation, hugepages, and SR-IOV settings.
+** `extra-manifest/` contains additional manifests applied during cluster installation.
+* `policytemplates/` contains `PolicyGenerator` CRs that define Day-2 configuration policies applied to managed clusters after provisioning:
+** `sno-ran-du-pg-v4-Y-Z-v1.yaml` is a `PolicyGenerator` CR that references source CRs and generates the policies enforced on the spoke cluster.
+** `source-crs/` contains the source CRs, such as subscriptions, performance profiles, and SR-IOV configurations, referenced by the policy generators.
+
+. Create an ArgoCD `Application` CR for cluster templates that points to the `clustertemplates/` directory in your Git repository, for example:
++
+[source,yaml]
+----
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: clusters
+  namespace: openshift-gitops
+spec:
+  destination:
+    server: https://kubernetes.default.svc
+  project: default
+  source:
+    path: clustertemplates
+    repoURL: https://git.example.com/your-org/ocloud-templates.git
+    targetRevision: main
+  syncPolicy:
+    automated:
+      prune: true
+      selfHeal: true
+  ignoreDifferences:
+  - group: metal3.io
+    jsonPointers:
+    - /spec/preprovisioningNetworkDataName
+    - /spec/online
+    kind: BareMetalHost
+----
++
+* `spec.source.repoURL` specifies the URL of the Git repository containing your cluster templates and configuration resources. Replace with the URL of your repository.
+* `spec.source.path` points to the `clustertemplates/` directory that contains `ClusterTemplate` CRs, defaults, and hardware profiles.
+* `spec.source.targetRevision` specifies the Git branch, tag, or commit to track. Set to the branch that contains your production-ready templates.
+* `spec.syncPolicy.automated` enables automatic synchronization. The `prune` option removes resources from the cluster that are no longer in Git, and `selfHeal` reverts manual changes made on the cluster back to the Git-defined state.
+* `spec.ignoreDifferences` prevents ArgoCD from reverting fields on `BareMetalHost` CRs that the Bare Metal Operator updates dynamically during provisioning.
+
+. Create an ArgoCD `Application` CR for policy templates that points to the `policytemplates/` directory:
++
+[source,yaml]
+----
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: policies
+  namespace: openshift-gitops
+spec:
+  destination:
+    server: https://kubernetes.default.svc
+  project: default
+  source:
+    path: policytemplates
+    repoURL: https://git.example.com/your-org/ocloud-templates.git
+    targetRevision: main
+  syncPolicy:
+    automated:
+      prune: true
+      selfHeal: true
+----
++
+* `spec.source.repoURL` specifies the URL of the Git repository. This can be the same repository as the cluster templates application if both directories exist in a single repository.
+* `spec.source.path` points to the `policytemplates/` directory that contains {rh-rhacm-first} policy generator resources and source CRs applied to managed clusters after provisioning.
+* `spec.syncPolicy.automated` enables automatic synchronization with pruning and self-healing, ensuring the hub cluster always reflects the latest policy definitions from Git.
+
+. Apply the ArgoCD application CRs by running the following commands:
++
+[source,terminal]
+----
+$ oc apply -f <clusters_application_filename>.yaml
+$ oc apply -f <policies_application_filename>.yaml
+----
++
+* Replace `<clusters_application_filename>.yaml` and `<policies_application_filename>.yaml` with the names of the application CRs.
+
+.Verification
+
+* Verify that ArgoCD has synchronized the cluster templates to the hub cluster:
++
+[source,terminal]
+----
+$ oc get clustertemplates.clcm.openshift.io -A
+----
++
+The output lists the `ClusterTemplate` CRs with their validation status. A `ClusterTemplateValidated` condition of `True` indicates that the template is ready for use.

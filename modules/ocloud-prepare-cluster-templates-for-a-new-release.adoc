@@ -1,0 +1,298 @@
+// Module included in the following assemblies:
+//
+// * infrastructure_lifecycle_management/ocloud-upgrading-clusters.adoc
+
+:_mod-docs-content-type: PROCEDURE
+[id="ocloud-prepare-cluster-templates-for-a-new-release_{context}"]
+= Prepare cluster templates for a new release
+
+[role="_abstract"]
+Before you can upgrade a cluster, you must create a new `ClusterTemplate` custom resource (CR) version for the target {product-title} release. Because `ClusterTemplate` CRs and their referenced `ConfigMap` CRs are immutable after validation, upgrading to a new release requires creating new versions of these resources with updated cluster installation defaults, policy templates, and upgrade configuration.
+
+.Prerequisites
+
+* The GitOps repository is configured and ArgoCD synchronizes resources to the hub cluster.
+* The target {product-title} version is available as a `ClusterImageSet` on the hub cluster.
+
+.Procedure
+
+. Create new `clustertemplates` and `policytemplates` directories in the GitOps repository for the target release version, following the same directory structure as existing versions:
++
+[source,terminal]
+----
+clustertemplates/
+├── version_4.Y.Z/
+│   └── sno-ran-du/
+└── version_4.Y.Z+1/        # new release directory
+    └── sno-ran-du/
+
+policytemplates/
+├── version_4.Y.Z/
+│   └── sno-ran-du/
+└── version_4.Y.Z+1/        # new release directory
+    └── sno-ran-du/
+----
+
+. Create a `ClusterInstance` defaults ConfigMap resource for the new version with the updated `clusterImageSetNameRef`:
++
+[source,yaml]
+----
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: clusterinstance-defaults-v1
+  namespace: <template_namespace>
+data:
+  clusterinstance-defaults: |
+    clusterImageSetNameRef: "<target_version>"
+    extraLabels:
+      ManagedCluster:
+        cluster-version: "<version_label>"
+        <template_name>-policy: "v1"
+----
++
+where:
++
+--
+`<template_namespace>`:: Specifies the namespace for the new `ClusterTemplate` version, such as `sno-ran-du-v4-Y-Z+1`.
+`<target_version>`:: Specifies the target {product-title} version, such as `4.22.0`.
+`<version_label>`:: Specifies a label value identifying the cluster version, such as `v4-22-0`.
+`<template_name>`:: Specifies the template name used for policy binding, such as `sno-ran-du`.
+--
++
+[NOTE]
+====
+The remaining configuration in the cluster instance defaults `ConfigMap` CR must remain identical to the original `ConfigMap` CR used for provisioning. For example, the `extraManifestsRefs` field must reference the same `ConfigMap` CR as the original version.
+====
+
+. Create policy templates for the new version with updated Operator index images and any new configuration manifests.
+
+. Create the `ClusterTemplate` CR for the target release with upgrade configuration. The `upgradeDefaults` section differs depending on the cluster topology:
+
+.. For single-node {product-title} clusters, configure `upgradeDefaults` with `imageBasedGroupUpgrade` to use image-based upgrade, and include the `upgradeParameters` schema to allow cluster overrides:
++
+[source,yaml]
+----
+apiVersion: clcm.openshift.io/v1alpha1
+kind: ClusterTemplate
+metadata:
+  name: <template_name>.v4-Y-Z+1-1
+  namespace: <template_namespace>
+spec:
+  name: <template_name>
+  version: v4-Y-Z+1-1
+  release: "<target_version>"
+  templateDefaults:
+    clusterInstanceDefaults: clusterinstance-defaults-v1
+    policyTemplateDefaults: policytemplate-defaults-v1
+    upgradeDefaults:
+      imageBasedGroupUpgrade:
+        ibuSpec:
+          seedImageRef:
+            image: "quay.io/seed-repo/seed-image:<target_version>"
+            version: "<target_version>"
+          oadpContent:
+            - name: <template_name>-ibu-platform-backup-<version_label>
+              namespace: openshift-adp
+          autoRollbackOnFailure:
+            initMonitorTimeoutSeconds: 1800
+        plan:
+          - actions: ["Prep"]
+            rolloutStrategy:
+              maxConcurrency: 1
+              timeout: 15
+          - actions: ["AbortOnFailure"]
+            rolloutStrategy:
+              maxConcurrency: 1
+              timeout: 5
+          - actions: ["Upgrade"]
+            rolloutStrategy:
+              maxConcurrency: 1
+              timeout: 60
+          - actions: ["AbortOnFailure"]
+            rolloutStrategy:
+              maxConcurrency: 1
+              timeout: 5
+          - actions: ["FinalizeUpgrade"]
+            rolloutStrategy:
+              maxConcurrency: 1
+              timeout: 5
+  templateParameterSchema:
+    properties:
+      # ... other parameters such as nodeClusterName and oCloudSiteId
+      upgradeParameters:
+        properties:
+          imageBasedGroupUpgrade:
+            type: object
+            properties:
+              ibuSpec:
+                properties:
+                  autoRollbackOnFailure:
+                    properties:
+                      initMonitorTimeoutSeconds:
+                        minimum: 0
+                        type: integer
+                    type: object
+                  oadpContent:
+                    items:
+                      properties:
+                        name:
+                          type: string
+                        namespace:
+                          type: string
+                      type: object
+                    type: array
+                  seedImageRef:
+                    properties:
+                      image:
+                        minLength: 1
+                        type: string
+                      pullSecretRef:
+                        properties:
+                          name:
+                            type: string
+                        type: object
+                      version:
+                        type: string
+                    type: object
+                type: object
+              plan:
+                items:
+                  properties:
+                    actions:
+                      items:
+                        type: string
+                      maxItems: 4
+                      type: array
+                    rolloutStrategy:
+                      properties:
+                        maxConcurrency:
+                          type: integer
+                        timeout:
+                          type: integer
+                      type: object
+                  type: object
+                maxItems: 6
+                type: array
+        type: object
+    required:
+      - nodeClusterName
+      - oCloudSiteId
+      - policyTemplateParameters
+      - clusterInstanceParameters
+    type: object
+----
++
+where:
++
+--
+`<template_name>`:: Specifies the base template name, such as `sno-ran-du`.
+`<template_namespace>`:: Specifies the namespace for the new `ClusterTemplate` version.
+`<target_version>`:: Specifies the target {product-title} version.
+`<version_label>`:: Specifies the version label used in the OADP backup `ConfigMap` CR, such as `v4-Y-Z+1-1`.
+`spec.templateDefaults.upgradeDefaults`:: Defines the default upgrade configuration for image-based upgrades on {sno} clusters.
+`ibuSpec.seedImageRef`:: Specifies the seed container image and target platform version for the upgrade.
+`ibuSpec.oadpContent`:: References `ConfigMap` resources that contain OADP `Backup` and `Restore` CRs for application data protection during the upgrade.
+`ibuSpec.autoRollbackOnFailure.initMonitorTimeoutSeconds`:: Defines the time in seconds to wait before automatically rolling back a failed upgrade. The default is `1800`, which is 30 minutes.
+`plan`:: Defines the ordered execution stages for the image-based upgrade. Each stage specifies the actions to perform, the maximum number of clusters to upgrade concurrently, and the timeout in minutes for that stage.
+`spec.templateParameterSchema`:: Defines the full schema for parameters that can be overridden for a specific cluster in the `ProvisioningRequest` CR. Use the `upgradeParameters` section to permit individual deployments to customize upgrades, such as the seed image, rollback timeout, or rollout concurrency.
+--
+
+.. For multi-node clusters, configure `upgradeDefaults` with `clusterVersion` to use the standard upgrade channel, and include the `upgradeParameters` schema to allow cluster overrides:
++
+[source,yaml]
+----
+apiVersion: clcm.openshift.io/v1alpha1
+kind: ClusterTemplate
+metadata:
+  name: <template_name>.v4-Y-Z+1-1
+  namespace: <template_namespace>
+spec:
+  name: <template_name>
+  version: v4-Y-Z+1-1
+  release: "<target_version>"
+  templateDefaults:
+    clusterInstanceDefaults: clusterinstance-defaults-v1
+    policyTemplateDefaults: policytemplate-defaults-v1
+    upgradeDefaults:
+      clusterVersion:
+        channel: "stable-<target_version>"
+        desiredUpdate:
+          version: "<target_version>"
+  templateParameterSchema:
+    properties:
+      # ... other parameters (nodeClusterName, oCloudSiteId, etc.) ...
+      upgradeParameters:
+        properties:
+          clusterUpgradeTimeout:
+            type: string
+          intermediateVersion:
+            type: string
+          clusterVersion:
+            type: object
+            properties:
+              channel:
+                type: string
+              upstream:
+                type: string
+              desiredUpdate:
+                type: object
+                properties:
+                  version:
+                    type: string
+                  image:
+                    type: string
+                  force:
+                    type: boolean
+                  architecture:
+                    type: string
+                    enum:
+                      - "Multi"
+                      - ""
+        type: object
+    required:
+      - nodeClusterName
+      - oCloudSiteId
+      - policyTemplateParameters
+      - clusterInstanceParameters
+    type: object
+----
++
+where:
++
+--
+`<template_name>`:: Specifies the base template name, such as `std-ran-du`.
+`<template_namespace>`:: Specifies the namespace for the new `ClusterTemplate` version.
+`<target_version>`:: Specifies the target {product-title} version.
+`spec.templateDefaults.upgradeDefaults`:: Defines the default upgrade configuration for standard platform upgrades on multi-node clusters.
+`clusterVersion.channel`:: Specifies the update channel for the target release.
+`clusterVersion.desiredUpdate.version`:: Specifies the target {product-title} version.
+`spec.templateParameterSchema`:: Defines the full schema for parameters that can be overridden for a specific cluster in the `ProvisioningRequest` CR. Use the `upgradeParameters` section to permit individual deployments to customize the upgrade timeout, intermediate version for EUS-to-EUS upgrades, or target release.
+`upgradeParameters.clusterUpgradeTimeout`:: Defines the maximum time allowed for the upgrade to complete.
+`upgradeParameters.intermediateVersion`:: Specifies an intermediate {product-title} version for EUS-to-EUS upgrades. If not specified, the controller auto-selects the highest valid intermediate version from the update graph.
+--
++
+[NOTE]
+====
+Do not configure both `imageBasedGroupUpgrade` and `clusterVersion` in the same `ClusterTemplate` CR. Each template must target a single cluster topology.
+====
+
+. Commit the new resources to the GitOps repository and wait for ArgoCD to synchronize them to the hub cluster.
+
+.Verification
+
+* Verify that the new `ClusterTemplate` CR is validated on the hub cluster by running the following command:
++
+[source,terminal]
+----
+$ oc get clustertemplates.clcm.openshift.io -n <template_namespace>
+----
++
+.Example output
+[source,terminal]
+----
+NAME                   AGE   STATE       DETAILS
+sno-ran-du.v4-22-0-1   10m   Validated   Cluster template has been validated
+----
++
+Verify that the STATE column shows `Validated`. If the state shows `Failed`, check the DETAILS column for the validation error.
