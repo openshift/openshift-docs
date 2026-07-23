@@ -1,0 +1,242 @@
+// Module included in the following assemblies:
+//
+// * scalability_and_performance/cnf-reserving-cpus-for-ovs-dpdk.adoc
+
+// cspell:ignore dpdk cpus numa
+
+:_mod-docs-content-type: PROCEDURE
+[id="cnf-configuring-ovs-dpdk-cpus_{context}"]
+= Reserve OVS-DPDK CPUs with a performance profile
+
+[role="_abstract"]
+Create or update a `PerformanceProfile` custom resource (CR) that reserves CPUs for OVS-DPDK by setting `spec.cpu.ovsDpdk`. You can optionally add the `performance.openshift.io/cpu-load-balancing-ovs-dpdk` annotation in the same CR to disable kernel scheduler load balancing on the OVS-DPDK CPUs.
+
+.Prerequisites
+
+* You have access to the cluster as a user with the `cluster-admin` role.
+* You have installed the OpenShift CLI (`oc`).
+* You have identified the CPU topology and NUMA locality of the OVS-DPDK NICs on the target nodes.
+* You have ensured that workload partitioning is enabled at install time through the `cpuPartitioningMode: AllNodes` setting. If workload partitioning is not enabled, you must configure the `kubelet` CPU Manager `strict-cpu-reservation` policy option in this performance profile using the `kubeletconfig.experimental` annotation.
+
+.Procedure
+
+. Generate a base performance profile by using the Performance Profile Creator (PPC) tool with `must-gather` data from your cluster:
+
+.. Collect `must-gather` data from the cluster:
++
+[source,terminal]
+----
+$ oc adm must-gather
+----
+
+.. Generate the base profile by running the PPC tool:
++
+[source,terminal,subs="attributes+"]
+----
+$ podman run --entrypoint performance-profile-creator \
+  -v <path_to_must_gather>:/must-gather:z \
+  registry.redhat.io/openshift4/ose-cluster-node-tuning-rhel9-operator:v{product-version} \
+  --must-gather-dir-path /must-gather \
+  --mcp-name=<mcp_name> \
+  --profile-name=ovs-dpdk-isolation \
+  --reserved-cpu-count=<reserved_count> \
+  --ovs-dpdk-cpu-count=<ovs_dpdk_count> \
+  --rt-kernel=true \
+  --split-reserved-cpus-across-numa=false \
+  --power-consumption-mode=ultra-low-latency \
+  > my-performance-profile.yaml
+----
++
+--
+`<path_to_must_gather>`:: Replace with the path to the `must-gather` output directory created by the `oc adm must-gather` command. The directory name follows the pattern `must-gather.local.<id>`.
+`<mcp_name>`:: Replace with the name of the machine config pool for the target nodes. For {sno}, use `--mcp-name=master`.
+`<reserved_count>`:: Replace with the number of CPUs to reserve for platform and cluster management.
+`<ovs_dpdk_count>`:: Replace with the number of CPUs to reserve for OVS-DPDK. When you specify this parameter, the PPC tool populates `spec.cpu.ovsDpdk` with the specified number of CPUs.
+--
++
+[NOTE]
+====
+For more information about other PPC arguments, see "Running the Performance Profile Creator using Podman".
+====
+
+. Review and edit the generated profile to ensure that the CPUs in `spec.cpu.ovsDpdk` are on the same NUMA node as the OVS-DPDK NICs:
++
+[source,terminal]
+----
+$ cat my-performance-profile.yaml
+----
++
+The PPC tool allocates CPUs by count and ensures they are siblings on the same physical core, but does not consider NUMA locality relative to the OVS-DPDK NICs. Verify that the `ovsDpdk` CPUs match the NUMA node identified in the prerequisites. If the allocated CPUs are on the wrong NUMA node, edit the `ovsDpdk` field to specify CPUs from the correct NUMA node. Ensure that the CPUs you specify are not already in the `reserved` set.
++
+[IMPORTANT]
+====
+Assigning OVS-DPDK CPUs to the wrong NUMA node causes silent dataplane performance degradation. Always verify NUMA locality before applying the profile.
+====
+
+. If workload partitioning is not enabled, edit the generated profile to add the `kubeletconfig.experimental` annotation to configure `strict-cpu-reservation`:
++
+[source,yaml]
+----
+apiVersion: performance.openshift.io/v2
+kind: PerformanceProfile
+metadata:
+  name: ovs-dpdk-isolation
+  annotations:
+    kubeletconfig.experimental: |
+      {
+       "cpuManagerPolicyOptions":{"strict-cpu-reservation":"true"}
+      }
+spec:
+  cpu:
+    isolated: "4-7"
+    ovsDpdk: "2-3"
+    reserved: "0-1"
+  machineConfigPoolSelector:
+    pools.operator.machineconfiguration.openshift.io/worker: ""
+  nodeSelector:
+    node-role.kubernetes.io/worker: ""
+----
++
+This annotation prevents `Burstable` and `BestEffort` pods from running on reserved CPUs. If workload partitioning is enabled, skip this step.
+
+. Optional: To disable kernel scheduler load balancing on the OVS-DPDK CPUs, add the `performance.openshift.io/cpu-load-balancing-ovs-dpdk` annotation set to `disable`:
++
+[source,yaml]
+----
+apiVersion: performance.openshift.io/v2
+kind: PerformanceProfile
+metadata:
+  name: ovs-dpdk-isolation
+  annotations:
+    performance.openshift.io/cpu-load-balancing-ovs-dpdk: "disable"
+    kubeletconfig.experimental: |
+      {
+       "cpuManagerPolicyOptions":{"strict-cpu-reservation":"true"}
+      }
+spec:
+  cpu:
+    isolated: "4-7"
+    ovsDpdk: "2-3"
+    reserved: "0-1"
+  machineConfigPoolSelector:
+    pools.operator.machineconfiguration.openshift.io/worker: ""
+  nodeSelector:
+    node-role.kubernetes.io/worker: ""
+----
++
+The example includes the `kubeletconfig.experimental` annotation. Omit this annotation if workload partitioning is enabled.
+
+. Apply the performance profile:
++
+[source,terminal]
+----
+$ oc apply -f my-performance-profile.yaml
+----
+
+. Wait for the Machine Config Operator to apply the configuration and for the target nodes to reboot. Confirm that the relevant machine config pool has finished updating:
++
+[source,terminal]
+----
+$ oc get mcp -w
+----
++
+The pool that matches your profile selector must show `UPDATED=True` and `UPDATING=False`. Press Ctrl+C to stop watching.
+
+.Verification
+
+. Verify that the performance profile is available:
++
+[source,terminal]
+----
+$ oc get performanceprofile ovs-dpdk-isolation -o yaml
+----
++
+Check the status conditions in the output. The `Available` condition must have `status: "True"` and the `Degraded` condition must have `status: "False"`.
++
+A properly configured system generates an output similar to this healthy profile example:
++
+[source,yaml]
+----
+status:
+  conditions:
+  - status: "True"
+    type: Available
+  - status: "False"
+    type: Degraded
+  runtimeClass: performance-ovs-dpdk-isolation
+----
++
+[NOTE]
+====
+If the `Degraded` condition shows `status: "True"` with `reason: OvsDpdkCPUsPrerequisiteNotMet`, the OVS-DPDK CPU feature requires strict CPU reservation. Verify that workload partitioning is enabled or that you have added the `kubeletconfig.experimental` annotation to configure `strict-cpu-reservation` in the performance profile, then reapply the profile.
+====
+
+. Verify that `kubelet` reserved system CPUs are the union of `reserved` and `ovsDpdk`:
++
+[source,terminal]
+----
+$ oc get --raw "/api/v1/nodes/<node_name>/proxy/configz" | \
+  python3 -c 'import sys,json; print(json.load(sys.stdin)["kubeletconfig"]["reservedSystemCPUs"])'
+----
++
+The reported set must equal the union of `reserved` and `ovsDpdk`. For example, with `reserved: "0-1"` and `ovsDpdk: "2-3"`, the output is `0-3`.
+
+. Start a debug session on a node that matches the performance profile:
++
+[source,terminal]
+----
+$ oc debug node/<node_name>
+----
+
+. Set `/host` as the root directory for the debug shell:
++
+[source,terminal]
+----
+# chroot /host
+----
+
+. Verify that kernel boot parameters include the OVS-DPDK CPUs:
++
+[source,terminal]
+----
+# cat /proc/cmdline
+----
++
+Confirm the following:
+
+* `isolcpus` includes the union of `isolated` and `ovsDpdk` CPUs.
+* `nohz_full` and `rcu_nocbs` include the `ovsDpdk` CPUs.
+* `systemd.cpu_affinity` does not include the `ovsDpdk` CPUs.
+
+. Verify that IRQ balancing excludes the OVS-DPDK CPUs:
++
+[source,terminal]
+----
+# grep -E "^IRQBALANCE_BANNED_CPUS=" /etc/sysconfig/irqbalance
+----
++
+Confirm that `IRQBALANCE_BANNED_CPUS` includes a hex mask that covers the `ovsDpdk` CPUs. For example, `ovsDpdk: "2-3"` (CPUs 2 and 3) produces `IRQBALANCE_BANNED_CPUS=c`. The mask value is not zero-padded.
+
+. Verify that the default SMP affinity mask excludes the OVS-DPDK CPUs:
++
+[source,terminal]
+----
+# cat /proc/irq/default_smp_affinity
+----
++
+The mask must clear the bits for `ovsDpdk` CPUs. For example, with `ovsDpdk: "2-3"` on an 8-CPU node, the output is `f3`.
+
+. Verify that the OVS-DPDK cgroup slice has the correct exclusive CPUs assigned:
++
+[source,terminal]
+----
+# cat /sys/fs/cgroup/ovs.slice/ovs-vswitchd.service/ovsdpdk.slice/cpuset.cpus.exclusive
+----
++
+The output must match the `ovsDpdk` value from the performance profile. For example, with `ovsDpdk: "2-3"`, the output is `2-3`.
+
+[NOTE]
+====
+These checks confirm that the platform configuration for OVS-DPDK CPU isolation is in place. Measuring OVS-DPDK dataplane throughput and packet loss requires your OVS-DPDK application test environment.
+====
+
