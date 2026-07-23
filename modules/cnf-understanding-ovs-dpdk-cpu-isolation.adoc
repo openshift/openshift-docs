@@ -1,0 +1,67 @@
+// Module included in the following assemblies:
+//
+// * scalability_and_performance/cnf-reserving-cpus-for-ovs-dpdk.adoc
+
+:_mod-docs-content-type: CONCEPT
+[id="cnf-understanding-ovs-dpdk-cpu-isolation_{context}"]
+= Understanding OVS-DPDK CPU isolation
+
+[role="_abstract"]
+OVS-DPDK poll mode driver (PMD) threads run as host processes and continuously poll network interfaces. Any interruption from kernel interrupts, system daemons, or Kubernetes pods can introduce jitter and reduce throughput. Reserving CPUs with `spec.cpu.ovsDpdk` in a `PerformanceProfile` custom resource (CR) gives those threads multi-layer isolation that is comparable to the isolation Guaranteed pods receive on isolated CPUs.
+
+== Why reserved and isolated CPU sets are not enough
+
+A performance profile already defines the following CPU sets:
+
+* `reserved`:: CPUs for operating system daemons and Kubernetes infrastructure. Without additional controls, Burstable and BestEffort pods can still run on reserved CPUs.
+* `isolated`:: CPUs for Guaranteed application pods that the kubelet schedules. Isolated CPUs are not intended for host processes such as OVS-DPDK.
+
+OVS-DPDK runs outside the pod scheduling path. To give PMD threads exclusive CPUs, the profile needs a third set that is excluded from kubelet scheduling and from host interference sources.
+
+== The three-tier CPU model for OVS-DPDK
+
+When you set `spec.cpu.ovsDpdk`, the Node Tuning Operator configures the following CPU roles on matching nodes:
+
+[cols="1,2,2"]
+|===
+|CPU set |Typical use |Isolation behavior
+
+|`reserved`
+|System daemons and platform components
+|Excluded from application Guaranteed pods. Workload partitioning or related policies further protect these CPUs.
+
+|`ovsDpdk`
+|OVS-DPDK PMD threads on the host
+|Excluded from kubelet scheduling for all QoS classes, banned from `irqbalance`, excluded from systemd CPU affinity, and included in kernel isolation parameters. Placed under the OVS cgroup hierarchy.
+
+|`isolated`
+|Guaranteed latency-sensitive pods
+|Available to the kubelet for Guaranteed workloads that request exclusive CPUs.
+|===
+
+[IMPORTANT]
+====
+The `ovsDpdk` CPU set is specific to OVS-DPDK. Do not use it as a generic pool for other DPDK applications. The Node Tuning Operator places these CPUs under the existing `ovs.slice` hierarchy for `ovs-vswitchd`.
+====
+
+== What the Node Tuning Operator configures
+
+For CPUs listed in `spec.cpu.ovsDpdk`, the Node Tuning Operator applies configuration across several layers, including the following:
+
+* Adds the CPUs to the kubelet `reservedSystemCPUs` set together with `spec.cpu.reserved`.
+* Adds the CPUs to TuneD `isolated_cores` together with `spec.cpu.isolated`.
+* Includes the CPUs in kernel boot parameters such as `isolcpus`, `nohz_full`, and `rcu_nocbs`.
+* Excludes the CPUs from `systemd.cpu_affinity`.
+* Updates `IRQBALANCE_BANNED_CPUS` so that hardware IRQs are not balanced onto those CPUs.
+* Creates and configures `ovsdpdk.slice` under `ovs.slice/ovs-vswitchd.service`, including exclusive CPU assignment for OVS-DPDK.
+
+== Prerequisites for isolation
+
+Workload partitioning (`CPUPartitioningAllNodes`) or the kubelet CPU Manager `strict-cpu-reservation` policy option is required. If neither is enabled, the Node Tuning Operator marks the performance profile as `Degraded` with the reason `OvsDpdkCPUsPrerequisiteNotMet` and does not complete the configuration.
+
+Without one of those prerequisites, Burstable and BestEffort pods can still be scheduled on the OVS-DPDK CPUs and break isolation.
+
+[NOTE]
+====
+You must choose NUMA-aligned CPUs for your OVS-DPDK NICs. The Operator does not automatically assign CPUs based on NIC locality.
+====
