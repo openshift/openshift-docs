@@ -1,0 +1,196 @@
+// Module included in the following assemblies:
+//
+// * ai_workloads/kueue/kueue-dra-integrating-dynamic-resource-allocation.adoc
+
+:_mod-docs-content-type: PROCEDURE
+[id="kueue-dra-extended-resources_{context}"]
+= Configuring the extended resources path
+
+[role="_abstract"]
+You can configure {kueue-name} to manage quota for workloads that request GPUs by using the standard `resources.requests` syntax, for example, `nvidia.com/gpu: "1"`.
+
+When a `DeviceClass` includes the `spec.extendedResourceName` field, the Kubernetes scheduler automatically generates `ResourceClaim` objects. This path does not require `deviceClassMappings` configuration because {kueue-name} auto-discovers the mapping by indexing `DeviceClass` objects.
+
+[NOTE]
+====
+The {kueue-name} operator automatically enables the required {kueue-name} feature gates when it detects the `DRAExtendedResource` Kubernetes feature gate on the cluster. No manual {kueue-name} feature gate configuration is required.
+====
+
+.Prerequisites
+
+* You have cluster administrator permissions.
+* You have installed {kueue-name} by using the {kueue-op}.
+* You have created a `Kueue` CR.
+* A DRA driver is installed and has published `ResourceSlice` objects.
+* You have enabled the `DRAExtendedResource` Kubernetes feature gate by adding the `CustomNoUpgrade` feature set to the `FeatureGate` CR named `cluster`, as shown in the following example:
++
+[source,yaml]
+----
+apiVersion: config.openshift.io/v1
+kind: FeatureGate
+metadata:
+  name: cluster
+spec:
+  featureSet: CustomNoUpgrade
+  customNoUpgrade:
+    enabled:
+    - DRAExtendedResource
+----
++
+[WARNING]
+====
+Enabling the `CustomNoUpgrade` feature set on your cluster cannot be undone and prevents minor version updates. This feature set is not supported on production clusters. 
+====
+
+.Procedure
+
+. Verify that the `DeviceClass` has `spec.extendedResourceName` set by running the following command:
++
+[source,terminal]
+----
+$ oc get deviceclass gpu.nvidia.com -o jsonpath='{.spec.extendedResourceName}'
+----
++
+.Example output
+[source,terminal]
+----
+nvidia.com/gpu
+----
++
+If the command does not return a value, add the `extendedResourceName` field by running the following command:
++
+[source,terminal]
+----
+$ oc patch deviceclass gpu.nvidia.com --type=merge -p '{"spec":{"extendedResourceName":"nvidia.com/gpu"}}'
+----
+
+. Create a `ClusterQueue` that includes the GPU resource in `coveredResources`. Create a file called `er-queues.yaml` that contains the following content:
++
+.Example quota configuration for extended resources
+[source,yaml]
+----
+apiVersion: kueue.x-k8s.io/v1beta2
+kind: ResourceFlavor
+metadata:
+  name: "default-flavor"
+---
+apiVersion: kueue.x-k8s.io/v1beta2
+kind: ClusterQueue
+metadata:
+  name: "cluster-queue"
+spec:
+  namespaceSelector: {}
+  resourceGroups:
+  - coveredResources: ["cpu", "memory", "nvidia.com/gpu"]
+    flavors:
+    - name: "default-flavor"
+      resources:
+      - name: "cpu"
+        nominalQuota: 40
+      - name: "memory"
+        nominalQuota: 200Gi
+      - name: "nvidia.com/gpu"
+        nominalQuota: 8
+---
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: team-a
+  labels:
+    kueue.openshift.io/managed: "true"
+---
+apiVersion: kueue.x-k8s.io/v1beta2
+kind: LocalQueue
+metadata:
+  namespace: "team-a"
+  name: "user-queue"
+spec:
+  clusterQueue: "cluster-queue"
+----
+
+. Apply the quota configuration by running the following command:
++
+[source,terminal]
+----
+$ oc apply -f er-queues.yaml
+----
+
+. Create a workload that uses the standard resource request syntax. Create a file called `er-job.yaml` with the following content:
++
+.Example workload using extended resources
+[source,yaml]
+----
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: er-test-job
+  namespace: team-a
+  labels:
+    kueue.x-k8s.io/queue-name: user-queue
+spec:
+  template:
+    spec:
+      containers:
+      - name: worker
+        image: registry.k8s.io/e2e-test-images/agnhost:2.53
+        args: ["pause"]
+        resources:
+          requests:
+            cpu: "1"
+            memory: "200Mi"
+            nvidia.com/gpu: "1"
+          limits:
+            nvidia.com/gpu: "1"
+      restartPolicy: Never
+----
+
+`user-queue`:: Identifies the local queue to submit the job to.
+
+`"1"`:: Requests a GPU by using the standard extended resource syntax. No `ResourceClaimTemplate` or `resourceClaims` section is needed. The `DeviceClass` with `spec.extendedResourceName` causes the Kubernetes scheduler to generate a `ResourceClaim` automatically.
+
+. Create the workload by running the following command:
++
+[source,terminal]
+----
+$ oc apply -f er-job.yaml
+----
+
+.Verification
+
+. Verify that a workload has been created and admitted by running the following command:
++
+[source,terminal]
+----
+$ oc -n team-a get workloads
+----
++
+.Example output
+[source,terminal]
+----
+NAME                          QUEUE        RESERVED IN     ADMITTED   AGE
+job-er-test-job-4m2x-d3f4g   user-queue   cluster-queue   True       10s
+----
+
+. Verify that a `ResourceClaim` was automatically created by running the following command:
++
+[source,terminal]
+----
+$ oc -n team-a get resourceclaims
+----
++
+.Example output
+[source,terminal]
+----
+NAME                                         STATE                AGE
+er-test-job-jj7vz-extended-resources-bggzk   allocated,reserved   24s
+----
++
+The Kubernetes scheduler creates a `ResourceClaim` for each pod that requests an extended resource backed by a `DeviceClass`.
++
+If the workload is not admitted, verify the following:
++
+* The `DRAExtendedResource` Kubernetes feature gate is enabled on the cluster.
+* The `DeviceClass` has `spec.extendedResourceName` set.
+* The `ClusterQueue` includes the extended resource name in `coveredResources`.
+* The `ClusterQueue` has sufficient quota available.
+
