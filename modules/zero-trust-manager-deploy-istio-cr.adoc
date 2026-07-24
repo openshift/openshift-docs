@@ -1,0 +1,261 @@
+// Module included in the following assemblies:
+//
+// * security/zero_trust_workload_identity_manager/zero-trust-manager-mesh-integration-multi-cluster.adoc.
+
+:_mod-docs-content-type: PROCEDURE
+[id="zero-trust-manager-deploy-istio-cr_{context}"]
+= Deploying the Istio custom resource with the federation configuration
+
+[role="_abstract"]
+Deploy the Istio custom resource on Cluster A and Cluster B with {spire-full} (SPIRE) federation and multi-cluster {SMProductName} settings. This configures Istiod to obtain workload certificates from SPIRE and to trust both clusters' SPIFFE bundles for cross-cluster mTLS.
+
+The Istio CR must include the following fields and values:
+
+* A `meshConfig.trustDomain` value that matches the SPIRE trust domain.
+* A `meshConfig.caCertificates` value with bundle URLs for both clusters. This handles cross-trust-domain validation.
+* A `WORKLOAD_IDENTITY_SOCKET_FILE` value for SPIRE SDS integration.
+* A `jwksResolverExtraRootCA` value for OIDC validation.
+* A multi-cluster configuration that includes `meshID`, `clusterName`, and `network`.
+* A SPIRE injection template configuration.
+
+[NOTE]
+====
+Do not use `meshConfig.trustDomainAliases`. Use `meshConfig.caCertificates` with `spiffeBundleUrl` instead.
+====
+
+.Prerequisites
+
+* You have completed deploying the Istio Container Network Interface (CNI) on both clusters. For more information, see "Deploying {SMProductName} CNI on both clusters".
+* The environment variables from the "Preparing the environment for multi-cluster {spire-full} federation" and "Deploying {spire-full} with federation on both clusters" procedures are set.
+
+.Procedure
+
+. Extract the OpenID Connect (OIDC) certificate on Cluster A by running the following command:
++
+[source,terminal]
+----
+$ export EXTRA_ROOT_CA_A="$(oc get secret oidc-serving-cert \
+  --kubeconfig="${CLUSTER_A_KUBECONFIG}" -n ${ZTWIM_NS} -o json | \
+  jq -r '.data."tls.crt"' | base64 -d | sed 's/^/        /')"
+----
+
+. Extract the OpenID Connect (OIDC) certificate on Cluster B by running the following command:
++
+[source,terminal]
+----
+$ export EXTRA_ROOT_CA_B="$(oc get secret oidc-serving-cert \
+  --kubeconfig="${CLUSTER_B_KUBECONFIG}" -n ${ZTWIM_NS} -o json | \
+  jq -r '.data."tls.crt"' | base64 -d | sed 's/^/        /')"
+----
+
+. Get the bundle endpoint URL for Cluster A by running the following command:
++
+[source,terminal]
+----
+$ export BUNDLE_URL_A="${FEDERATION_ENDPOINT_A}"
+----
+
+.. Get the bundle endpoint URL for Cluster B by running the following command:
++
+[source,terminal]
+----
+$ export BUNDLE_URL_B="${FEDERATION_ENDPOINT_B}"
+----
+
+. Create the `Istio` custom resource (CR) on Cluster A by running the following command:
++
+[source,terminal]
+----
+$ oc new-project "${OSSM_NS}" --kubeconfig="${CLUSTER_A_KUBECONFIG}" 2>/dev/null || true
+----
+
+. Apply the `Istio` CR on Cluster A by running the following command:
+
+.. Create a YAML file that defines the `Istio` CR on Cluster A:
++
+[source,yaml]
+----
+apiVersion: sailoperator.io/v1
+kind: Istio
+metadata:
+  name: default
+spec:
+  namespace: istio-system
+  updateStrategy:
+    type: InPlace
+  values:
+    meshConfig:
+      trustDomain: ${CLUSTER_A_TRUST_DOMAIN}
+      defaultConfig:
+        proxyMetadata:
+          WORKLOAD_IDENTITY_SOCKET_FILE: "spire-agent.sock"
+      caCertificates:
+        - spiffeBundleUrl: ${BUNDLE_URL_A}
+          trustDomains:
+            - ${CLUSTER_A_TRUST_DOMAIN}
+        - spiffeBundleUrl: ${BUNDLE_URL_B}
+          trustDomains:
+            - ${CLUSTER_B_TRUST_DOMAIN}
+    global:
+      meshID: mesh1
+      multiCluster:
+        clusterName: ${CLUSTER_A}
+      network: ${NETWORK_A}
+    pilot:
+      jwksResolverExtraRootCA: |
+        ${EXTRA_ROOT_CA_A}
+      env:
+        ENABLE_CA_SERVER: "true"
+    sidecarInjectorWebhook:
+      templates:
+        spire: |
+          spec:
+            initContainers:
+            - name: istio-proxy
+              volumeMounts:
+              - name: workload-socket
+                mountPath: /run/secrets/workload-spiffe-uds
+                readOnly: true
+            volumes:
+              - name: workload-socket
+                csi:
+                  driver: "csi.spiffe.io"
+                  readOnly: true
+        spireGw: |
+          spec:
+            containers:
+            - name: istio-proxy
+              volumeMounts:
+              - name: workload-socket
+                mountPath: /run/secrets/workload-spiffe-uds
+                readOnly: true
+            volumes:
+              - name: workload-socket
+                csi:
+                  driver: "csi.spiffe.io"
+                  readOnly: true
+----
+
+.. Apply the YAML file on Cluster A by running the following command:
++
+[source,terminal]
+----
+$ oc apply --kubeconfig="${CLUSTER_A_KUBECONFIG}" -f <filename>
+----
+
+. Create the `Istio` CR on Cluster B by running the following command:
++
+[source,terminal]
+----
+$ oc new-project "${OSSM_NS}" --kubeconfig="${CLUSTER_B_KUBECONFIG}" 2>/dev/null || true
+----
+
+. Apply the `Istio` CR on Cluster B by running the following command:
+
+.. Create a YAML file that defines the `Istio` CR on Cluster B:
++
+[source,yaml]
+----
+apiVersion: sailoperator.io/v1
+kind: Istio
+metadata:
+  name: default
+spec:
+  namespace: istio-system
+  updateStrategy:
+    type: InPlace
+  values:
+    meshConfig:
+      trustDomain: ${CLUSTER_B_TRUST_DOMAIN}
+      defaultConfig:
+        proxyMetadata:
+          WORKLOAD_IDENTITY_SOCKET_FILE: "spire-agent.sock"
+      caCertificates:
+        - spiffeBundleUrl: ${BUNDLE_URL_B}
+          trustDomains:
+            - ${CLUSTER_B_TRUST_DOMAIN}
+        - spiffeBundleUrl: ${BUNDLE_URL_A}
+          trustDomains:
+            - ${CLUSTER_A_TRUST_DOMAIN}
+    global:
+      meshID: mesh1
+      multiCluster:
+        clusterName: ${CLUSTER_B}
+      network: ${NETWORK_B}
+    pilot:
+      jwksResolverExtraRootCA: |
+        ${EXTRA_ROOT_CA_B}
+      env:
+        ENABLE_CA_SERVER: "true"
+    sidecarInjectorWebhook:
+      templates:
+        spire: |
+          spec:
+            initContainers:
+            - name: istio-proxy
+              volumeMounts:
+              - name: workload-socket
+                mountPath: /run/secrets/workload-spiffe-uds
+                readOnly: true
+            volumes:
+              - name: workload-socket
+                csi:
+                  driver: "csi.spiffe.io"
+                  readOnly: true
+        spireGw: |
+          spec:
+            containers:
+            - name: istio-proxy
+              volumeMounts:
+              - name: workload-socket
+                mountPath: /run/secrets/workload-spiffe-uds
+                readOnly: true
+            volumes:
+              - name: workload-socket
+                csi:
+                  driver: "csi.spiffe.io"
+                  readOnly: true
+----
+
+.. Apply the YAML file on Cluster B by running the following command:
++
+[source,terminal]
+----
+$ oc apply --kubeconfig="${CLUSTER_B_KUBECONFIG}" -f <filename>
+----
+
+. Wait for the `istiod` deployment to be created on Cluster A by running the following command:
++
+[source,terminal,subs="+quotes,verbatim"]
+----
+$ until oc get deployment istiod --kubeconfig="${CLUSTER_A_KUBECONFIG}" -n "${OSSM_NS}" &> /dev/null; do
+  sleep 3
+done
+----
+
+. Wait for `Istiod` to become ready on Cluster A by running the following command:
++
+[source,terminal,subs="+quotes,verbatim"]
+----
+$ oc wait --for=condition=Available deployment/istiod \
+  --kubeconfig="${CLUSTER_A_KUBECONFIG}" -n "${OSSM_NS}" --timeout=300s
+----
+
+. Wait for the `istiod` deployment to be created on Cluster B by running the following command:
++
+[source,terminal,subs="+quotes,verbatim"]
+----
+$ until oc get deployment istiod --kubeconfig="${CLUSTER_B_KUBECONFIG}" -n "${OSSM_NS}" &> /dev/null; do
+  sleep 3
+done
+----
+
+. Wait for `Istiod` to become ready on Cluster B by running the following command:
++
+[source,terminal,subs="+quotes,verbatim"]
+----
+$ oc wait --for=condition=Available deployment/istiod \
+  --kubeconfig="${CLUSTER_B_KUBECONFIG}" -n "${OSSM_NS}" --timeout=300s
+----
+
+
