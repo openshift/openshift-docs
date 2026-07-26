@@ -1,0 +1,236 @@
+:_mod-docs-content-type: REFERENCE
+
+[id="http-output-format_{context}"]
+= HTTP output format and payload structure
+
+[role="_abstract"]
+When you forward logs to an HTTP endpoint, the log collector sends OpenShift log records as JSON payloads in POST requests. Understanding this format helps you configure receiving HTTP services and implement custom log ingestion endpoints.
+
+The log collector sends logs to HTTP endpoints using JSON-formatted POST requests. Each request can contain one or more log records, depending on the batching configuration.
+
+== Request structure
+
+HTTP requests from the log collector have the following structure:
+
+.HTTP headers
+[cols="2,3"]
+|====
+|Header |Value
+
+|`Content-Type`
+|`application/json`
+
+|`User-Agent`
+|`Vector/<version>` (the collector implementation)
+
+|Custom headers
+|Optional - configurable in the `ClusterLogForwarder` output specification
+|====
+
+.Request body formats
+
+The log collector supports two JSON payload formats:
+
+Single record per request:: Each HTTP POST request contains one log record as a JSON object.
+
+Batched records per request:: Each HTTP POST request contains an array of log records as a JSON array.
+
+You configure batching behavior in the `ClusterLogForwarder` output specification.
+
+== Single record format
+
+When configured for single-record requests, the log collector sends each log record as a complete JSON object:
+
+.Example: Application log
+[source,json]
+----
+{
+  "kubernetes": {
+    "namespace_name": "my-app",
+    "pod_name": "web-1",
+    "container_name": "nginx",
+    "host": "ip-10-0-1-42.ec2.internal",
+    "labels": {
+      "app": "web",
+      "version": "1.0"
+    }
+  },
+  "message": "Error connecting to database",
+  "level": "error",
+  "@timestamp": "2024-01-15T10:30:00.000Z",
+  "hostname": "ip-10-0-1-42.ec2.internal"
+}
+----
+
+The HTTP endpoint receives this exact JSON object as the POST request body.
+
+== Batched records format
+
+When configured for batching, the log collector sends multiple log records as a JSON array:
+
+.Example: Batched application logs
+[source,json]
+----
+[
+  {
+    "kubernetes": {
+      "namespace_name": "my-app",
+      "pod_name": "web-1",
+      "container_name": "nginx"
+    },
+    "message": "Request processed",
+    "level": "info",
+    "@timestamp": "2024-01-15T10:30:00.000Z",
+    "hostname": "ip-10-0-1-42.ec2.internal"
+  },
+  {
+    "kubernetes": {
+      "namespace_name": "my-app",
+      "pod_name": "web-2",
+      "container_name": "nginx"
+    },
+    "message": "Error connecting to database",
+    "level": "error",
+    "@timestamp": "2024-01-15T10:30:01.000Z",
+    "hostname": "ip-10-0-1-42.ec2.internal"
+  }
+]
+----
+
+Batching reduces HTTP overhead for high-volume log forwarding. Configure batch size and timeout limits to balance throughput and latency.
+
+== Field structure
+
+The log collector preserves the complete OpenShift log record structure without transformation. All fields from the original log record appear in the JSON payload:
+
+Common fields for all log types:
+
+`@timestamp`:: ISO 8601 timestamp when the log was created
+
+`hostname`:: Kubernetes node name where the log originated
+
+`message`:: Log message content (plain text or nested JSON)
+
+`level`:: Log severity level (for example, `info`, `error`, `debug`)
+
+Fields for application and infrastructure container logs:
+
+`kubernetes`:: Object containing Kubernetes metadata:
++
+* `namespace_name`: Kubernetes namespace
+* `pod_name`: Pod name
+* `container_name`: Container name
+* `host`: Node hostname
+* `labels`: Pod labels as key-value pairs
+* `annotations`: Pod annotations as key-value pairs
+
+Fields for infrastructure journal logs:
+
+`systemd`:: Object containing systemd journal metadata:
++
+* `t.SYSTEMD_UNIT`: Systemd unit name (for example, `kubelet.service`)
+* `t.SYSLOG_IDENTIFIER`: Process identifier
+
+`SYSLOG_IDENTIFIER`:: Process name (for example, `kubelet`, `crio`)
+
+Fields for audit logs:
+
+`k8s_audit_level`:: Kubernetes API audit level
+
+`openshift_audit_level`:: OpenShift API audit level
+
+`auditID`:: Unique audit event identifier
+
+== Authentication and authorization
+
+The HTTP output supports the following authentication methods:
+
+Bearer token:: Include an `Authorization: Bearer <token>` header in all requests.
+
+Basic authentication:: Include an `Authorization: Basic <base64-credentials>` header in all requests.
+
+TLS client certificates:: Mutual TLS authentication using client certificates.
+
+Custom headers:: Static or template-based custom headers for API key authentication.
+
+Configure authentication credentials using Secrets referenced in the `ClusterLogForwarder` output specification.
+
+== Error handling
+
+The HTTP endpoint must return specific status codes for the log collector to handle delivery correctly:
+
+[cols="1,2,3"]
+|====
+|Status code |Meaning |Collector behavior
+
+|`200-299`
+|Success
+|Log records marked as delivered, removed from retry queue
+
+|`400`
+|Bad Request
+|Log records discarded (not retried) - indicates malformed payload
+
+|`401`, `403`
+|Unauthorized/Forbidden
+|Collector retries with exponential backoff - check credentials
+
+|`429`
+|Too Many Requests
+|Collector backs off and retries - rate limiting active
+
+|`500-599`
+|Server Error
+|Collector retries with exponential backoff - temporary failure
+
+|Connection refused
+|Network/endpoint unavailable
+|Collector retries with exponential backoff
+|====
+
+Configure retry limits and timeout values in the `ClusterLogForwarder` output specification to control delivery behavior.
+
+.Example: Infrastructure journal log over HTTP
+The following infrastructure log from systemd journal:
+[source,json]
+----
+{
+  "message": "Started container",
+  "systemd": {
+    "t": {
+      "SYSTEMD_UNIT": "kubelet.service"
+    }
+  },
+  "SYSLOG_IDENTIFIER": "kubelet",
+  "hostname": "ip-10-0-1-42.ec2.internal",
+  "@timestamp": "2024-01-15T10:30:00.000Z"
+}
+----
+
+The log collector sends this as an HTTP POST request:
+[source,http]
+----
+POST /logs HTTP/1.1
+Host: logs.example.com
+Content-Type: application/json
+Authorization: Bearer eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9...
+User-Agent: Vector/0.28.0
+
+{
+  "message": "Started container",
+  "systemd": {
+    "t": {
+      "SYSTEMD_UNIT": "kubelet.service"
+    }
+  },
+  "SYSLOG_IDENTIFIER": "kubelet",
+  "hostname": "ip-10-0-1-42.ec2.internal",
+  "@timestamp": "2024-01-15T10:30:00.000Z"
+}
+----
+
+[role="_additional-resources"]
+.Additional resources
+
+* xref:../configuring/forwarding-to-third-party-systems.adoc#forwarding-to-third-party-systems[Forwarding to third-party systems]
+* link:https://vector.dev/docs/reference/configuration/sinks/http/[Vector HTTP sink documentation]
