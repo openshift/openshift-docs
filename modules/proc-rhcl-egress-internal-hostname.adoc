@@ -1,0 +1,119 @@
+// Module included in the following assemblies:
+//
+// * deployment/rhcl-egress-dns-routing.adoc
+
+:_mod-docs-content-type: PROCEDURE
+[id="proc-rhcl-egress-internal-hostname_{context}"]
+= Routing egress traffic using an internal hostname
+
+[role="_abstract"]
+You can route egress traffic by configuring the application to use the cluster-internal service name of the egress gateway as the hostname. The gateway rewrites the host header and routes the request to the real external service with TLS origination. This is the recommended approach because it requires no DNS configuration and has the most straightforward TLS model.
+
+.How it works
+
+When a workload sends a request to the internal service name:
+
+. Kubernetes DNS resolves the internal service name to the egress gateway `ClusterIP`.
+. The egress gateway receives the plain HTTP request.
+. The `HTTPRoute` matches the request and the `URLRewrite` filter sets the `Host` header to the real external hostname.
+. The `DestinationRule` initiates TLS to the external service.
+. The external service receives the request over HTTPS and responds.
+
+No additional DNS configuration is needed. When {service-mesh} provisions the egress gateway, it creates a Kubernetes service named `kuadrant-egressgateway-istio` in the namespace of the gateway. Any pod can resolve this service automatically.
+
+.Prerequisites
+
+* An egress gateway is deployed with a `ServiceEntry`, `DestinationRule`, and `Gateway` resource.
+* The {oc-first} is installed.
+
+.Procedure
+
+. Optional: If a friendlier hostname is preferred, create an `ExternalName` service that aliases the gateway service:
++
+[source,terminal,subs="+quotes"]
+----
+$ oc apply -f - <<EOF
+apiVersion: v1
+kind: Service
+metadata:
+  name: httpbin-egress
+  namespace: _<application_namespace>_
+spec:
+  type: ExternalName
+  externalName: kuadrant-egressgateway-istio.gateway-system.svc.cluster.local
+EOF
+----
++
+Replace `_<application_namespace>_` with the namespace where your application runs. Applications in that namespace can then use `http://httpbin-egress/get`. This creates a DNS alias within the cluster, not a transparent override of the real external hostname. The application must still be configured to use this alias instead of the original hostname.
+
+. Create the `HTTPRoute` that matches the internal service name and rewrites the `Host` header to the real external hostname. This replaces the `HTTPRoute` deployed during egress gateway setup:
++
+[source,terminal]
+----
+$ oc apply -f - <<EOF
+apiVersion: gateway.networking.k8s.io/v1
+kind: HTTPRoute
+metadata:
+  name: httpbin-internal-hostname
+  namespace: gateway-system
+spec:
+  parentRefs:
+    - name: kuadrant-egressgateway
+      namespace: gateway-system
+  hostnames:
+    - kuadrant-egressgateway-istio.gateway-system.svc.cluster.local
+  rules:
+    - filters:
+        - type: URLRewrite
+          urlRewrite:
+            hostname: httpbin.org
+      backendRefs:
+        - group: networking.istio.io
+          kind: Hostname
+          name: httpbin.org
+          port: 443
+EOF
+----
++
+The `URLRewrite` filter changes the `Host` header from the internal hostname to `httpbin.org`, and the `Hostname` backend routes the request to the real external service.
++
+[NOTE]
+====
+The `Gateway` listener does not restrict by hostname, so it accepts traffic on any host, including the internal service name.
+====
+
+.TLS considerations
+
+This approach has the most straightforward TLS model:
+
+* *Application to gateway:* Plain HTTP. The application sends unencrypted HTTP to the egress gateway `ClusterIP`. Traffic stays within the cluster network.
+* *Gateway to external service:* TLS origination. The `DestinationRule` establishes a TLS connection to the external service with the appropriate SNI.
+
+The application does not need to handle TLS certificates for the external service.
+
+.Verification
+
+* Send a request from a pod using the internal service name:
++
+[source,terminal]
+----
+$ oc exec test-client -n egress-test -- \
+    curl -s http://kuadrant-egressgateway-istio.gateway-system.svc.cluster.local/get
+----
++
+The response confirms the flow works end-to-end:
++
+[source,json]
+----
+{
+  "headers": {
+    "Host": "httpbin.org",
+    "X-Envoy-Original-Host": "kuadrant-egressgateway-istio.gateway-system.svc.cluster.local"
+  },
+  "url": "https://httpbin.org/get"
+}
+----
++
+* `Host: httpbin.org` confirms the `URLRewrite` correctly rewrote the host header.
+* `X-Envoy-Original-Host` preserves the original internal hostname.
+* `url: https://httpbin.org/get` confirms TLS origination occurred.

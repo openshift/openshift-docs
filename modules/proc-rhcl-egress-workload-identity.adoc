@@ -1,0 +1,121 @@
+// Module included in the following assemblies:
+//
+// * deployment/rhcl-egress-gateway.adoc
+
+:_mod-docs-content-type: PROCEDURE
+[id="proc-rhcl-egress-workload-identity_{context}"]
+= Authenticating workloads with TokenReview
+
+[role="_abstract"]
+In egress scenarios, the clients are internal workloads. You can identify which workload is making a request by using Kubernetes TokenReview via `AuthPolicy`. Every pod has a service account token mounted automatically, so no API keys need to be distributed.
+
+The workload sends its service account token in the `Authorization` header. `AuthPolicy` validates the token and exposes the identity of the workload, including namespace and service account name, for use by other policies. Requests without a valid service account token are rejected with a `401` status code.
+
+.Prerequisites
+
+* An egress gateway is deployed and operational.
+* A test client pod is available in the `egress-test` namespace.
+
+.Procedure
+
+. Export the egress gateway address:
++
+[source,terminal]
+----
+$ export EGRESS_IP=$(oc get gtw kuadrant-egressgateway -n gateway-system \
+    -o jsonpath='{.status.addresses[0].value}')
+----
+
+. Apply an `AuthPolicy` to authenticate workloads and restrict egress access to specific namespaces:
++
+[source,terminal]
+----
+$ oc apply -f - <<EOF
+apiVersion: kuadrant.io/v1
+kind: AuthPolicy
+metadata:
+  name: workload-identity
+  namespace: gateway-system
+spec:
+  targetRef:
+    group: gateway.networking.k8s.io
+    kind: HTTPRoute
+    name: httpbin-external
+  rules:
+    authentication:
+      "workload-sa":
+        kubernetesTokenReview:
+          audiences:
+            - "https://kubernetes.default.svc.cluster.local"
+    authorization:
+      "allowed-namespaces":
+        patternMatching:
+          patterns:
+            - predicate: auth.identity.user.username.startsWith('system:serviceaccount:egress-test:')
+    response:
+      success:
+        filters:
+          "identity":
+            json:
+              properties:
+                username:
+                  selector: auth.identity.user.username
+EOF
+----
++
+* `authentication.workload-sa` validates the service account token via TokenReview. Unauthenticated requests are rejected with a `401` status code.
+* `authorization.allowed-namespaces` restricts access to workloads from the `egress-test` namespace. Workloads from other namespaces are rejected with a `403` status code. Add additional patterns with `||` to allow more namespaces.
+* `response.success.filters.identity` exposes the resolved identity as dynamic metadata. This is required for policies that reference `auth.identity.*` expressions, such as per-workload rate limiting.
+
+.Verification
+
+. Verify that an authorized workload receives a `200` response:
++
+[source,terminal]
+----
+$ oc exec test-client -n egress-test -- sh -c '
+curl -s -o /dev/null -w "%{http_code}" \
+    -H "Host: httpbin.org" \
+    -H "Authorization: Bearer $(cat /var/run/secrets/kubernetes.io/serviceaccount/token)" \
+    http://'"${EGRESS_IP}"'/get
+'
+----
++
+Expected output: `200`
+
+. Verify that a request without a token is rejected:
++
+[source,terminal]
+----
+$ oc exec test-client -n egress-test -- \
+    curl -s -o /dev/null -w "%{http_code}" -H "Host: httpbin.org" http://${EGRESS_IP}/get
+----
++
+Expected output: `401`
+
+. Verify that a workload from an unauthorized namespace is rejected:
++
+[source,terminal]
+----
+$ oc run bad-client --image=curlimages/curl:latest -n default --restart=Never \
+    --command -- sleep infinity
+$ oc wait --for=condition=Ready pod/bad-client -n default --timeout=30s
+----
++
+[source,terminal]
+----
+$ oc exec bad-client -n default -- sh -c '
+curl -s -o /dev/null -w "%{http_code}" -H "Host: httpbin.org" \
+    -H "Authorization: Bearer $(cat /var/run/secrets/kubernetes.io/serviceaccount/token)" \
+    http://'"${EGRESS_IP}"'/get
+'
+----
++
+Expected output: `403`
+
+. Clean up the test pod:
++
+[source,terminal]
+----
+$ oc delete pod bad-client -n default
+----
