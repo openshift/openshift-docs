@@ -1,0 +1,109 @@
+// Module included in the following assemblies:
+//
+// * observability/otel/otel-collector/otel-collector-extensions.adoc
+
+:_mod-docs-content-type: REFERENCE
+[id="otel-extensions-k8sleaderelector-extension_{context}"]
+= Kubernetes Leader Elector Extension
+
+[role="_abstract"]
+The Kubernetes Leader Elector Extension enables high availability for OpenTelemetry Collector components that must run as singletons in a Kubernetes cluster. This extension uses Kubernetes Lease objects to elect a single active leader among multiple Collector replicas. All other replicas remain on standby and automatically promote to leader if the current leader becomes unavailable. This extension supports metrics and logs.
+
+:FeatureName: The Kubernetes Leader Elector Extension
+include::snippets/technology-preview.adoc[]
+:!FeatureName:
+
+Without leader election, deploying the following receivers with multiple replicas produces duplicate telemetry data, because each replica independently watches the Kubernetes API server for the same cluster-wide data:
+
+* Kubernetes Cluster Receiver
+* Kubernetes Objects Receiver
+* Kubernetes Events Receiver
+
+The Kubernetes Leader Elector Extension solves this problem by ensuring that only the elected leader actively collects data. When the leader fails, a standby replica automatically acquires the lease and takes over collection. The failover gap is bounded by the `lease_duration` setting, which defaults to `15s`.
+
+This extension is intended for Collector instances deployed in `Deployment` mode with multiple replicas. It is not needed for `DaemonSet` mode, where each pod collects node-local data, or for `Sidecar` mode, where each pod is scoped to a single application.
+
+NOTE: For the Prometheus Receiver, use the Target Allocator instead of the Kubernetes Leader Elector Extension. The Target Allocator distributes scrape targets across all Collector replicas, keeping every replica active. In contrast, leader election leaves all replicas except the leader idle.
+
+Receivers that support the Kubernetes Leader Elector Extension integrate with it by using the `k8s_leader_elector` configuration field, which points to the extension's component ID in the Collector configuration.
+
+The following `OpenTelemetryCollector` custom resource configures the Kubernetes Leader Elector Extension with the Kubernetes Cluster Receiver and the Kubernetes Objects Receiver:
+
+[source,yaml]
+----
+# ...
+  config:
+    extensions:
+      k8s_leader_elector:
+        auth_type: serviceAccount
+        lease_name: otel-collector-leader
+        lease_namespace: <namespace>
+        lease_duration: 15s
+        renew_deadline: 10s
+        retry_period: 2s
+
+    receivers:
+      k8s_cluster:
+        k8s_leader_elector: k8s_leader_elector
+        collection_interval: 30s
+      k8sobjects:
+        k8s_leader_elector: k8s_leader_elector
+        objects:
+          - name: pods
+            mode: pull
+          - name: events
+            mode: watch
+      k8s_events:
+        k8s_leader_elector: k8s_leader_elector
+
+    processors:
+      batch: {}
+
+    exporters:
+      otlp:
+        endpoint: "<endpoint>"
+
+    service:
+      extensions: [k8s_leader_elector]
+      pipelines:
+        metrics:
+          receivers: [k8s_cluster]
+          processors: [batch]
+          exporters: [otlp]
+        logs:
+          receivers: [k8sobjects, k8s_events]
+          processors: [batch]
+          exporters: [otlp]
+# ...
+----
+where:
+
+`auth_type`:: The authentication method for accessing the Kubernetes API. The supported values are `serviceAccount` and `kubeConfig`. The default is `serviceAccount`.
+`lease_name`:: Required. The name of the Kubernetes Lease object that is used for leader election.
+`lease_namespace`:: Required. The namespace in which the Kubernetes Lease object is created.
+`lease_duration`:: The duration that a lease is held before it expires if not renewed. The default is `15s`.
+`renew_deadline`:: The deadline for the leader to renew the lease before it expires. This value must be less than the `lease_duration` value. The default is `10s`.
+`retry_period`:: How often non-leader replicas attempt to acquire the lease. The default is `2s`.
+`k8s_leader_elector`:: The reference to the Kubernetes Leader Elector Extension component ID. When this field is set on a receiver, the receiver is activated only on the Collector replica that is the current leader.
+
+The Kubernetes Leader Elector Extension requires additional RBAC permissions to manage Lease objects. The following Role must be granted to the Collector's ServiceAccount:
+
+[source,yaml]
+----
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: otel-leader-election
+  namespace: <namespace>
+rules:
+- apiGroups: ["coordination.k8s.io"]
+  resources: ["leases"]
+  verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
+----
+
+To verify which Collector replica currently holds the lease, run the following command:
+
+[source,terminal]
+----
+$ oc get lease <lease_name> -n <namespace> -o jsonpath='{.spec.holderIdentity}'
+----
