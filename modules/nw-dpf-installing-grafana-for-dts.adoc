@@ -1,0 +1,455 @@
+// Module included in the following assemblies:
+//
+// * networking/networking_operators/dpf_operator/dpf-validation-telemetry.adoc
+
+:_mod-docs-content-type: PROCEDURE
+
+[id="nw-dpf-installing-grafana-for-dts_{context}"]
+= Installing Grafana for DTS metrics visualization
+
+You can install Grafana to provide enhanced visualization capabilities for DPU telemetry metrics with advanced filtering and dashboard customization options.
+
+.Prerequisites
+
+* User-workload monitoring is enabled.
+* The DTS ServiceMonitor is configured and collecting metrics.
+* Cluster-admin privileges on the management cluster.
+
+.Procedure
+
+. Install the Grafana Operator using Helm:
++
+[source,terminal]
+----
+$ helm upgrade -i grafana-operator oci://ghcr.io/grafana/helm-charts/grafana-operator \
+    --version 5.24.0 \
+    --namespace grafana-operator \
+    --create-namespace
+----
++
+.Example output
+[source,terminal]
+----
+Pulled: ghcr.io/grafana/helm-charts/grafana-operator:5.24.0
+Digest: sha256:4f69cdaecfed2cc61d4e5f4a8e7142795e9b00997e4bcbd37a8c154a225a2f1f
+Release "grafana-operator" has been upgraded. Happy Helming!
+NAME: grafana-operator
+LAST DEPLOYED: Tue Aug  4 08:51:36 2026
+NAMESPACE: grafana-operator
+STATUS: deployed
+REVISION: 2
+TEST SUITE: None
+----
+
+. Create Grafana RBAC for Prometheus access:
++
+Create a ServiceAccount with a long-lived token and bind it to the `cluster-monitoring-view` ClusterRole so Grafana can query the platform Prometheus:
++
+[source,yaml]
+----
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: grafana-prometheus-reader
+  namespace: dpf-operator-system
+---
+apiVersion: v1
+kind: Secret
+metadata:
+  name: grafana-prometheus-reader-token
+  namespace: dpf-operator-system
+  annotations:
+    kubernetes.io/service-account.name: grafana-prometheus-reader
+type: kubernetes.io/service-account-token
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: grafana-prometheus-reader-cluster-monitoring
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: cluster-monitoring-view
+subjects:
+  - kind: ServiceAccount
+    name: grafana-prometheus-reader
+    namespace: dpf-operator-system
+----
++
+Apply the YAML:
++
+[source,terminal]
+----
+$ oc apply -f grafana-rbac.yaml
+----
+
+. Deploy the Grafana instance with critical control-plane scheduling:
++
+[source,yaml]
+----
+apiVersion: grafana.integreatly.org/v1beta1
+kind: Grafana
+metadata:
+  name: dpf-grafana
+  namespace: dpf-operator-system
+  labels:
+    dashboards: "dpf-grafana"
+spec:
+  route:
+    spec:
+      port:
+        targetPort: grafana
+      tls:
+        termination: edge
+  config:
+    log:
+      mode: "console"
+      level: "info"
+    auth.anonymous:
+      enabled: "true"
+      org_role: "Viewer"
+    security:
+      admin_user: "admin"
+      admin_password: "admin"
+  deployment:
+    spec:
+      template:
+        spec:
+          nodeSelector:
+            node-role.kubernetes.io/control-plane: ""
+          tolerations:
+          - key: node-role.kubernetes.io/master
+            operator: Exists
+            effect: NoSchedule
+          - key: node-role.kubernetes.io/control-plane
+            operator: Exists
+            effect: NoSchedule
+----
++
+Apply the YAML:
++
+[source,terminal]
+----
+$ oc apply -f grafana-cr.yaml
+----
++
+[WARNING]
+====
+The default credentials (`admin`/`admin`) are suitable for lab environments only. Change the `admin_password` for non-lab deployments.
+====
+
+. Configure the Prometheus datasource:
++
+[source,yaml]
+----
+apiVersion: grafana.integreatly.org/v1beta1
+kind: GrafanaDatasource
+metadata:
+  name: prometheus
+  namespace: dpf-operator-system
+spec:
+  instanceSelector:
+    matchLabels:
+      dashboards: "dpf-grafana"
+  valuesFrom:
+    - targetPath: "secureJsonData.httpHeaderValue1"
+      valueFrom:
+        secretKeyRef:
+          name: grafana-prometheus-reader-token
+          key: token
+  datasource:
+    name: prometheus
+    type: prometheus
+    uid: prometheus
+    access: proxy
+    url: https://thanos-querier.openshift-monitoring.svc.cluster.local:9091
+    isDefault: true
+    jsonData:
+      tlsSkipVerify: true
+      httpHeaderName1: "Authorization"
+      timeInterval: "30s"
+    secureJsonData:
+      httpHeaderValue1: "Bearer ${token}"
+----
++
+Apply the YAML:
++
+[source,terminal]
+----
+$ oc apply -f grafana-datasource.yaml
+----
+
+. Deploy the complete DTS Grafana dashboard:
++
+The DTS Grafana dashboard provides comprehensive DPU hardware telemetry monitoring with per-DPU filtering capabilities. It includes PCIe status, throughput metrics, error monitoring, and NIC activity tracking:
++
+[source,yaml]
+----
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: dpf-dts-grafana-dashboard
+  namespace: dpf-operator-system
+  labels:
+    app.kubernetes.io/part-of: dpf
+data:
+  doca-dpu-telemetry-dts.json: |
+    {
+      "title": "DOCA DPU Telemetry (DTS)",
+      "uid": "doca-dpu-telemetry-dts",
+      "tags": ["dpf", "dpu", "dts", "telemetry"],
+      "timezone": "browser",
+      "schemaVersion": 39,
+      "editable": true,
+      "time": {"from": "now-1h", "to": "now"},
+      "refresh": "30s",
+      "templating": {
+        "list": [
+          {
+            "name": "source",
+            "label": "DPU (source)",
+            "type": "query",
+            "datasource": {"type": "prometheus", "uid": "prometheus"},
+            "query": "label_values(current_link_speed, source)",
+            "refresh": 2,
+            "includeAll": true,
+            "multi": true,
+            "current": {"text": "All", "value": "$__all"},
+            "sort": 1
+          }
+        ]
+      },
+      "panels": [
+        {
+          "type": "stat",
+          "title": "PCIe Link Speed (GT/s)",
+          "datasource": {"type": "prometheus", "uid": "prometheus"},
+          "gridPos": {"h": 4, "w": 6, "x": 0, "y": 0},
+          "fieldConfig": {"defaults": {"unit": "none"}, "overrides": []},
+          "options": {"reduceOptions": {"calcs": ["lastNotNull"]}, "colorMode": "value", "graphMode": "none"},
+          "targets": [
+            {"refId": "A", "datasource": {"type": "prometheus", "uid": "prometheus"},
+             "expr": "current_link_speed{source=~\"$source\"}", "legendFormat": "{{source}} {{hca}}"}
+          ]
+        },
+        {
+          "type": "stat",
+          "title": "PCIe Link Width (lanes)",
+          "datasource": {"type": "prometheus", "uid": "prometheus"},
+          "gridPos": {"h": 4, "w": 6, "x": 6, "y": 0},
+          "fieldConfig": {"defaults": {"unit": "none"}, "overrides": []},
+          "options": {"reduceOptions": {"calcs": ["lastNotNull"]}, "colorMode": "value", "graphMode": "none"},
+          "targets": [
+            {"refId": "A", "datasource": {"type": "prometheus", "uid": "prometheus"},
+             "expr": "current_link_width{source=~\"$source\"}", "legendFormat": "{{source}} {{hca}}"}
+          ]
+        },
+        {
+          "type": "stat",
+          "title": "Max PCIe Link Speed (GT/s)",
+          "datasource": {"type": "prometheus", "uid": "prometheus"},
+          "gridPos": {"h": 4, "w": 6, "x": 12, "y": 0},
+          "fieldConfig": {"defaults": {"unit": "none"}, "overrides": []},
+          "options": {"reduceOptions": {"calcs": ["lastNotNull"]}, "colorMode": "value", "graphMode": "none"},
+          "targets": [
+            {"refId": "A", "datasource": {"type": "prometheus", "uid": "prometheus"},
+             "expr": "max_link_speed{source=~\"$source\"}", "legendFormat": "{{source}} {{hca}}"}
+          ]
+        },
+        {
+          "type": "stat",
+          "title": "Max PCIe Link Width (lanes)",
+          "datasource": {"type": "prometheus", "uid": "prometheus"},
+          "gridPos": {"h": 4, "w": 6, "x": 18, "y": 0},
+          "fieldConfig": {"defaults": {"unit": "none"}, "overrides": []},
+          "options": {"reduceOptions": {"calcs": ["lastNotNull"]}, "colorMode": "value", "graphMode": "none"},
+          "targets": [
+            {"refId": "A", "datasource": {"type": "prometheus", "uid": "prometheus"},
+             "expr": "max_link_width{source=~\"$source\"}", "legendFormat": "{{source}} {{hca}}"}
+          ]
+        },
+        {
+          "type": "timeseries",
+          "title": "Uplink RX throughput (p0/p1)",
+          "datasource": {"type": "prometheus", "uid": "prometheus"},
+          "gridPos": {"h": 8, "w": 12, "x": 0, "y": 4},
+          "fieldConfig": {"defaults": {"unit": "bps", "custom": {"drawStyle": "line", "fillOpacity": 10}}, "overrides": []},
+          "options": {"legend": {"displayMode": "table", "placement": "bottom", "calcs": ["mean", "max"]}, "tooltip": {"mode": "multi"}},
+          "targets": [
+            {"refId": "A", "datasource": {"type": "prometheus", "uid": "prometheus"},
+             "expr": "sum by(source)(rate({__name__=~\"p[01]_eth_rx_bytes\", source=~\"$source\"}[5m])) * 8",
+             "legendFormat": "{{source}}"}
+          ]
+        },
+        {
+          "type": "timeseries",
+          "title": "Uplink TX throughput (p0/p1)",
+          "datasource": {"type": "prometheus", "uid": "prometheus"},
+          "gridPos": {"h": 8, "w": 12, "x": 12, "y": 4},
+          "fieldConfig": {"defaults": {"unit": "bps", "custom": {"drawStyle": "line", "fillOpacity": 10}}, "overrides": []},
+          "options": {"legend": {"displayMode": "table", "placement": "bottom", "calcs": ["mean", "max"]}, "tooltip": {"mode": "multi"}},
+          "targets": [
+            {"refId": "A", "datasource": {"type": "prometheus", "uid": "prometheus"},
+             "expr": "sum by(source)(rate({__name__=~\"p[01]_eth_tx_bytes\", source=~\"$source\"}[5m])) * 8",
+             "legendFormat": "{{source}}"}
+          ]
+        },
+        {
+          "type": "timeseries",
+          "title": "Uplink packets/s (p0/p1 rx+tx)",
+          "datasource": {"type": "prometheus", "uid": "prometheus"},
+          "gridPos": {"h": 8, "w": 12, "x": 0, "y": 12},
+          "fieldConfig": {"defaults": {"unit": "pps", "custom": {"drawStyle": "line", "fillOpacity": 10}}, "overrides": []},
+          "options": {"legend": {"displayMode": "table", "placement": "bottom", "calcs": ["mean", "max"]}, "tooltip": {"mode": "multi"}},
+          "targets": [
+            {"refId": "A", "datasource": {"type": "prometheus", "uid": "prometheus"},
+             "expr": "sum by(source)(rate({__name__=~\"p[01]_eth_rx_packets\", source=~\"$source\"}[5m]))",
+             "legendFormat": "{{source}} rx"},
+            {"refId": "B", "datasource": {"type": "prometheus", "uid": "prometheus"},
+             "expr": "sum by(source)(rate({__name__=~\"p[01]_eth_tx_packets\", source=~\"$source\"}[5m]))",
+             "legendFormat": "{{source}} tx"}
+          ]
+        },
+        {
+          "type": "timeseries",
+          "title": "Uplink errors & drops/s (p0/p1)",
+          "datasource": {"type": "prometheus", "uid": "prometheus"},
+          "gridPos": {"h": 8, "w": 12, "x": 12, "y": 12},
+          "fieldConfig": {"defaults": {"unit": "cps", "custom": {"drawStyle": "line", "fillOpacity": 10}}, "overrides": []},
+          "options": {"legend": {"displayMode": "table", "placement": "bottom", "calcs": ["max"]}, "tooltip": {"mode": "multi"}},
+          "targets": [
+            {"refId": "A", "datasource": {"type": "prometheus", "uid": "prometheus"},
+             "expr": "sum by(source)(rate({__name__=~\"p[01]_eth_rx_errors\", source=~\"$source\"}[5m])) + sum by(source)(rate({__name__=~\"p[01]_eth_tx_errors\", source=~\"$source\"}[5m])) + sum by(source)(rate({__name__=~\"p[01]_eth_rx_dropped\", source=~\"$source\"}[5m])) + sum by(source)(rate({__name__=~\"p[01]_eth_tx_dropped\", source=~\"$source\"}[5m])) + sum by(source)(rate({__name__=~\"p[01]_eth_rx_crc_errors\", source=~\"$source\"}[5m]))",
+             "legendFormat": "{{source}}"}
+          ]
+        },
+        {
+          "type": "timeseries",
+          "title": "NIC channel poll/s",
+          "datasource": {"type": "prometheus", "uid": "prometheus"},
+          "gridPos": {"h": 8, "w": 12, "x": 0, "y": 20},
+          "fieldConfig": {"defaults": {"unit": "cps", "custom": {"drawStyle": "line", "fillOpacity": 10}}, "overrides": []},
+          "options": {"legend": {"displayMode": "table", "placement": "bottom", "calcs": ["mean", "max"]}, "tooltip": {"mode": "multi"}},
+          "targets": [
+            {"refId": "A", "datasource": {"type": "prometheus", "uid": "prometheus"},
+             "expr": "rate(ch_poll{source=~\"$source\"}[5m])",
+             "legendFormat": "{{source}} {{device_name}}"}
+          ]
+        },
+        {
+          "type": "timeseries",
+          "title": "NIC channel events/s",
+          "datasource": {"type": "prometheus", "uid": "prometheus"},
+          "gridPos": {"h": 8, "w": 12, "x": 12, "y": 20},
+          "fieldConfig": {"defaults": {"unit": "cps", "custom": {"drawStyle": "line", "fillOpacity": 10}}, "overrides": []},
+          "options": {"legend": {"displayMode": "table", "placement": "bottom", "calcs": ["mean", "max"]}, "tooltip": {"mode": "multi"}},
+          "targets": [
+            {"refId": "A", "datasource": {"type": "prometheus", "uid": "prometheus"},
+             "expr": "rate(ch_events{source=~\"$source\"}[5m])",
+             "legendFormat": "{{source}} {{device_name}}"}
+          ]
+        }
+      ]
+    }
+---
+apiVersion: grafana.integreatly.org/v1beta1
+kind: GrafanaDashboard
+metadata:
+  name: doca-dpu-telemetry-dts
+  namespace: dpf-operator-system
+spec:
+  instanceSelector:
+    matchLabels:
+      dashboards: "dpf-grafana"
+  configMapRef:
+    name: dpf-dts-grafana-dashboard
+    key: doca-dpu-telemetry-dts.json
+----
++
+Apply the YAML:
++
+[source,terminal]
+----
+$ oc apply -f dts-grafana-dashboard.yaml
+----
+
+.Verification
+
+. Verify that the Grafana operator is running:
++
+[source,terminal]
+----
+$ oc get pods -n grafana-operator
+----
++
+.Example output
+[source,terminal]
+----
+NAME                               READY   STATUS    RESTARTS   AGE
+grafana-operator-66d8c8c7b-xyz12   1/1     Running   0          5m42s
+----
+
+. Verify that the Grafana instance is running:
++
+[source,terminal]
+----
+$ oc get grafana -n dpf-operator-system
+----
++
+.Example output
+[source,terminal]
+----
+NAME          AGE
+dpf-grafana   3m15s
+----
+
+. Verify that the Grafana pod is running on a control plane node:
++
+[source,terminal]
+----
+$ oc get pods -n dpf-operator-system -l app.kubernetes.io/name=grafana -o wide
+----
++
+.Example output
+[source,terminal]
+----
+NAME                             READY   STATUS    RESTARTS   AGE     IP             NODE            NOMINATED NODE   READINESS GATES
+grafana-deployment-7c8b9d-xyz12  1/1     Running   0          2m38s   10.128.0.45   master-node-1   <none>           <none>
+----
+
+. Verify the Grafana route exists:
++
+[source,terminal]
+----
+$ oc get route -n dpf-operator-system
+----
++
+.Example output
+[source,terminal]
+----
+NAME                HOST/PORT                               PATH   SERVICES      PORT      TERMINATION   WILDCARD
+dpf-grafana-route   dpf-grafana-route-dpf-operator-system.apps.cluster.example.com          dpf-grafana   grafana   edge          None
+----
+
+. Access the Grafana web interface:
++
+Get the Grafana URL:
++
+[source,terminal]
+----
+$ echo "https://$(oc -n dpf-operator-system get route dpf-grafana-route -o jsonpath='{.spec.host}')"
+----
++
+Open the returned URL in a web browser. Use anonymous access (read-only) or sign in with the default credentials (`admin`/`admin`) for editing capabilities.
+
+. Navigate to the DTS dashboard:
++
+.. In Grafana, go to **Dashboards** → **"DOCA DPU Telemetry (DTS)"**
+.. Use the **DPU (source)** dropdown at the top to focus on specific DPUs or select **All**
+.. Adjust the time range (top-right corner) - the dashboard refreshes every 30 seconds automatically
+.. Monitor the following metrics:
++
+* **PCIe Status**: Current and maximum link speed/width
+* **Throughput**: RX/TX data rates for uplink ports (p0/p1)
+* **Packet Rates**: Packet-per-second statistics with RX/TX breakdown
+* **Error Monitoring**: Combined error, drop, and CRC error rates
