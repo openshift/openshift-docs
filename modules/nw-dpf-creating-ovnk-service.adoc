@@ -1,0 +1,226 @@
+// Module included in the following assemblies:
+//
+// * networking/networking_operators/dpf_operator/dpf-operator-installation.adoc
+
+:_mod-docs-content-type: PROCEDURE
+[id="nw-dpf-creating-ovnk-service_{context}"]
+= Create the HBN and OVN-Kubernetes DPU service resources
+
+[role="_abstract"]
+You can create the Host-Based Networking (HBN) and OVN-Kubernetes DPU services by defining `DPUServiceTemplate` and `DPUServiceConfiguration` custom resources. The HBN service provides BGP-based networking on the DPU with ECMP routing support. The OVN-Kubernetes service provides pod networking on the DPU.
+
+[IMPORTANT]
+====
+The following OVN-Kubernetes features are not supported as part of the CNI used in this technical preview:
+
+* User-Defined Networks (UDN)
+* Egress IP
+* `AdminNetworkPolicy` (ANP)
+* Hybrid overlay
+* Egress firewall
+* Quality of Service (QoS)
+* Border Gateway Protocol (BGP)
+* Multicast
+* Local gateway mode
+====
+
+.Prerequisites
+
+* You have installed the DPF Operator.
+* You have created the `DPFOperatorConfig` resource.
+* You have set the DPF Operator environment variables. For details, see "DPF Operator installation environment variables".
+
+.Procedure
+
+. Create a file named `hbn.yaml` with the following content:
++
+[source,yaml]
+----
+apiVersion: svc.dpu.nvidia.com/v1alpha1
+kind: DPUServiceTemplate
+metadata:
+  name: hbn
+  namespace: dpf-operator-system
+spec:
+  deploymentServiceName: "hbn"
+  helmChart:
+    source:
+      repoURL: $HBN_HELM_REPO_URL
+      version: $HBN_HELM_CHART_VERSION
+      chart: doca-hbn
+    values:
+      image:
+        repository: $HBN_IMAGE_REPO
+        tag: $HBN_IMAGE_TAG
+      resources:
+        memory: 6Gi
+        nvidia.com/bf_sf: 3
+---
+apiVersion: svc.dpu.nvidia.com/v1alpha1
+kind: DPUServiceConfiguration
+metadata:
+  name: hbn
+  namespace: dpf-operator-system
+spec:
+  deploymentServiceName: "hbn"
+  serviceConfiguration:
+    serviceDaemonSet:
+      annotations:
+        k8s.v1.cni.cncf.io/networks: |-
+          [
+          {"name": "iprequest", "interface": "ip_lo", "cni-args": {"poolNames": ["loopback"], "poolType": "cidrpool"}},
+          {"name": "iprequest", "interface": "ip_pf2dpu2", "cni-args": {"poolNames": ["pool1"], "poolType": "cidrpool", "allocateDefaultGateway": true}}
+          ]
+    helmChart:
+      values:
+        configuration:
+          perDPUValuesYAML: |
+            - hostnamePattern: "*"
+              values:
+                bgp_peer_group: hbn
+          startupYAMLJ2: |
+            - header:
+                model: BLUEFIELD
+                nvue-api-version: nvue_v1
+                rev-id: 1.0
+                version: HBN 2.4.0
+            - set:
+                interface:
+                  lo:
+                    ip:
+                      address:
+                        {{ ipaddresses.ip_lo.ip }}/32: {}
+                    type: loopback
+                  p0_if,p1_if:
+                    type: swp
+                    link:
+                      mtu: 9216
+                  pf2dpu2_if:
+                    ip:
+                      address:
+                        {{ ipaddresses.ip_pf2dpu2.cidr }}: {}
+                    type: swp
+                    link:
+                      mtu: 9216
+                router:
+                  bgp:
+                    autonomous-system: {{ ( ipaddresses.ip_lo.ip.split(".")[3] | int ) + 65101 }}
+                    enable: on
+                    graceful-restart:
+                      mode: full
+                    router-id: {{ ipaddresses.ip_lo.ip }}
+                vrf:
+                  default:
+                    router:
+                      bgp:
+                        address-family:
+                          ipv4-unicast:
+                            enable: on
+                            redistribute:
+                              connected:
+                                enable: on
+                          ipv6-unicast:
+                            enable: on
+                            redistribute:
+                              connected:
+                                enable: on
+                        enable: on
+                        neighbor:
+                          p0_if:
+                            peer-group: {{ config.bgp_peer_group }}
+                            type: unnumbered
+                          p1_if:
+                            peer-group: {{ config.bgp_peer_group }}
+                            type: unnumbered
+                        path-selection:
+                          multipath:
+                            aspath-ignore: on
+                        peer-group:
+                          {{ config.bgp_peer_group }}:
+                            remote-as: external
+  interfaces:
+    - name: p0_if
+      network: mybrhbn
+    - name: p1_if
+      network: mybrhbn
+    - name: pf2dpu2_if
+      network: mybrhbn
+----
+
+. Apply the HBN resource file:
++
+[source,terminal]
+----
+$ envsubst < hbn.yaml | oc apply -f -
+----
+
+. Create a file named `ovn-k.yaml` with the following content:
++
+[source,yaml]
+----
+apiVersion: svc.dpu.nvidia.com/v1alpha1
+kind: DPUServiceTemplate
+metadata:
+  name: ovn
+  namespace: dpf-operator-system
+spec:
+  deploymentServiceName: "ovn"
+  helmChart:
+    source:
+      repoURL: $OVN_TEMPLATE_CHART_URL
+      chart: ovn-kubernetes-chart
+      version: $OVN_CHART_VERSION
+    values:
+      commonManifests:
+        enabled: true
+      dpuManifests:
+        enabled: true
+        cniBinDir: /var/lib/cni/bin/
+        cniConfDir: /run/multus/cni/net.d
+      leaseNamespace: "openshift-ovn-kubernetes"
+      gatewayOpts: "--gateway-interface=br-dpu"
+---
+apiVersion: svc.dpu.nvidia.com/v1alpha1
+kind: DPUServiceConfiguration
+metadata:
+  name: ovn
+  namespace: dpf-operator-system
+spec:
+  deploymentServiceName: "ovn"
+  serviceConfiguration:
+    helmChart:
+      values:
+        global:
+          enableOvnKubeIdentity: false
+        k8sAPIServer: https://$HOST_CLUSTER_API:$TARGETCLUSTER_API_SERVER_PORT
+        podNetwork: $POD_CIDR/23
+        serviceNetwork: $SERVICE_CIDR
+        mtu: $OVN_MTU
+        dpuManifests:
+          ovnMultiNetworkEnable: "false"
+          namespaceSecretName: "ovn-dpu"
+          vtepCIDR: $VTEP_CIDR
+          hostCIDR: $TARGETCLUSTER_NODE_CIDR
+          ipamPool: "pool1"
+          ipamPoolType: "cidrpool"
+          ipamVTEPIPIndex: 0
+          ipamPFIPIndex: 1
+          cniBinDir: "/var/lib/cni/bin/"
+          cniConfDir: "/run/multus/cni/net.d"
+----
+
+. Apply the OVN-Kubernetes resource file:
++
+[source,terminal]
+----
+$ envsubst < ovn-k.yaml | oc apply -f -
+----
+
+.Verification
+
+* Verify that the HBN and OVN-Kubernetes service resources are created:
++
+[source,terminal]
+----
+$ oc get dpuservicetemplate,dpuserviceconfiguration -n dpf-operator-system | grep -E 'hbn|ovn'
+----

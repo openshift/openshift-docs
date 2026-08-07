@@ -1,0 +1,325 @@
+// Module included in the following assemblies:
+//
+// * networking/networking_operators/dpf_operator/dpf-environment-setup.adoc
+
+:_mod-docs-content-type: PROCEDURE
+[id="nw-dpf-configuring-required-operators_{context}"]
+= Configure the required Operators
+
+[role="_abstract"]
+After the required Operators are installed, configure the multicluster engine, Node Feature Discovery, MetalLB, {gitops-shortname}, and Cluster Network Operator for the DPF environment.
+
+.Prerequisites
+
+* You have access to the cluster as a user with the `cluster-admin` role.
+* You have installed the OpenShift CLI (`oc`).
+* You have installed the {cert-manager-operator}, MetalLB Operator, {gitops-title}, and NVIDIA Maintenance Operator.
+* You have installed the multicluster engine for Kubernetes Operator and the Node Feature Discovery Operator. You can install them by using the Assisted Installer during cluster creation.
+
+.Procedure
+
+. Create a file named `multiclusterengine-instance.yaml` with the following content to enable hosted control planes:
++
+[source,yaml]
+----
+apiVersion: multicluster.openshift.io/v1
+kind: MultiClusterEngine
+metadata:
+  name: multiclusterengine
+spec:
+  overrides:
+    components:
+    - name: hypershift
+      enabled: true
+----
+
+. Apply the file:
++
+[source,terminal]
+----
+$ oc apply -f multiclusterengine-instance.yaml
+----
+
+. Define the cluster variables used by Node Feature Discovery:
++
+[source,terminal]
+----
+$ export CLUSTER_NAME="doca-mgmt"
+$ export BASE_DOMAIN="example.com"
+$ export HOST_CLUSTER_API="api.${CLUSTER_NAME}.${BASE_DOMAIN}"
+----
++
+where:
++
+`CLUSTER_NAME`:: Specifies the management cluster name.
+`BASE_DOMAIN`:: Specifies the management cluster base domain.
+`HOST_CLUSTER_API`:: Specifies the management cluster API endpoint.
+
+. Create a file named `nfd-instance.yaml` with the following `NodeFeatureDiscovery` resource definition:
++
+[source,yaml]
+----
+apiVersion: nfd.openshift.io/v1
+kind: NodeFeatureDiscovery
+metadata:
+  name: nfd-instance
+  namespace: openshift-nfd
+spec:
+  operand:
+    workerEnvs:
+      - name: KUBERNETES_SERVICE_HOST
+        value: $HOST_CLUSTER_API
+      - name: KUBERNETES_SERVICE_PORT
+        value: "6443"
+  workerConfig:
+    configData: |
+      sources:
+        pci:
+          deviceClassWhitelist:
+            - "0200"
+            - "03"
+            - "12"
+            - "0207"
+          deviceLabelFields:
+            - "vendor"
+            - "device"
+            - "class"
+----
+
+. Apply the file by using `envsubst` to substitute the environment variables:
++
+[source,terminal]
+----
+$ envsubst < nfd-instance.yaml | oc apply -f -
+----
+
+. Create a file named `nfd-rule.yaml` with the following `NodeFeatureRule` resource definition to detect worker nodes with DPUs and label them with a `dpu-enabled` label:
++
+[source,yaml]
+----
+apiVersion: nfd.openshift.io/v1alpha1
+kind: NodeFeatureRule
+metadata:
+  name: dpu-detection-rule
+  namespace: openshift-nfd
+spec:
+  rules:
+    - labels:
+        dpu-enabled: ""
+      matchFeatures:
+        - feature: pci.device
+          matchExpressions:
+            device:
+              op: In
+              value:
+                - a2d6
+                - a2dc
+            vendor:
+              op: In
+              value:
+                - 15b3
+      name: DPU-detection-rule
+----
+
+. Apply the file:
++
+[source,terminal]
+----
+$ oc apply -f nfd-rule.yaml
+----
+
+. Ensure that the MetalLB Operator `Subscription` schedules Operator pods on control-plane nodes.
+When you install the MetalLB Operator, include the following `spec.config` settings, or patch an existing `Subscription` to add them:
++
+[source,yaml]
+----
+apiVersion: operators.coreos.com/v1alpha1
+kind: Subscription
+metadata:
+  name: metallb-operator
+  namespace: openshift-operators
+spec:
+  channel: "stable"
+  name: metallb-operator
+  source: redhat-operators
+  sourceNamespace: openshift-marketplace
+  installPlanApproval: Automatic
+  config:
+    tolerations:
+    - key: "node-role.kubernetes.io/control-plane"
+      operator: "Exists"
+      effect: "NoSchedule"
+    affinity:
+      nodeAffinity:
+        requiredDuringSchedulingIgnoredDuringExecution:
+          nodeSelectorTerms:
+          - matchExpressions:
+            - key: "node-role.kubernetes.io/control-plane"
+              operator: "Exists"
+----
+
+. Create a file named `metallb-config.yaml` with the following `MetalLB` resource definition:
++
+[source,yaml]
+----
+apiVersion: metallb.io/v1beta1
+kind: MetalLB
+metadata:
+  name: metallb
+  namespace: openshift-operators
+spec:
+  nodeSelector:
+    node-role.kubernetes.io/control-plane: ""
+  speakerTolerations:
+    - key: node-role.kubernetes.io/control-plane
+      operator: Exists
+      effect: NoSchedule
+----
+
+. Apply the MetalLB resource file:
++
+[source,terminal]
+----
+$ oc apply -f metallb-config.yaml
+----
+
+. Ensure that the {gitops-title} `Subscription` includes the DPF-required environment variables.
+When you install the Operator, set the following `spec.config.env` values, or patch an existing `Subscription` to add them so that Argo CD can manage the `dpf-operator-system` namespace:
++
+[source,yaml]
+----
+apiVersion: operators.coreos.com/v1alpha1
+kind: Subscription
+metadata:
+  name: openshift-gitops-operator
+  namespace: openshift-gitops-operator
+spec:
+  channel: gitops-1.21
+  config:
+    env:
+    - name: ARGOCD_CLUSTER_CONFIG_NAMESPACES
+      value: "openshift-gitops,dpf-operator-system"
+    - name: CONTROLLER_CLUSTER_ROLE
+      value: "cluster-admin"
+    - name: SERVER_CLUSTER_ROLE
+      value: "cluster-admin"
+  installPlanApproval: Automatic
+  name: openshift-gitops-operator
+  source: redhat-operators
+  sourceNamespace: openshift-marketplace
+----
+
+. Create a file named `argocd-instance.yaml` with the following `ArgoCD` resource definition:
++
+[source,yaml]
+----
+apiVersion: argoproj.io/v1beta1
+kind: ArgoCD
+metadata:
+  name: argocd
+  namespace: dpf-operator-system
+spec:
+  nodePlacement:
+    nodeSelector:
+      node-role.kubernetes.io/control-plane: ""
+    tolerations:
+    - key: node-role.kubernetes.io/master
+      operator: Exists
+      effect: NoSchedule
+    - key: node-role.kubernetes.io/control-plane
+      operator: Exists
+      effect: NoSchedule
+  server:
+    route:
+      enabled: true
+    labels:
+      ovn.dpu.nvidia.com/skip-injection: ""
+  controller:
+    labels:
+      ovn.dpu.nvidia.com/skip-injection: ""
+  repo:
+    labels:
+      ovn.dpu.nvidia.com/skip-injection: ""
+  applicationSet:
+    enabled: false
+  sso:
+    dex:
+      openShiftOAuth: true
+  notifications:
+    enabled: false
+----
+
+. Apply the Argo CD file:
++
+[source,terminal]
+----
+$ oc apply -f argocd-instance.yaml
+----
+
+. Wait for the Argo CD Redis deployment to become available:
++
+[source,terminal]
+----
+$ oc wait deployment argocd-redis -n dpf-operator-system \
+  --for=condition=Available --timeout=120s
+----
+
+. Add the `skip-injection` label to the Redis deployment to prevent the OVN resource injector from modifying Redis pods:
++
+[source,terminal]
+----
+$ oc patch deployment argocd-redis -n dpf-operator-system \
+  --type=merge -p '{"spec":{"template":{"metadata":{"labels":{"ovn.dpu.nvidia.com/skip-injection":""}}}}}'
+----
++
+[IMPORTANT]
+====
+The {gitops-title} `ArgoCD` custom resource does not support custom labels on the Redis component.
+You must apply this label manually.
+The Operator does not override this patch.
+====
+
+. Enable global IP forwarding on the OVN-Kubernetes configuration:
++
+[source,terminal]
+----
+$ oc patch network.operator.openshift.io cluster --type=merge -p \
+  '{"spec":{"defaultNetwork":{"ovnKubernetesConfig":{"gatewayConfig":{"ipForwarding":"Global"}}}}}'
+----
+
+.Verification
+
+* Verify that the `MultiClusterEngine` instance is available:
++
+[source,terminal]
+----
+$ oc get multiclusterengine multiclusterengine
+----
+
+* Verify that the `NodeFeatureDiscovery` instance and `NodeFeatureRule` are configured:
++
+[source,terminal]
+----
+$ oc get nodefeaturediscovery,nodefeaturerule -n openshift-nfd
+----
+
+* Verify that the `MetalLB` instance was created:
++
+[source,terminal]
+----
+$ oc get metallb -n openshift-operators
+----
+
+* Verify that the Argo CD pods are running:
++
+[source,terminal]
+----
+$ oc get pods -n dpf-operator-system -l app.kubernetes.io/part-of=argocd
+----
+
+* Verify that IP forwarding is set to `Global`:
++
+[source,terminal]
+----
+$ oc get network.operator.openshift.io cluster -o jsonpath='{.spec.defaultNetwork.ovnKubernetesConfig.gatewayConfig.ipForwarding}'
+----
