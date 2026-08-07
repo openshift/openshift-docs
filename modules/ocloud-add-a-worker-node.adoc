@@ -1,0 +1,169 @@
+// Module included in the following assemblies:
+//
+// * infrastructure_lifecycle_management/ocloud-scaling-worker-nodes.adoc
+
+:_mod-docs-content-type: PROCEDURE
+[id="ocloud-add-a-worker-node_{context}"]
+= Add a worker node to a provisioned cluster
+
+[role="_abstract"]
+To increase available compute capacity, you can add a worker node to a multi-node cluster. When you update the `ProvisioningRequest` CR, the O-Cloud Manager allocates a matching bare-metal server from the resource pool, provisions it, and joins it to the cluster automatically.
+
+The following example scales a cluster from 2 workers to 3 workers by creating new `ConfigMap` CR and `ClusterTemplate` CR versions, and then updating the `ProvisioningRequest` CR with the new worker node entry. Because `ClusterTemplate` CRs and their referenced `ConfigMap` CRs are immutable after validation, each configuration change requires new versions of these resources.
+
+[NOTE]
+====
+Scaling is supported only for worker nodes on multi-node clusters. You cannot add nodes to single-node {product-title} clusters. Scaling and upgrade operations cannot run concurrently on the same cluster.
+====
+
+.Prerequisites
+
+* The cluster is fully provisioned with `ClusterProvisioned=Completed` status on the `ProvisioningRequest` CR.
+* Available `BareMetalHost` resources exist in the resource pool with labels matching the worker node group `resourceSelector` defined in the `ClusterTemplate` CR.
+* No upgrade operation is in progress on the cluster.
+
+.Procedure
+
+. Create a `ConfigMap` CR that defines the cluster instance defaults, with the additional `role: worker` entry for the new node. The following example scales from 2 workers to 3 workers:
++
+[source,yaml]
+----
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: clusterinstance-defaults-v2
+  namespace: <template_namespace>
+data:
+  clusterinstance-defaults: |
+    nodes:
+      - role: master
+        bootMode: UEFI
+        nodeNetwork:
+          interfaces:
+            - name: eno1
+              label: boot-interface
+      - role: master
+        bootMode: UEFI
+        nodeNetwork:
+          interfaces:
+            - name: eno1
+              label: boot-interface
+      - role: master
+        bootMode: UEFI
+        nodeNetwork:
+          interfaces:
+            - name: eno1
+              label: boot-interface
+      - role: worker
+        bootMode: UEFI
+        nodeNetwork:
+          interfaces:
+            - name: eno1
+              label: boot-interface
+      - role: worker
+        bootMode: UEFI
+        nodeNetwork:
+          interfaces:
+            - name: eno1
+              label: boot-interface
+      - role: worker  # New worker node entry
+        bootMode: UEFI
+        nodeNetwork:
+          interfaces:
+            - name: eno1
+              label: boot-interface
+----
++
+* `<template_namespace>` specifies the namespace where you store the `ClusterTemplate` CR and associated resources.
+* `metadata.name` uses a new name, for example, `v2`, to differentiate it from the original `ConfigMap` CR. This preserves the previous configuration for rollback.
+* The final `role: worker` entry is the new worker node in this example. This entry provides the default values for the node you are adding.
+
+
+. Create a new `ClusterTemplate` CR version that references the updated `ConfigMap` CR, such as the following example:
++
+[source,yaml]
+----
+apiVersion: clcm.openshift.io/v1alpha1
+kind: ClusterTemplate
+metadata:
+  name: <template_name>.v4-Y-Z-2
+  namespace: <template_namespace>
+spec:
+  name: <template_name>
+  version: v4-Y-Z-2
+  release: "4.Y.Z"
+  templateDefaults:
+    clusterInstanceDefaults: clusterinstance-defaults-v2
+    policyTemplateDefaults: policytemplate-defaults-v1
+    hwMgmtDefaults:
+      nodeGroupData:
+        - name: master
+          role: master
+          resourceSelector:
+            server-type: master
+        - name: worker
+          role: worker
+          resourceSelector:
+            server-type: worker
+----
++
+* `metadata.name` is the Kubernetes resource name. By convention, this combines the logical template name and version (for example, `std-ran-du.v4-22-0-2`).
+* `spec.name` is the logical template name that stays the same across all versions. This is the value that `ProvisioningRequest` CRs reference in `spec.templateName`.
+* `spec.version` is a new version identifier. `ClusterTemplate` CRs are immutable after validation, so each configuration change requires a new version.
+* `spec.templateDefaults.clusterInstanceDefaults` references the new `ConfigMap` CR that includes the additional worker node entry.
+
+. Apply the new `ConfigMap` CR and `ClusterTemplate` CR to the hub cluster, or commit them to the GitOps repository and wait for ArgoCD to synchronize them.
+
+. Verify that the new `ClusterTemplate` CR passes validation by running the following command:
++
+[source,terminal]
+----
+$ oc get clustertemplates.clcm.openshift.io <template_name>.v4-Y-Z-2 -n <template_namespace>
+----
++
+The `STATE` column must show `Completed` before proceeding.
+
+. Update the `ProvisioningRequest` CR to reference the new `ClusterTemplate` CR version and add the new worker node by running the following command:
++
+[source,terminal]
+----
+$ oc edit provisioningrequests.clcm.openshift.io <uuid>
+----
++
+where:
++
+`<uuid>`:: Specifies the UUID of the `ProvisioningRequest` CR for the target cluster.
++
+Update `spec.templateVersion` and append the new node entry to `spec.templateParameters.clusterInstanceParameters.nodes`:
++
+[source,yaml]
+----
+spec:
+  templateName: std-ran-du
+  templateVersion: v4-Y-Z-2
+  templateParameters:
+    clusterInstanceParameters:
+      nodes:
+        - hostName: master-1.cluster.example.com
+        - hostName: master-2.cluster.example.com
+        - hostName: master-3.cluster.example.com
+        - hostName: worker-1.cluster.example.com
+        - hostName: worker-2.cluster.example.com
+        - hostName: worker-3.cluster.example.com  # new worker
+----
++
+* `spec.templateVersion` references the new `ClusterTemplate` CR.
+* The new worker node entry is appended to the end of the `nodes` array. The `ConfigMap` CR must have an entry at the same index position to provide default values for this node.
+
+. Apply the updated `ProvisioningRequest` CR to the hub cluster, or commit it to the GitOps repository for ArgoCD synchronization.
+
+.Verification
+
+* Verify that the `ProvisioningRequest` CR transitions back to `fulfilled` after the new node joins the cluster by running the following command:
++
+[source,terminal]
+----
+$ oc get provisioningrequests.clcm.openshift.io <uuid> -o jsonpath='{.status.provisioningStatus.provisioningPhase}'
+----
++
+The `ProvisioningRequest` CR transitions from `fulfilled` to `pending` to `progressing` and back to `fulfilled` once the new worker node is provisioned and reaches `Ready` state.

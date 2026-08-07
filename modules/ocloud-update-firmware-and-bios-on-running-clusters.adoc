@@ -1,0 +1,102 @@
+// Module included in the following assemblies:
+//
+// * infrastructure_lifecycle_management/ocloud-updating-cluster-configuration.adoc
+
+:_mod-docs-content-type: PROCEDURE
+[id="ocloud-update-firmware-and-bios-on-running-clusters_{context}"]
+= Update firmware and BIOS settings on running clusters
+
+[role="_abstract"]
+You can update firmware versions and BIOS settings on a provisioned cluster by creating a new `HardwareProfile` custom resource and updating the `ProvisioningRequest` CR to reference it. The O-Cloud Manager coordinates a rolling update across node groups, applying changes with minimal workload disruption.
+
+The Day-2 firmware update differs from Day-0 provisioning in the following ways:
+
+* Node groups are processed by role: control-plane nodes are updated serially first, then worker nodes.
+* Worker nodes can be updated in parallel based on the `maxUnavailable` setting from the corresponding `MachineConfigPool` on the spoke cluster.
+* On multi-node clusters, each node is cordoned and drained before firmware is applied. On single-node {product-title} clusters, cordon and drain are skipped.
+
+.Prerequisites
+
+* The cluster is fully provisioned with `provisioningPhase: fulfilled` on the `ProvisioningRequest` CR.
+* The `ClusterTemplate` CR defines `hwMgmtParameters` in its `spec.templateParameterSchema` to accept hardware profile overrides.
+* No other firmware update or upgrade operation is in progress.
+* The firmware download URLs in the new `HardwareProfile` CR are accessible from the BMC management network.
+
+.Procedure
+
+. Create a new `HardwareProfile` CR with the desired firmware versions and BIOS settings:
++
+[source,yaml]
+----
+apiVersion: clcm.openshift.io/v1alpha1
+kind: HardwareProfile
+metadata:
+  name: <new_hardware_profile_name>
+  namespace: <template_namespace>
+spec:
+  bios:
+    attributes:
+      BootMode: Uefi
+      WorkloadProfile: HpcProfile
+  bmcFirmware:
+    version: "<target_bmc_version>"
+  biosFirmware:
+    version: "<target_bios_version>"
+----
++
+where:
++
+--
+`<new_hardware_profile_name>`:: Specifies a descriptive name for the new hardware profile, such as `server-type-bios-2.6.3-bmc-7.20.30.50`.
+`<template_namespace>`:: Specifies the namespace where the `ClusterTemplate` and related resources are stored.
+`<target_bios_version>`:: Specifies the target BIOS firmware version.
+`<target_bmc_version>`:: Specifies the target BMC firmware version.
+--
++
+[NOTE]
+====
+All firmware fields in the `HardwareProfile` CR are optional. Specify only the components you need to update. For example, define only `spec.bios.attributes` without any firmware version fields to update BIOS settings without changing firmware versions.
+====
+
+. Apply the new `HardwareProfile` CR to the hub cluster, or commit it to the GitOps repository for ArgoCD synchronization.
+
+. Update the `ProvisioningRequest` CR to reference the new `HardwareProfile` by running the following command:
++
+[source,terminal]
+----
+$ oc patch provisioningrequests.clcm.openshift.io <uuid> --type merge \
+  -p '{"spec":{"templateParameters":{"hwMgmtParameters":{"nodeGroupData":[{"name":"<node_group>","hwProfile":"<new_hardware_profile_name>"}]}}}}'
+----
++
+where:
++
+--
+`<uuid>`:: Specifies the UUID of the `ProvisioningRequest` CR for the target cluster.
+`<node_group>`:: Specifies the node group to update, such as `controller` or `worker`.
+`<new_hardware_profile_name>`:: Specifies the name of the new `HardwareProfile` CR.
+--
++
+The O-Cloud Manager detects the profile change and propagates it through the `NodeAllocationRequest` CR to the hardware manager. The hardware manager computes the firmware differences, updates the Metal3 `HostFirmwareSettings` and `HostFirmwareComponents` CRs, and triggers host reboots to apply the updates.
+
+.Verification
+
+* Monitor the firmware update progress by checking the `HardwareConfigured` condition by running the following command:
++
+[source,terminal]
+----
+$ oc get provisioningrequests.clcm.openshift.io <uuid> -o jsonpath='{.status.conditions[?(@.type=="HardwareConfigured")]}'
+----
++
+.Example output during update
+[source,terminal]
+----
+{"lastTransitionTime":"2025-10-01T21:36:01Z","message":"Hardware configuring is in progress","reason":"InProgress","status":"False","type":"HardwareConfigured"}
+----
++
+.Example output after completion
+[source,terminal]
+----
+{"lastTransitionTime":"2025-10-01T22:05:01Z","message":"Configuration has been applied successfully","reason":"Completed","status":"True","type":"HardwareConfigured"}
+----
++
+A `reason: Completed` with `status: "True"` indicates that all nodes have been updated and validated.

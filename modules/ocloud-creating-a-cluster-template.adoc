@@ -1,0 +1,195 @@
+// Module included in the following assemblies:
+//
+// * infrastructure_lifecycle_management/ocloud-defining-templates-and-onboarding-servers.adoc
+
+:_mod-docs-content-type: PROCEDURE
+[id="ocloud-creating-a-cluster-template_{context}"]
+= Create a ClusterTemplate for cluster provisioning
+
+[role="_abstract"]
+You can define a `ClusterTemplate` custom resource that serves as a reusable blueprint for provisioning clusters. The template specifies the cluster topology, hardware requirements, and default configuration. It also defines a validation schema for the site-specific parameters that site engineers provide in a `ProvisioningRequest` resource.
+
+A `ClusterTemplate` CR references two ConfigMaps that contain defaults for cluster installation and Day-2 policy configuration. When a site engineer creates a `ProvisioningRequest` resource, the O-Cloud Manager merges the site-specific parameters from the request with these defaults to produce the final cluster and policy definitions.
+
+.Prerequisites
+
+* The O-Cloud Manager Operator is installed on the hub cluster.
+* The GitOps repository is configured and synchronized with ArgoCD.
+* Bare-metal servers are onboarded to resource pools with appropriate resource selector labels.
+* If firmware or BIOS management is required, `HardwareProfile` resources are defined.
+
+.Procedure
+
+. Create a namespace for the `ClusterTemplate` and its associated resources by running the following command:
++
+[source,terminal]
+----
+$ oc create namespace <template_namespace>
+----
++
+where:
++
+`<template_namespace>`:: Specifies the target namespace for the `ClusterTemplate` resource and associated `ConfigMap` resources.
+
+. Create a `ConfigMap` CR containing default values for cluster installation parameters, such as the following example:
++
+[source,yaml]
+----
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: clusterinstance-defaults-v1
+  namespace: <template_namespace>
+data:
+  clusterinstance-defaults: |
+    clusterImageSetNameRef: "4.Y.Z"
+    pullSecretRef:
+      name: pull-secret
+    networkType: OVNKubernetes
+    templateRefs:
+      - name: ai-cluster-templates-v1
+        namespace: open-cluster-management
+    nodes:
+      - role: master
+        bootMode: UEFI
+        ironicInspect: "disabled"
+        automatedCleaningMode: disabled
+        nodeNetwork:
+          interfaces:
+            - name: ens3f0
+              label: boot-interface
+        templateRefs:
+          - name: ai-node-templates-v1
+            namespace: open-cluster-management
+----
++
+* `clusterImageSetNameRef` specifies the {product-title} release version to install.
+* `templateRefs` references the SiteConfig Operator templates used for cluster installation.
++
+[NOTE]
+====
+For image-based installation (IBI) provisioning, replace the `templateRefs` values with `ibi-cluster-templates-v1` and `ibi-node-templates-v1`. These templates instruct the installation program to use the seed image on the preinstalled host instead of performing a full installation. The Image Based Install (IBI) Operator must be enabled in the `MultiClusterEngine` resource, and servers must be preinstalled with the seed image using the live installation ISO before provisioning.
+====
+* The `boot-interface` label on a network interface is required. Using this label, the O-Cloud Manager resolves the boot NIC's MAC address from hardware inventory data.
+
+
+. Create a `ConfigMap` CR containing default values for Day-2 configuration policy parameters, such as the following example:
++
+[source,yaml]
+----
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: policytemplates-defaults-v1
+  namespace: <template_namespace>
+data:
+  policytemplate-defaults: |
+    cpu-isolated: "2-63"
+    cpu-reserved: "0-1"
+    hugepages-default: "1G"
+    hugepages-size: "1G"
+    hugepages-count: "32"
+----
++
+The `ConfigMap` resource must contain a `policytemplate-defaults` key. The value is a YAML string defining the default policy parameters. Site-specific values from the `ProvisioningRequest` resource take precedence over these defaults when both specify the same parameter.
+
+. Create the `ClusterTemplate` CR, such as the following example:
++
+[source,yaml]
+----
+apiVersion: clcm.openshift.io/v1alpha1
+kind: ClusterTemplate
+metadata:
+  name: sno-ran-du.v4-Y-Z-1
+  namespace: <template_namespace>
+spec:
+  name: sno-ran-du
+  version: v4-Y-Z-1
+  release: 4.Y.Z
+  templateDefaults:
+    hwMgmtDefaults:
+      hardwareProvisioningTimeout: "90m"
+      nodeGroupData:
+        - name: controller
+          role: master
+          resourceSelector:
+            server-type: <server_type>
+    clusterInstanceDefaults: clusterinstance-defaults-v1
+    policyTemplateDefaults: policytemplates-defaults-v1
+  templateParameterSchema:
+    properties:
+      nodeClusterName:
+        type: string
+      oCloudSiteId:
+        type: string
+      policyTemplateParameters:
+        properties:
+          cpu-isolated:
+            type: string
+          cpu-reserved:
+            type: string
+        type: object
+      clusterInstanceParameters:
+        properties:
+          clusterName:
+            type: string
+          baseDomain:
+            type: string
+          nodes:
+            items:
+              properties:
+                hostName:
+                  type: string
+              required:
+                - hostName
+              type: object
+            type: array
+        required:
+          - clusterName
+          - nodes
+        type: object
+    required:
+      - nodeClusterName
+      - oCloudSiteId
+      - policyTemplateParameters
+      - clusterInstanceParameters
+    type: object
+----
++
+where:
++
+`metadata.name`:: Must follow the format `<name>.<version>` and must be unique across all namespaces.
+`<template_namespace>`:: Specifies the namespace where the `ClusterTemplate` CR and its associated `ConfigMap` CRs are stored.
+`spec.name`:: Specifies the base name of the template. Combined with `spec.version` to form the `metadata.name` value.
+`spec.version`:: Specifies the version of the template.
+`spec.release`:: Specifies the {product-title} release version to install. Must match the `clusterImageSetNameRef` value in the `clusterinstance-defaults` `ConfigMap` resource.
+`spec.templateDefaults.hardwareProvisioningTimeout`:: Specifies the timeout for hardware provisioning. Defaults to `90m`.
+`<server_type>`:: Specifies the resource selector label value used to match bare-metal hosts during provisioning. This must match the corresponding label on onboarded `BareMetalHost` CRs.
+`spec.templateDefaults.clusterInstanceDefaults`:: References the name of the `ConfigMap` resource that contains default cluster installation parameters. These defaults are merged with the site-specific values from the `ProvisioningRequest` CR to produce the final `ClusterInstance` resource.
+`spec.templateDefaults.policyTemplateDefaults`:: References the name of the `ConfigMap` resource that contains default Day-2 configuration policy parameters. Site-specific values from the `ProvisioningRequest` CR take precedence over these defaults.
+`spec.templateParameterSchema`:: Defines the OpenAPI v3 schema that validates parameters supplied in a `ProvisioningRequest` CR. The schema must include `nodeClusterName`, `oCloudSiteId`, `policyTemplateParameters`, and `clusterInstanceParameters`.
++
+[NOTE]
+====
+For advanced configurations including hardware data selectors, multi-node templates, and per-site hardware overrides, see xref:ocloud-configuring-advanced-hardware-management[Configure advanced hardware management].
+====
+
+. Apply the resources to the hub cluster, or commit them to the GitOps repository for ArgoCD synchronization.
+
+.Verification
+
+. Verify that the `ClusterTemplate` is validated by running the following command:
++
+[source,terminal]
+----
+$ oc get clustertemplates.clcm.openshift.io -A
+----
++
+.Example output
+[source,terminal]
+----
+NAMESPACE          NAME                   AGE   STATE       DETAILS
+ocloud-templates   sno-ran-du.v4-Y-Z-1   18s   Completed   The cluster template validation succeeded
+----
++
+A `STATE` of `Completed` with a `ClusterTemplateValidated` condition of `True` indicates that the template passed validation and is ready for use. After successful validation, the `ClusterTemplate` CR and its referenced ConfigMaps become immutable.
