@@ -1,0 +1,278 @@
+// Module included in the following assemblies:
+//
+// * machine_management/creating_machinesets/creating-machineset-osp.adoc
+
+:_mod-docs-content-type: PROCEDURE
+[id="machineset-osp-multi-az-anti-affinity_{context}"]
+= Distributing worker nodes across OpenStack availability zones with anti-affinity
+
+You can distribute {product-title} worker nodes across multiple {rh-openstack-first} Nova availability zones and configure anti-affinity policies to ensure nodes are spread across different compute hosts for improved fault tolerance.
+
+[IMPORTANT]
+====
+Availability zones in OpenStack do not inherently guarantee physical fault isolation. The actual fault tolerance depends on how your OpenStack administrator configured the zones. Consult your cloud provider to understand the isolation boundaries.
+====
+
+.Prerequisites
+
+* You have an {rh-openstack} cloud with multiple Nova availability zones configured.
+* You have identified available zones by running `openstack availability zone list --compute`.
+* You have obtained your cluster's infrastructure ID by running:
++
+[source,terminal]
+----
+$ oc get -o jsonpath='{.status.infrastructureName}{"\n"}' infrastructure cluster
+----
+
+.Procedure
+
+. Identify the availability zones in your {rh-openstack} environment:
++
+[source,terminal]
+----
+$ openstack availability zone list --compute
+----
++
+.Example output
+[source,terminal]
+----
++-----------+----------+
+| Zone Name | Status   |
++-----------+----------+
+| nova-az0  | available|
+| nova-az1  | available|
+| nova-az2  | available|
++-----------+----------+
+----
+
+. Create a server group with an anti-affinity policy for each availability zone:
++
+[source,terminal]
+----
+$ openstack server group create \
+  --policy soft-anti-affinity \
+  <infrastructure_id>-worker-<zone_name>
+----
++
+where:
++
+`<infrastructure_id>`:: Specifies your cluster's infrastructure ID.
+`<zone_name>`:: Specifies the availability zone name, for example `az0`.
++
+.Example command
+[source,terminal]
+----
+$ openstack server group create \
+  --policy soft-anti-affinity \
+  cluster-abc-worker-az0
+----
++
+[NOTE]
+====
+Use `soft-anti-affinity` to allow instance creation even if anti-affinity cannot be satisfied. Use `anti-affinity` for strict enforcement, but note this requires additional compute hosts during maintenance and may prevent scaling if insufficient hosts are available.
+====
+
+. Record the server group ID from the output:
++
+[source,terminal]
+----
+$ openstack server group show <infrastructure_id>-worker-<zone_name> -c id -f value
+----
++
+.Example output
+[source,terminal]
+----
+7ee219f3-d2e9-48a1-96c2-e7429f1b0da7
+----
+
+. List existing worker MachineSets to use as a template:
++
+[source,terminal]
+----
+$ oc get machineset -n openshift-machine-api
+----
++
+.Example output
+[source,terminal]
+----
+NAME                           DESIRED   CURRENT   READY   AVAILABLE
+cluster-abc-worker-0           3         3         3       3
+----
+
+. Export an existing worker MachineSet configuration:
++
+[source,terminal]
+----
+$ oc get machineset <existing_machineset> -n openshift-machine-api -o yaml > machineset-az0.yaml
+----
+
+. Edit the file to configure the first availability zone:
++
+[source,yaml]
+----
+apiVersion: machine.openshift.io/v1beta1
+kind: MachineSet
+metadata:
+  labels:
+    machine.openshift.io/cluster-api-cluster: <infrastructure_id>
+    machine.openshift.io/cluster-api-machine-role: worker
+    machine.openshift.io/cluster-api-machine-type: worker
+  name: <infrastructure_id>-worker-az0 # <1>
+  namespace: openshift-machine-api
+spec:
+  replicas: 2 # <2>
+  selector:
+    matchLabels:
+      machine.openshift.io/cluster-api-cluster: <infrastructure_id>
+      machine.openshift.io/cluster-api-machineset: <infrastructure_id>-worker-az0
+  template:
+    metadata:
+      labels:
+        machine.openshift.io/cluster-api-cluster: <infrastructure_id>
+        machine.openshift.io/cluster-api-machine-role: worker
+        machine.openshift.io/cluster-api-machine-type: worker
+        machine.openshift.io/cluster-api-machineset: <infrastructure_id>-worker-az0
+    spec:
+      providerSpec:
+        value:
+          apiVersion: machine.openshift.io/v1alpha1
+          availabilityZone: nova-az0 # <3>
+          cloudName: openstack
+          cloudsSecret:
+            name: openstack-cloud-credentials
+            namespace: openshift-machine-api
+          flavor: <nova_flavor>
+          image: <glance_image_name_or_location>
+          serverGroupID: <server_group_uuid_az0> # <4>
+          kind: OpenstackProviderSpec
+          networks:
+          - filter: {}
+            subnets:
+            - filter:
+                name: <subnet_name>
+                tags: openshiftClusterID=<infrastructure_id>
+          primarySubnet: <rhosp_subnet_UUID>
+          rootVolume: # <5>
+            availabilityZone: cinder-az0
+            size: 25
+            volumeType: <volume_type>
+          securityGroups:
+          - filter: {}
+            name: <infrastructure_id>-worker
+          serverMetadata:
+            Name: <infrastructure_id>-worker
+            openshiftClusterID: <infrastructure_id>
+          tags:
+          - openshiftClusterID=<infrastructure_id>
+          trunk: true
+          userDataSecret:
+            name: worker-user-data
+----
+<1> Unique MachineSet name including the availability zone identifier.
+<2> Number of worker replicas for this zone. For even distribution across 3 zones with 6 total workers, use `2` replicas per zone.
+<3> Nova availability zone where compute instances will be created.
+<4> Server group ID from step 3 to enforce anti-affinity policy.
+<5> Optional: Specify Cinder availability zone for root volumes. Aligning storage and compute zones improves reliability.
+
+. Remove the `status` section entirely from the YAML file.
+
+. Create the MachineSet for the first availability zone:
++
+[source,terminal]
+----
+$ oc create -f machineset-az0.yaml
+----
+
+. Repeat steps 2-9 for each additional availability zone, modifying:
++
+* MachineSet name (for example, `<infrastructure_id>-worker-az1`)
+* `availabilityZone` value (for example, `nova-az1`)
+* `rootVolume.availabilityZone` value (for example, `cinder-az1`)
+* `serverGroupID` value (create separate server group for each zone)
+* All label selectors to match the new MachineSet name
+
+.Verification
+
+. Verify that all MachineSets are created and scaling:
++
+[source,terminal]
+----
+$ oc get machineset -n openshift-machine-api
+----
++
+.Example output
+[source,terminal]
+----
+NAME                           DESIRED   CURRENT   READY   AVAILABLE   AGE
+cluster-abc-worker-az0         2         2         2       2           5m
+cluster-abc-worker-az1         2         2         2       2           4m
+cluster-abc-worker-az2         2         2         2       2           3m
+----
+
+. Verify that worker nodes are distributed across availability zones:
++
+[source,terminal]
+----
+$ oc get nodes -L topology.kubernetes.io/zone
+----
++
+.Example output
+[source,terminal]
+----
+NAME                    STATUS   ROLES    AGE     VERSION             ZONE
+worker-az0-1            Ready    worker   5m15s   v1.30.1+012d409     nova-az0
+worker-az0-2            Ready    worker   5m10s   v1.30.1+012d409     nova-az0
+worker-az1-1            Ready    worker   4m20s   v1.30.1+012d409     nova-az1
+worker-az1-2            Ready    worker   4m18s   v1.30.1+012d409     nova-az1
+worker-az2-1            Ready    worker   3m25s   v1.30.1+012d409     nova-az2
+worker-az2-2            Ready    worker   3m22s   v1.30.1+012d409     nova-az2
+----
++
+The `topology.kubernetes.io/zone` label is automatically applied to nodes based on the availability zone specified in the MachineSet.
+
+. Verify anti-affinity by checking that instances are on different compute hosts:
++
+[source,terminal]
+----
+$ openstack server list --name <infrastructure_id>-worker -c Name -c Host -c Status
+----
++
+.Example output
+[source,terminal]
+----
++---------------------------+------------------+---------+
+| Name                      | Host             | Status  |
++---------------------------+------------------+---------+
+| cluster-abc-worker-az0-1  | compute-host-01  | ACTIVE  |
+| cluster-abc-worker-az0-2  | compute-host-02  | ACTIVE  |
+| cluster-abc-worker-az1-1  | compute-host-03  | ACTIVE  |
+| cluster-abc-worker-az1-2  | compute-host-04  | ACTIVE  |
++---------------------------+------------------+---------+
+----
++
+Instances should be distributed across different compute hosts according to the anti-affinity policy.
+
+. Verify that instances are members of the server groups:
++
+[source,terminal]
+----
+$ openstack server group show <infrastructure_id>-worker-az0
+----
++
+.Example output
+[source,terminal]
+----
++----------+--------------------------------------+
+| Field    | Value                                |
++----------+--------------------------------------+
+| id       | 7ee219f3-d2e9-48a1-96c2-e7429f1b0da7 |
+| members  | instance-uuid-1, instance-uuid-2     |
+| name     | cluster-abc-worker-az0               |
+| policies | soft-anti-affinity                   |
++----------+--------------------------------------+
+----
+
+[NOTE]
+====
+The machine-api-provider-openstack automatically applies the `machine.openshift.io/zone` label to Machine resources, which propagates to Node resources as `topology.kubernetes.io/zone`. This enables pod topology spread constraints for zone-aware workload placement.
+====
