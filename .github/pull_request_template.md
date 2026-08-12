@@ -9,6 +9,7 @@ If a book is being created or modified, there are changes on the Customer Portal
 
 Version(s):
 <!--- Specify the version or versions of OpenShift your PR applies to. -->
+- [ ] For CQA PRs, if these changes do not apply to 4.16+, reason is provided in the linked issue.
 
 Issue:
 <!--- Add a link to the Bugzilla, Jira, or GitHub issue, if applicable. --->
