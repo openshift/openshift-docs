@@ -13,37 +13,11 @@ The OpenTelemetry eBPF Instrumentation (OBI) Receiver uses eBPF to instrument ap
 include::snippets/technology-preview.adoc[]
 :!FeatureName:
 
-The OBI Receiver runs as a `daemonset` and requires `hostPID: true` and elevated privileges to load eBPF programs. On {ocp-product-title}, you must grant these privileges through a `SecurityContextConstraints` (SCC) object that is bound to the Collector service account.
+The OBI Receiver runs as a `daemonset` and requires `hostPID: true` and elevated privileges to load eBPF programs. On {ocp-product-title}, you grant these privileges through a `SecurityContextConstraints` (SCC) object that is bound to the Collector service account.
 
-The following `SecurityContextConstraints` object allows a privileged container with `hostPID`, which works across most environments:
+In accordance with the principle of least privilege, run the OBI Receiver with only the Linux capabilities that it requires, as described in the following configuration. Use a fully privileged container only if the capability-based configuration is not sufficient in your environment, as described in the "Running the OBI Receiver in a privileged container" section.
 
-[source,yaml]
-----
-kind: SecurityContextConstraints
-apiVersion: security.openshift.io/v1
-metadata:
-  name: obi-privileged
-runAsUser:
-  type: RunAsAny
-seLinuxContext:
-  type: RunAsAny
-allowHostPorts: false
-allowHostDirVolumePlugin: false
-allowHostIPC: false
-allowHostNetwork: false
-allowHostPID: true
-allowPrivilegedContainer: true
-readOnlyRootFilesystem: false
-----
-
-Bind the SCC to the Collector service account by running the following command:
-
-[source,terminal]
-----
-$ oc adm policy add-scc-to-user obi-privileged -z obi-collector -n <namespace>
-----
-
-The following `OpenTelemetryCollector` custom resource (CR) configures the OBI Receiver by using a privileged container:
+The following `OpenTelemetryCollector` custom resource (CR) configures the OBI Receiver with only the Linux capabilities that it requires for producing distributed traces:
 
 [source,yaml]
 ----
@@ -79,6 +53,40 @@ roleRef:
   kind: ClusterRole
   name: obi
 ---
+apiVersion: security.openshift.io/v1
+kind: SecurityContextConstraints
+metadata:
+  name: obi-unprivileged
+allowHostPorts: false
+allowHostDirVolumePlugin: true
+allowHostIPC: false
+allowHostNetwork: false
+allowHostPID: true
+allowPrivilegedContainer: false
+readOnlyRootFilesystem: true
+allowedCapabilities:
+  - BPF
+  - SYS_PTRACE
+  - NET_RAW
+  - NET_ADMIN
+  - CHECKPOINT_RESTORE
+  - DAC_READ_SEARCH
+  - PERFMON
+runAsUser:
+  type: RunAsAny
+seLinuxContext:
+  type: RunAsAny
+volumes:
+  - emptyDir
+  - hostPath
+  - configMap
+  - secret
+  - downwardAPI
+  - projected
+users:
+- system:serviceaccount:<namespace>:obi-collector
+# ...
+---
 apiVersion: opentelemetry.io/v1beta1
 kind: OpenTelemetryCollector
 metadata:
@@ -90,7 +98,29 @@ spec:
   hostPID: true # <1>
   securityContext:
     runAsUser: 0
-    privileged: true
+    readOnlyRootFilesystem: true
+    capabilities:
+      add:
+        - BPF
+        - SYS_PTRACE
+        - NET_RAW
+        - NET_ADMIN
+        - CHECKPOINT_RESTORE
+        - DAC_READ_SEARCH
+        - PERFMON
+      drop:
+        - ALL
+  volumes:
+    - name: var-run-obi
+      emptyDir: {}
+    - name: cgroup
+      hostPath:
+        path: /sys/fs/cgroup
+  volumeMounts:
+    - name: var-run-obi
+      mountPath: /var/run/obi
+    - name: cgroup
+      mountPath: /sys/fs/cgroup
   config:
     receivers:
       obi:
@@ -116,57 +146,47 @@ spec:
 <2> Selects the workloads to instrument. See the "Selecting workloads" section.
 <3> Enables Kubernetes attribute enrichment. See the "Kubernetes attribute enrichment" section.
 
-[id="otel-receivers-obi-receiver-unprivileged_{context}"]
-== Running the OBI Receiver without a privileged container
+The receiver requires the following Linux capabilities:
 
-Instead of granting full privileges, you can run the OBI Receiver with only the Linux capabilities that it requires.
+`BPF` and `PERFMON`:: Load the eBPF programs.
+`SYS_PTRACE`:: Inspect processes and executables through the `/proc` filesystem.
+`NET_RAW`:: Attach socket filters to capture HTTP requests.
+`NET_ADMIN`:: Attach the traffic control (TC) programs that inject and read distributed trace context. This capability is required for trace context propagation.
+`CHECKPOINT_RESTORE` and `DAC_READ_SEARCH`:: Open the ELF files of the instrumented processes.
 
-The following `SecurityContextConstraints` object allows the required eBPF capabilities without a privileged container:
+[NOTE]
+====
+To instrument Go applications or TLS-encrypted traffic, add the `SYS_ADMIN` capability, which is required to attach uprobes on kernels that restrict them. Because the `SYS_ADMIN` capability grants broad privileges, consider running the OBI Receiver in a privileged container instead, as described in the following section.
+====
+
+[id="otel-receivers-obi-receiver-privileged_{context}"]
+== Running the OBI Receiver in a privileged container
+
+If the capability-based configuration is not sufficient in your environment, you can run the OBI Receiver in a fully privileged container instead.
+
+The following `OpenTelemetryCollector` CR configures the OBI Receiver by using a privileged container. The `ServiceAccount`, `ClusterRole`, and `ClusterRoleBinding` are the same as in the capability-based configuration.
 
 [source,yaml]
 ----
-kind: SecurityContextConstraints
 apiVersion: security.openshift.io/v1
+kind: SecurityContextConstraints
 metadata:
-  name: obi-unprivileged
+  name: obi-privileged
+allowHostPorts: false
+allowHostDirVolumePlugin: false
+allowHostIPC: false
+allowHostNetwork: false
+allowHostPID: true
+allowPrivilegedContainer: true
+readOnlyRootFilesystem: false
 runAsUser:
   type: RunAsAny
 seLinuxContext:
   type: RunAsAny
-allowHostPorts: false
-allowHostDirVolumePlugin: true
-allowHostIPC: false
-allowHostNetwork: false
-allowHostPID: true
-allowPrivilegedContainer: false
-readOnlyRootFilesystem: true
-allowedCapabilities:
-  - BPF
-  - SYS_PTRACE
-  - NET_RAW
-  - CHECKPOINT_RESTORE
-  - DAC_READ_SEARCH
-  - PERFMON
-volumes:
-  - emptyDir
-  - hostPath
-  - configMap
-  - secret
-  - downwardAPI
-  - projected
-----
-
-Bind the SCC to the Collector service account by running the following command:
-
-[source,terminal]
-----
-$ oc adm policy add-scc-to-user obi-unprivileged -z obi-collector -n <namespace>
-----
-
-The following `OpenTelemetryCollector` CR configures the OBI Receiver with only the required capabilities:
-
-[source,yaml]
-----
+users:
+- system:serviceaccount:<namespace>:obi-collector
+# ...
+---
 apiVersion: opentelemetry.io/v1beta1
 kind: OpenTelemetryCollector
 metadata:
@@ -178,28 +198,7 @@ spec:
   hostPID: true
   securityContext:
     runAsUser: 0
-    readOnlyRootFilesystem: true
-    capabilities:
-      add:
-        - BPF
-        - SYS_PTRACE
-        - NET_RAW
-        - CHECKPOINT_RESTORE
-        - DAC_READ_SEARCH
-        - PERFMON
-      drop:
-        - ALL
-  volumes:
-    - name: var-run-obi
-      emptyDir: {}
-    - name: cgroup
-      hostPath:
-        path: /sys/fs/cgroup
-  volumeMounts:
-    - name: var-run-obi
-      mountPath: /var/run/obi
-    - name: cgroup
-      mountPath: /sys/fs/cgroup
+    privileged: true
   config:
     receivers:
       obi:
@@ -221,8 +220,6 @@ spec:
           exporters: [debug]
 # ...
 ----
-
-The `ServiceAccount`, `ClusterRole`, and `ClusterRoleBinding` are the same as in the privileged configuration.
 
 [id="otel-receivers-obi-receiver-selecting-workloads_{context}"]
 == Selecting workloads
