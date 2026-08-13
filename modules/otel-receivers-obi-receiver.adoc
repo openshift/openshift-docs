@@ -1,0 +1,281 @@
+// Module included in the following assemblies:
+//
+// * otel-collector/otel-collector-receivers.adoc
+
+:_mod-docs-content-type: REFERENCE
+[id="otel-receivers-obi-receiver_{context}"]
+= OBI Receiver
+
+[role="_abstract"]
+The OpenTelemetry eBPF Instrumentation (OBI) Receiver uses eBPF to instrument applications at the kernel level, producing distributed traces without code changes or language-specific agents. The receiver inspects processes and the operating system networking stack, and combines OBI's zero-code instrumentation with the Collector's processing capabilities, such as tail-based sampling, data filtering, and multi-backend export.
+
+:FeatureName: The OBI Receiver
+include::snippets/technology-preview.adoc[]
+:!FeatureName:
+
+The OBI Receiver runs as a `daemonset` and requires `hostPID: true` and elevated privileges to load eBPF programs. On {ocp-product-title}, you must grant these privileges through a `SecurityContextConstraints` (SCC) object that is bound to the Collector service account.
+
+The following `SecurityContextConstraints` object allows a privileged container with `hostPID`, which works across most environments:
+
+[source,yaml]
+----
+kind: SecurityContextConstraints
+apiVersion: security.openshift.io/v1
+metadata:
+  name: obi-privileged
+runAsUser:
+  type: RunAsAny
+seLinuxContext:
+  type: RunAsAny
+allowHostPorts: false
+allowHostDirVolumePlugin: false
+allowHostIPC: false
+allowHostNetwork: false
+allowHostPID: true
+allowPrivilegedContainer: true
+readOnlyRootFilesystem: false
+----
+
+Bind the SCC to the Collector service account by running the following command:
+
+[source,terminal]
+----
+$ oc adm policy add-scc-to-user obi-privileged -z obi-collector -n <namespace>
+----
+
+The following `OpenTelemetryCollector` custom resource (CR) configures the OBI Receiver by using a privileged container:
+
+[source,yaml]
+----
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: obi-collector
+  namespace: <namespace>
+# ...
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: obi
+rules:
+  - apiGroups: ['apps']
+    resources: ['replicasets']
+    verbs: ['list', 'watch']
+  - apiGroups: ['']
+    resources: ['pods', 'services', 'nodes']
+    verbs: ['list', 'watch']
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: obi
+subjects:
+  - kind: ServiceAccount
+    name: obi-collector
+    namespace: <namespace>
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: obi
+---
+apiVersion: opentelemetry.io/v1beta1
+kind: OpenTelemetryCollector
+metadata:
+  name: obi-collector
+  namespace: <namespace>
+spec:
+  mode: daemonset
+  serviceAccount: obi-collector
+  hostPID: true # <1>
+  securityContext:
+    runAsUser: 0
+    privileged: true
+  config:
+    receivers:
+      obi:
+        discovery:
+          instrument:
+            - k8s_namespace: <application_namespace> # <2>
+              k8s_pod_labels:
+                obi.instrument: "true"
+        attributes:
+          kubernetes:
+            enable: "true" # <3>
+    exporters:
+      debug:
+        verbosity: detailed
+    service:
+      pipelines:
+        traces:
+          receivers: [obi]
+          exporters: [debug]
+# ...
+----
+<1> Required so that the receiver can access the processes on the host.
+<2> Selects the workloads to instrument. See the "Selecting workloads" section.
+<3> Enables Kubernetes attribute enrichment. See the "Kubernetes attribute enrichment" section.
+
+[id="otel-receivers-obi-receiver-unprivileged_{context}"]
+== Running the OBI Receiver without a privileged container
+
+Instead of granting full privileges, you can run the OBI Receiver with only the Linux capabilities that it requires.
+
+The following `SecurityContextConstraints` object allows the required eBPF capabilities without a privileged container:
+
+[source,yaml]
+----
+kind: SecurityContextConstraints
+apiVersion: security.openshift.io/v1
+metadata:
+  name: obi-unprivileged
+runAsUser:
+  type: RunAsAny
+seLinuxContext:
+  type: RunAsAny
+allowHostPorts: false
+allowHostDirVolumePlugin: true
+allowHostIPC: false
+allowHostNetwork: false
+allowHostPID: true
+allowPrivilegedContainer: false
+readOnlyRootFilesystem: true
+allowedCapabilities:
+  - BPF
+  - SYS_PTRACE
+  - NET_RAW
+  - CHECKPOINT_RESTORE
+  - DAC_READ_SEARCH
+  - PERFMON
+volumes:
+  - emptyDir
+  - hostPath
+  - configMap
+  - secret
+  - downwardAPI
+  - projected
+----
+
+Bind the SCC to the Collector service account by running the following command:
+
+[source,terminal]
+----
+$ oc adm policy add-scc-to-user obi-unprivileged -z obi-collector -n <namespace>
+----
+
+The following `OpenTelemetryCollector` CR configures the OBI Receiver with only the required capabilities:
+
+[source,yaml]
+----
+apiVersion: opentelemetry.io/v1beta1
+kind: OpenTelemetryCollector
+metadata:
+  name: obi-collector
+  namespace: <namespace>
+spec:
+  mode: daemonset
+  serviceAccount: obi-collector
+  hostPID: true
+  securityContext:
+    runAsUser: 0
+    readOnlyRootFilesystem: true
+    capabilities:
+      add:
+        - BPF
+        - SYS_PTRACE
+        - NET_RAW
+        - CHECKPOINT_RESTORE
+        - DAC_READ_SEARCH
+        - PERFMON
+      drop:
+        - ALL
+  volumes:
+    - name: var-run-obi
+      emptyDir: {}
+    - name: cgroup
+      hostPath:
+        path: /sys/fs/cgroup
+  volumeMounts:
+    - name: var-run-obi
+      mountPath: /var/run/obi
+    - name: cgroup
+      mountPath: /sys/fs/cgroup
+  config:
+    receivers:
+      obi:
+        discovery:
+          instrument:
+            - k8s_namespace: <application_namespace>
+              k8s_pod_labels:
+                obi.instrument: "true"
+        attributes:
+          kubernetes:
+            enable: "true"
+    exporters:
+      debug:
+        verbosity: detailed
+    service:
+      pipelines:
+        traces:
+          receivers: [obi]
+          exporters: [debug]
+# ...
+----
+
+The `ServiceAccount`, `ClusterRole`, and `ClusterRoleBinding` are the same as in the privileged configuration.
+
+[id="otel-receivers-obi-receiver-selecting-workloads_{context}"]
+== Selecting workloads
+
+The `discovery.instrument` list controls which processes the OBI Receiver attaches to. The following example filters by namespace and pod labels, so that only pods matching all of the fields are instrumented:
+
+[source,yaml]
+----
+# ...
+receivers:
+  obi:
+    discovery:
+      instrument:
+        - k8s_namespace: frontend
+          k8s_pod_labels:
+            obi.instrument: "true"
+        - k8s_namespace: backend
+          k8s_pod_labels:
+            obi.instrument: "true"
+# ...
+----
+
+Add the matching label to the workload pod templates to opt them in:
+
+[source,yaml]
+----
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: my-app
+  namespace: frontend
+spec:
+  template:
+    metadata:
+      labels:
+        obi.instrument: "true"
+    spec:
+      containers:
+        - name: my-app
+          image: my-app:latest
+# ...
+----
+
+To match on pod annotations instead of pod labels, use the `k8s_pod_annotations` field in place of the `k8s_pod_labels` field.
+
+[id="otel-receivers-obi-receiver-attribute-enrichment_{context}"]
+== Kubernetes attribute enrichment
+
+Setting the `attributes.kubernetes.enable` field to `"true"` adds resource attributes such as `k8s.namespace.name`, `k8s.pod.name`, and `service.name` to the traces. For this enrichment, the Collector `ServiceAccount` requires `list` and `watch` permissions on the following resources: pods, nodes, services, replicationcontrollers, deployments, replicasets, statefulsets, and daemonsets.
+
+[role="_additional-resources"]
+.Additional resources
+* link:https://opentelemetry.io/docs/zero-code/obi/[OpenTelemetry documentation: OpenTelemetry eBPF Instrumentation (OBI)]
+* link:https://opentelemetry.io/docs/zero-code/obi/configure/collector-receiver/[OpenTelemetry documentation: Run OBI as a Collector receiver]
+* link:https://opentelemetry.io/docs/zero-code/obi/configure/service-discovery/[OpenTelemetry documentation: OBI service discovery]
+* link:https://opentelemetry.io/docs/zero-code/obi/setup/kubernetes/[OpenTelemetry documentation: Deploy OBI in Kubernetes]
