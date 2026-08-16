@@ -1,0 +1,34 @@
+// Module included in the following assemblies:
+//
+// * /serverless/eventing/triggers/create-trigger-cli.adoc
+
+:_mod-docs-content-type: PROCEDURE
+[id="serverless-create-kn-trigger_{context}"]
+= Creating a trigger by using the Knative CLI
+
+You can use the `kn trigger create` command to create a trigger.
+
+.Prerequisites
+
+* The {ServerlessOperatorName} and Knative Eventing are installed on your {product-title} cluster.
+* You have installed the Knative (`kn`) CLI.
+* You have created a project or have access to a project with the appropriate roles and permissions to create applications and other workloads in {product-title}.
+
+.Procedure
+
+* Create a trigger:
++
+[source,terminal]
+----
+$ kn trigger create <trigger_name> --broker <broker_name> --filter <key=value> --sink <sink_name>
+----
++
+Alternatively, you can create a trigger and simultaneously create the `default` broker using broker injection:
++
+[source,terminal]
+----
+$ kn trigger create <trigger_name> --inject-broker --filter <key=value> --sink <sink_name>
+----
++
+By default, triggers forward all events sent to a broker to sinks that are subscribed to that broker.
+Using the `--filter` attribute for triggers allows you to filter events from a broker, so that subscribers will only receive a subset of events based on your defined criteria.

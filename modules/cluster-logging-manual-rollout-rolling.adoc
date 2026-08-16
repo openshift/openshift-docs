@@ -1,0 +1,221 @@
+// Module included in the following assemblies:
+//
+// * observability/logging/log_storage/logging-config-es-store.adoc
+
+:_mod-docs-content-type: PROCEDURE
+[id="cluster-logging-manual-rollout-rolling_{context}"]
+= Performing an Elasticsearch rolling cluster restart
+
+Perform a rolling restart when you change the `elasticsearch` config map or any of the `elasticsearch-*` deployment configurations.
+
+Also, a rolling restart is recommended if the nodes on which an Elasticsearch pod runs requires a reboot.
+
+.Prerequisites
+
+* The Red Hat OpenShift Logging and Elasticsearch Operators must be installed.
+
+.Procedure
+
+To perform a rolling cluster restart:
+
+. Change to the `openshift-logging` project:
++
+[source,terminal]
+----
+$ oc project openshift-logging
+----
+
+. Get the names of the Elasticsearch pods:
++
+----
+$ oc get pods -l component=elasticsearch
+----
+
+. Scale down the collector pods so they stop sending new logs to Elasticsearch:
++
+[source,terminal]
+----
+$ oc -n openshift-logging patch daemonset/collector -p '{"spec":{"template":{"spec":{"nodeSelector":{"logging-infra-collector": "false"}}}}}'
+----
+
+. Perform a shard synced flush using the {product-title} link:https://github.com/openshift/origin-aggregated-logging/tree/master/elasticsearch#es_util[*es_util*] tool to ensure there are no pending operations waiting to be written to disk prior to shutting down:
++
+[source,terminal]
+----
+$ oc exec <any_es_pod_in_the_cluster> -c elasticsearch -- es_util --query="_flush/synced" -XPOST
+----
++
+For example:
++
+[source,terminal]
+----
+$ oc exec -c elasticsearch-cdm-5ceex6ts-1-dcd6c4c7c-jpw6  -c elasticsearch -- es_util --query="_flush/synced" -XPOST
+----
++
+.Example output
+[source,terminal]
+----
+{"_shards":{"total":4,"successful":4,"failed":0},".security":{"total":2,"successful":2,"failed":0},".kibana_1":{"total":2,"successful":2,"failed":0}}
+----
+
+. Prevent shard balancing when purposely bringing down nodes using the {product-title}
+link:https://github.com/openshift/origin-aggregated-logging/tree/master/elasticsearch#es_util[*es_util*] tool:
++
+[source,terminal]
+----
+$ oc exec <any_es_pod_in_the_cluster> -c elasticsearch -- es_util --query="_cluster/settings" -XPUT -d '{ "persistent": { "cluster.routing.allocation.enable" : "primaries" } }'
+----
++
+For example:
++
+[source,terminal]
+----
+$ oc exec elasticsearch-cdm-5ceex6ts-1-dcd6c4c7c-jpw6 -c elasticsearch -- es_util --query="_cluster/settings" -XPUT -d '{ "persistent": { "cluster.routing.allocation.enable" : "primaries" } }'
+----
++
+.Example output
+[source,terminal]
+----
+{"acknowledged":true,"persistent":{"cluster":{"routing":{"allocation":{"enable":"primaries"}}}},"transient":
+----
+
+. After the command is complete, for each deployment you have for an ES cluster:
+
+.. By default, the {product-title} Elasticsearch cluster blocks rollouts to their nodes. Use the following command to allow rollouts
+and allow the pod to pick up the changes:
++
+[source,terminal]
+----
+$ oc rollout resume deployment/<deployment-name>
+----
++
+For example:
++
+[source,terminal]
+----
+$ oc rollout resume deployment/elasticsearch-cdm-0-1
+----
++
+[source,terminal]
+----
+deployment.extensions/elasticsearch-cdm-0-1 resumed
+----
++
+A new pod is deployed. After the pod has a ready container, you can
+move on to the next deployment.
++
+[source,terminal]
+----
+$ oc get pods -l component=elasticsearch-
+----
++
+.Example output
+[source,terminal]
+----
+NAME                                            READY   STATUS    RESTARTS   AGE
+elasticsearch-cdm-5ceex6ts-1-dcd6c4c7c-jpw6k    2/2     Running   0          22h
+elasticsearch-cdm-5ceex6ts-2-f799564cb-l9mj7    2/2     Running   0          22h
+elasticsearch-cdm-5ceex6ts-3-585968dc68-k7kjr   2/2     Running   0          22h
+----
+
+.. After the deployments are complete, reset the pod to disallow rollouts:
++
+[source,terminal]
+----
+$ oc rollout pause deployment/<deployment-name>
+----
++
+For example:
++
+[source,terminal]
+----
+$ oc rollout pause deployment/elasticsearch-cdm-0-1
+----
++
+[source,terminal]
+----
+deployment.extensions/elasticsearch-cdm-0-1 paused
+----
++
+.. Check that the Elasticsearch cluster is in a `green` or `yellow` state:
++
+[source,terminal]
+----
+$ oc exec <any_es_pod_in_the_cluster> -c elasticsearch -- es_util --query=_cluster/health?pretty=true
+----
++
+[NOTE]
+====
+If you performed a rollout on the Elasticsearch pod you used in the previous commands, the pod no longer exists and you need a new pod name here.
+====
++
+For example:
++
+[source,terminal]
+----
+$ oc exec elasticsearch-cdm-5ceex6ts-1-dcd6c4c7c-jpw6 -c elasticsearch -- es_util --query=_cluster/health?pretty=true
+----
++
+.Example output
+[source,json]
+----
+{
+  "cluster_name" : "elasticsearch",
+  "status" : "yellow", <1>
+  "timed_out" : false,
+  "number_of_nodes" : 3,
+  "number_of_data_nodes" : 3,
+  "active_primary_shards" : 8,
+  "active_shards" : 16,
+  "relocating_shards" : 0,
+  "initializing_shards" : 0,
+  "unassigned_shards" : 1,
+  "delayed_unassigned_shards" : 0,
+  "number_of_pending_tasks" : 0,
+  "number_of_in_flight_fetch" : 0,
+  "task_max_waiting_in_queue_millis" : 0,
+  "active_shards_percent_as_number" : 100.0
+}
+----
+<1> Make sure this parameter value is `green` or `yellow` before proceeding.
+
+. If you changed the Elasticsearch configuration map, repeat these steps for each Elasticsearch pod.
+
+. After all the deployments for the cluster have been rolled out, re-enable shard balancing:
++
+[source,terminal]
+----
+$ oc exec <any_es_pod_in_the_cluster> -c elasticsearch -- es_util --query="_cluster/settings" -XPUT -d '{ "persistent": { "cluster.routing.allocation.enable" : "all" } }'
+----
++
+For example:
++
+[source,terminal]
+----
+$ oc exec elasticsearch-cdm-5ceex6ts-1-dcd6c4c7c-jpw6 -c elasticsearch -- es_util --query="_cluster/settings" -XPUT -d '{ "persistent": { "cluster.routing.allocation.enable" : "all" } }'
+----
++
+.Example output
+[source,terminal]
+----
+{
+  "acknowledged" : true,
+  "persistent" : { },
+  "transient" : {
+    "cluster" : {
+      "routing" : {
+        "allocation" : {
+          "enable" : "all"
+        }
+      }
+    }
+  }
+}
+----
+
+. Scale up the collector pods so they send new logs to Elasticsearch.
++
+[source,terminal]
+----
+$ oc -n openshift-logging patch daemonset/collector -p '{"spec":{"template":{"spec":{"nodeSelector":{"logging-infra-collector": "true"}}}}}'
+----

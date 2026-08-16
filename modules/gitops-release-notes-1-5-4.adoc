@@ -1,0 +1,17 @@
+// Module included in the following assembly:
+//
+// * gitops/gitops-release-notes.adoc
+
+:_mod-docs-content-type: REFERENCE
+
+[id="gitops-release-notes-1-5-4_{context}"]
+= Release notes for {gitops-title} 1.5.4
+
+{gitops-title} 1.5.4 is now available on {product-title} 4.8, 4.9, 4.10, and 4.11.
+
+[id="fixed-issues-1-5-4_{context}"]
+== Fixed issues
+
+The following issues have been resolved in the current release:
+
+* Before this update, the {gitops-title} was using an older version of the *REDIS 5* image tag. This update fixes the issue and upgrades the `rhel8/redis-5` image tag. link:https://issues.redhat.com/browse/GITOPS-2037[GITOPS-2037]

@@ -1,0 +1,217 @@
+// Module included in the following assemblies:
+//
+// * networking/configuring-ipfailover.adoc
+
+:_mod-docs-content-type: PROCEDURE
+[id="nw-ipfailover-configuration_{context}"]
+= Configuring IP failover in your cluster
+
+[role="_abstract"]
+To configure IP failover in your {product-title} cluster and provide high availability for Virtual IP addresses, you can create a deployment that runs Keepalived on selected nodes to monitor services and fail over VIPs when nodes become unavailable.
+
+The IP failover deployment ensures that a failover pod runs on each of the nodes matching the constraints or the label used. The pod, which runs Keepalived, can monitor an endpoint and use Virtual Router Redundancy Protocol (VRRP) to fail over the virtual IP (VIP) from one node to another if the first node cannot reach the service or endpoint.
+
+For production use, set a `selector` that selects at least two nodes, and set `replicas` equal to the number of selected nodes.
+
+.Prerequisites
+
+* You have logged in to the cluster as a user with `cluster-admin` privileges.
+* You have created a pull secret.
+* {rh-openstack-first} only: 
+** You have installed an link:https://docs.openstack.org/python-openstackclient/latest/[{rh-openstack} client ({op-system} documentation)] on the target environment.
+** You have downloaded the link:https://docs.openstack.org/zh_CN/user-guide/common/cli-set-environment-variables-using-openstack-rc.html[{rh-openstack} `openrc.sh` rc file ({op-system} documentation)].
+
+.Procedure
+
+. Create an IP failover service account:
++
+[source,terminal]
+----
+$ oc create sa ipfailover
+----
+
+. Update security context constraints (SCC) for `hostNetwork`:
++
+[source,terminal]
+----
+$ oc adm policy add-scc-to-user privileged -z ipfailover
+----
++
+[source,terminal]
+----
+$ oc adm policy add-scc-to-user hostnetwork -z ipfailover
+----
+
+. {rh-openstack-first} only: Complete the following steps to make a failover VIP address reachable on {rh-openstack} ports.
++
+.. Use the {rh-openstack} CLI to show the default {rh-openstack} API and VIP addresses in the `allowed_address_pairs` parameter of your {rh-openstack} cluster:
++
+[source,terminal]
+----
+$ openstack port show <cluster_name> -c allowed_address_pairs
+----
++
+.Output example
+[source,terminal,subs="+attributes"]
+----
+*Field*                  *Value*
+allowed_address_pairs    ip_address='192.168.0.5', mac_address='fa:16:3e:31:f9:cb'
+                         ip_address='192.168.0.7', mac_address='fa:16:3e:31:f9:cb'
+----
++
+.. Set a different VIP address for the IP failover deployment and make the address reachable on {rh-openstack} ports by entering the following command in the {rh-openstack} CLI. Do not set any default {rh-openstack} API and VIP addresses as the failover VIP address for the IP failover deployment.
++
+.Example of adding the `1.1.1.1` failover IP address as an allowed address on {rh-openstack} ports.
+[source,terminal,subs="+attributes"]
+----
+$ openstack port set <cluster_name> --allowed-address ip-address=1.1.1.1,mac-address=fa:fa:16:3e:31:f9:cb
+----
++
+.. Create a deployment YAML file to configure IP failover for your deployment. See "Example deployment YAML for IP failover configuration" in a later step.
++
+.. Specify the following specification in the IP failover deployment so that you pass the failover VIP address to the `OPENSHIFT_HA_VIRTUAL_IPS` environment variable:
++
+.Example of adding the `1.1.1.1` VIP address to `OPENSHIFT_HA_VIRTUAL_IPS`
+[source,yaml,subs="attributes,quotes"]
+----
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: ipfailover-keepalived
+# ...
+      spec:
+          env:
+          - name: OPENSHIFT_HA_VIRTUAL_IPS 
+          value: "1.1.1.1"
+# ...
+----
+
+. Create a deployment YAML file to configure IP failover.
++
+[NOTE]
+====
+For {rh-openstack-first}, you do not need to re-create the deployment YAML file. You already created this file as part of the earlier instructions.
+====
++
+.Example deployment YAML for IP failover configuration
+[source,yaml,subs="attributes+"]
+----
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: ipfailover-keepalived
+  labels:
+    ipfailover: hello-openshift
+spec:
+  strategy:
+    type: Recreate
+  replicas: 2
+  selector:
+    matchLabels:
+      ipfailover: hello-openshift
+  template:
+    metadata:
+      labels:
+        ipfailover: hello-openshift
+    spec:
+      serviceAccountName: ipfailover
+      privileged: true
+      hostNetwork: true
+      nodeSelector:
+        node-role.kubernetes.io/worker: ""
+      containers:
+      - name: openshift-ipfailover
+        image: registry.redhat.io/openshift4/ose-keepalived-ipfailover-rhel9:v{product-version}
+        ports:
+        - containerPort: 63000
+          hostPort: 63000
+        imagePullPolicy: IfNotPresent
+        securityContext:
+          privileged: true
+        volumeMounts:
+        - name: lib-modules
+          mountPath: /lib/modules
+          readOnly: true
+        - name: host-slash
+          mountPath: /host
+          readOnly: true
+          mountPropagation: HostToContainer
+        - name: etc-sysconfig
+          mountPath: /etc/sysconfig
+          readOnly: true
+        - name: config-volume
+          mountPath: /etc/keepalive
+        env:
+        - name: OPENSHIFT_HA_CONFIG_NAME
+          value: "ipfailover"
+        - name: OPENSHIFT_HA_VIRTUAL_IPS
+          value: "1.1.1.1-2"
+        - name: OPENSHIFT_HA_VIP_GROUPS
+          value: "10"
+        - name: OPENSHIFT_HA_NETWORK_INTERFACE
+          value: "ens3" #The host interface to assign the VIPs
+        - name: OPENSHIFT_HA_MONITOR_PORT
+          value: "30060"
+        - name: OPENSHIFT_HA_VRRP_ID_OFFSET
+          value: "10"
+        - name: OPENSHIFT_HA_REPLICA_COUNT
+          value: "2" #Must match the number of replicas in the deployment
+        - name: OPENSHIFT_HA_USE_UNICAST
+          value: "false"
+        #- name: OPENSHIFT_HA_UNICAST_PEERS
+          #value: "10.0.148.40,10.0.160.234,10.0.199.110"
+        - name: OPENSHIFT_HA_IPTABLES_CHAIN
+          value: "INPUT"
+        #- name: OPENSHIFT_HA_NOTIFY_SCRIPT
+        #  value: /etc/keepalive/mynotifyscript.sh
+        - name: OPENSHIFT_HA_CHECK_SCRIPT
+          value: "/etc/keepalive/mycheckscript.sh"
+        - name: OPENSHIFT_HA_PREEMPTION
+          value: "preempt_delay 300"
+        - name: OPENSHIFT_HA_CHECK_INTERVAL
+          value: "2"
+        livenessProbe:
+          initialDelaySeconds: 10
+          exec:
+            command:
+            - pgrep
+            - keepalived
+      volumes:
+      - name: lib-modules
+        hostPath:
+          path: /lib/modules
+      - name: host-slash
+        hostPath:
+          path: /
+      - name: etc-sysconfig
+        hostPath:
+          path: /etc/sysconfig
+      # config-volume contains the check script
+      # created with `oc create configmap keepalived-checkscript --from-file=mycheckscript.sh`
+      - configMap:
+          defaultMode: 0755
+          name: keepalived-checkscript
+        name: config-volume
+      imagePullSecrets:
+        - name: openshift-pull-secret
+----
++
+where:
++
+--
+`ipfailover-keepalived`:: Specifies the name of the IP failover deployment.
+`OPENSHIFT_HA_VIRTUAL_IPS`:: Specifies the lis  t of IP address ranges to replicate. This must be provided. For example, `1.2.3.4-6,1.2.3.9`.
+`OPENSHIFT_HA_VIP_GROUPS`:: Specifies the number of groups to create for VRRP. If not set, a group is created for each virtual IP range specified with the `OPENSHIFT_HA_VIP_GROUPS` variable.
+`OPENSHIFT_HA_NETWORK_INTERFACE`:: Specifies the interface name that IP failover uses to send VRRP traffic. By default, `eth0` is used.
+`OPENSHIFT_HA_MONITOR_PORT`:: Specifies the IP failover pod tries to open a TCP connection to this port on each VIP. If connection is established, the service is considered to be running. If this port is set to `0`, the test always passes. The default value is `80`.
+`OPENSHIFT_HA_VRRP_ID_OFFSET`:: Specifies the offset value used to set the virtual router IDs. Using different offset values allows multiple IP failover configurations to exist within the same cluster. The default offset is `10`, and the allowed range is `0` through `255`.
+`OPENSHIFT_HA_REPLICA_COUNT`:: Specifies the number of replicas to create. This must match `spec.replicas` value in IP failover configuration. The default value is `2`.
+`OPENSHIFT_HA_USE_UNICAST`:: Specifies whether to use unicast mode for VRRP. The default value is `false`.
+`OPENSHIFT_HA_UNICAST_PEERS`:: Specifies the list of IP addresses of the unicast peers. This must be provided if `OPENSHIFT_HA_USE_UNICAST` is set to `true`.
+`OPENSHIFT_HA_IPTABLES_CHAIN`:: Specifies the name of the `iptables` chain to automatically add an `iptables` rule to allow the VRRP traffic on. If the value is not set, an `iptables` rule is not added. If the chain does not exist, it is not created, and Keepalived operates in unicast mode. The default is `INPUT`.
+`OPENSHIFT_HA_NOTIFY_SCRIPT`:: Specifies the full path name in the pod file system of a script that is run whenever the state changes.
+`OPENSHIFT_HA_CHECK_SCRIPT`:: Specifies the full path name in the pod file system of a script that is periodically run to verify the application is operating.
+`OPENSHIFT_HA_PREEMPTION`:: Specifies the strategy for handling a new higher priority host. The default value is `preempt_delay 300`, which causes a Keepalived instance to take over a VIP after 5 minutes if a lower-priority master is holding the VIP.
+`OPENSHIFT_HA_CHECK_INTERVAL`:: Specifies the period, in seconds, that the check script is run. The default value is `2`.
+`openshift-pull-secret`:: Specifies the name of the pull secret to use for the IP failover deployment. Create the pull secret before creating the deployment, otherwise you will get an error when creating the deployment.
+--

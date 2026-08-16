@@ -1,0 +1,136 @@
+// Module included in the following assemblies:
+//
+// * etcd/KMS_v2/kms-disabling.adoc
+
+:_mod-docs-content-type: PROCEDURE
+[id="kms-disabling-encryption_{context}"]
+= Disable KMS encryption
+
+[role="_abstract"]
+You can disable external KMS encryption and migrate to local encryption to simplify operations or resolve KMS connectivity issues.
+
+.Prerequisites
+
+* You have access to the cluster as a user with the `cluster-admin` role.
+* You have created an etcd backup.
+
+[WARNING]
+====
+Re-encryption of all etcd data will occur.
+====
+
+.Procedure
+
+. Edit the `APIServer` custom resource by entering the following command:
++
+[source,terminal]
+----
+$ oc edit apiserver cluster
+----
+
+. Change the encryption configuration:
++
+[source,yaml]
+----
+apiVersion: config.openshift.io/v1
+kind: APIServer
+metadata:
+  name: cluster
+spec:
+  encryption:
+    type: <encryption>
+----
++
+Replace `<encryption>` with `aescbc`, `aesgcm`, or `identity`.
+
+. Save and exit.
++
+{product-title} automatically migrates etcd data. Migration time depends on etcd size and secret count.
+
+. Monitor the migration progress by entering the following command:
++
+[source,terminal]
+----
+$ oc get openshiftapiserver -o=jsonpath='{range .items[0].status.conditions[?(@.type=="Encrypted")]}{.reason}{"\n"}{.message}{"\n"}{end}'
+----
++
+Wait until the output shows `EncryptionCompleted`.
+
+. Verify kube-apiserver pods rolled out by entering the following command:
++
+[source,terminal]
+----
+$ oc get pods -n openshift-kube-apiserver -l app=openshift-kube-apiserver
+----
+
+. Remove the static pod manifest from each control plane node by running the following command:
++
+[source,terminal]
+----
+$ for node in $(oc get nodes --selector=node-role.kubernetes.io/master -o name | cut -d/ -f2); do
+    echo "Removing static pod from $node..."
+    oc debug node/$node -- chroot /host \
+      rm -f /etc/kubernetes/manifests/vault-kms-plugin.yaml
+  done
+----
++
+The kubelet automatically stops static pods when their manifest is removed from `/etc/kubernetes/manifests/`.
+
+. Clean up the socket directory by running the following command:
++
+[source,terminal]
+----
+$ for node in $(oc get nodes --selector=node-role.kubernetes.io/master -o name | cut -d/ -f2); do
+    oc debug node/$node -- chroot /host rm -rf /var/run/kmsplugin
+  done
+----
+
+. After backup retention period passes, decommission the KMS key.
+
+.Verification
+
+. Verify the encryption type by entering the following command:
++
+[source,terminal]
+----
+$ oc get apiserver cluster -o jsonpath='{.spec.encryption.type}'
+----
+
+. Verify that a test secret uses the new encryption type:
++
+--
+.. Create a test secret by entering the following command:
++
+[source,terminal]
+----
+$ oc create secret generic encryption-test --from-literal=key=value -n default
+----
+
+.. Get an etcd pod name by entering the following command:
++
+[source,terminal]
+----
+$ oc get pods -n openshift-etcd -l app=etcd -o name | head -1
+----
+
+.. Check the encryption prefix by entering the following command:
++
+[source,terminal]
+----
+$ oc exec -n openshift-etcd <etcd_pod_name> -- etcdctl get /kubernetes.io/secrets/default/encryption-test --print-value-only | hexdump -C | head -1
+----
++
+Output should begin with `k8s:enc:aescbc:v1:`, `k8s:enc:aesgcm:v1:`, or show readable JSON for `identity`.
+
+.. Delete the test secret by entering the following command:
++
+[source,terminal]
+----
+$ oc delete secret encryption-test -n default
+----
+--
+
+[NOTE]
+====
+Do not delete the KMS key until migration completes successfully.
+====

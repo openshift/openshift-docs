@@ -1,0 +1,84 @@
+// Module is included in the following assemblies:
+// * logging/cluster-logging-loki.adoc
+// * observability/logging/log_collection_forwarding/log-forwarding.adoc
+// * observability/logging/troubleshooting/log-forwarding-troubleshooting.adoc
+
+:_mod-docs-content-type: PROCEDURE
+[id="loki-rate-limit-errors_{context}"]
+= Troubleshooting Loki rate limit errors
+
+If the Log Forwarder API forwards a large block of messages that exceeds the rate limit to Loki, Loki generates rate limit (`429`) errors.
+
+These errors can occur during normal operation. For example, when adding the {logging} to a cluster that already has some logs, rate limit errors might occur while the {logging} tries to ingest all of the existing log entries. In this case, if the rate of addition of new logs is less than the total rate limit, the historical data is eventually ingested, and the rate limit errors are resolved without requiring user intervention.
+
+In cases where the rate limit errors continue to occur, you can fix the issue by modifying the `LokiStack` custom resource (CR).
+
+[IMPORTANT]
+====
+The `LokiStack` CR is not available on Grafana-hosted Loki. This topic does not apply to Grafana-hosted Loki servers.
+====
+
+.Conditions
+
+* The Log Forwarder API is configured to forward logs to Loki.
+
+* Your system sends a block of messages that is larger than 2 MB to Loki. For example:
++
+[source,text]
+----
+"values":[["1630410392689800468","{\"kind\":\"Event\",\"apiVersion\":\
+.......
+......
+......
+......
+\"received_at\":\"2021-08-31T11:46:32.800278+00:00\",\"version\":\"1.7.4 1.6.0\"}},\"@timestamp\":\"2021-08-31T11:46:32.799692+00:00\",\"viaq_index_name\":\"audit-write\",\"viaq_msg_id\":\"MzFjYjJkZjItNjY0MC00YWU4LWIwMTEtNGNmM2E5ZmViMGU4\",\"log_type\":\"audit\"}"]]}]}
+----
+
+* After you enter `oc logs -n openshift-logging -l component=collector`, the collector logs in your cluster show a line containing one of the following error messages:
++
+[source,text]
+----
+429 Too Many Requests Ingestion rate limit exceeded
+----
++
+.Example Vector error message
+[source,text]
+----
+2023-08-25T16:08:49.301780Z  WARN sink{component_kind="sink" component_id=default_loki_infra component_type=loki component_name=default_loki_infra}: vector::sinks::util::retries: Retrying after error. error=Server responded with an error: 429 Too Many Requests internal_log_rate_limit=true
+----
++
+.Example Fluentd error message
+[source,text]
+----
+2023-08-30 14:52:15 +0000 [warn]: [default_loki_infra] failed to flush the buffer. retry_times=2 next_retry_time=2023-08-30 14:52:19 +0000 chunk="604251225bf5378ed1567231a1c03b8b" error_class=Fluent::Plugin::LokiOutput::LogPostError error="429 Too Many Requests Ingestion rate limit exceeded for user infrastructure (limit: 4194304 bytes/sec) while attempting to ingest '4082' lines totaling '7820025' bytes, reduce log volume or contact your Loki administrator to see if the limit can be increased\n"
+----
++
+The error is also visible on the receiving end. For example, in the LokiStack ingester pod:
++
+.Example Loki ingester error message
+[source,text]
+----
+level=warn ts=2023-08-30T14:57:34.155592243Z caller=grpc_logging.go:43 duration=1.434942ms method=/logproto.Pusher/Push err="rpc error: code = Code(429) desc = entry with timestamp 2023-08-30 14:57:32.012778399 +0000 UTC ignored, reason: 'Per stream rate limit exceeded (limit: 3MB/sec) while attempting to ingest for stream
+----
+
+.Procedure
+
+* Update the `ingestionBurstSize` and `ingestionRate` fields in the `LokiStack` CR:
++
+[source,yaml]
+----
+apiVersion: loki.grafana.com/v1
+kind: LokiStack
+metadata:
+  name: logging-loki
+  namespace: openshift-logging
+spec:
+  limits:
+    global:
+      ingestion:
+        ingestionBurstSize: 16 # <1>
+        ingestionRate: 8 # <2>
+# ...
+----
+<1> The `ingestionBurstSize` field defines the maximum local rate-limited sample size per distributor replica in MB. This value is a hard limit. Set this value to at least the maximum logs size expected in a single push request. Single requests that are larger than the `ingestionBurstSize` value are not permitted.
+<2> The `ingestionRate` field is a soft limit on the maximum amount of ingested samples per second in MB. Rate limit errors occur if the rate of logs exceeds the limit, but the collector retries sending the logs. As long as the total average is lower than the limit, the system recovers and errors are resolved without user intervention.

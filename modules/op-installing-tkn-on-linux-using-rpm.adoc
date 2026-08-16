@@ -1,0 +1,89 @@
+// Module included in the following assemblies:
+//
+// * cli_reference/tkn_cli/installing-tkn.adoc
+
+:_mod-docs-content-type: PROCEDURE
+[id="installing-tkn-on-linux-using-rpm"]
+
+= Installing the {pipelines-title} CLI on Linux using an RPM
+
+[role="_abstract"]
+For {op-system-base-full} version 8, you can install the {pipelines-title} CLI as an RPM.
+
+.Prerequisites
+
+* You have an active {product-title} subscription on your Red Hat account.
+* You have root or sudo privileges on your local system.
+
+.Procedure
+
+. Register with Red Hat Subscription Manager:
++
+[source,terminal]
+----
+# subscription-manager register
+----
+
+. Pull the latest subscription data:
++
+[source,terminal]
+----
+# subscription-manager refresh
+----
+
+. List the available subscriptions:
++
+[source,terminal]
+----
+# subscription-manager list --available --matches '*pipelines*'
+----
+
+. In the output for the previous command, find the pool ID for your {product-title} subscription and attach the subscription to the registered system:
++
+[source,terminal]
+----
+# subscription-manager attach --pool=<pool_id>
+----
+
+. Enable the repositories required by {pipelines-title}:
++
+* Linux (x86_64, amd64)
++
+[source,terminal,subs="attributes"]
+----
+# subscription-manager repos --enable="pipelines-{pipelines-version-number}-for-rhel-8-x86_64-rpms"
+----
++
+* Linux on {ibm-z-name} and {ibm-linuxone-name} (s390x)
++
+[source,terminal,subs="attributes"]
+----
+# subscription-manager repos --enable="pipelines-{pipelines-version-number}-for-rhel-8-s390x-rpms"
+----
++
+* Linux on {ibm-power-name} (ppc64le)
++
+[source,terminal,subs="attributes"]
+----
+# subscription-manager repos --enable="pipelines-{pipelines-version-number}-for-rhel-8-ppc64le-rpms"
+----
++
+* Linux on ARM (aarch64, arm64)
++
+[source,terminal,subs="attributes"]
+----
+# subscription-manager repos --enable="pipelines-{pipelines-version-number}-for-rhel-8-aarch64-rpms"
+----
+. Install the `openshift-pipelines-client` package:
++
+[source,terminal]
+----
+# yum install openshift-pipelines-client
+----
+
+After you install the CLI, it is available using the `tkn` command:
+
+[source,terminal]
+----
+$ tkn version
+----

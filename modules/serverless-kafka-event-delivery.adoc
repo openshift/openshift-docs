@@ -1,0 +1,11 @@
+// Module included in the following assemblies:
+//
+// * serverless/develop/serverless-kafka-developer.adoc
+
+:_mod-docs-content-type: CONCEPT
+[id="serverless-kafka-delivery-retries_{context}"]
+= Apache Kafka event delivery and retries
+
+Using Apache Kafka components in an event-driven architecture provides "at least once" event delivery. This means that operations are retried until a return code value is received. This makes applications more resilient to lost events; however, it might result in duplicate events being sent.
+
+For the Kafka event source, there is a fixed number of retries for event delivery by default. For Kafka channels, retries are only performed if they are configured in the Kafka channel `Delivery` spec.

@@ -1,0 +1,396 @@
+// Module included in the following assemblies:
+//
+// * post_installation_configuration/day_2_core_cnf_clusters/updating/update-rhacm-talm-y-stream.adoc
+
+:_mod-docs-content-type: PROCEDURE
+[id="core-cluster-upgrade-y-stream_{context}"]
+= Updating clusters through y-stream releases
+
+[role="_abstract"]
+You can update clusters through minor version, or y-stream, releases by using {rh-rhacm} policies and {cgu-operator-full} ({cgu-operator}).
+Y-stream updates introduce new features and might include API deprecations, requiring careful planning and validation.
+
+You must perform y-stream updates through consecutive versions.
+You cannot skip versions during y-stream updates.
+For example, to update from 4.20 to 4.22, you must update from 4.20 to 4.21, and then from 4.21 to 4.22.
+If you need to move 2 y-stream versions, consider EUS-to-EUS updates instead.
+
+[NOTE]
+====
+The following procedure uses `spoke1` as an example cluster name. Replace it with your actual cluster name throughout.
+====
+
+.Prerequisites
+
+* You have completed the pre-update health check successfully.
+* {cgu-operator} is installed and configured on the {rh-rhacm-first} hub cluster.
+* A y-stream release is available, such as 4.21 when updating from 4.20.
+* You have reviewed the y-stream release notes for API deprecations and breaking changes.
+* You have scheduled a maintenance window. Y-stream updates take 1 to 2 hours.
+
+.Procedure
+
+. Identify deprecated APIs in use on your cluster by running the following command:
++
+[source,terminal]
+----
+$ oc get apirequestcounts -o jsonpath='{range .items[?(@.status.removedInRelease!="")]}{.status.removedInRelease}{"\t"}{.metadata.name}{"\n"}{end}' | sort -k1
+----
++
+This command shows APIs that will be removed in future releases.
+Review the {product-title} release notes for your target version and update any resources that use deprecated or removed APIs before updating.
+
+. Validate OLM Operator compatibility with the target y-stream version by running the following command:
++
+[source,terminal]
+----
+$ oc get csv -A
+----
++
+All Operators must show `Succeeded` status. Investigate any Operators in a failed state before proceeding.
+
+. Review Operator subscription channels to ensure they support the target {product-title} version by running the following command:
++
+[source,terminal]
+----
+$ oc get subscription -A -o jsonpath='{range .items[*]}{.metadata.name}{"\t"}{.spec.channel}{"\n"}{end}'
+----
++
+Update Operator subscriptions if needed before the cluster update.
+
+. Create a {rh-rhacm} policy to pause worker nodes:
++
+[source,yaml]
+----
+apiVersion: policy.open-cluster-management.io/v1
+kind: Policy
+metadata:
+  name: core-pause-worker-nodes
+  namespace: openshift-upgrade-policies
+spec:
+  remediationAction: inform
+  disabled: false
+  policy-templates:
+  - objectDefinition:
+      apiVersion: policy.open-cluster-management.io/v1
+      kind: ConfigurationPolicy
+      metadata:
+        name: pause-worker-mcp
+      spec:
+        remediationAction: inform
+        severity: high
+        object-templates:
+        - complianceType: musthave
+          objectDefinition:
+            apiVersion: machineconfiguration.openshift.io/v1
+            kind: MachineConfigPool
+            metadata:
+              name: worker
+            spec:
+              paused: true
+----
+
+. Create a {rh-rhacm} policy for the y-stream update:
++
+[source,yaml]
+----
+apiVersion: policy.open-cluster-management.io/v1
+kind: Policy
+metadata:
+  name: core-upgrade-4.21-policy
+  namespace: openshift-upgrade-policies
+spec:
+  remediationAction: inform
+  disabled: false
+  policy-templates:
+  - objectDefinition:
+      apiVersion: policy.open-cluster-management.io/v1
+      kind: ConfigurationPolicy
+      metadata:
+        name: upgrade-cluster-version
+      spec:
+        remediationAction: inform
+        severity: high
+        object-templates:
+        - complianceType: musthave
+          objectDefinition:
+            apiVersion: config.openshift.io/v1
+            kind: ClusterVersion
+            metadata:
+              name: version
+            spec:
+              channel: stable-4.21
+              desiredUpdate:
+                version: 4.21.0
+----
++
+Replace `4.21.0` with your target y-stream version.
+Both policies are set to `inform` so they do not immediately push changes.
+The `ClusterGroupUpgrade` custom resource (CR) enforces these policies at the scheduled update time.
+
+. Apply the policies to {rh-rhacm} by running the following commands:
++
+[source,terminal]
+----
+$ oc apply -f core-pause-worker-policy.yaml
+$ oc apply -f core-upgrade-4.21-policy.yaml
+----
+
+. Verify the policies and placement resources were created by running the following commands:
++
+[source,terminal]
+----
+$ oc get policy -n openshift-upgrade-policies
+$ oc get placementbinding -n openshift-upgrade-policies
+$ oc get placement -n openshift-upgrade-policies
+----
++
+If no `PlacementBinding` or `Placement` exists, the policies will not apply to any clusters.
+Create appropriate placement resources for your target clusters.
+
+. Create a `ClusterGroupUpgrade` CR for the y-stream update:
++
+[source,yaml]
+----
+apiVersion: ran.openshift.io/v1alpha1
+kind: ClusterGroupUpgrade
+metadata:
+  name: core-ystream-upgrade-4.21
+  namespace: openshift-upgrade-policies
+spec:
+  clusters:
+  - spoke1
+  managedPolicies:
+  - core-pause-worker-nodes
+  - core-upgrade-4.21-policy
+  enable: false
+  remediationStrategy:
+    maxConcurrency: 1
+    timeout: 120
+  actions:
+    beforeEnable:
+      addClusterLabels:
+        upgrade-in-progress: "true"
+    afterCompletion:
+      addClusterLabels:
+        upgraded-to: "4.21"
+        control-plane-upgraded: "true"
+----
++
+For canary deployments, use a single cluster first before updating additional clusters.
+
+. Apply and enable the `ClusterGroupUpgrade` CR to start the control plane update by running the following commands:
++
+[source,terminal]
+----
+$ oc apply -f core-ystream-cgu.yaml
+$ oc patch cgu core-ystream-upgrade-4.21 \
+  -n openshift-upgrade-policies \
+  --type merge \
+  -p '{"spec":{"enable":true}}'
+----
+
+. Monitor the control plane update progress by running the following commands:
++
+[source,terminal]
+----
+$ oc get cgu core-ystream-upgrade-4.21 -n openshift-upgrade-policies -w
+$ oc --context=spoke1 get clusterversion -w
+$ oc --context=spoke1 get co
+----
++
+Cluster Operators update sequentially during the y-stream update.
+The control plane update typically takes 60 to 120 minutes.
+
+. After the control plane update completes, verify control plane health by running the following commands:
++
+[source,terminal]
+----
+$ oc --context=spoke1 get nodes -l node-role.kubernetes.io/master=
+$ oc --context=spoke1 get co | grep -v "True.*False.*False"
+----
++
+All control plane nodes and Operators must be healthy before proceeding.
+
+. Create an OLM Operator update policy that updates Operator subscription channels to versions compatible with the new y-stream:
++
+[source,yaml]
+----
+apiVersion: policy.open-cluster-management.io/v1
+kind: Policy
+metadata:
+  name: core-upgrade-olm-4.21
+  namespace: openshift-upgrade-policies
+spec:
+  remediationAction: inform
+  disabled: false
+  policy-templates:
+  - objectDefinition:
+      apiVersion: policy.open-cluster-management.io/v1
+      kind: ConfigurationPolicy
+      metadata:
+        name: upgrade-olm-operators
+      spec:
+        remediationAction: inform
+        severity: high
+        object-templates:
+        - complianceType: musthave
+          objectDefinition:
+            apiVersion: operators.coreos.com/v1alpha1
+            kind: Subscription
+            metadata:
+              name: sriov-network-operator-subscription
+              namespace: openshift-sriov-network-operator
+            spec:
+              channel: stable-4.21
+            status:
+              state: AtLatestKnown
+----
++
+You can include multiple Operator subscriptions in the same policy.
+For more details about creating OLM update policies, see "Coordinating OLM Operator updates with cluster updates".
+
+. Create a `ClusterGroupUpgrade` CR to apply the OLM Operator update policy:
++
+[source,yaml]
+----
+apiVersion: ran.openshift.io/v1alpha1
+kind: ClusterGroupUpgrade
+metadata:
+  name: core-olm-upgrade-4.21
+  namespace: openshift-upgrade-policies
+spec:
+  clusters:
+  - spoke1
+  managedPolicies:
+  - core-upgrade-olm-4.21
+  enable: true
+  remediationStrategy:
+    maxConcurrency: 1
+    timeout: 60
+----
+
+. Apply the OLM Operator update policy and `ClusterGroupUpgrade` CR by running the following commands:
++
+[source,terminal]
+----
+$ oc apply -f core-olm-upgrade-policy.yaml
+$ oc apply -f core-olm-cgu.yaml
+----
+
+. Monitor the OLM Operator update and verify that worker nodes remain at the previous version by running the following commands:
++
+[source,terminal]
+----
+$ oc get cgu core-olm-upgrade-4.21 -n openshift-upgrade-policies -w
+$ oc --context=spoke1 get nodes
+----
++
+Worker nodes must still show the previous kubelet version.
+
+. Create a policy to unpause worker nodes:
++
+[source,yaml]
+----
+apiVersion: policy.open-cluster-management.io/v1
+kind: Policy
+metadata:
+  name: core-unpause-worker-nodes
+  namespace: openshift-upgrade-policies
+spec:
+  remediationAction: inform
+  disabled: false
+  policy-templates:
+  - objectDefinition:
+      apiVersion: policy.open-cluster-management.io/v1
+      kind: ConfigurationPolicy
+      metadata:
+        name: unpause-worker-mcp
+      spec:
+        remediationAction: inform
+        severity: high
+        object-templates:
+        - complianceType: musthave
+          objectDefinition:
+            apiVersion: machineconfiguration.openshift.io/v1
+            kind: MachineConfigPool
+            metadata:
+              name: worker
+            spec:
+              paused: false
+----
+
+. Create a `ClusterGroupUpgrade` CR to unpause workers:
++
+[source,yaml]
+----
+apiVersion: ran.openshift.io/v1alpha1
+kind: ClusterGroupUpgrade
+metadata:
+  name: core-unpause-workers-4.21
+  namespace: openshift-upgrade-policies
+spec:
+  clusters:
+  - spoke1
+  managedPolicies:
+  - core-unpause-worker-nodes
+  enable: false
+  remediationStrategy:
+    maxConcurrency: 1
+----
+
+. Apply and enable the unpause `ClusterGroupUpgrade` CR by running the following commands:
++
+[source,terminal]
+----
+$ oc apply -f core-unpause-workers-cgu.yaml
+$ oc patch cgu core-unpause-workers-4.21 \
+  -n openshift-upgrade-policies \
+  --type merge \
+  -p '{"spec":{"enable":true}}'
+----
+
+. Monitor worker node updates by running the following command:
++
+[source,terminal]
+----
+$ oc --context=spoke1 get mcp worker -w
+----
++
+Worker nodes update in a rolling fashion.
+The process typically takes 30 to 60 minutes depending on the number of worker nodes.
+
+.Verification
+
+. Verify all nodes are at the target y-stream version by running the following command:
++
+[source,terminal]
+----
+$ oc --context=spoke1 get nodes
+----
+
+. Verify all cluster Operators are healthy by running the following command:
++
+[source,terminal]
+----
+$ oc --context=spoke1 get co
+----
+
+. Verify workload health and CNF-specific resources by running the following commands:
++
+[source,terminal]
+----
+$ oc --context=spoke1 get pods -A | grep -v Running | grep -v Completed
+$ oc --context=spoke1 get performanceprofile
+$ oc --context=spoke1 get ptpconfig -n openshift-ptp
+$ oc --context=spoke1 get sriovnetworknodepolicy -n openshift-sriov-network-operator
+----
+
+. Run smoke tests for critical workloads.
+
+.Troubleshooting
+
+* If API deprecation warnings appear, update manifests to use new API versions before updating.
+* If Operator compatibility issues occur, update Operator subscriptions to channels that support the target y-stream.
+* If worker node updates get stuck, check `MachineConfigPool` resource status and node logs.
+

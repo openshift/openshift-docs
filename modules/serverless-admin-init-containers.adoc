@@ -1,0 +1,37 @@
+// Module included in the following assemblies:
+//
+// * /serverless/admin_guide/serverless-configuration.adoc
+
+:_mod-docs-content-type: PROCEDURE
+[id="serverless-admin-init-containers_{context}"]
+= Enabling init containers
+
+.Prerequisites
+
+* You have installed {ServerlessOperatorName} and Knative Serving on your cluster.
+
+ifdef::openshift-enterprise[]
+* You have cluster administrator permissions.
+endif::[]
+
+ifdef::openshift-dedicated,openshift-rosa[]
+* You have cluster or dedicated administrator permissions.
+endif::[]
+
+.Procedure
+
+* Enable the use of init containers by adding the `kubernetes.podspec-init-containers` flag to the `KnativeServing` CR:
++
+.Example KnativeServing CR
+[source,yaml]
+----
+apiVersion: operator.knative.dev/v1beta1
+kind: KnativeServing
+metadata:
+  name: knative-serving
+spec:
+  config:
+    features:
+      kubernetes.podspec-init-containers: enabled
+...
+----

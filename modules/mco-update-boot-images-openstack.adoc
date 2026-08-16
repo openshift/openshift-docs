@@ -1,0 +1,302 @@
+// Module included in the following assemblies:
+//
+// * machine_configuration/mco-update-boot-images-manual.adoc
+
+:_mod-docs-content-type: PROCEDURE
+[id="mco-update-boot-images-openstack_{context}"]
+= Manually updating the boot image on an {rh-openstack} cluster
+
+[role="_abstract"]
+For a {rh-openstack-first} cluster, you can manually update the boot image for your cluster by configuring your machine sets to use the latest {product-title} image as the boot image to help ensure any new nodes can scale up properly.
+
+[NOTE]
+====
+The standard boot image management feature is not supported for {rh-openstack} clusters.
+====
+
+The following procedure, which includes steps to create environment variables that facilitate running the required commands, shows how to obtain {rh-openstack} authentication credentials, download a boot image, upload that image to the {rh-openstack} image service (Glance), and modify your worker machine sets to use the new boot image.
+
+This procedure requires the `clouds.yaml` file, which is needed by the OpenStackClient CLI to connect to your {rh-openstack} cloud. If you need to re-create this file, you can get the {rh-openstack} credentials from an {product-title} secret, the name of which you can find in the default compute machine set. You can decrypt this secret and export the credentials to create the `clouds.yaml` file, as described in the following procedure.
+
+[NOTE]
+====
+Updating control plane machine sets is not supported in {rh-openstack}.
+====
+
+.Prerequisites
+
+* You have completed the general boot image prerequisites as described in the Prerequisites section of link:https://access.redhat.com/articles/7053165#prerequisites-2[{product-title} Boot Image Updates].
+
+* You have downloaded the latest version of the {product-title} installation program, openshift-install, from the {cluster-manager-url}. For more information, see "Obtaining the installation program."
+
+* You have installed the {oc-first} installed.
+
+* You have installed the link:https://docs.openstack.org/python-openstackclient/latest/[OpenStackClient ({op-system} documentation)].
+
+* You have installed the link:https://stedolan.github.io/jq/[`jq`] program.
+
+.Procedure
+
+. If you need to re-create the `clouds.yaml` file, perform the following steps: 
+
+.. Obtain the name of the secret that contains your credentials by running the following command:
++
+[source,terminal]
+----
+$ oc get machineset -n openshift-machine-api -o yaml | grep cloudsSecret -A 1
+----
++
+.Example output
+[source,terminal]
+----
+cloudsSecret:
+  name: openstack-cloud-credentials
+----
+
+.. Decrypt the secret and add the contents to the `clouds.yaml` file by running the following command:
++
+[source,terminal]
+----
+$ oc get secret <secret_name> -n openshift-machine-api -o jsonpath='{.data.clouds\.yaml}' | base64 -d > <file_path>/clouds.yaml
+----
++
+Replace `<secret_name>` with the name of the secret, which you obtained in the previous step, and `<file_path>` with the path to the `clouds.yaml` file.  
+
+.. Optional: Verify the contents of the `clouds.yaml` file by running the following command:
++
+[source,terminal]
+----
+$ cat <file_path>/clouds.yaml
+----
++
+Replace `<file_path>` with the path to the `clouds.yaml` file.
++
+.Example output
+[source,terminal]
+----
+clouds:
+  openstack:
+    auth:
+      auth_url: https://your-openstack-url:13000
+      username: "your-username"
+      password: "your-password"
+      project_name: "your-project"
+      user_domain_name: "Default"
+      project_domain_name: "Default"
+----
+
+. Set an environment variable for the location of the `clouds.yaml` file by running the following command:
++
+[source,terminal]
+----
+$ export OS_CLIENT_CONFIG_FILE=<file_path>/clouds.yaml
+----
++
+Replace `<file_path>` with the path to the `clouds.yaml` file.
++
+The OpenStackClient CLI uses this environment variable to locate the `clouds.yaml` file.
+
+. Obtain the name of your {rh-openstack} cloud from the default compute machine set and set the name in an environment variable by running the following command:
++
+[source,terminal]
+----
+$ export CLOUD_NAME=$(oc get machineset -n openshift-machine-api -o jsonpath='{.items[0].spec.template.spec.providerSpec.value.cloudName}')
+----
+
+. Obtain the URL of the {op-system} image you want to use as the boot image and set the location in an environment variable by running one of the following commands, based on cluster architecture:
++
+* Linux (x86_64, amd64):
++
+[source,terminal]
+----
+$ export RHCOS_URL=$(openshift-install coreos print-stream-json | jq -r \
+  '.architectures.x86_64.artifacts.openstack.formats."qcow2.gz".disk.location')
+----
++
+* Linux on {ibm-z-name} and {ibm-linuxone-name} (s390x):
++
+[source,terminal]
+----
+$ export RHCOS_URL=$(openshift-install coreos print-stream-json | jq -r \
+  '.architectures.s390x.artifacts.openstack.formats."qcow2.gz".disk.location')
+----
++
+* Linux on ARM (aarch64, arm64)
++
+[source,terminal]
+----
+$ export RHCOS_URL=$(openshift-install coreos print-stream-json | jq -r \
+  '.architectures.aarch64.artifacts.openstack.formats."qcow2.gz".disk.location')
+----
+
+. Obtain the boot image and upload the image to the {rh-openstack} image service (Glance):
+
+.. Download the image by using the following command: 
++
+[source,terminal]
+----
+$ curl -L -o /tmp/rhcos-new.qcow2.gz "${RHCOS_URL}"
+----
++
+`RHCOS_URL` is the URL environment variables you created in a previous step.
+
+.. Decompress the downloaded image by using the following command:
++
+[source,terminal]
+----
+$ gunzip <file_path>/rhcos-new.qcow2.gz
+----
++
+Replace `<file_path>` with the path to the location for the image.
+
+.. Set an environment variable to create a descriptive name for your boot image in Glance by running the following command:
++
+[source,terminal]
+----
+$ export IMAGE_NAME="<descriptive_image_name>"
+----
++
+Setting a descriptive name for your boot image, such as using the {op-system-first} version number in the image name, makes it easier to track which version is currently deployed if you update the cluster in the future.
++
+.Example command
+[source,terminal]
+----
+$ export IMAGE_NAME="rhcos 9.6 boot image"
+----
+
+.. Upload the image to Glance by using the following command:
++
+[source,terminal]
+----
+$ openstack --os-cloud "${CLOUD_NAME}" image create "${IMAGE_NAME}" \
+  --disk-format qcow2 \
+  --container-format bare \
+  --file <file_path>/rhcos-new.qcow2 \
+  --property os_type=linux \
+  --property os_distro=rhcos
+----
++
+Replace `<file_path>` with the path to the location for the image.
++
+`CLOUD_NAME` and `IMAGE_NAME` are environment variables you created in previous steps.
++
+It might take several minutes for the image to upload. When the upload is complete, details on the image displays, similar to the following example:
++
+.Example output
+[source,terminal]
+----
++------------------+-------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------+
+| Field            | Value                                                                                                                                                                               |
++------------------+-------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------+
+| checksum         | 469fa549f706617ff15b41bd2a919679                                                                                                                                                    |
+# ...                                                                                                                                                         |
+| disk_format      | qcow2                                                                                                                                                                               |
+# ...
+| name             | rhcos 9.6 boot image            
+----
+
+.. Optional: Verify that the image has uploaded and is in active state by running the following command:
++
+[source,terminal]
+----
+$ openstack --os-cloud "${CLOUD_NAME}" image show "${IMAGE_NAME}" -f json | jq '{name: .name, status: .status}'
+----
++
+.Example output
+[source,terminal]
+----
+{
+  "name": "rhcos 9.6 boot image",
+  "status": "active"
+}
+----
+
+. Update each of your compute machine sets to include the new boot image:
+
+.. Obtain the name of your machine sets for use in the following step by running the following command:
++
+[source,terminal]
+----
+$ oc get machineset -n openshift-machine-api
+----
++
+.Example output
+[source,terminal]
+----
+NAME                                 DESIRED   CURRENT   READY   AVAILABLE   AGE
+rhhdrbk-b5564-4pcm9-worker-0         3         3         3       3           123m
+ci-ln-xj96skb-72292-48nm5-worker-d   1         1         1       1           27m
+----
+
+.. Edit a machine set to update the `image` field in the `providerSpec` stanza to add your boot image by running the following command:
++
+[source,terminal]
+----
+$ oc patch machineset <machineset_name> -n openshift-machine-api --type merge -p \
+  '{"spec":{"template":{"spec":{"providerSpec":{"value":{"image":"'${IMAGE_NAME}'"}}}}}}'
+----
++
+Replace `<machineset_name>` with the name of your machine set.
++
+`IMAGE_NAME` is the environment variable you created in a previous step.
+
+. If boot image skew enforcement in your cluster is set to the manual mode, update the version of the new boot image in the `MachineConfiguration` object as described in "Updating the boot image skew enforcement version".
+
+.Verification
+
+. Scale up a machine set to check that the new node is using the new boot image:
++
+.. Increase the machine set replicas by one to trigger a new machine by running the following command:
++
+[source,terminal]
+----
+$ oc scale --replicas=<count> machineset <machineset_name> -n openshift-machine-api
+----
++
+where:
+
+`<count>`:: Specifies the total number of replicas, including any existing replicas, that you want for this machine set.
+`<machineset_name>`:: Specifies the name of the machine set to scale.
+
+.. Optional: View the status of the machine set as it provisions by running the following command:
++
+[source,terminal]
+----
+$ oc get machines.machine.openshift.io -n openshift-machine-api -w
+----
++
+It can take several minutes for the machine set to achieve the `Running` state.
+
+.. Verify that the new node has been created and is in the `Ready` state by running the following command:
++
+[source,terminal]
+----
+$ oc get nodes
+----
+
+. Verify that the new node is using the new boot image by running the following command:
++
+[source,terminal]
+----
+$ oc debug node/<new_node> -- chroot /host cat /sysroot/.coreos-aleph-version.json
+----
++
+Replace `<new_node>` with the name of your new node.
++
+.Example output
+[source,terminal]
+----
+{
+# ...
+    "ref": "docker://ostree-image-signed:oci-archive:/rhcos-9.6.20251212-1-ostree.x86_64.ociarchive",
+    "version": "9.6.20251212-1"
+}
+----
++
+where:
++
+--
+`version`:: Specifies the boot image version.
+--
++
+After you migrate all machine sets to the new boot image, you can remove the old boot image from Glance.

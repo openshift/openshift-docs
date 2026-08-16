@@ -1,0 +1,24 @@
+// Module is included in the following assemblies:
+//
+// * /serverless/monitor/serverless-developer-metrics.adoc
+
+:_mod-docs-content-type: PROCEDURE
+[id="serverless-monitoring-services-examining-metrics-dashboard_{context}"]
+= Examining metrics of a service in the dashboard
+
+.Prerequisites
+
+* You have logged in to the {product-title} web console.
+* You have installed the {ServerlessOperatorName} and Knative Serving.
+
+.Procedure
+
+. In the web console, navigate to the *Observe* -> *Metrics* interface.
+
+. Select the `Knative User Services (Queue Proxy metrics)` dashboard.
+
+. Select the *Namespace*, *Configuration*, and *Revision* that correspond to your application.
+
+. Observe the visualized metrics:
++
+image::serverless-monitoring-service-example-dashboard.png[Observing metrics of a service using a dashboard]

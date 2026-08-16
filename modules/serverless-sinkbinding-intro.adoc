@@ -1,0 +1,19 @@
+// Module included in the following assemblies:
+//
+// * /serverless/eventing/event-sources/serverless-custom-event-sources.adoc
+
+:_mod-docs-content-type: CONCEPT
+[id="serverless-sinkbinding-intro_{context}"]
+= Sink binding
+
+The `SinkBinding` object supports decoupling event production from delivery addressing. Sink binding is used to connect _event producers_ to an event consumer, or _sink_. An event producer is a Kubernetes resource that embeds a `PodSpec` template and produces events. A sink is an addressable Kubernetes object that can receive events.
+
+The `SinkBinding` object injects environment variables into the `PodTemplateSpec` of the sink, which means that the application code does not need to interact directly with the Kubernetes API to locate the event destination. These environment variables are as follows:
+
+`K_SINK`:: The URL of the resolved sink.
+`K_CE_OVERRIDES`:: A JSON object that specifies overrides to the outbound event.
+
+[NOTE]
+====
+The `SinkBinding` object currently does not support custom revision names for services.
+====

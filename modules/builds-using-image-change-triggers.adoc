@@ -1,0 +1,99 @@
+// Module included in the following assemblies:
+//
+// * builds/triggering-builds-build-hooks.adoc
+
+:_mod-docs-content-type: PROCEDURE
+[id="builds-using-image-change-triggers_{context}"]
+= Using image change triggers
+
+As a developer, you can configure your build to run automatically every time a base image changes.
+
+You can use image change triggers to automatically invoke your build when a new version of an upstream image is available. For example, if a build is based on a RHEL image, you can trigger that build to run any time the RHEL image changes. As a result, the application image is always running on the latest RHEL base image.
+
+[NOTE]
+====
+Image streams that point to container images in link:http://docs.docker.com/v1.7/reference/api/hub_registry_spec/#docker-registry-1-0[v1 container registries] only trigger a build once when the image stream tag becomes available and not on subsequent image updates. This is due to the lack of uniquely identifiable images in v1 container registries.
+====
+
+.Procedure
+
+. Define an `ImageStream` that points to the upstream image you want to use as a trigger:
++
+[source,yaml]
+----
+kind: "ImageStream"
+apiVersion: "v1"
+metadata:
+  name: "ruby-20-centos7"
+----
++
+This defines the image stream that is tied to a container image repository located at `_<system-registry>_/_<namespace>_/ruby-20-centos7`. The `<system-registry>` is defined as a service with the name `docker-registry` running in {product-title}.
+
+. If an image stream is the base image for the build, set the `from` field in the build strategy to point to the `ImageStream`:
++
+[source,yaml]
+----
+strategy:
+  sourceStrategy:
+    from:
+      kind: "ImageStreamTag"
+      name: "ruby-20-centos7:latest"
+----
++
+In this case, the `sourceStrategy` definition is consuming the `latest` tag of the image stream named `ruby-20-centos7` located within this namespace.
+
+. Define a build with one or more triggers that point to `ImageStreams`:
++
+[source,yaml]
+----
+type: "ImageChange" <1>
+imageChange: {}
+type: "ImageChange" <2>
+imageChange:
+  from:
+    kind: "ImageStreamTag"
+    name: "custom-image:latest"
+----
+<1> An image change trigger that monitors the `ImageStream` and `Tag` as defined by the build strategy's `from` field. The `imageChange` object here must be empty.
+<2> An image change trigger that monitors an arbitrary image stream. The `imageChange` part, in this case, must include a `from` field that references the `ImageStreamTag` to monitor.
+
+When using an image change trigger for the strategy image stream, the generated build is supplied with an immutable docker tag that points to the latest image corresponding to that tag. This new image reference is used by the strategy when it executes for the build.
+
+For other image change triggers that do not reference the strategy image stream, a new build is started, but the build strategy is not updated with a unique image reference.
+
+Since this example has an image change trigger for the strategy, the resulting build is:
+
+[source,yaml]
+----
+strategy:
+  sourceStrategy:
+    from:
+      kind: "DockerImage"
+      name: "172.30.17.3:5001/mynamespace/ruby-20-centos7:<immutableid>"
+----
+
+This ensures that the triggered build uses the new image that was just pushed to the repository, and the build can be re-run any time with the same inputs.
+
+You can pause an image change trigger to allow multiple changes on the referenced image stream before a build is started. You can also set the `paused` attribute to true when initially adding an `ImageChangeTrigger` to a `BuildConfig` to prevent a build from being immediately triggered.
+
+[source,yaml]
+----
+type: "ImageChange"
+imageChange:
+  from:
+    kind: "ImageStreamTag"
+    name: "custom-image:latest"
+  paused: true
+----
+
+ifdef::openshift-enterprise,openshift-webscale,openshift-origin[]
+In addition to setting the image field for all `Strategy` types, for custom builds, the `OPENSHIFT_CUSTOM_BUILD_BASE_IMAGE` environment variable is checked.
+If it does not exist, then it is created with the immutable image reference. If it does exist, then it is updated with the immutable image reference.
+endif::[]
+
+If a build is triggered due to a webhook trigger or manual request, the build that is created uses the `<immutableid>` resolved from the `ImageStream` referenced by the `Strategy`. This ensures that builds are performed using consistent image tags for ease of reproduction.
+
+[role="_additional-resources"]
+.Additional resources
+
+* link:http://docs.docker.com/v1.7/reference/api/hub_registry_spec/#docker-registry-1-0[v1 container registries]

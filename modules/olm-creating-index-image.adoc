@@ -1,0 +1,46 @@
+// Module included in the following assemblies:
+//
+// * operators/admin/olm-managing-custom-catalogs.adoc
+
+:_mod-docs-content-type: PROCEDURE
+[id="olm-creating-index-image_{context}"]
+= Creating a SQLite-based index image
+
+You can create an index image based on the SQLite database format by using the `opm` CLI.
+
+.Prerequisites
+
+* You have installed the `opm` CLI.
+* You have `podman` version 1.9.3+.
+* A bundle image is built and pushed to a registry that supports link:https://docs.docker.com/registry/spec/manifest-v2-2/[Docker v2-2].
+
+.Procedure
+
+. Start a new index:
++
+[source,terminal]
+----
+$ opm index add \
+    --bundles <registry>/<namespace>/<bundle_image_name>:<tag> \//<1>
+    --tag <registry>/<namespace>/<index_image_name>:<tag> \//<2>
+    [--binary-image <registry_base_image>] <3>
+----
+<1> Comma-separated list of bundle images to add to the index.
+<2> The image tag that you want the index image to have.
+<3> Optional: An alternative registry base image to use for serving the catalog.
+
+. Push the index image to a registry.
+
+.. If required, authenticate with your target registry:
++
+[source,terminal]
+----
+$ podman login <registry>
+----
+
+.. Push the index image:
++
+[source,terminal]
+----
+$ podman push <registry>/<namespace>/<index_image_name>:<tag>
+----

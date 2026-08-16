@@ -1,0 +1,210 @@
+// Module included in the following assemblies:
+//
+// * networking/advanced_networking/bgp_routing/no-overlay-mode-bgp-routing.adoc
+
+:_mod-docs-content-type: PROCEDURE
+[id="nw-no-overlay-enable-default-network_{context}"]
+= Enable underlay routing for the default cluster network
+
+[role="_abstract"]
+To steer default network's east-west traffic over the underlay network instead of Geneve, configure the Cluster Network Operator (CNO) for `NoOverlay` transport and set the source network address translation (SNAT) and routing. If you use unmanaged routing, apply `FRRConfiguration` and `RouteAdvertisements` custom resources (CRs) so your routers exchange pod routes.
+
+.Prerequisites
+* You have cluster-admin privileges.
+* Your cluster is installed on bare-metal infrastructure with single-node zone interconnect mode.
+* You have enabled Border Gateway Protocol (BGP) routing for the cluster. See "About BGP routing" and "Enabling BGP routing" for more information.
+* You deployed FRR-K8s on cluster nodes installed with the BGP prerequisite.
+
+[IMPORTANT]
+====
+* Choose `spec.defaultNetwork.ovnKubernetesConfig.noOverlayConfig.outboundSNAT` based on whether pod IPs are routable on your external network. You can set to `Enabled` when they are not, and `Disabled` when the underlay can route pod IP addressess directly.
+* For `unmanaged` mode you must set `outboundSNAT` to `Enabled` or cluster deployment will fail.
+====
+
+.Procedure
+
+. Enable no-overlay for the default network in the Cluster Network Operator (CNO) custom resource (CR).
+
+.. At installation time (day 0), set the BGP manifest in your installation `manifests/` directory to configure the `noOverlayConfig` object such as in the following managed and unmanaged routing examples.
++
+.Example CNO CR using no-overlay with unmanaged routing
+[source,yaml]
+----
+apiVersion: operator.openshift.io/v1
+kind: Network
+metadata:
+  name: cluster
+spec:
+  additionalRoutingCapabilities:
+    providers:
+    - FRR
+  defaultNetwork:
+    ovnKubernetesConfig:
+      routeAdvertisements: Enabled
+      transport: NoOverlay
+      noOverlayConfig:
+        outboundSNAT: Enabled
+        routing: Unmanaged
+    type: OVNKubernetes
+----
++
+.Example CNO CR using no-overlay with managed routing
+[source,yaml]
+----
+apiVersion: operator.openshift.io/v1
+kind: Network
+metadata:
+  name: cluster
+spec:
+  additionalRoutingCapabilities:
+    providers:
+    - FRR
+  defaultNetwork:
+    ovnKubernetesConfig:
+      routeAdvertisements: Enabled
+      transport: NoOverlay
+      noOverlayConfig:
+        outboundSNAT: Enabled
+        routing: Managed
+        bgpTopology: FullMesh
+        asNumber: 64512
+    type: OVNKubernetes
+----
++
+--
+`spec.defaultNetwork.ovnKubernetesConfig.noOverlayConfig.bgpTopology`:: Specifies `FullMesh` for a full-mesh BGP fabric between nodes.
+`spec.defaultNetwork.ovnKubernetesConfig.noOverlayConfig.asNumber`:: Optional: specifies the BGP autonomous system number used in the default VRF. When omitted, `64512` is used.
+--
+
+.. On a running cluster (day 2), configure the `noOverlayConfig` object in CNO using the following command:
++
+[source,terminal]
+----
+$ oc patch network.operator.openshift.io cluster --type merge --patch '{"spec":{"defaultNetwork":{"ovnKubernetesConfig":{"noOverlayConfig":{"outboundSNAT":"Enabled"}}}}}'
+----
+
+.. For managed routing, proceed to the verification step. Do not create `RouteAdvertisements` or `FRRConfiguration` objects. OVN-Kubernetes can reconcile the managed BGP fabric
+
+. If you use unmanaged routing, add manifests to the installation `manifests/` directory (day 0) for the following custom resources (CRs):
+
+.. Add the following `FRRConfiguration` CR:
++
+[source,yaml]
+----
+apiVersion: frrk8s.metallb.io/v1beta1
+kind: FRRConfiguration
+metadata:
+  name: external-bgp
+  namespace: openshift-frr-k8s
+  labels:
+    network: default
+spec:
+  bgp:
+    routers:
+    - asn: 64512
+      neighbors:
+      - address: 192.168.111.1
+        asn: 64512
+        disableMP: true
+        toReceive:
+          allowed:
+            mode: filtered
+----
++
+Replace `spec.bgp.routers[].neighbors[].address`, ASN values, and `toReceive` filters so they match your external BGP design.
+
+.. Add the following `RouteAdvertisements` CR:
++
+[source,yaml]
+----
+apiVersion: k8s.ovn.org/v1
+kind: RouteAdvertisements
+metadata:
+  name: default
+spec:
+  advertisements:
+  - PodNetwork
+  frrConfigurationSelector:
+    matchLabels:
+      network: default
+----
+
+. Optional: Alternatively, you can create or apply the following CRs with `oc apply` (day 2):
+
+.. Create an `FRRConfiguration` CR that defines BGP peering toward your external router.
++
+.Example `FRRConfiguration` CR for unmanaged routing
+[source,yaml]
+----
+apiVersion: frrk8s.metallb.io/v1beta1
+kind: FRRConfiguration
+metadata:
+  name: external-bgp
+  namespace: openshift-frr-k8s
+  labels:
+    network: default
+spec:
+  bgp:
+    routers:
+    - asn: 64512
+      neighbors:
+      - address: 192.168.111.1
+        asn: 64512
+        disableMP: true
+        toReceive:
+          allowed:
+            mode: filtered
+----
++
+Replace `spec.bgp.routers[].neighbors[].address`, ASN values, and `toReceive` filters so they match your external BGP design.
+
+.. Apply the `FRRConfiguration` CR using the following command:
++
+[source,terminal]
+----
+$ oc apply -f <frrconfiguration_file>.yaml
+----
++
+Replace `<frrconfiguration_file>.yaml` with your manifest file name.
+
+.. Create a `RouteAdvertisements` CR that advertises the pod network.
++
+.Example `RouteAdvertisements` CR for unmanaged routing
+[source,yaml]
+----
+apiVersion: k8s.ovn.org/v1
+kind: RouteAdvertisements
+metadata:
+  name: default
+spec:
+  advertisements:
+  - PodNetwork
+  frrConfigurationSelector:
+    matchLabels:
+      network: default
+  networkSelectors:
+  - networkSelectionType: DefaultNetwork
+  nodeSelector: {}
+----
++
+[NOTE]
+====
+For unmanaged routing on the default network, at least one `RouteAdvertisements` object must select the default network. In the example, the `spec.networkSelectors` entry with `networkSelectionType: DefaultNetwork` selects the default network, `spec.advertisements` includes `PodNetwork`, and the `RouteAdvertisements` CR reaches `Accepted=True` in status. OVN-Kubernetes uses this configuration when advertising pod subnets to your BGP infrastructure.
+====
+
+.. Apply the `RouteAdvertisements` CR using the following command:
++
+[source,terminal]
+----
+$ oc apply -f <routeadvertisements_file>.yaml
+----
++
+Replace `<routeadvertisements_file>.yaml` with your file name.
+
+.Verification
+. Verify that the OVN-Kubernetes pods are running:
++
+[source,terminal]
+----
+$ oc get pods -n openshift-ovn-kubernetes
+----

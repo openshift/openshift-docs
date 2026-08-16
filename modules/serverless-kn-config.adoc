@@ -1,0 +1,37 @@
+// Module included in the following assemblies:
+//
+// * serverless/cli_tools/advanced-kn-config.adoc
+
+:_mod-docs-content-type: CONCEPT
+[id="serverless-kn-config_{context}"]
+= Customizing the Knative CLI
+
+You can customize your Knative (`kn`) CLI setup by creating a `config.yaml` configuration file. You can provide this configuration by using the `--config` flag, otherwise the configuration is picked up from a default location. The default configuration location conforms to the https://specifications.freedesktop.org/basedir-spec/basedir-spec-latest.html[XDG Base Directory Specification], and is different for Unix systems and Windows systems.
+
+For Unix systems:
+
+* If the `XDG_CONFIG_HOME` environment variable is set, the default configuration location that the Knative CLI looks for is `$XDG_CONFIG_HOME/kn`.
+* If the `XDG_CONFIG_HOME` environment variable is not set, the Knative CLI looks for the configuration in the home directory of the user at `$HOME/.config/kn/config.yaml`.
+
+For Windows systems, the default Knative CLI configuration location is `%APPDATA%\kn`.
+
+.Example configuration file
+[source,yaml]
+----
+plugins:
+  path-lookup: true <1>
+  directory: ~/.config/kn/plugins <2>
+eventing:
+  sink-mappings: <3>
+  - prefix: svc <4>
+    group: core <5>
+    version: v1 <6>
+    resource: services <7>
+----
+<1> Specifies whether the Knative CLI should look for plugins in the `PATH` environment variable. This is a boolean configuration option. The default value is `false`.
+<2> Specifies the directory where the Knative CLI will look for plugins. The default path depends on the operating system, as described above. This can be any directory that is visible to the user.
+<3> The `sink-mappings` spec defines the Kubernetes addressable resource that is used when you use the `--sink` flag with a `kn` CLI command.
+<4> The prefix you want to use to describe your sink. `svc` for a service, `channel`, and `broker` are predefined prefixes in `kn`.
+<5> The API group of the Kubernetes resource.
+<6> The version of the Kubernetes resource.
+<7> The plural name of the Kubernetes resource type. For example, `services` or `brokers`.

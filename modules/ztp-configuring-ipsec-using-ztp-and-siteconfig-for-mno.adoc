@@ -1,0 +1,207 @@
+// Module included in the following assemblies:
+//
+// * scalability_and_performance/ztp_far_edge/ztp-advanced-install-ztp.adoc
+
+:_mod-docs-content-type: PROCEDURE
+[id="ztp-configuring-ipsec-using-ztp-and-siteconfig-for-mno_{context}"]
+= Configuring IPsec encryption for multi-node clusters using {ztp} and ClusterInstance resources
+
+[role="_abstract"]
+You can enable IPsec encryption in managed multi-node clusters that you install using {ztp} and {rh-rhacm-first}.
+You can encrypt traffic between the managed cluster and IPsec endpoints external to the managed cluster. All network traffic between nodes on the OVN-Kubernetes cluster network is encrypted with IPsec in Transport mode.
+
+.Prerequisites
+
+* You have installed the OpenShift CLI (`oc`).
+
+* You have logged in to the hub cluster as a user with `cluster-admin` privileges.
+
+* You have installed the SiteConfig Operator in the hub cluster.
+
+* You have configured {rh-rhacm} and the hub cluster for generating the required installation and policy custom resources (CRs) for managed clusters.
+
+* You have created a Git repository where you manage your custom site configuration data.
+The repository must be accessible from the hub cluster and be defined as a source repository for the Argo CD application.
+
+* You have installed the `butane` utility version 0.20.0 or later.
+
+* You have a PKCS#12 certificate for the IPsec endpoint and a CA cert in PEM format.
+
+* You have installed the NMState Operator.
+
+.Procedure
+
+. Extract the latest version of the `ztp-site-generate` container source and merge it with your repository where you manage your custom site configuration data.
+
+. Configure the `optional-extra-manifest/ipsec/ipsec-config-policy.yaml` file with the required values that configure IPsec in the cluster.
++
+.`ConfigurationPolicy` object for creating an IPsec configuration
+[source,yaml]
+----
+apiVersion: policy.open-cluster-management.io/v1
+kind: ConfigurationPolicy
+metadata:
+  name: policy-config
+spec:
+  namespaceSelector:
+    include: ["default"]
+    exclude: []
+    matchExpressions: []
+    matchLabels: {}
+  remediationAction: inform
+  severity: low
+  evaluationInterval:
+    compliant:
+    noncompliant:
+  object-templates-raw: |
+    {{- range (lookup "v1" "Node" "" "").items }}
+    - complianceType: musthave
+      objectDefinition:
+        kind: NodeNetworkConfigurationPolicy
+        apiVersion: nmstate.io/v1
+        metadata:
+          name: {{ .metadata.name }}-ipsec-policy
+        spec:
+          nodeSelector:
+            kubernetes.io/hostname: {{ .metadata.name }}
+          desiredState:
+            interfaces:
+            - name: hosta_conn
+              type: ipsec
+              libreswan:
+                left: '%defaultroute'
+                leftid: '%fromcert'
+                leftmodecfgclient: false
+                leftcert: left_server
+                leftrsasigkey: '%cert'
+                right: <external_host>
+                rightid: '%fromcert'
+                rightrsasigkey: '%cert'
+                rightsubnet: <external_address>
+                ikev2: insist
+                type: tunnel
+----
++
+--
+* `leftcert` must match the name of the certificate used on the remote system.
+* `right` is the external host IP address or DNS hostname.
+* `rightsubnet` is the IP subnet of the external host on the other side of the IPsec tunnel.
+* `ikev2: insist` uses the IKEv2 VPN encryption protocol only. Do not use IKEv1, which is deprecated.
+--
+
+. Add the following certificates to the `optional-extra-manifest/ipsec` folder:
+
+** `left_server.p12`: The certificate bundle for the IPsec endpoints
+
+** `ca.pem`: The certificate authority that you signed your certificates with
++
+The certificate files are required for the Network Security Services (NSS) database on each host. These files are imported as part of the Butane configuration in later steps.
+
+. Open a shell prompt at the `optional-extra-manifest/ipsec` folder of the Git repository where you maintain your custom site configuration data.
+
+. Run the `optional-extra-manifest/ipsec/import-certs.sh` script to generate the required Butane and `MachineConfig` CRs to import the external certs.
++
+If the PKCS#12 certificate is protected with a password, set the `-W` argument.
++
+The following example shows the generated output directory structure:
++
+[source,terminal]
+----
+out
+ └── argocd
+      └── example
+           └── optional-extra-manifest
+                └── ipsec
+                     ├── 99-ipsec-master-import-certs.bu
+                     ├── 99-ipsec-master-import-certs.yaml
+                     ├── 99-ipsec-worker-import-certs.bu
+                     ├── 99-ipsec-worker-import-certs.yaml
+                     ├── import-certs.sh
+                     ├── ca.pem
+                     ├── left_server.p12
+                     ├── enable-ipsec.yaml
+                     ├── ipsec-config-policy.yaml
+                     └── README.md
+----
++
+--
+* The `ipsec/import-certs.sh` script generates the Butane and endpoint configuration CRs.
+* Add the `ca.pem` and `left_server.p12` certificate files that are relevant to your network.
+--
+
+. Create an `ipsec-manifests/` folder in the repository where you manage your custom site configuration data and add the `enable-ipsec.yaml` and `99-ipsec-*` YAML files to the directory.
++
+.Example site configuration directory
+[source,terminal]
+----
+site-configs/
+  ├── hub-1/
+  │   └── clusterinstance-site1-mno-du.yaml
+  ├── ipsec-manifests/
+  │   ├── enable-ipsec.yaml
+  │   ├── 99-ipsec-master-import-certs.yaml
+  │   └── 99-ipsec-worker-import-certs.yaml
+  └── kustomization.yaml
+----
+
+. Create a `kustomization.yaml` file that uses `configMapGenerator` to package your IPsec manifests into a `ConfigMap`:
++
+[source,yaml]
+----
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+resources:
+  - hub-1/clusterinstance-site1-mno-du.yaml
+configMapGenerator:
+  - name: ipsec-manifests-cm
+    namespace: site1-mno-du
+    files:
+      - ipsec-manifests/enable-ipsec.yaml
+      - ipsec-manifests/99-ipsec-master-import-certs.yaml
+      - ipsec-manifests/99-ipsec-worker-import-certs.yaml
+generatorOptions:
+  disableNameSuffixHash: true
+----
++
+--
+* `namespace` must match the `ClusterInstance` namespace.
+* `disableNameSuffixHash: true` disables the hash suffix so the `ConfigMap` name is predictable.
+--
+
+. In your `ClusterInstance` CR, reference the `ConfigMap` in the `extraManifestsRefs` field:
++
+[source,yaml]
+----
+apiVersion: siteconfig.open-cluster-management.io/v1alpha1
+kind: ClusterInstance
+metadata:
+  name: "site1-mno-du"
+  namespace: "site1-mno-du"
+spec:
+  clusterName: "site1-mno-du"
+  networkType: "OVNKubernetes"
+  extraManifestsRefs:
+    - name: ipsec-manifests-cm
+# ...
+----
++
+--
+* `extraManifestsRefs.name` references the `ConfigMap` containing the IPsec certificate import manifests.
+--
++
+[NOTE]
+====
+If you have other extra manifests, you can either include them in the same `ConfigMap` or create multiple `ConfigMap` resources and reference them all in `extraManifestsRefs`.
+====
+
+. Include the `ipsec-config-policy.yaml` config policy file in the `source-crs` directory in GitOps and reference the file in one of the `PolicyGenerator` CRs.
+
+. Commit the `ClusterInstance` CR, IPsec manifest files, and `kustomization.yaml` changes in your Git repository and push the changes to provision the managed cluster and configure IPsec encryption.
++
+The Argo CD pipeline detects the changes and begins the managed cluster deployment.
++
+During cluster provisioning, the SiteConfig Operator applies the CRs contained in the referenced `ConfigMap` resources as extra manifests. The IPsec configuration policy is applied as a Day 2 operation after the cluster is provisioned.
+
+.Verification
+
+For information about verifying the IPsec encryption, see "Verifying the IPsec encryption".

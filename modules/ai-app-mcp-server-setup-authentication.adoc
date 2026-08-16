@@ -1,0 +1,198 @@
+// Module included in the following assemblies:
+//
+// * ai_applications/mcp_server/mcp-server-overview.adoc
+
+:_mod-docs-content-type: PROCEDURE
+[id="ai-app-mcp-server-setup-authentication_{context}"]
+= Set up MCP gateway authentication
+
+[role="_abstract"]
+To install the Model Context Protocol (MCP) server for Red Hat {product-title} feature, set up OAuth-based authentication for the MCP gateway, including OAuth discovery.
+
+.Prerequisites
+
+* Access to OpenShift console with admin rights.
+* The MCP server Helm chart is installed.
+* MCP-compatible client connected.
+* MCP gateway is installed and verified.
+* RBAC is configured.
+* You have revoked access to specific Custom Resources (CRs) as needed.
+* You have access to an Identity Provider (Entra ID).
+
+.Procedure
+
+. Configure OAuth metadata discovery by setting environment variables on the MCP gateway broker-router deployment by running the following command:
++
+[source,terminal]
+----
+$ oc set env deployment/mcp-gateway-broker-router -n mcp-system\
+OAUTH_RESOURCE_NAME="MCP Server" \
+OAUTH_RESOURCE="http://mcp.127-0-0-1.sslip.io:8001/mcp" \
+OAUTH_AUTHORIZATION_SERVERS="https://login.microsoftonline.com/<tenant-id>/v2.0" \
+OAUTH_BEARER_METHODS_SUPPORTED="header" \
+OAUTH_SCOPES_SUPPORTED="openid,mcp-server,offline_access"
+----
++
+These environment variables enable the OAuth 2.0 Protected Resource Metadata endpoint that clients use for authentication discovery.
+
+. Create the HTTPRoute for OAuth discovery by running the following command:
++
+[source,terminal]
+----
+$ oc apply -f - <<EOF
+apiVersion: gateway.networking.k8s.io/v1
+kind: HTTPRoute
+metadata:
+  name: mcp-gateway-oauth-metadata
+  namespace: mcp-system
+spec:
+  parentRefs:
+  - group: gateway.networking.k8s.io
+    kind: Gateway
+    name: mcp-gateway
+    namespace: gateway-system
+    sectionName: mcp
+  hostnames:
+  - ${MCP_GATEWAY_HOST}
+  rules:
+  - matches:
+    - path:
+        type: PathPrefix
+        value: /.well-known/oauth-protected-resource
+    backendRefs:
+    - name: mcp-gateway
+      port: 8080
+EOF
+----
++
+Where `${MCP_GATEWAY_HOST}` is the fully qualified domain name for your MCP gateway (for example, `mcp.127-0-0-1.sslip.io`).
++
+This route enables clients to discover OAuth metadata, which is required for the authentication flow. Without this route, clients receive a 404 error when attempting OAuth discovery.
+
+. Configure the Identity Provider (Entra ID) App Registration:
+
+.. In the Azure Portal or Entra admin center, go to your Entra ID App Registration.
+
+.. Under *Expose an API*, add a custom scope named `mcp-server`.
+
+.. Ensure that the following scopes are available: `openid`, `offline_access`, and `mcp-server`.
+
+.. If required by your organization, grant admin consent for these scopes.
++
+For more information about configuring Entra ID, see the Microsoft Entra ID documentation about configuring app registrations.
+
+. Configure certificate trust for JWT validation by mounting the Entra ID CA certificate into the Authorino deployment by running the following commands:
++
+[source,terminal]
+----
+$ oc create configmap entra-ca --from-file=ca.crt=/path/to/entra-ca.crt -n kuadrant-system
+----
++
+[source,terminal]
+----
+$ oc patch deployment authorino -n kuadrant-system --type=json -p='[
+  {
+    "op": "add",
+    "path": "/spec/template/spec/volumes/-",
+    "value": {"name": "entra-ca", "configMap": {"name": "entra-ca"}}
+  },
+  {
+    "op": "add",
+    "path": "/spec/template/spec/containers/0/volumeMounts/-",
+    "value": {"name": "entra-ca", "mountPath": "/etc/ssl/certs/entra-ca.crt", "subPath": "ca.crt"}
+  }
+]'
+----
++
+This ensures that Authorino can verify JWT token signatures from Microsoft Entra ID.
+
+. Configure the MCP gateway authentication by applying the authentication policy that validates JWT tokens by running the following command:
++
+[source,terminal]
+----
+$ oc apply -f - <<EOF
+apiVersion: kuadrant.io/v1
+kind: AuthPolicy
+metadata:
+  name: mcp-auth-policy
+  namespace: mcp-system
+spec:
+  targetRef:
+    group: gateway.networking.k8s.io
+    kind: Gateway
+    name: mcp-gateway
+    sectionName: mcp
+  defaults:
+    when:
+
+      - predicate: "!request.path.contains('/.well-known')"
+    rules:
+      authentication:
+        'entra-id':
+          jwt:
+            issuerUrl: https://login.microsoftonline.com/<tenant-id>/v2.0
+      response:
+        unauthenticated:
+          code: 401
+          headers:
+            'WWW-Authenticate':
+              value: Bearer resource_metadata=http://mcp.127-0-0-1.sslip.io:8001/.well-known/oauth-protected-resource/mcp
+          body:
+            value: |
+              {
+                "error": "Unauthorized",
+                "message": "Authentication required."
+              }
+EOF
+----
+
+.Verification
+
+. Verify OAuth Discovery by testing that the broker now serves OAuth discovery information by running the following command:
++
+[source,terminal]
+----
+curl http://mcp.127-0-0-1.sslip.io:8001/.well-known/oauth-protected-resource
+----
++
+The command should show OAuth 2.0 Protected Resource Metadata similar to the following:
++
+.Example
++
+[source,terminal]
+----
+{
+  "resource_name": "MCP Server",
+  "resource": "http://mcp.127-0-0-1.sslip.io:8001/mcp",
+  "authorization_servers": [
+    "https://login.microsoftonline.com/<tenant-id>/v2.0"
+  ],
+  "bearer_methods_supported": [
+    "header"
+  ],
+  "scopes_supported": [
+    "openid",
+    "mcp-server",
+    "offline_access"
+  ]
+}
+----
+
+. Test that protected endpoints now require authentication by running the following command:
++
+[source,terminal]
+----
+$ curl -v http://mcp.127-0-0-1.sslip.io:8001/mcp \
+  -H "Content-Type: application/json" \
+  -d '{"jsonrpc": "2.0", "id": 1, "method": "tools/list"}'
+----
++
+.Example
++
+[source,terminal]
+----
+{
+  "error": "Unauthorized",
+  "message": "Authentication required."
+}
+----

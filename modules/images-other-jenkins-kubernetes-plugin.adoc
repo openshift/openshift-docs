@@ -1,0 +1,159 @@
+// Module included in the following assemblies:
+//
+// * cicd/jenkins/images-other-jenkins.adoc
+
+:_mod-docs-content-type: CONCEPT
+[id="images-other-jenkins-kubernetes-plugin_{context}"]
+= Using the Jenkins Kubernetes plugin
+
+In the following example, the `openshift-jee-sample` `BuildConfig` object causes a Jenkins Maven agent pod to be dynamically provisioned. The pod clones some Java source code, builds a WAR file, and causes a second `BuildConfig`, `openshift-jee-sample-docker` to run. The second `BuildConfig` layers the new WAR file into a container image.
+
+[IMPORTANT]
+====
+{product-title} 4.11 removed the OpenShift Jenkins Maven and NodeJS Agent images from its payload. Red Hat no longer produces these images, and they are not available from the `ocp-tools-4` repository at `registry.redhat.io`. Red Hat maintains the 4.10 and earlier versions of these images for any significant bug fixes or security CVEs, following the link:https://access.redhat.com/support/policy/updates/openshift[{product-title} lifecycle policy].
+
+For more information, see the "Important changes to OpenShift Jenkins images" link in the following "Additional resources" section.
+====
+
+.Sample `BuildConfig` that uses the Jenkins Kubernetes plugin
+[source,yaml]
+----
+kind: List
+apiVersion: v1
+items:
+- kind: ImageStream
+  apiVersion: image.openshift.io/v1
+  metadata:
+    name: openshift-jee-sample
+- kind: BuildConfig
+  apiVersion: build.openshift.io/v1
+  metadata:
+    name: openshift-jee-sample-docker
+  spec:
+    strategy:
+      type: Docker
+    source:
+      type: Docker
+      dockerfile: |-
+        FROM openshift/wildfly-101-centos7:latest
+        COPY ROOT.war /wildfly/standalone/deployments/ROOT.war
+        CMD $STI_SCRIPTS_PATH/run
+      binary:
+        asFile: ROOT.war
+    output:
+      to:
+        kind: ImageStreamTag
+        name: openshift-jee-sample:latest
+- kind: BuildConfig
+  apiVersion: build.openshift.io/v1
+  metadata:
+    name: openshift-jee-sample
+  spec:
+    strategy:
+      type: JenkinsPipeline
+      jenkinsPipelineStrategy:
+        jenkinsfile: |-
+          node("maven") {
+            sh "git clone https://github.com/openshift/openshift-jee-sample.git ."
+            sh "mvn -B -Popenshift package"
+            sh "oc start-build -F openshift-jee-sample-docker --from-file=target/ROOT.war"
+          }
+    triggers:
+    - type: ConfigChange
+----
+
+It is also possible to override the specification of the dynamically created Jenkins agent pod. The following is a modification to the preceding example, which overrides the container memory and specifies an environment variable.
+
+.Sample `BuildConfig` that uses the Jenkins Kubernetes plugin, specifying memory limit and environment variable
+[source,yaml]
+----
+kind: BuildConfig
+apiVersion: build.openshift.io/v1
+metadata:
+  name: openshift-jee-sample
+spec:
+  strategy:
+    type: JenkinsPipeline
+    jenkinsPipelineStrategy:
+      jenkinsfile: |-
+        podTemplate(label: "mypod", <1>
+                    cloud: "openshift", <2>
+                    inheritFrom: "maven", <3>
+                    containers: [
+            containerTemplate(name: "jnlp", <4>
+                              image: "openshift/jenkins-agent-maven-35-centos7:v3.10", <5>
+                              resourceRequestMemory: "512Mi", <6>
+                              resourceLimitMemory: "512Mi", <7>
+                              envVars: [
+              envVar(key: "CONTAINER_HEAP_PERCENT", value: "0.25") <8>
+            ])
+          ]) {
+          node("mypod") { <9>
+            sh "git clone https://github.com/openshift/openshift-jee-sample.git ."
+            sh "mvn -B -Popenshift package"
+            sh "oc start-build -F openshift-jee-sample-docker --from-file=target/ROOT.war"
+          }
+        }
+  triggers:
+  - type: ConfigChange
+----
+<1> A new pod template called `mypod` is defined dynamically. The new pod template name is referenced in the node stanza.
+<2> The `cloud` value must be set to `openshift`.
+<3> The new pod template can inherit its configuration from an existing pod template. In this case, inherited from the Maven pod template that is pre-defined by {product-title}.
+<4> This example overrides values in the pre-existing container, and must be specified by name. All Jenkins agent images shipped with {product-title} use the Container name `jnlp`.
+<5> Specify the container image name again. This is a known issue.
+<6> A memory request of `512 Mi` is specified.
+<7> A memory limit of `512 Mi` is specified.
+<8> An environment variable `CONTAINER_HEAP_PERCENT`, with value `0.25`, is specified.
+<9> The node stanza references the name of the defined pod template.
+
+// Writer, remove or update jenkins-agent-maven reference in 4.12
+
+By default, the pod is deleted when the build completes. This behavior can be modified with the plugin or within a pipeline Jenkinsfile.
+
+Upstream Jenkins has more recently introduced a YAML declarative format for defining a `podTemplate` pipeline DSL in-line with your pipelines. An example of this format, using the sample `java-builder` pod template that is defined in the {product-title} Jenkins image:
+
+[source,yaml]
+----
+def nodeLabel = 'java-buidler'
+
+pipeline {
+  agent {
+    kubernetes {
+      cloud 'openshift'
+      label nodeLabel
+      yaml """
+apiVersion: v1
+kind: Pod
+metadata:
+  labels:
+    worker: ${nodeLabel}
+spec:
+  containers:
+  - name: jnlp
+    image: image-registry.openshift-image-registry.svc:5000/openshift/jenkins-agent-base-rhel8:latest
+    args: ['\$(JENKINS_SECRET)', '\$(JENKINS_NAME)']
+  - name: java
+    image: image-registry.openshift-image-registry.svc:5000/openshift/java:latest
+    command:
+    - cat
+    tty: true
+"""
+    }
+  }
+
+  options {
+    timeout(time: 20, unit: 'MINUTES')
+  }
+
+  stages {
+    stage('Build App') {
+      steps {
+        container("java") {
+          sh "mvn --version"
+        }
+     }
+    }
+  }
+}
+----

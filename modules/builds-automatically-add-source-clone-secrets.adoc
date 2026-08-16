@@ -1,0 +1,71 @@
+// Module included in the following assemblies:
+//
+// * builds/creating-build-inputs.adoc
+
+:_mod-docs-content-type: PROCEDURE
+[id="builds-automatically-add-source-clone-secrets_{context}"]
+= Automatically adding a source clone secret to a build configuration
+
+When a `BuildConfig` is created, {product-title} can automatically populate its source clone secret reference. This behavior allows the resulting builds to automatically use the credentials stored in the referenced secret to authenticate to a remote Git repository, without requiring further configuration.
+
+To use this functionality, a secret containing the Git repository credentials must exist in the namespace in which the `BuildConfig` is later created. This secrets must include one or more annotations prefixed with `build.openshift.io/source-secret-match-uri-`. The value of each of these annotations is a Uniform Resource Identifier (URI) pattern, which is defined as follows. When a `BuildConfig` is created without a source clone secret reference and its Git source URI matches a URI pattern in a secret annotation, {product-title} automatically inserts a reference to that secret in the `BuildConfig`.
+
+.Prerequisites
+
+A URI pattern must consist of:
+
+* A valid scheme: `*://`, `git://`, `http://`, `https://` or `ssh://`
+* A host: \*` or a valid hostname or IP address optionally preceded by `*.`
+* A path: `/\*` or `/` followed by any characters optionally including `*` characters
+
+In all of the above, a `*` character is interpreted as a wildcard.
+
+[IMPORTANT]
+====
+URI patterns must match Git source URIs which are conformant to link:https://www.ietf.org/rfc/rfc3986.txt[RFC3986]. Do not include a username (or password) component in a URI pattern.
+
+For example, if you use `ssh://git@bitbucket.atlassian.com:7999/ATLASSIAN jira.git` for a git repository URL, the source secret must be specified as `pass:c[ssh://bitbucket.atlassian.com:7999/*]` (and not `pass:c[ssh://git@bitbucket.atlassian.com:7999/*]`).
+
+[source,terminal]
+----
+$ oc annotate secret mysecret \
+    'build.openshift.io/source-secret-match-uri-1=ssh://bitbucket.atlassian.com:7999/*'
+----
+
+====
+
+.Procedure
+
+If multiple secrets match the Git URI of a particular `BuildConfig`, {product-title} selects the secret with the longest match. This allows for basic overriding, as in the following example.
+
+The following fragment shows two partial source clone secrets, the first matching any server in the domain `mycorp.com` accessed by HTTPS, and the second overriding access to servers `mydev1.mycorp.com` and `mydev2.mycorp.com`:
+
+[source,yaml]
+----
+kind: Secret
+apiVersion: v1
+metadata:
+  name: matches-all-corporate-servers-https-only
+  annotations:
+    build.openshift.io/source-secret-match-uri-1: https://*.mycorp.com/*
+data:
+  ...
+---
+kind: Secret
+apiVersion: v1
+metadata:
+  name: override-for-my-dev-servers-https-only
+  annotations:
+    build.openshift.io/source-secret-match-uri-1: https://mydev1.mycorp.com/*
+    build.openshift.io/source-secret-match-uri-2: https://mydev2.mycorp.com/*
+data:
+  ...
+----
+
+* Add a `build.openshift.io/source-secret-match-uri-` annotation to a pre-existing secret using:
++
+[source,terminal]
+----
+$ oc annotate secret mysecret \
+    'build.openshift.io/source-secret-match-uri-1=https://*.mycorp.com/*'
+----

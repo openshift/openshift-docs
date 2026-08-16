@@ -1,0 +1,314 @@
+// Module included in the following assembly:
+//
+// * cicd/pipelines/op-release-notes.adoc
+
+[id="op-release-notes-1-5_{context}"]
+= Release notes for {pipelines-title} General Availability 1.5
+
+{pipelines-title} General Availability (GA) 1.5 is now available on {product-title} 4.8.
+
+[id="compatibility-support-matrix-1-5_{context}"]
+== Compatibility and support matrix
+
+Some features in this release are currently in link:https://access.redhat.com/support/offerings/techpreview[Technology Preview]. These experimental features are not intended for production use.
+
+In the table, features are marked with the following statuses:
+
+[horizontal]
+TP:: Technology Preview
+GA:: General Availability
+
+Note the following scope of support on the Red Hat Customer Portal for these features:
+
+.Compatibility and support matrix
+[cols="1,1,1",options="header"]
+|===
+| Feature | Version | Support Status
+| Pipelines | 0.24 | GA
+| CLI | 0.19 | GA
+| Catalog | 0.24 | GA
+| Triggers | 0.14 | TP
+| Pipeline resources | - | TP
+|===
+
+
+For questions and feedback, you can send an email to the product team at pipelines-interest@redhat.com.
+
+[id="new-features-1-5_{context}"]
+== New features
+
+In addition to the fixes and stability improvements, the following sections highlight what is new in {pipelines-title} 1.5.
+
+* Pipeline run and task runs will be automatically pruned by a cron job in the target namespace. The cron job uses the `IMAGE_JOB_PRUNER_TKN` environment variable to get the value of `tkn image`. With this enhancement, the following fields are introduced to the `TektonConfig` custom resource:
++
+[source,yaml,subs="attributes+"]
+----
+...
+pruner:
+  resources:
+    - pipelinerun
+    - taskrun
+  schedule: "*/5 * * * *" # cron schedule
+  keep: 2 # delete all keeping n
+...
+----
+
+* In {product-title}, you can customize the installation of the Tekton Add-ons component by modifying the values of the new parameters `clusterTasks` and `pipelinesTemplates` in the `TektonConfig` custom resource:
++
+[source,yaml,subs="attributes+"]
+----
+apiVersion: operator.tekton.dev/v1alpha1
+kind: TektonConfig
+metadata:
+  name: config
+spec:
+  profile: all
+  targetNamespace: openshift-pipelines
+  addon:
+    params:
+    - name: clusterTasks
+      value: "true"
+    - name: pipelineTemplates
+      value: "true"
+...
+----
++
+The customization is allowed if you create the add-on using `TektonConfig`, or directly by using Tekton Add-ons. However, if the parameters are not passed, the controller adds parameters with default values.
++
+[NOTE]
+====
+* If add-on is created using the `TektonConfig` custom resource, and you change the parameter values later in the
+`Addon` custom resource, then the values in the `TektonConfig` custom resource overwrites the changes.
+
+* You can set the value of the `pipelinesTemplates` parameter to `true` only when the value of the `clusterTasks` parameter is `true`.
+====
+
+* The `enableMetrics` parameter is added to the `TektonConfig` custom resource. You can use it to disable the service monitor, which is part of Tekton Pipelines for {product-title}.
++
+[source,yaml,subs="attributes+"]
+----
+apiVersion: operator.tekton.dev/v1alpha1
+kind: TektonConfig
+metadata:
+  name: config
+spec:
+  profile: all
+  targetNamespace: openshift-pipelines
+  pipeline:
+    params:
+    - name: enableMetrics
+      value: "true"
+...
+----
+
+* Eventlistener OpenCensus metrics, which captures metrics at process level, is added.
+
+* Triggers now has label selector; you can configure triggers for an event listener using labels.
+
+* The `ClusterInterceptor` custom resource definition for registering interceptors is added, which allows you to register new `Interceptor` types that you can plug in. In addition, the following relevant changes are made:
+
+** In the trigger specifications, you can configure interceptors using a new API that includes a `ref` field to refer to a cluster interceptor. In addition, you can use the `params` field to add parameters that pass on to the interceptors for processing.
+
+** The bundled interceptors CEL, GitHub, GitLab, and BitBucket, have been migrated. They are implemented using the new `ClusterInterceptor` custom resource definition.
+
+** Core interceptors are migrated to the new format, and any new triggers created using the old syntax automatically switch to the new `ref` or `params` based syntax.
+
+* To disable prefixing the name of the task or step while displaying logs, use the `--prefix` option for `log` commands.
+
+* To display the version of a specific component, use the new `--component` flag in the `tkn version` command.
+
+* The `tkn hub check-upgrade` command is added, and other commands are revised to be based on the pipeline version. In addition, catalog names are displayed in the `search` command output.
+
+* Support for optional workspaces are added to the `start` command.
+
+* If the plugins are not present in the `plugins` directory, they are searched in the current path.
+
+* The `tkn start [task | clustertask | pipeline]` command starts interactively and ask for the `params` value, even when you specify the default parameters are specified. To stop the interactive prompts, pass the `--use-param-defaults` flag at the time of invoking the command. For example:
++
+[source,terminal,subs="attributes+"]
+----
+$ tkn pipeline start build-and-deploy \
+    -w name=shared-workspace,volumeClaimTemplateFile=https://raw.githubusercontent.com/openshift/pipelines-tutorial/{pipelines-ver}/01_pipeline/03_persistent_volume_claim.yaml \
+    -p deployment-name=pipelines-vote-api \
+    -p git-url=https://github.com/openshift/pipelines-vote-api.git \
+    -p IMAGE=image-registry.openshift-image-registry.svc:5000/pipelines-tutorial/pipelines-vote-api \
+    --use-param-defaults
+----
+
+* The `version` field is added in the `tkn task describe` command.
+
+* The option to automatically select resources such as `TriggerTemplate`, or `TriggerBinding`, or `ClusterTriggerBinding`, or `Eventlistener`, is added in the `describe` command, if only one is present.
+
+* In the `tkn pr describe` command, a section for skipped tasks is added.
+
+* Support for the `tkn clustertask logs` is added.
+
+* The YAML merge and variable from `config.yaml` is removed. In addition, the `release.yaml` file can now be more easily consumed by tools such as `kustomize` and `ytt`.
+
+* The support for resource names to contain the dot character (".") is added.
+
+* The `hostAliases` array in the `PodTemplate` specification is added to the pod-level override of hostname resolution. It is achieved by modifying the `/etc/hosts` file.
+
+* A variable `$(tasks.status)` is introduced to access the aggregate execution status of tasks.
+
+* An entry-point binary build for Windows is added.
+
+
+[id="deprecated-features-1-5_{context}"]
+== Deprecated features
+
+* In the `when` expressions, support for fields written is PascalCase is removed. The `when` expressions only support fields written in lowercase.
++
+[NOTE]
+====
+If you had applied a pipeline with `when` expressions in Tekton Pipelines `v0.16` (Operator `v1.2.x`), you have to reapply it.
+====
+
+* When you upgrade the {pipelines-title} Operator to `v1.5`, the `openshift-client` and the `openshift-client-v-1-5-0` cluster tasks have the `SCRIPT` parameter. However, the `ARGS` parameter and the `git` resource are removed from the specification of the `openshift-client` cluster task. This is a breaking change, and only those cluster tasks that do not have a specific version in the `name` field of the `ClusterTask` resource upgrade seamlessly.
++
+To prevent the pipeline runs from breaking, use the `SCRIPT` parameter after the upgrade because it moves the values previously specified in the `ARGS` parameter into the `SCRIPT` parameter of the cluster task. For example:
++
+[source,yaml,subs="attributes+"]
+----
+...
+- name: deploy
+  params:
+  - name: SCRIPT
+    value: oc rollout status <deployment-name>
+  runAfter:
+    - build
+  taskRef:
+    kind: ClusterTask
+    name: openshift-client
+...
+----
++
+
+* When you upgrade from {pipelines-title} Operator `v1.4` to `v1.5`, the profile names in which the `TektonConfig` custom resource is installed now change.
+
++
+.Profiles for `TektonConfig` custom resource
+[cols="1,1,1",options="header"]
+|===
+| Profiles in Pipelines 1.5 | Corresponding profile in Pipelines 1.4 | Installed Tekton components
+| All (_default profile_) | All (_default profile_) | Pipelines, Triggers, Add-ons
+| Basic | Default | Pipelines, Triggers
+| Lite | Basic | Pipelines
+
+|===
+
++
+[NOTE]
+====
+If you used `profile: all` in the `config` instance of the `TektonConfig` custom resource, no change is necessary in the resource specification.
+
+However, if the installed Operator is either in the Default or the Basic profile before the upgrade, you must edit the `config` instance of the `TektonConfig` custom resource after the upgrade. For example, if the configuration was `profile: basic` before the upgrade, ensure that it is `profile: lite` after upgrading to Pipelines 1.5.
+====
++
+
+* The `disable-home-env-overwrite` and `disable-working-dir-overwrite` fields are now deprecated and will be removed in a future release. For this release, the default value of these flags is set to `true` for backward compatibility.
++
+[NOTE]
+====
+In the next release ({pipelines-title} 1.6), the `HOME` environment variable will not be automatically set to `/tekton/home`, and the default working directory will not be set to `/workspace` for task runs. These defaults collide with any value set by image Dockerfile of the step.
+====
+
+* The `ServiceType` and `podTemplate` fields are removed from the `EventListener` spec.
+
+* The controller service account no longer requests cluster-wide permission to list and watch namespaces.
+
+* The status of the `EventListener` resource has a new condition called `Ready`.
++
+[NOTE]
+====
+In the future, the other status conditions for the `EventListener` resource will be deprecated in favor of the `Ready` status condition.
+====
+
+* The `eventListener` and `namespace` fields in the `EventListener` response are deprecated. Use the `eventListenerUID` field instead.
+
+* The `replicas` field is deprecated from the `EventListener` spec. Instead, the `spec.replicas` field is moved to `spec.resources.kubernetesResource.replicas` in the `KubernetesResource` spec.
++
+[NOTE]
+====
+The `replicas` field will be removed in a future release.
+====
+
+* The old method of configuring the core interceptors is deprecated. However, it continues to work until it is removed in a future release. Instead, interceptors in a `Trigger` resource are now configured using a new `ref` and `params` based syntax. The resulting default webhook automatically switch the usages of the old syntax to the new syntax for new triggers.
+
+* Use `rbac.authorization.k8s.io/v1` instead of the deprecated `rbac.authorization.k8s.io/v1beta1` for the `ClusterRoleBinding` resource.
+
+* In cluster roles, the cluster-wide write access to resources such as `serviceaccounts`, `secrets`, `configmaps`, and `limitranges` are removed. In addition, cluster-wide access to resources such as `deployments`, `statefulsets`, and `deployment/finalizers` are removed.
+
+* The `image` custom resource definition in the `caching.internal.knative.dev` group is not used by Tekton anymore, and is excluded in this release.
+
+
+[id="known-issues-1-5_{context}"]
+== Known issues
+
+* The link:https://github.com/tektoncd/catalog/tree/main/task/git-cli/0.1[git-cli] cluster task is built off the link:https://github.com/tektoncd/catalog/blob/68e44c629c9ee287393681030ed391d2c2e856cd/task/git-cli/0.1/git-cli.yaml#L32[alpine/git] base image, which expects `/root` as the user's home directory. However, this is not explicitly set in the `git-cli` cluster task.
++
+In Tekton, the default home directory is overwritten with `/tekton/home` for every step of a task, unless otherwise specified. This overwriting of the `$HOME` environment variable of the base image causes the `git-cli` cluster task to fail.
++
+This issue is expected to be fixed in the upcoming releases. For {pipelines-title} 1.5 and earlier versions, you can _use any one of the following workarounds_ to avoid the failure of the `git-cli` cluster task:
+
+** Set the `$HOME` environment variable in the steps, so that it is not overwritten.
+
+. [OPTIONAL] If you installed {pipelines-title} using the Operator, then clone the `git-cli` cluster task into a separate task. This approach ensures that the Operator does not overwrite the changes made to the cluster task.
+. Execute the `oc edit clustertasks git-cli` command.
+. Add the expected `HOME` environment variable to the YAML of the step:
++
+[source,yaml,subs="attributes+"]
+----
+...
+steps:
+  - name: git
+    env:
+    - name: HOME
+      value: /root
+    image: $(params.BASE_IMAGE)
+    workingDir: $(workspaces.source.path)
+...
+----
++
+[WARNING]
+====
+For {pipelines-title} installed by the Operator, if you do not clone the `git-cli` cluster task into a separate task before changing the `HOME` environment variable, then the changes are overwritten during Operator reconciliation.
+====
+
+** Disable overwriting the `HOME` environment variable in the `feature-flags` config map.
+
+. Execute the `oc edit -n openshift-pipelines configmap feature-flags` command.
+. Set the value of the `disable-home-env-overwrite` flag to `true`.
++
+[WARNING]
+====
+* If you installed {pipelines-title} using the Operator, then the changes are overwritten during Operator reconciliation.
+
+* Modifying the default value of the `disable-home-env-overwrite` flag can break other tasks and cluster tasks, as it changes the default behavior for all tasks.
+====
+
+** Use a different service account for the `git-cli` cluster task, as the overwriting of the `HOME` environment variable happens when the default service account for pipelines is used.
+
+. Create a new service account.
+. Link your Git secret to the service account you just created.
+. Use the service account while executing a task or a pipeline.
+
+
+* On {ibm-power-name} Systems, {ibm-z-name}, and {ibm-linuxone-name}, the `s2i-dotnet` cluster task and the `tkn hub` command are unsupported.
+
+* When you run Maven and Jib-Maven cluster tasks, the default container image is supported only on Intel (x86) architecture. Therefore, tasks will fail on {ibm-power-name} Systems (ppc64le), {ibm-z-name}, and {ibm-linuxone-name} (s390x) clusters. As a workaround, you can specify a custom image by setting the `MAVEN_IMAGE` parameter value to `maven:3.6.3-adoptopenjdk-11`.
+
+[id="fixed-issues-1-5_{context}"]
+== Fixed issues
+
+* The `when` expressions in `dag` tasks are not allowed to specify the context variable accessing the execution status (`$(tasks.<pipelineTask>.status)`) of any other task.
+
+* Use Owner UIDs instead of Owner names, as it helps avoid race conditions created by deleting a `volumeClaimTemplate` PVC, in situations where a `PipelineRun` resource is quickly deleted and then recreated.
+
+* A new Dockerfile is added for `pullrequest-init` for `build-base` image triggered by non-root users.
+
+* When a pipeline or task is executed with the `-f` option and the `param` in its definition does not have a `type` defined, a validation error is generated instead of the pipeline or task run failing silently.
+
+* For the `tkn start [task | pipeline | clustertask]` commands, the description of the `--workspace` flag is now consistent.
+
+* While parsing the parameters, if an empty array is encountered, the corresponding interactive help is displayed as an empty string now.

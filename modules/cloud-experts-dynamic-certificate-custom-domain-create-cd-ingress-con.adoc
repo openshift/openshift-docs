@@ -1,0 +1,140 @@
+// Module included in the following assemblies:
+//
+// * cloud_experts_tutorials/cloud-experts-dynamic-certificate-custom-domain.adoc
+
+:_mod-docs-content-type: PROCEDURE
+[id="cloud-experts-dynamic-certificate-custom-domain-create-cd-ingress-con_{context}"]
+= Creating a custom domain Ingress Controller
+
+[role="_abstract"]
+You can create the custom domain Ingress Controller by using the {oc-first} tool.
+
+.Procedure
+. Create and configure a certificate resource to provision a certificate for the custom domain Ingress Controller:
++
+[NOTE]
+====
+The following example uses a single domain certificate. SAN and wildcard certificates are also supported.
+====
++
+[source,terminal]
+----
+$ cat << EOF | oc apply -f -
+apiVersion: cert-manager.io/v1
+kind: Certificate
+metadata:
+  name: custom-domain-ingress-cert
+  namespace: openshift-ingress
+spec:
+  secretName: custom-domain-ingress-cert-tls
+  issuerRef:
+     name: letsencrypt-production
+     kind: ClusterIssuer
+  commonName: "${DOMAIN}"
+  dnsNames:
+  - "${DOMAIN}"
+EOF
+----
++
+. Verify the certificate has been issued:
++
+[NOTE]
+====
+It takes a few minutes for this certificate to be issued by Let's Encrypt. If it takes longer than 5 minutes, run `oc -n openshift-ingress describe certificate.cert-manager.io/custom-domain-ingress-cert` to see any issues reported by cert-manager.
+====
++
+[source,terminal]
+----
+$ oc -n openshift-ingress get certificate.cert-manager.io/custom-domain-ingress-cert
+----
++
+**Example output**
++
+[source,text]
+----
+NAME                         READY   SECRET                           AGE
+custom-domain-ingress-cert   True    custom-domain-ingress-cert-tls   9m53s
+----
++
+. Create a new `IngressController` resource:
++
+[source,terminal]
+----
+$ cat << EOF | oc apply -f -
+apiVersion: operator.openshift.io/v1
+kind: IngressController
+metadata:
+  name: custom-domain-ingress
+  namespace: openshift-ingress-operator
+spec:
+  domain: ${DOMAIN}
+  defaultCertificate:
+    name: custom-domain-ingress-cert-tls
+  endpointPublishingStrategy:
+    loadBalancer:
+      dnsManagementPolicy: Unmanaged
+      providerParameters:
+        aws:
+          type: NLB
+        type: AWS
+      scope: External
+    type: LoadBalancerService
+EOF
+----
++
+[WARNING]
+====
+This `IngressController` example will create an internet accessible Network Load Balancer (NLB) in your AWS account. To provision an internal NLB instead, set the `.spec.endpointPublishingStrategy.loadBalancer.scope` parameter to `Internal` before creating the `IngressController` resource.
+====
++
+. Verify that your custom domain IngressController has successfully created an external load balancer:
++
+[source,terminal]
+----
+$ oc -n openshift-ingress get service/router-custom-domain-ingress
+----
++
+**Example output**
++
+[source,terminal]
+----
+NAME                           TYPE           CLUSTER-IP      EXTERNAL-IP                                                                     PORT(S)                      AGE
+router-custom-domain-ingress   LoadBalancer   172.30.174.34   a309962c3bd6e42c08cadb9202eca683-1f5bbb64a1f1ec65.elb.us-east-1.amazonaws.com   80:31342/TCP,443:31821/TCP   7m28s
+----
++
+. Prepare a document with the necessary DNS changes to enable DNS resolution for your custom domain Ingress Controller:
++
+[source,terminal]
+----
+$ INGRESS=$(oc -n openshift-ingress get service/router-custom-domain-ingress -ojsonpath="{.status.loadBalancer.ingress[0].hostname}")
+$ cat << EOF > "${SCRATCH}/create-cname.json"
+{
+  "Comment":"Add CNAME to custom domain endpoint",
+  "Changes":[{
+      "Action":"CREATE",
+      "ResourceRecordSet":{
+        "Name": "*.${DOMAIN}",
+      "Type":"CNAME",
+      "TTL":30,
+      "ResourceRecords":[{
+        "Value": "${INGRESS}"
+      }]
+    }
+  }]
+}
+EOF
+----
++
+. Submit your changes to Amazon Route 53 for propagation:
++
+[source,terminal]
+----
+$ aws route53 change-resource-record-sets \
+  --hosted-zone-id ${ZONE_ID} \
+  --change-batch file://${SCRATCH}/create-cname.json
+----
++
+[NOTE]
+====
+While the wildcard CNAME record avoids the need to create a new record for every new application you deploy using the custom domain Ingress Controller, the certificate that each of these applications use *is not* a wildcard certificate.
+====

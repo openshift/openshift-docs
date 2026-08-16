@@ -1,0 +1,24 @@
+// Module included in the following assemblies:
+//
+// * rosa_cluster_admin/cloud_infrastructure_access/dedicated-aws-peering.adoc
+
+:_mod-docs-content-type: PROCEDURE
+[id="dedicated-aws-vpc-accepting-peering"]
+= Accepting the VPC peer request
+
+After you create the VPC peering connection, you must accept the request in the
+Customer AWS Account.
+
+.Prerequisites
+
+* Initiate the VPC peer request.
+
+.Procedure
+
+. Log in to the AWS Web Console.
+. Navigate to *VPC Service*.
+. Go to *Peering Connections*.
+. Click on *Pending peering connection*.
+. Confirm the AWS Account and VPC ID that the request originated from. This should
+be from the {product-title} AWS Account and {product-title} Cluster VPC.
+. Click *Accept Request*.

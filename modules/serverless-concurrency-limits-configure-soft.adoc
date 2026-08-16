@@ -1,0 +1,41 @@
+// Module included in the following assemblies:
+//
+// * serverless/knative-serving/autoscaling/serverless-autoscaling-developer.adoc
+
+:_mod-docs-content-type: PROCEDURE
+[id="serverless-concurrency-limits-configure-soft_{context}"]
+= Configuring a soft concurrency target
+
+A soft limit is a targeted requests limit, rather than a strictly enforced bound. For example, if there is a sudden burst of traffic, the soft limit target can be exceeded. You can specify a soft concurrency target for your Knative service by setting the `autoscaling.knative.dev/target` annotation in the spec, or by using the `kn service` command with the correct flags.
+
+.Procedure
+
+* Optional: Set the `autoscaling.knative.dev/target` annotation for your Knative service in the spec of the `Service` custom resource:
++
+.Example service spec
+[source,yaml]
+----
+apiVersion: serving.knative.dev/v1
+kind: Service
+metadata:
+  name: example-service
+  namespace: default
+spec:
+  template:
+    metadata:
+      annotations:
+        autoscaling.knative.dev/target: "200"
+----
+
+* Optional: Use the `kn service` command to specify the `--concurrency-target` flag:
++
+[source,terminal]
+----
+$ kn service create <service_name> --image <image_uri> --concurrency-target <integer>
+----
++
+.Example command to create a service with a concurrency target of 50 requests
+[source,terminal]
+----
+$ kn service create example-service --image quay.io/openshift-knative/knative-eventing-sources-event-display:latest --concurrency-target 50
+----

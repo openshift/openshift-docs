@@ -1,0 +1,295 @@
+// Module included in the following assemblies:
+// 
+//installing/installing_bare_metal/ipi/ipi-install-troubleshooting.adoc
+
+:_mod-docs-content-type: PROCEDURE
+[id="ipi-install-troubleshooting-misc-issues_{context}"]
+
+= Miscellaneous issues
+
+== Addressing the `runtime network not ready` error
+
+After the deployment of a cluster you might receive the following error:
+
+----
+`runtime network not ready: NetworkReady=false reason:NetworkPluginNotReady message:Network plugin returns error: Missing CNI default network`
+----
+
+The Cluster Network Operator is responsible for deploying the networking components in response to a special object created by the installation program. It runs very early in the installation process, after the control plane (master) nodes have come up, but before the bootstrap control plane has been torn down. It can be indicative of more subtle installation program issues, such as long delays in bringing up control plane (master) nodes or issues with `apiserver` communication.
+
+.Procedure
+
+. Inspect the pods in the `openshift-network-operator` namespace:
++
+[source,terminal]
+----
+$ oc get all -n openshift-network-operator
+----
++
+[source,terminal]
+----
+NAME                                    READY STATUS            RESTARTS   AGE
+pod/network-operator-69dfd7b577-bg89v   0/1   ContainerCreating 0          149m
+----
+
+
+. On the `provisioner` node, determine that the network configuration exists:
++
+[source,terminal]
+----
+$ kubectl get network.config.openshift.io cluster -oyaml
+----
++
+[source,yaml]
+----
+apiVersion: config.openshift.io/v1
+kind: Network
+metadata:
+  name: cluster
+spec:
+  serviceNetwork:
+  - 172.30.0.0/16
+  clusterNetwork:
+  - cidr: 10.128.0.0/14
+    hostPrefix: 23
+  networkType: OVNKubernetes
+----
++
+If it does not exist, the installation program did not create it. To determine why the installation program did not create it, execute the following:
++
+[source,terminal]
+----
+$ openshift-install create manifests
+----
+
+. Check that the `network-operator` is running:
++
+[source,terminal]
+----
+$ kubectl -n openshift-network-operator get pods
+----
+
+. Retrieve the logs:
++
+[source,terminal]
+----
+$ kubectl -n openshift-network-operator logs -l "name=network-operator"
+----
++
+On high availability clusters with three or more control plane nodes, the Operator will perform leader election and all other Operators will sleep. For additional details, see https://github.com/openshift/installer/blob/master/docs/user/troubleshooting.md[Troubleshooting].
+
+== Addressing the "No disk found with matching rootDeviceHints" error message
+
+After you deploy a cluster, you might receive the following error message:
+
+[source,text]
+----
+No disk found with matching rootDeviceHints
+----
+
+To address the `No disk found with matching rootDeviceHints` error message, a temporary workaround is to change the `rootDeviceHints` to `minSizeGigabytes: 300`.
+
+After you change the `rootDeviceHints` settings, boot the CoreOS and then verify the disk information by using the following command:
+
+[source,terminal]
+----
+$ udevadm info /dev/sda
+----
+
+If you are using DL360 Gen 10 servers, be aware that they have an SD-card slot that might be assigned the `/dev/sda` device name. If no SD card is present in the server, it can cause conflicts. Ensure that the SD card slot is disabled in the server's BIOS settings.
+
+If the `minSizeGigabytes` workaround is not fulfilling the requirements, you might need to revert `rootDeviceHints` back to `/dev/sda`. This change allows ironic images to boot successfully.
+
+An alternative approach to fixing this problem is by using the serial ID of the disk. However, be aware that finding the serial ID can be challenging and might make the configuration file less readable. If you choose this path, ensure that you gather the serial ID using the previously documented command and incorporate it into your configuration.
+
+== Cluster nodes not getting the correct IPv6 address over DHCP
+
+If the cluster nodes are not getting the correct IPv6 address over DHCP, check the following:
+
+. Ensure the reserved IPv6 addresses reside outside the DHCP range.
+
+. In the IP address reservation on the DHCP server, ensure the reservation specifies the correct DHCP Unique Identifier (DUID). For example:
++
+[source,terminal]
+----
+# This is a dnsmasq dhcp reservation, 'id:00:03:00:01' is the client id and '18:db:f2:8c:d5:9f' is the MAC Address for the NIC
+id:00:03:00:01:18:db:f2:8c:d5:9f,openshift-master-1,[2620:52:0:1302::6]
+----
+
+. Ensure that route announcements are working.
+
+. Ensure that the DHCP server is listening on the required interfaces serving the IP address ranges.
+
+
+== Cluster nodes not getting the correct hostname over DHCP
+
+During IPv6 deployment, cluster nodes must get their hostname over DHCP. Sometimes the `NetworkManager` does not assign the hostname immediately. A control plane (master) node might report an error such as:
+
+----
+Failed Units: 2
+  NetworkManager-wait-online.service
+  nodeip-configuration.service
+----
+
+This error indicates that the cluster node likely booted without first receiving a hostname from the DHCP server, which causes `kubelet` to boot
+with a `localhost.localdomain` hostname. To address the error, force the node to renew the hostname.
+
+.Procedure
+
+. Retrieve the `hostname`:
++
+[source,terminal]
+----
+[core@master-X ~]$ hostname
+----
++
+If the hostname is `localhost`, proceed with the following steps.
++
+[NOTE]
+====
+Where `X` is the control plane node number.
+====
+
+. Force the cluster node to renew the DHCP lease:
++
+[source,terminal]
+----
+[core@master-X ~]$ sudo nmcli con up "<bare_metal_nic>"
+----
++
+Replace `<bare_metal_nic>` with the wired connection corresponding to the `baremetal` network.
+
+. Check `hostname` again:
++
+[source,terminal]
+----
+[core@master-X ~]$ hostname
+----
+
+. If the hostname is still `localhost.localdomain`, restart `NetworkManager`:
++
+[source,terminal]
+----
+[core@master-X ~]$ sudo systemctl restart NetworkManager
+----
+
+. If the hostname is still `localhost.localdomain`, wait a few minutes and check again. If the hostname remains  `localhost.localdomain`, repeat the previous steps.
+
+. Restart the `nodeip-configuration` service:
++
+[source,terminal]
+----
+[core@master-X ~]$ sudo systemctl restart nodeip-configuration.service
+----
++
+This service will reconfigure the `kubelet` service with the correct hostname references.
+
+. Reload the unit files definition since the kubelet changed in the previous step:
++
+[source,terminal]
+----
+[core@master-X ~]$ sudo systemctl daemon-reload
+----
+
+. Restart the `kubelet` service:
++
+[source,terminal]
+----
+[core@master-X ~]$ sudo systemctl restart kubelet.service
+----
+
+. Ensure `kubelet` booted with the correct hostname:
++
+[source,terminal]
+----
+[core@master-X ~]$ sudo journalctl -fu kubelet.service
+----
+
+If the cluster node is not getting the correct hostname over DHCP after the cluster is up and running, such as during a reboot, the cluster will have a pending `csr`. **Do not** approve a `csr`, or other issues might arise.
+
+.Addressing a `csr`
+
+. Get CSRs on the cluster:
++
+[source,terminal]
+----
+$ oc get csr
+----
+
+. Verify if a pending `csr` contains `Subject Name: localhost.localdomain`:
++
+[source,terminal]
+----
+$ oc get csr <pending_csr> -o jsonpath='{.spec.request}' | base64 --decode | openssl req -noout -text
+----
+
+. Remove any `csr` that contains `Subject Name: localhost.localdomain`:
++
+[source,terminal]
+----
+$ oc delete csr <wrong_csr>
+----
+
+== Routes do not reach endpoints
+
+During the installation process, it is possible to encounter a Virtual Router Redundancy Protocol (VRRP) conflict. This conflict might occur if a previously used {product-title} node that was once part of a cluster deployment using a specific cluster name is still running but not part of the current {product-title} cluster deployment using that same cluster name. For example, a cluster was deployed using the cluster name `openshift`, deploying three control plane (master) nodes and three worker nodes. Later, a separate install uses the same cluster name `openshift`, but this redeployment only installed three control plane (master) nodes, leaving the three worker nodes from a previous deployment in an `ON` state. This might cause a Virtual Router Identifier (VRID) conflict and a VRRP conflict.
+
+. Get the route:
++
+[source,terminal]
+----
+$ oc get route oauth-openshift
+----
+
+. Check the service endpoint:
++
+[source,terminal]
+----
+$ oc get svc oauth-openshift
+----
++
+[source,terminal]
+----
+NAME              TYPE        CLUSTER-IP      EXTERNAL-IP   PORT(S)   AGE
+oauth-openshift   ClusterIP   172.30.19.162   <none>        443/TCP   59m
+----
+
+. Attempt to reach the service from a control plane (master) node:
++
+[source,terminal]
+----
+[core@master0 ~]$ curl -k https://172.30.19.162
+----
++
+[source,terminal]
+----
+{
+  "kind": "Status",
+  "apiVersion": "v1",
+  "metadata": {
+  },
+  "status": "Failure",
+  "message": "forbidden: User \"system:anonymous\" cannot get path \"/\"",
+  "reason": "Forbidden",
+  "details": {
+  },
+  "code": 403
+----
+
+. Identify the `authentication-operator` errors from the `provisioner` node:
++
+[source,terminal]
+----
+$ oc logs deployment/authentication-operator -n openshift-authentication-operator
+----
++
+[source,terminal]
+----
+Event(v1.ObjectReference{Kind:"Deployment", Namespace:"openshift-authentication-operator", Name:"authentication-operator", UID:"225c5bd5-b368-439b-9155-5fd3c0459d98", APIVersion:"apps/v1", ResourceVersion:"", FieldPath:""}): type: 'Normal' reason: 'OperatorStatusChanged' Status for clusteroperator/authentication changed: Degraded message changed from "IngressStateEndpointsDegraded: All 2 endpoints for oauth-server are reporting"
+----
+
+.Solution
+
+. Ensure that the cluster name for every deployment is unique, ensuring no conflict.
+
+. Turn off all the rogue nodes which are not part of the cluster deployment that are using the same cluster name. Otherwise, the authentication pod of the  {product-title} cluster might never start successfully.

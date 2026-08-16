@@ -1,0 +1,260 @@
+// Module included in the following assemblies:
+//
+// * backup_and_restore/replacing-unhealthy-etcd-member.adoc
+// * etcd/etcd-backup-restore/replace-unhealthy-etcd-member.adoc
+
+:_mod-docs-content-type: PROCEDURE
+[id="restore-replace-crashlooping-etcd-member_{context}"]
+= Replacing an unhealthy etcd member whose etcd pod is crashlooping
+
+This procedure details the steps to replace an etcd member that is unhealthy because the etcd pod is crashlooping.
+
+.Prerequisites
+
+* You have identified the unhealthy etcd member.
+* You have verified that the etcd pod is crashlooping.
+* You have access to the cluster as a user with the `cluster-admin` role.
+* You have taken an etcd backup.
++
+[IMPORTANT]
+====
+It is important to take an etcd backup before performing this procedure so that your cluster can be restored if you encounter any issues.
+====
+
+.Procedure
+
+. Stop the crashlooping etcd pod.
+
+.. Debug the node that is crashlooping.
++
+In a terminal that has access to the cluster as a `cluster-admin` user, run the following command:
++
+[source,terminal]
+----
+$ oc debug node/ip-10-0-131-183.ec2.internal <1>
+----
+<1> Replace this with the name of the unhealthy node.
+
+.. Change your root directory to `/host`:
++
+[source,terminal]
+----
+sh-4.2# chroot /host
+----
+
+.. Move the existing etcd pod file out of the kubelet manifest directory:
++
+[source,terminal]
+----
+sh-4.2# mkdir /var/lib/etcd-backup
+----
++
+[source,terminal]
+----
+sh-4.2# mv /etc/kubernetes/manifests/etcd-pod.yaml /var/lib/etcd-backup/
+----
+
+.. Move the etcd data directory to a different location:
++
+[source,terminal]
+----
+sh-4.2# mv /var/lib/etcd/ /tmp
+----
++
+You can now exit the node shell.
+
+. Remove the unhealthy member.
+
+.. Choose a pod that is _not_ on the affected node.
++
+In a terminal that has access to the cluster as a `cluster-admin` user, run the following command:
++
+[source,terminal]
+----
+$ oc -n openshift-etcd get pods -l k8s-app=etcd
+----
++
+.Example output
+[source,terminal]
+----
+etcd-ip-10-0-131-183.ec2.internal                2/3     Error       7          6h9m
+etcd-ip-10-0-164-97.ec2.internal                 3/3     Running     0          6h6m
+etcd-ip-10-0-154-204.ec2.internal                3/3     Running     0          6h6m
+----
+
+.. Connect to the running etcd container, passing in the name of a pod that is not on the affected node.
++
+In a terminal that has access to the cluster as a `cluster-admin` user, run the following command:
++
+[source,terminal]
+----
+$ oc rsh -n openshift-etcd etcd-ip-10-0-154-204.ec2.internal
+----
+
+.. View the member list:
++
+[source,terminal]
+----
+sh-4.2# etcdctl member list -w table
+----
++
+.Example output
+[source,terminal]
+----
++------------------+---------+------------------------------+---------------------------+---------------------------+
+|        ID        | STATUS  |             NAME             |        PEER ADDRS         |       CLIENT ADDRS        |
++------------------+---------+------------------------------+---------------------------+---------------------------+
+| 62bcf33650a7170a | started | ip-10-0-131-183.ec2.internal | https://10.0.131.183:2380 | https://10.0.131.183:2379 |
+| b78e2856655bc2eb | started |  ip-10-0-164-97.ec2.internal |  https://10.0.164.97:2380 |  https://10.0.164.97:2379 |
+| d022e10b498760d5 | started | ip-10-0-154-204.ec2.internal | https://10.0.154.204:2380 | https://10.0.154.204:2379 |
++------------------+---------+------------------------------+---------------------------+---------------------------+
+----
++
+Take note of the ID and the name of the unhealthy etcd member, because these values are needed later in the procedure.
+
+.. Remove the unhealthy etcd member by providing the ID to the `etcdctl member remove` command:
++
+[source,terminal]
+----
+sh-4.2# etcdctl member remove 62bcf33650a7170a
+----
++
+.Example output
+[source,terminal]
+----
+Member 62bcf33650a7170a removed from cluster ead669ce1fbfb346
+----
+
+.. View the member list again and verify that the member was removed:
++
+[source,terminal]
+----
+sh-4.2# etcdctl member list -w table
+----
++
+.Example output
+[source,terminal]
+----
++------------------+---------+------------------------------+---------------------------+---------------------------+
+|        ID        | STATUS  |             NAME             |        PEER ADDRS         |       CLIENT ADDRS        |
++------------------+---------+------------------------------+---------------------------+---------------------------+
+| b78e2856655bc2eb | started |  ip-10-0-164-97.ec2.internal |  https://10.0.164.97:2380 |  https://10.0.164.97:2379 |
+| d022e10b498760d5 | started | ip-10-0-154-204.ec2.internal | https://10.0.154.204:2380 | https://10.0.154.204:2379 |
++------------------+---------+------------------------------+---------------------------+---------------------------+
+----
++
+You can now exit the node shell.
+
+. Turn off the quorum guard by entering the following command:
++
+[source,terminal]
+----
+$ oc patch etcd/cluster --type=merge -p '{"spec": {"unsupportedConfigOverrides": {"useUnsupportedUnsafeNonHANonProductionUnstableEtcd": true}}}'
+----
++
+This command ensures that you can successfully re-create secrets and roll out the static pods.
+
+. Remove the old secrets for the unhealthy etcd member that was removed.
+
+.. List the secrets for the unhealthy etcd member that was removed.
++
+[source,terminal]
+----
+$ oc get secrets -n openshift-etcd | grep ip-10-0-131-183.ec2.internal <1>
+----
+<1> Pass in the name of the unhealthy etcd member that you took note of earlier in this procedure.
++
+There is a peer, serving, and metrics secret as shown in the following output:
++
+.Example output
+[source,terminal]
+----
+etcd-peer-ip-10-0-131-183.ec2.internal              kubernetes.io/tls                     2      47m
+etcd-serving-ip-10-0-131-183.ec2.internal           kubernetes.io/tls                     2      47m
+etcd-serving-metrics-ip-10-0-131-183.ec2.internal   kubernetes.io/tls                     2      47m
+----
+
+.. Delete the secrets for the unhealthy etcd member that was removed.
+
+... Delete the peer secret:
++
+[source,terminal]
+----
+$ oc delete secret -n openshift-etcd etcd-peer-ip-10-0-131-183.ec2.internal
+----
+
+... Delete the serving secret:
++
+[source,terminal]
+----
+$ oc delete secret -n openshift-etcd etcd-serving-ip-10-0-131-183.ec2.internal
+----
+
+... Delete the metrics secret:
++
+[source,terminal]
+----
+$ oc delete secret -n openshift-etcd etcd-serving-metrics-ip-10-0-131-183.ec2.internal
+----
+
+. Force etcd redeployment.
++
+In a terminal that has access to the cluster as a `cluster-admin` user, run the following command:
++
+[source,terminal]
+----
+$ oc patch etcd cluster -p='{"spec": {"forceRedeploymentReason": "single-master-recovery-'"$( date --rfc-3339=ns )"'"}}' --type=merge <1>
+----
+<1> The `forceRedeploymentReason` value must be unique, which is why a timestamp is appended.
++
+When the etcd cluster Operator performs a redeployment, it ensures that all control plane nodes have a functioning etcd pod.
+
+. Turn the quorum guard back on by entering the following command:
++
+[source,terminal]
+----
+$ oc patch etcd/cluster --type=merge -p '{"spec": {"unsupportedConfigOverrides": null}}'
+----
+
+. You can verify that the `unsupportedConfigOverrides` section is removed from the object by entering this command:
++
+[source,terminal]
+----
+$ oc get etcd/cluster -oyaml
+----
+
+. If you are using {sno}, restart the node. Otherwise, you might encounter the following error in the etcd cluster Operator:
++
+.Example output
+[source,terminal]
+----
+EtcdCertSignerControllerDegraded: [Operation cannot be fulfilled on secrets "etcd-peer-sno-0": the object has been modified; please apply your changes to the latest version and try again, Operation cannot be fulfilled on secrets "etcd-serving-sno-0": the object has been modified; please apply your changes to the latest version and try again, Operation cannot be fulfilled on secrets "etcd-serving-metrics-sno-0": the object has been modified; please apply your changes to the latest version and try again]
+----
+
+.Verification
+
+* Verify that the new member is available and healthy.
+
+.. Connect to the running etcd container again.
++
+In a terminal that has access to the cluster as a cluster-admin user, run the following command:
++
+[source,terminal]
+----
+$ oc rsh -n openshift-etcd etcd-ip-10-0-154-204.ec2.internal
+----
+
+.. Verify that all members are healthy:
++
+[source,terminal]
+----
+sh-4.2# etcdctl endpoint health
+----
++
+.Example output
+[source,terminal]
+----
+https://10.0.131.183:2379 is healthy: successfully committed proposal: took = 16.671434ms
+https://10.0.154.204:2379 is healthy: successfully committed proposal: took = 16.698331ms
+https://10.0.164.97:2379 is healthy: successfully committed proposal: took = 16.621645ms
+----

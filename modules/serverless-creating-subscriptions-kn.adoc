@@ -1,0 +1,70 @@
+// Module included in the following assemblies:
+//
+// * /serverless/develop/serverless-subs.adoc
+
+:_mod-docs-content-type: PROCEDURE
+[id="serverless-creating-subscriptions-kn_{context}"]
+= Creating a subscription by using the Knative CLI
+
+After you have created a channel and an event sink, you can create a subscription to enable event delivery. Using the Knative (`kn`) CLI to create subscriptions provides a more streamlined and intuitive user interface than modifying YAML files directly. You can use the `kn subscription create` command with the appropriate flags to create a subscription.
+
+.Prerequisites
+
+* The {ServerlessOperatorName} and Knative Eventing are installed on your {product-title} cluster.
+* You have installed the Knative (`kn`) CLI.
+* You have created a project or have access to a project with the appropriate roles and permissions to create applications and other workloads in {product-title}.
+
+.Procedure
+
+* Create a subscription to connect a sink to a channel:
++
+[source,terminal]
+----
+$ kn subscription create <subscription_name> \
+  --channel <group:version:kind>:<channel_name> \ <1>
+  --sink <sink_prefix>:<sink_name> \ <2>
+  --sink-dead-letter <sink_prefix>:<sink_name> <3>
+----
+<1> `--channel` specifies the source for cloud events that should be processed. You must provide the channel name. If you are not using the default `InMemoryChannel` channel that is backed by the `Channel` custom resource, you must prefix the channel name with the `<group:version:kind>` for the specified channel type. For example, this will be `messaging.knative.dev:v1beta1:KafkaChannel` for an Apache Kafka backed channel.
+<2> `--sink` specifies the target destination to which the event should be delivered. By default, the `<sink_name>` is interpreted as a Knative service of this name, in the same namespace as the subscription. You can specify the type of the sink by using one of the following prefixes:
+`ksvc`:: A Knative service.
+`channel`:: A channel that should be used as destination. Only default channel types can be referenced here.
+`broker`:: An Eventing broker.
+<3> Optional: `--sink-dead-letter` is an optional flag that can be used to specify a sink which events should be sent to in cases where events fail to be delivered. For more information, see the {ServerlessProductName} _Event delivery_ documentation.
++
+.Example command
+[source,terminal]
+----
+$ kn subscription create mysubscription --channel mychannel --sink ksvc:event-display
+----
++
+.Example output
+[source,terminal]
+----
+Subscription 'mysubscription' created in namespace 'default'.
+----
+
+.Verification
+
+* To confirm that the channel is connected to the event sink, or _subscriber_, by a subscription, list the existing subscriptions and inspect the output:
++
+[source,terminal]
+----
+$ kn subscription list
+----
++
+.Example output
+[source,terminal]
+----
+NAME            CHANNEL             SUBSCRIBER           REPLY   DEAD LETTER SINK   READY   REASON
+mysubscription   Channel:mychannel   ksvc:event-display                              True
+----
+
+.Deleting a subscription
+// move to own procedure, out of scope for this PR
+* Delete a subscription:
++
+[source,terminal]
+----
+$ kn subscription delete <subscription_name>
+----

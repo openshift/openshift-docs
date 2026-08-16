@@ -1,0 +1,50 @@
+// Module included in the following assemblies:
+//
+// * serverless/eventing/event-sources/serverless-custom-event-sources.adoc
+// * serverless/reference/kn-eventing-ref.adoc
+
+:_mod-docs-content-type: REFERENCE
+[id="serverless-kn-containersource_{context}"]
+= Creating and managing container sources by using the Knative CLI
+// needs to be revised as separate procedure modules; out of scope for this PR
+
+You can use the `kn source container` commands to create  and manage container sources by using the Knative (`kn`) CLI. Using the Knative CLI to create event sources provides a more streamlined and intuitive user interface than modifying YAML files directly.
+
+.Create a container source
+[source,terminal]
+----
+$ kn source container create <container_source_name> --image <image_uri> --sink <sink>
+----
+
+.Delete a container source
+[source,terminal]
+----
+$ kn source container delete <container_source_name>
+----
+
+.Describe a container source
+[source,terminal]
+----
+$ kn source container describe <container_source_name>
+----
+
+.List existing container sources
+[source,terminal]
+----
+$ kn source container list
+----
+
+.List existing container sources in YAML format
+[source,terminal]
+----
+$ kn source container list -o yaml
+----
+
+.Update a container source
+
+This command updates the image URI for an existing container source:
+
+[source,terminal]
+----
+$ kn source container update <container_source_name> --image <image_uri>
+----

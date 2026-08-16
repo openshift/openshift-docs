@@ -1,0 +1,93 @@
+// This module is included in the following assembly:
+//
+// // *openshift_pipelines/creating-applications-with-cicd-pipelines.adoc
+
+:_mod-docs-content-type: PROCEDURE
+[id="running-a-pipeline_{context}"]
+= Running a pipeline
+
+A `PipelineRun` resource starts a pipeline and ties it to the Git and image resources that should be used for the specific invocation. It automatically creates and starts the `TaskRun` resources for each task in the pipeline.
+
+[discrete]
+.Procedure
+
+. Start the pipeline for the back-end application:
++
+[source,yaml,subs="attributes+"]
+----
+$ tkn pipeline start build-and-deploy \
+    -w name=shared-workspace,volumeClaimTemplateFile=https://raw.githubusercontent.com/openshift/pipelines-tutorial/{pipelines-ver}/01_pipeline/03_persistent_volume_claim.yaml \
+    -p deployment-name=pipelines-vote-api \
+    -p git-url=https://github.com/openshift/pipelines-vote-api.git \
+    -p IMAGE='image-registry.openshift-image-registry.svc:5000/pipelines-tutorial/pipelines-vote-api' \
+    --use-param-defaults
+----
++
+The previous command uses a volume claim template, which creates a persistent volume claim for the pipeline execution.
+
+. To track the progress of the pipeline run, enter the following command::
++
+[source,yaml]
+----
+$ tkn pipelinerun logs <pipelinerun_id> -f
+----
++
+The <pipelinerun_id> in the above command is the ID for the `PipelineRun` that was returned in the output of the previous command.
+
+. Start the pipeline for the front-end application:
++
+[source,yaml,subs="attributes+"]
+----
+$ tkn pipeline start build-and-deploy \
+    -w name=shared-workspace,volumeClaimTemplateFile=https://raw.githubusercontent.com/openshift/pipelines-tutorial/{pipelines-ver}/01_pipeline/03_persistent_volume_claim.yaml \
+    -p deployment-name=pipelines-vote-ui \
+    -p git-url=https://github.com/openshift/pipelines-vote-ui.git \
+    -p IMAGE='image-registry.openshift-image-registry.svc:5000/pipelines-tutorial/pipelines-vote-ui' \
+    --use-param-defaults
+----
+
+. To track the progress of the pipeline run, enter the following command:
++
+[source,yaml]
+----
+$ tkn pipelinerun logs <pipelinerun_id> -f
+----
++
+The <pipelinerun_id> in the above command is the ID for the `PipelineRun` that was returned in the output of the previous command.
+
+. After a few minutes, use `tkn pipelinerun list` command to verify that the pipeline ran successfully by listing all the pipeline runs:
++
+[source,yaml]
+----
+$ tkn pipelinerun list
+----
++
+The output lists the pipeline runs:
++
+[source,yaml]
+----
+
+ NAME                         STARTED      DURATION     STATUS
+ build-and-deploy-run-xy7rw   1 hour ago   2 minutes    Succeeded
+ build-and-deploy-run-z2rz8   1 hour ago   19 minutes   Succeeded
+----
+
+. Get the application route:
++
+[source,yaml]
+----
+$ oc get route pipelines-vote-ui --template='http://{{.spec.host}}'
+----
+Note the output of the previous command. You can access the application using this route.
+
+. To rerun the last pipeline run, using the pipeline resources and service account of the previous pipeline, run:
++
+[source,yaml]
+----
+$ tkn pipeline start build-and-deploy --last
+----
+
+[role="_additional-resources"]
+.Additional resources
+
+* xref:../../cicd/pipelines/authenticating-pipelines-using-git-secret.adoc#authenticating-pipelines-using-git-secret[Authenticating pipelines using git secret]

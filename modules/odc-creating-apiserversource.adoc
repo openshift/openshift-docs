@@ -1,0 +1,54 @@
+// Module included in the following assemblies:
+//
+// * serverless/eventing/event-sources/serverless-apiserversource.adoc
+
+:_mod-docs-content-type: PROCEDURE
+[id="odc-creating-apiserversource_{context}"]
+= Creating an API server source by using the web console
+
+After Knative Eventing is installed on your cluster, you can create an API server source by using the web console. Using the {product-title} web console provides a streamlined and intuitive user interface to create an event source.
+
+.Prerequisites
+
+* You have logged in to the {product-title} web console.
+* The {ServerlessOperatorName} and Knative Eventing are installed on the cluster.
+* You have created a project or have access to a project with the appropriate roles and permissions to create applications and other workloads in {product-title}.
+* You have installed the OpenShift CLI (`oc`).
+
+.Procedure
+
+include::snippets/serverless-service-account-apiserversource.adoc[]
+
+. In the *Developer* perspective, navigate to *+Add* → *Event Source*. The  *Event Sources* page is displayed.
+. Optional: If you have multiple providers for your event sources, select the required provider from the *Providers* list to filter the available event sources from the provider.
+. Select *ApiServerSource* and then click *Create Event Source*. The  *Create Event Source* page is displayed.
+. Configure the *ApiServerSource* settings by using the *Form view* or *YAML view*:
++
+[NOTE]
+====
+You can switch between the *Form view* and *YAML view*. The data is persisted when switching between the views.
+====
+.. Enter `v1` as the *APIVERSION* and `Event` as the *KIND*.
+// .. Select *Resource* as the *Mode*. *Mode* is the mode that the receive adapter controller runs in. `Ref` sends only the reference to the resource. `Resource` sends the full resource.
+// TODO: clarify what this is used for. Out of scope for this PR since not required.
+.. Select the *Service Account Name* for the service account that you created.
+.. Select the *Sink* for the event source. A *Sink* can be either a *Resource*, such as a channel, broker, or service, or a *URI*.
+. Click *Create*.
+
+.Verification
+
+* After you have created the API server source, you will see it connected to the service it is sinked to in the *Topology* view.
++
+image::toplogy-odc-apiserver.png[ApiServerSource Topology view]
+
+[NOTE]
+====
+If a URI sink is used, modify the URI by right-clicking on *URI sink* -> *Edit URI*.
+====
+
+.Deleting the API server source
+
+. Navigate to the *Topology* view.
+. Right-click the API server source and select *Delete ApiServerSource*.
++
+image::delete-apiserversource-odc.png[Delete the ApiServerSource]
