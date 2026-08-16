@@ -4,24 +4,36 @@
 
 :_mod-docs-content-type: PROCEDURE
 [id="nw-dpf-worker-machineconfig_{context}"]
-= Configure worker nodes for DPUs
+= Configure worker nodes for DPU operation
 
 [role="_abstract"]
-You must create a `MachineConfig` resource for worker nodes with DPUs before adding those nodes to the management cluster.
-The Machine Config Operator stores this configuration and automatically applies it when worker nodes with the `worker-dpu` label are added to the cluster.
-
-The `MachineConfig` resource performs several configuration tasks required by DPF:
-
-Bridge configuration:: Creates a `br-dpu` bridge interface that enables communication between the DPU and the hosted cluster control plane running on the management cluster. For more information, see the link:https://github.com/NVIDIA/doca-platform/blob/public-release-v26.4/docs/public/user-guides/host-trusted/prerequisites/host-network-configuration-prerequisite.md[DPF Operator prerequisites].
-OVS service management:: Disables the default OVS services on x86 worker nodes. This is required for OVN-Kubernetes DPU Host mode operation, where networking functions are offloaded to the DPU rather than running on the host CPU.
-IP rules configuration:: Sets routing rules required for pod-to-host control-plane traffic.
+You must create a `MachineConfigPool` resource and deploy the `dpu-worker-config` Helm chart to configure worker nodes with DPUs before adding those nodes to the management cluster.
+The `MachineConfigPool` groups DPU-equipped worker nodes so that the Machine Config Operator can apply DPU-specific configurations to them.
+The `dpu-worker-config` Helm chart creates the `dpu-worker-configuration` MachineConfig resource that configures the bridge, OVS services, and IP routing on worker nodes.
 
 .Prerequisites
 
 * You have access to the cluster as a user with the `cluster-admin` role.
 * You have installed the OpenShift CLI (`oc`).
+* The Helm CLI (`helm`) is installed on your workstation.
 
 .Procedure
+
+. Deploy the `dpu-worker-config` Helm chart to create the worker node MachineConfig:
++
+[source,terminal]
+----
+$ helm upgrade --install dpu-worker-config \
+    oci://quay.io/redhat-user-workloads/dpu-kit-for-nvidia-operator-tenant/dpu-worker-config-chart \
+    --namespace dpf-hcp-provisioner-system \
+    --create-namespace \
+    --disable-openapi-validation
+----
++
+[NOTE]
+====
+If your network uses jumbo frames, set the MTU by adding `--set networkMTU=9000` to the command.
+====
 
 . Create a file named `worker-dpu-mcp.yaml` with the following `MachineConfigPool` definition:
 +
@@ -42,390 +54,30 @@ spec:
   paused: false
 ----
 
-. Create the script files that are embedded in the `MachineConfig`.
-+
-.. Create the bridge configuration script file named `apply-nmstate-bridge.sh`:
-+
-[source,bash,subs="verbatim"]
-----
-# A script for detecting the default network interface and creating the br-dpu bridge
-cat > apply-nmstate-bridge.sh << 'EOF'
-#!/bin/bash
-set -e
-BRIDGE_NAME="br-dpu"
-IP_HINT_FILE="/run/nodeip-configuration/primary-ip"
-TARGET_MTU="$1"
-NODE_IP=""
-read_node_ip() {
-    if [[ ! -f "$IP_HINT_FILE" ]]; then
-        echo "ERROR: IP hint file not found: $IP_HINT_FILE" >&2
-        return 1
-    fi
-    NODE_IP=$(tr -d '[:space:]' < "$IP_HINT_FILE")
-    if [[ -z "$NODE_IP" ]]; then
-        echo "ERROR: IP hint file is empty: $IP_HINT_FILE" >&2
-        return 1
-    fi
-    echo "INFO: Node IP from hint file: $NODE_IP"
-}
-wait_for_bridge_ip() {
-    local bridge="$1"
-    local timeout=120
-    local interval=2
-    local elapsed=0
-    echo "INFO: Waiting up to ${timeout}s for $bridge to acquire $NODE_IP..."
-    while (( elapsed < timeout )); do
-        if ip -o addr show dev "$bridge" | grep -qw "$NODE_IP"; then
-            echo "INFO: $bridge has $NODE_IP."
-            ip addr show dev "$bridge"
-            return 0
-        fi
-        sleep "$interval"
-        elapsed=$(( elapsed + interval ))
-    done
-    echo "ERROR: $bridge did not acquire $NODE_IP within ${timeout}s." >&2
-    return 1
-}
-set_bridge_rp_filter_loose() {
-    local bridge="$1"
-    echo "INFO: Setting rp_filter=2 (loose mode) on $bridge"
-    sysctl -w "net.ipv4.conf.${bridge}.rp_filter=2"
-}
-validate_bridge_exists() {
-    if ip link show "$BRIDGE_NAME" &> /dev/null; then
-        echo "INFO: Bridge '$BRIDGE_NAME' already exists, waiting for IP..."
-        wait_for_bridge_ip "$BRIDGE_NAME"
-        set_bridge_rp_filter_loose "$BRIDGE_NAME"
-        exit 0
-    fi
-}
-get_nodeip_hint_interface() {
-    local iface
-    iface=$(ip -j addr | jq -r --arg ip "$NODE_IP" --arg br "$BRIDGE_NAME" \
-        'first(.[] | select(any(.addr_info[]; .local==$ip) and .ifname!=$br)) | .ifname')
-    if [[ -z "${iface}" || "${iface}" == "null" ]]; then
-        echo "ERROR: No interface found with IP $NODE_IP" >&2
-        return 1
-    fi
-    echo "${iface}"
-}
-apply_linux_bridge() {
-    local iface="$1"
-    local bridge="$BRIDGE_NAME"
-    local mtu_arg="$2"
-    if [ -z "$iface" ]; then
-        echo "ERROR: No physical interface matches the Node IP in $IP_HINT_FILE." >&2
-        exit 1
-    fi
-    echo "INFO: Target interface: $iface"
-    echo "INFO: MTU policy: ${mtu_arg:+Set to $mtu_arg (user override)}${mtu_arg:-Inherit from physical interface}"
-    local routes_json
-    routes_json=$(nmstatectl show --json | jq -c --arg phys "$iface" \
-        '[.routes.config // [] | .[] | select(.["next-hop-interface"] == $phys)]')
-    echo "INFO: Generating NMState desired state..."
-    nmstatectl show "$iface" --json | jq \
-        --arg br "$bridge" \
-        --arg phys "$iface" \
-        --arg mtu_val "$mtu_arg" \
-        --argjson phys_routes "$routes_json" \
-    '
-    .interfaces[0] as $p |
-    (if $mtu_val != "" then {"mtu": ($mtu_val | tonumber)} else {} end) as $mtu_obj |
-    {
-        "interfaces": [
-            ({
-                "name": $br,
-                "type": "linux-bridge",
-                "state": "up",
-                "mac-address": $p."mac-address",
-                "ipv4": ($p.ipv4 | del(.forwarding)),
-                "ipv6": ($p.ipv6 | del(.forwarding)),
-                "bridge": {
-                    "options": { "stp": { "enabled": false } },
-                    "port": [{ "name": $phys }]
-                }
-            } + $mtu_obj),
-            ({
-                "name": $phys,
-                "type": $p.type,
-                "state": "up",
-                "ipv4": { "enabled": false },
-                "ipv6": { "enabled": false }
-            } + $mtu_obj
-              + if $p["link-aggregation"] then
-                    { "link-aggregation": $p["link-aggregation"] }
-                else {} end)
-        ]
-    }
-    + if ($phys_routes | length) > 0 then
-        { "routes": { "config": [$phys_routes[] | .["next-hop-interface"] = $br] } }
-      else {} end
-    ' > /tmp/br-dpu-config.yml
-    echo "--- Generated NMState desired state ---"
-    cat /tmp/br-dpu-config.yml
-    echo "---------------------------------------"
-    echo "INFO: Applying configuration via nmstatectl..."
-    if nmstatectl apply /tmp/br-dpu-config.yml; then
-        echo "SUCCESS: Bridge $bridge created successfully."
-        wait_for_bridge_ip "$bridge"
-        ip addr show "$bridge"
-        set_bridge_rp_filter_loose "$bridge"
-    else
-        echo "ERROR: Failed to apply NMState configuration." >&2
-        rm -f /tmp/br-dpu-config.yml
-        exit 1
-    fi
-    rm -f /tmp/br-dpu-config.yml
-}
-# --- Main ---
-read_node_ip
-validate_bridge_exists
-SELECTED_IFACE=$(get_nodeip_hint_interface)
-apply_linux_bridge "$SELECTED_IFACE" "$TARGET_MTU"
-EOF
-----
-+
-.. Create the P0 routing script file named `configure-p0-routing.sh`:
-+
-[source,bash,subs="verbatim"]
-----
-cat > configure-p0-routing.sh << 'EOF'
-#!/bin/bash
-set -e
-# Long-running service that ensures routing table 100 stays configured for
-# OVN-K traffic via br-dpu. Continuously monitors and re-applies rules/routes
-# in case they are removed (e.g. after NMState reconfiguration).
-CHECK_INTERVAL=2
-RECONCILE_INTERVAL=60
-PRIMARY_IP_FILE="/run/nodeip-configuration/primary-ip"
-echo "Waiting for primary IP file to determine IP version..."
-while [ ! -f "$PRIMARY_IP_FILE" ] || [ ! -s "$PRIMARY_IP_FILE" ]; do
-    sleep $CHECK_INTERVAL
-done
-br_dpu_ip=$(tr -d '[:space:]' < "$PRIMARY_IP_FILE")
-echo "Using br-dpu IP from $PRIMARY_IP_FILE: $br_dpu_ip"
-if [[ "$br_dpu_ip" =~ : ]]; then
-    IP_VERSION="6"
-    IP_FLAG="-6"
-    PREFIX_LEN="128"
-    LINK_LOCAL_PATTERN="^fe80:"
-    echo "Detected IPv6 configuration"
-else
-    IP_VERSION="4"
-    IP_FLAG="-4"
-    PREFIX_LEN="32"
-    LINK_LOCAL_PATTERN="^169[.]254"
-    echo "Detected IPv4 configuration"
-fi
-ensure_rule() {
-    if ip $IP_FLAG -j rule list | jq -e --arg src "$br_dpu_ip" '.[] | select(.src == $src and .table == "100")' > /dev/null 2>&1; then
-        return 0
-    fi
-    echo "Adding rule: from $br_dpu_ip/$PREFIX_LEN lookup 100"
-    ip $IP_FLAG rule add from $br_dpu_ip/$PREFIX_LEN lookup 100
-}
-ensure_route() {
-    local dst="$1"; shift
-    if ip $IP_FLAG -j route show table 100 | jq -e --arg dst "$dst" '.[] | select(.dst == $dst)' > /dev/null 2>&1; then
-        return 0
-    fi
-    echo "Adding route: $dst $*  table 100"
-    ip $IP_FLAG route add $dst "$@" table 100
-}
-configure_routing() {
-    local ovnk_iface="$1"
-    local ovnk_ip="$2"
-    local br_dpu_network
-    br_dpu_network=$(ip $IP_FLAG -j route show dev br-dpu | jq -r '.[] | select(.protocol == "kernel") | .dst' | head -n1)
-    if [ -z "$br_dpu_network" ]; then
-        echo "Warning: Could not find br-dpu network, will retry"
-        return 1
-    fi
-    local br_dpu_gateway
-    br_dpu_gateway=$(ip $IP_FLAG -j route | jq -r '.[] | select(.dst == "default" and .dev == "br-dpu") | .gateway' | head -n1)
-    if [ -z "$br_dpu_gateway" ]; then
-        echo "Warning: Could not find gateway for br-dpu, will retry"
-        return 1
-    fi
-    local ovnk_subnet
-    ovnk_subnet=$(ip $IP_FLAG -j route | jq --arg dev "$ovnk_iface" --arg pattern "$LINK_LOCAL_PATTERN" -r '
-      .[] | select(
-        .dev == $dev
-        and .dst != null
-        and .dst != "default"
-        and (.dst | test($pattern) | not)
-        and .gateway == null
-      ) | .dst' | head -n1)
-    if [ -z "$ovnk_subnet" ]; then
-        echo "Warning: Could not find subnet for $ovnk_iface, will retry"
-        return 1
-    fi
-    local br_dpu_metric
-    br_dpu_metric=$(ip $IP_FLAG -j route show dev br-dpu | jq -r '.[] | select(.protocol == "kernel") | .metric // 425' | head -n1)
-    ensure_rule
-    ensure_route "$ovnk_subnet" via "$br_dpu_gateway"
-    ensure_route "$br_dpu_network" dev br-dpu proto kernel scope link src "$br_dpu_ip" metric "$br_dpu_metric"
-    return 0
-}
-echo "Waiting for OVN-K interface (with link-local address) to get an IP address..."
-configured=false
-while true; do
-    ovnk_ifaces=$(ip -j addr show | jq --arg pattern "$LINK_LOCAL_PATTERN" -r '.[] | select(.addr_info[]? | .local | test($pattern)) | .ifname' | sort -u)
-    for ovnk_iface in $ovnk_ifaces; do
-        ovnk_ip=$(ip $IP_FLAG -j addr show "$ovnk_iface" | jq --arg pattern "$LINK_LOCAL_PATTERN" -r '.[] | .addr_info[]? | select(.local | test($pattern) | not) | .local' | head -n1)
-        if [ -n "$ovnk_ip" ]; then
-            if [ "$configured" = "false" ]; then
-                echo "Found OVN-K interface: $ovnk_iface with IPv${IP_VERSION}: $ovnk_ip"
-            fi
-            if configure_routing "$ovnk_iface" "$ovnk_ip"; then
-                if [ "$configured" = "false" ]; then
-                    echo "Routing configuration completed, entering reconcile loop"
-                    configured=true
-                fi
-            fi
-            break
-        fi
-    done
-    if [ "$configured" = "true" ]; then
-        sleep $RECONCILE_INTERVAL
-    else
-        sleep $CHECK_INTERVAL
-    fi
-done
-EOF
-----
-+
-.. Create the NetworkManager configuration file named `unmanage-ovnk-interface.conf`:
-+
-[source,bash,subs="verbatim"]
-----
-cat > unmanage-ovnk-interface.conf << 'EOF'
-[keyfile]
-unmanaged-devices=interface-name:ovn-k8s-*
-EOF
-----
-
-. Encode the scripts to base64:
-+
-[source,terminal]
-----
-$ BRIDGE_SCRIPT_BASE64=$(base64 -w 0 apply-nmstate-bridge.sh)
-$ ROUTING_SCRIPT_BASE64=$(base64 -w 0 configure-p0-routing.sh)
-$ NETWORKMANAGER_CONFIG_BASE64=$(base64 -w 0 unmanage-ovnk-interface.conf)
-----
-
-. Create a file named `dpu-worker-configuration.yaml` with the following `MachineConfig` definition that embeds the base64-encoded scripts:
-+
-[source,bash,subs="verbatim"]
-----
-# Create the MachineConfig with substituted base64 content
-envsubst << EOF > dpu-worker-configuration.yaml
-apiVersion: machineconfiguration.openshift.io/v1
-kind: MachineConfig
-metadata:
- labels:
-   machineconfiguration.openshift.io/role: worker-dpu
- name: dpu-worker-configuration
-spec:
- config:
-   ignition:
-     version: 3.2.0
-   storage:
-     files:
-       - contents:
-           source: data:text/plain;charset=utf-8;base64,$BRIDGE_SCRIPT_BASE64
-         mode: 0755
-         overwrite: true
-         path: /usr/local/bin/apply-nmstate-bridge.sh
-       - contents:
-           source: data:text/plain;charset=utf-8;base64,$ROUTING_SCRIPT_BASE64
-         mode: 0755
-         overwrite: true
-         path: /usr/local/bin/configure-p0-routing.sh
-       - contents:
-           source: data:text/plain;charset=utf-8;base64,$NETWORKMANAGER_CONFIG_BASE64
-         mode: 0644
-         overwrite: true
-         path: "/etc/NetworkManager/conf.d/unmanage-ovnk-interface.conf"
-   systemd:
-     units:
-       - contents: |
-           [Unit]
-           Description=Apply NMState bridge configuration
-           After=network.target NetworkManager.service nodeip-configuration.service nmstate.service
-           Before=crio.service kubelet.service
-           [Service]
-           Type=oneshot
-           ExecStart=/usr/local/bin/apply-nmstate-bridge.sh \$NODES_MTU
-           RemainAfterExit=yes
-           TimeoutStartSec=150s
-           Restart=on-failure
-           RestartSec=10
-           [Install]
-           WantedBy=multi-user.target
-         enabled: true
-         name: nmstate-bridge.service
-       - name: ovs-configuration.service
-         enabled: false
-       - name: openvswitch.service
-         enabled: false
-         mask: true
-       - name: wait-for-br-ex-up.service
-         enabled: false
-       - name: p0-routing.service
-         enabled: true
-         contents: |
-           [Unit]
-           Description=Configure and maintain p0 interface routing
-           After=kubelet.service network-online.target nmstate-bridge.service
-           Wants=network-online.target
-           [Service]
-           Type=simple
-           ExecStart=/usr/local/bin/configure-p0-routing.sh
-           StandardOutput=journal
-           StandardError=journal
-           Restart=always
-           RestartSec=10
-           [Install]
-           WantedBy=multi-user.target
-EOF
-----
-
-. Set the MTU environment variable and apply both configuration files.
-Set `NODES_MTU` to `9000` for jumbo frames or `1500` for standard MTU:
-+
-[source,terminal]
-----
-$ export NODES_MTU=1500
-----
+. Apply the `MachineConfigPool`:
 +
 [source,terminal]
 ----
 $ oc apply -f worker-dpu-mcp.yaml
 ----
-+
-[source,terminal]
-----
-$ envsubst < dpu-worker-configuration.yaml | oc apply -f -
-----
 
 .Verification
 
-. Verify that the `MachineConfig` was created:
+* Verify that the `dpu-worker-config` Helm release is deployed:
++
+[source,terminal]
+----
+$ helm list -n dpf-hcp-provisioner-system
+----
+
+* Verify that the `dpu-worker-configuration` MachineConfig is created:
 +
 [source,terminal]
 ----
 $ oc get machineconfig dpu-worker-configuration
 ----
-+
-.Example output
-[source,terminal]
-----
-NAME                       GENERATEDBYCONTROLLER   IGNITIONVERSION   AGE
-dpu-worker-configuration                           3.2.0             2m
-----
 
-. Verify that the `MachineConfigPool` exists:
+* Verify that the `MachineConfigPool` exists:
 +
 [source,terminal]
 ----
@@ -441,5 +93,5 @@ worker-dpu            True      False      False      0              0
 
 [NOTE]
 ====
-The Machine Config Operator automatically reboots worker nodes to apply these changes after nodes with the `worker-dpu` label are added to the cluster.
+The Machine Config Operator automatically reboots worker nodes to apply DPU-specific configurations after nodes with the `worker-dpu` label are added to the cluster.
 ====
