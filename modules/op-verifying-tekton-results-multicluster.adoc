@@ -1,0 +1,134 @@
+// Module included in the following assemblies:
+//
+// * resource/configuring-tekton-results-multicluster.adoc
+
+:_mod-docs-content-type: PROCEDURE
+[id="op-verifying-tekton-results-multicluster_{context}"]
+= Verifying Tekton Results in a multicluster environment
+
+You can verify that Tekton Results is correctly configured by testing both records storage and logs storage.
+
+.Prerequisites
+
+* You have configured Tekton Results for records storage, logs storage, or both.
+* You have access to the hub cluster using an account with permissions to create pipeline runs and query results.
+* You have installed the `oc` CLI.
+
+.Procedure
+
+. Create a test namespace on the hub cluster by running the following command:
++
+[source,terminal]
+----
+$ oc create namespace tekton-test
+----
++
+[NOTE]
+====
+For logs to be collected on spoke clusters, you must use a custom namespace other than `default`, `kube-*`, or `openshift-*`.
+====
+
+. Create a LocalQueue resource in the test namespace if it does not already exist:
++
+[source,terminal]
+----
+$ oc apply -f - <<EOF
+apiVersion: kueue.x-k8s.io/v1beta2
+kind: LocalQueue
+metadata:
+  namespace: tekton-test
+  name: pipelines-queue
+spec:
+  clusterQueue: cluster-queue
+EOF
+----
+
+. Create a test pipeline run on the hub cluster by running the following command:
++
+[source,terminal]
+----
+$ oc create -f - <<EOF
+apiVersion: tekton.dev/v1
+kind: PipelineRun
+metadata:
+  generateName: test-results-
+  namespace: tekton-test
+  labels:
+    kueue.x-k8s.io/queue-name: pipelines-queue
+spec:
+  managedBy: kueue.x-k8s.io/multikueue
+  pipelineSpec:
+    tasks:
+    - name: test-task
+      taskSpec:
+        steps:
+        - name: echo
+          image: registry.access.redhat.com/ubi9/ubi-minimal:latest
+          script: |
+            #!/bin/sh
+            echo "Testing Tekton Results"
+            echo "This is a test log message"
+            sleep 5
+            echo "Test complete"
+EOF
+----
+
+. Wait for the pipeline run to complete by running the following command:
++
+[source,terminal]
+----
+$ oc get pipelineruns -n tekton-test -w
+----
++
+The pipeline run should transition from `Pending` to `Running` and then to `Succeeded`.
+
+. If you configured records storage, verify that the pipeline run record is stored in the database:
++
+.. Get the name of the completed pipeline run by running the following command:
++
+[source,terminal]
+----
+$ PIPELINERUN_NAME=$(oc get pipelineruns -n tekton-test -o jsonpath='{.items[0].metadata.name}')
+----
++
+.. Query the Tekton Results API on the hub cluster by running the following command:
++
+[source,terminal]
+----
+$ oc exec -n openshift-pipelines deployment/tekton-results-api -- \
+  curl -s http://localhost:8080/apis/results.tekton.dev/v1alpha2/parents/-/results/-/records \
+  | grep ${PIPELINERUN_NAME}
+----
++
+The output should include the pipeline run name, indicating that the record is stored in the database.
+
+. If you configured logs storage, verify that logs are stored and queryable from the hub cluster:
++
+.. Wait a few minutes for logs to be forwarded and indexed by LokiStack.
++
+.. Query logs using the Tekton Results logs API by running the following command:
++
+[source,terminal]
+----
+$ oc exec -n openshift-pipelines deployment/tekton-results-api -- \
+  curl -s "http://localhost:8080/apis/results.tekton.dev/v1alpha2/parents/tekton-test/results/-/logs?name=${PIPELINERUN_NAME}"
+----
++
+The output should include the log messages from the pipeline run, such as "Testing Tekton Results" and "Test complete".
+
+. Optional: Verify logs on the spoke cluster by checking collector metrics:
++
+[source,terminal]
+----
+$ oc exec -n openshift-logging $(oc get pods -n openshift-logging -l app.kubernetes.io/component=collector -o jsonpath='{.items[0].metadata.name}') -- \
+  curl -sk https://127.0.0.1:24231/metrics | grep sent.*hub_loki
+----
++
+The metrics should show that logs have been sent to the hub Loki endpoint.
+
+.Verification
+
+* Records storage verification: The Tekton Results API returns the pipeline run record from the PostgreSQL database.
+* Logs storage verification: The Tekton Results logs API returns the pipeline run logs from the hub cluster's LokiStack.
+
+If both verifications succeed, Tekton Results is correctly configured for your multicluster environment.
