@@ -1,0 +1,246 @@
+// Module included in the following assemblies:
+//
+// * install/ossm-migrating-sidecar-to-ambient.adoc
+
+:_mod-docs-content-type: PROCEDURE
+[id="ossm-migrating-sidecar-to-ambient-install-ambient-components_{context}"]
+= Installing ambient mode components
+
+[role="_abstract"]
+
+This procedure upgrades your {istio} installation to include the ambient data plane components ZTunnel and updated CNI while leaving all existing sidecar workloads unchanged. Your sidecars continue to handle traffic normally throughout this step.
+
+[WARNING]
+====
+Do not add the `istio.io/dataplane-mode=ambient` label to any namespace or remove sidecar injection labels until "Enabling ambient mode".
+====
+
+.Prerequisites
+
+* You have completed the prerequisites described in "Before you begin".
+* You have backed up your existing {istio} configuration.
+
+.Procedure
+
+. Update the `Istio` resource to use the ambient profile:
+
+.. Create or update your `Istio` resource. The following example shows the required configuration in a file named `istio-ambient.yaml`:
++
+[NOTE]
+====
+Add any existing custom `values` configuration to this resource. The example below shows only the required changes for ambient mode.
+====
++
+[source,yaml]
+----
+apiVersion: sailoperator.io/v1
+kind: Istio
+metadata:
+  name: default
+spec:
+  namespace: istio-system
+  profile: ambient # Set ambient mode profile
+  values:
+    pilot:
+      trustedZtunnelNamespace: ztunnel # Required for ambient mode, must match the namespace used when deploying ZTunnel
+----
+
+.. Apply the configuration:
++
+[source,terminal]
+----
+$ oc apply -f istio-ambient.yaml
+----
+
+.. Wait for the {istio} control plane to be ready:
++
+[source,terminal]
+----
+$ oc wait --for=condition=Ready istios/default --timeout=5m
+----
+
+. Update the `IstioCNI` resource to use the ambient profile:
+
+.. Update your `IstioCNI` resource. The following example shows the required configuration in a file named `istio-cni-ambient.yaml`:
++
+[source,yaml]
+----
+apiVersion: sailoperator.io/v1
+kind: IstioCNI
+metadata:
+  name: default
+spec:
+  namespace: istio-cni
+  profile: ambient # Set profile to ambient to enable CNI support for ambient mode
+----
+
+.. Apply the configuration:
++
+[source,terminal]
+----
+$ oc apply -f istio-cni-ambient.yaml
+----
+
+.. Wait for the `IstioCNI` resource to be ready:
++
+[source,terminal]
+----
+$ oc wait --for=condition=Ready istiocnis/default --timeout=3m
+----
+
+. Deploy the ZTunnel proxy:
+
+.. Create the `ztunnel` namespace:
++
+[source,terminal]
+----
+$ oc create namespace ztunnel
+----
++
+[NOTE]
+====
+The `ztunnel` namespace name must match the `trustedZtunnelNamespace` parameter in the {istio} configuration.
+====
+
+.. Create the `ZTunnel` resource. The following example shows the required configuration in a file named `ztunnel.yaml`:
++
+[source,yaml]
+----
+apiVersion: sailoperator.io/v1
+kind: ZTunnel
+metadata:
+  name: default
+spec:
+  namespace: ztunnel
+----
+
+.. Apply the configuration:
++
+[source,terminal]
+----
+$ oc apply -f ztunnel.yaml
+----
+
+.. Wait for the ZTunnel to be ready:
++
+[source,terminal]
+----
+$ oc wait --for=condition=Ready ztunnel/default --timeout=3m
+----
+
+.Verification
+
+. Verify that ZTunnel pods are running on all nodes:
++
+[source,terminal]
+----
+$ oc get pods -n ztunnel -o wide
+----
++
+[source,terminal]
+----
+$ oc get daemonset -n ztunnel
+----
+
+. Enable HBONE protocol support in existing sidecars:
++
+Restart deployments in each namespace that has sidecar injection enabled, so that existing sidecar proxies pick up the `ISTIO_META_ENABLE_HBONE=true` configuration. This enables sidecars to communicate with ambient mode workloads using the HBONE protocol.
+
+.. Restart deployments in each sidecar injected namespace by running the following command:
++
+[source,terminal]
+----
+$ oc rollout restart deployment -n <namespace>
+----
+
+.. Wait for the rollout to complete by running the following command:
++
+[source,terminal]
+----
+$ oc rollout status deployment -n <namespace>
+----
++
+Repeat for each namespace containing sidecar-injected workloads.
++
+[TIP]
+====
+Restarting pods at this stage has no observable impact on traffic. HBONE only activates when the destination is an ambient mode workload, and no namespaces have been enrolled in ambient mode yet.
+====
+
+.. To verify that HBONE support is active on a restarted pod, run the following command:
++
+[source,terminal]
+----
+$ istioctl ztunnel-config workloads --namespace ztunnel --workload-namespace <namespace>
+----
++
+.Example output
+[source,terminal]
+----
+NAMESPACE   POD NAME        ADDRESS    NODE     WAYPOINT PROTOCOL
+<namespace> <pod-name>      10.0.0.1   node-1   None     HBONE
+----
++
+Verify that the `PROTOCOL` column displays `HBONE` for the restarted pods. If the column shows `TCP`, the pod did not pick up the HBONE configuration and must be restarted again.
+
+[id="ossm-migrating-sidecar-to-ambient-interoperability_{context}"]
+== Sidecar and ambient interoperability during migration
+
+When a sidecar injected pod communicates with a workload that has already moved to ambient mode, the sidecar uses the HBONE protocol to tunnel traffic directly to the destination pod's ztunnel. As a consequence, L7 policies on the waypoint such as `HTTPRoute` rules or `AuthorizationPolicy` resources with `targetRefs` are not enforced for traffic coming from sidecar mode workloads during the migration period.
+
+[WARNING]
+====
+If you use a waypoint bypass prevention policy (a DENY policy that rejects traffic not originating from the waypoint), that policy also rejects traffic from sidecar mode workloads, because they bypass the waypoint. For guidance on handling this during an incremental migration, see "Migrating traffic and security policies".
+====
+
+. Optional: Deploy waypoint proxies for namespaces that require L7 features:
++
+[TIP]
+====
+Skip this step if you only need L4 mTLS and authorization policies. Waypoints are only required for L7 features.
+====
++
+Deploy a waypoint proxy now for namespaces that require L7 features. The waypoint will be configured but not yet activated, traffic continues to flow through sidecars until you enable ambient mode.
+
+.. Create a `Gateway` resource for the waypoint. The following example shows the configuration in a file named `waypoint.yaml`:
++
+[source,yaml]
+----
+apiVersion: gateway.networking.k8s.io/v1
+kind: Gateway
+metadata:
+  name: waypoint
+  namespace: <namespace>
+  labels:
+    istio.io/waypoint-for: service
+spec:
+  gatewayClassName: istio-waypoint
+  listeners:
+  - name: mesh
+    port: 15008
+    protocol: HBONE
+----
+
+.. Apply the waypoint:
++
+[source,terminal]
+----
+$ oc apply -f waypoint.yaml
+----
+
+.. Verify the waypoint pod is running:
++
+[source,terminal]
+----
+$ oc get gateway waypoint -n <namespace>
+----
++
+[source,terminal]
+----
+$ oc get pods -n <namespace> -l gateway.istio.io/managed=istio.io-mesh-controller
+----
++
+[WARNING]
+====
+Do not add the `istio.io/use-waypoint` label to any namespace or service at this stage. Activating waypoints before sidecars are removed can cause traffic to be processed twice. Wait until "Enabling ambient mode".
+====
