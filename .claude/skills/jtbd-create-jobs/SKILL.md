@@ -75,6 +75,12 @@ Pick the first non-hidden job from the coverage map and create it:
 
 2. The job map file must:
    - Start with `:_mod-docs-content-type: MAP`
+   - Set a `:context:` variable on the line after the content type,
+     using the job map filename without the `.adoc` extension
+     (e.g., `:context: prepare-your-environment-mirroring` for
+     `prepare-your-environment-mirroring.adoc`). This is required
+     because modules use `_{context}` in their IDs and each job
+     must produce unique IDs.
    - Include modules from the coverage map using relative paths to
      `modules/` (for modules in `maps/jobs/modules/`)
    - Use `leveloffset=+0` for the first module and `leveloffset=+1` for
@@ -82,12 +88,19 @@ Pick the first non-hidden job from the coverage map and create it:
    - Use `chunk="to-content"` on the intro concept module and `toc="no"` on all include statements
 
 3. **Intro concept module**: every job needs one as its first include.
-   - If a suitable existing concept module exists, use it as the first
-     include with `leveloffset=+0,chunk="to-content"`
-   - If no suitable intro exists, create a new concept module in
-     `maps/jobs/modules/` with:
+   - If a suitable existing concept module exists, use it as-is as the
+     first include with `leveloffset=+0,chunk="to-content"`. Do not
+     rename or modify the existing module's heading.
+   - If no suitable intro exists, check any existing assembly that is
+     relevant to this job for introductory content in its
+     abstract/shortdesc section. Use that content as the basis for the
+     new intro module.
+   - Create the new concept module in `maps/jobs/modules/` with:
      - Content type: CONCEPT
-     - A concise 1-2 sentence short description based on the Job Statement
+     - A heading that matches the job title
+     - A concise 1-2 sentence short description, sourced from the
+       relevant assembly's abstract/shortdesc if available, or based
+       on the Job Statement if no assembly content is suitable
      - The `[role="_abstract"]` attribute
 
 4. Add the job to the category map at
