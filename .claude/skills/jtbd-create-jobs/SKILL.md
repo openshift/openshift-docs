@@ -114,11 +114,20 @@ jobs following the same pattern. For each job:
 Create the distro directory under `maps/` if it doesn't already exist
 (e.g., `maps/ocp/`).
 
-### Step 4: Summary
+### Step 4: Offer to convert module headings from gerunds to imperatives
+
+After all the jobs have been created, ask the user if they want to convert
+the headings of modules included in the jobs created by this skill from gerunds
+to imperatives. If so, convert each module heading from gerund to imperative form.
+For example, "= Creating an application" should become "= Create an application".
+Do not change the filename. Do not change the ID. Only change the heading.
+
+### Step 5: Summary
 
 After all jobs are created, provide a summary:
 - List of job map files created
 - List of new intro concept modules created
+- Number of modules that were changed from gerund to imperative heading
 - The updated category map content
 - Any jobs from the coverage map that were skipped and why
 
