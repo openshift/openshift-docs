@@ -33,7 +33,7 @@ The maps directory structure is:
 ```
 maps/
   jobs/                          # shared job maps (all distros)
-    modules/                     # shared modules used by job maps
+    modules -> ../../modules/                     # symlink to shared modules used by job maps
     prepare-your-environment-mirroring.adoc   # example job map
   microshift/                    # distro-specific category maps
     navigation.adoc              # top-level nav
@@ -53,9 +53,9 @@ Here is a real example of each file type:
 
 = Install
 
-include::jobs/prepare-your-environment-mirroring.adoc[leveloffset=+1,chunk="to-content",navtitle="Prepare your environment (mirroring)"]
+include::jobs/prepare-your-environment-mirroring.adoc[leveloffset=+1]
 
-include::jobs/install-with-image-mode-rhel.adoc[leveloffset=+1,navtitle="Install with image mode for RHEL"]
+include::jobs/install-with-image-mode-rhel.adoc[leveloffset=+1]
 ```
 
 ### Intro concept module (`maps/jobs/modules/microshift-mirror-container-images.adoc`):
@@ -76,27 +76,24 @@ Pick the first non-hidden job from the coverage map and create it:
 2. The job map file must:
    - Start with `:_mod-docs-content-type: MAP`
    - Include modules from the coverage map using relative paths to
-     `modules/` (for modules in `maps/jobs/modules/`) or absolute paths
-     from repo root for modules elsewhere
+     `modules/` (for modules in `maps/jobs/modules/`)
    - Use `leveloffset=+0` for the first module and `leveloffset=+1` for
      subsequent modules
-   - Use `toc="no"` on all include statements
+   - Use `chunk="to-content"` on the intro concept module and `toc="no"` on all include statements
 
 3. **Intro concept module**: every job needs one as its first include.
    - If a suitable existing concept module exists, use it as the first
-     include with `leveloffset=+0,toc="no"`
+     include with `leveloffset=+0,chunk="to-content"`
    - If no suitable intro exists, create a new concept module in
      `maps/jobs/modules/` with:
      - Content type: CONCEPT
      - A concise 1-2 sentence short description based on the Job Statement
      - The `[role="_abstract"]` attribute
-   - The first module in the job map gets `chunk="to-content"` when
-     included in the **category map** (not in the job map itself)
 
 4. Add the job to the category map at
    `maps/<distro>/<category>.adoc`:
    ```asciidoc
-   include::jobs/<job-name>.adoc[leveloffset=+1,chunk="to-content",navtitle="<Job display name>"]
+   include::jobs/<job-name>.adoc[leveloffset=+1]
    ```
 
 ### Step 2: Show and confirm
@@ -129,8 +126,7 @@ After all jobs are created, provide a summary:
 
 - Job map filenames use kebab-case matching the job name
 - All modules in job maps use `toc="no"` in their include attributes
-- The `chunk="to-content"` attribute goes on the job include in the
-  **category map**, not on individual module includes within the job map
-- `navtitle` in the category map should match the human-readable job name
+  except the concept topic that introduces the job
+- The `chunk="to-content"` attribute goes on the first include in the job map
 - If the coverage map flags a job as having gaps (missing modules), note
   this to the user rather than silently skipping content
