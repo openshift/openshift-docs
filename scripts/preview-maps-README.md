@@ -17,6 +17,25 @@ It also generates index pages listing all previewed distros for the branch and a
 - The `asciidoctor-multipage` Ruby gem must be installed (`gem install asciidoctor-multipage`)
 - A `gh-pages` branch must exist on the writer's fork
 
+## Setting up the `gh-pages` branch on your fork
+
+1. Log in to GitHub and go to your fork of the `openshift-docs` repo (for example, `https://github.com/<your_username>/openshift-docs`).
+2. Go to `https://github.com/<your_username>/openshift-docs/branches` (or click the **Branches** button on the repo page), and then click **New branch**.
+3. Fill out the branch creation form:
+   - **New branch name:** `gh-pages`
+   - **Source repository:** select `openshift/openshift-docs` from the first dropdown
+   - **Source branch:** enter `gh-pages` in the second dropdown
+4. Click **Create new branch**.
+5. Go to your fork's **Settings** (from the menu across the top of the page), and then select **Pages** from the left-hand nav, or go directly to `https://github.com/<your_username>/openshift-docs/settings/pages`.
+6. Under **Build and deployment**, ensure **Source** is set to **Deploy from a branch**.
+7. Select the `gh-pages` branch from the **Branch** dropdown.
+8. Click **Save** if these settings were not already correct.
+
+## Running the script
+
+1. Ensure your branch is up to date with the upstream repo so that it contains the `scripts/preview-maps.sh` file and the `maps/docinfo-footer.html` file.
+2. Run the script from the root directory of the repo, from a feature branch that has maps you want to preview.
+
 ## Usage
 
 ```
