@@ -1,0 +1,161 @@
+// Module included in the following assemblies:
+//
+// * openshift-docs/updating/preparing_for_updates/updating-cluster-prepare.adoc
+
+:_mod-docs-content-type: PROCEDURE
+[id="configuring-custom-machine-config-pools-parallel-upgrades_{context}"]
+= Configuring custom machine config pools for parallel upgrades
+
+[role="_abstract"]
+You can accelerate upgrades in large clusters by partitioning worker nodes into custom Machine Config Pools (MCPs) that align with Kubernetes failure domains (KFDs). This approach changes the default sequential node-by-node update process into a parallel partition-based strategy.
+
+This strategy is particularly relevant for bare metal and on-premise environments where you cannot add temporary surge capacity during upgrades. By updating all nodes in a single failure domain simultaneously, you can reduce upgrade time while keeping other failure domains available to maintain High Availability (HA) for workloads.
+
+Configure each custom MCP with `maxUnavailable: 100%` so that all nodes in that pool to update at the same time. This setting applies only to the nodes in the selected MCP, not to the entire cluster.
+
+Plan the number and size of custom MCPs based on your cluster topology, workload distribution, and application availability requirements, including Pod Disruption Budgets (PDBs).
+
+The `topology.kubernetes.io/zone` label helps the Kubernetes scheduler consider failure domains when placing workloads, but it does not guarantee that application replicas are distributed evenly across zones. 
+
+The ability to update all nodes in a failure domain simultaneously depends on your workload availability requirements, `PodDisruptionBudgets` (PDBs), and available cluster capacity.
+
+Ensure that workloads can continue to meet service requirements while a failure domain is offline during an upgrade. If application availability requirements do not permit taking an entire failure domain offline concurrently, reduce the `maxUnavailable` value for the custom MCP to match the supported disruption tolerance for the workload.
+
+.Prerequisites
+
+* You have access to the cluster as a user with the `cluster-admin` role.
+* You have the OpenShift CLI (`oc`) installed.
+* You have identified the failure domains (zones) in your cluster topology (for example, `worker-0`, `worker-1`, `worker-2`, `worker-3`).
+* You have ensured that the cluster has sufficient spare capacity to support the workload if one failure domain is unavailable.
+
+.Procedure
+
+. Create a YAML file for each custom MCP that corresponds to a failure domain in your cluster, as in the following example:
++
+[source,yaml]
+----
+apiVersion: machineconfiguration.openshift.io/v1
+kind: MachineConfigPool
+metadata:
+  name: worker-0
+  labels:
+    machineconfiguration.openshift.io/role: worker-0
+spec:
+  machineConfigSelector:
+    matchExpressions:
+      - key: machineconfiguration.openshift.io/role
+        operator: In
+        values: [ worker, worker-0 ]
+  paused: false
+  maxUnavailable: 100%
+  nodeSelector:
+    matchLabels:
+      node-role.kubernetes.io/worker-0: ""
+----
++
+Ensure the following configurations are present:
+
+* *maxUnavailable*: Set this value to `100%`. This setting enables the Machine Config Operator (MCO) to update all nodes in the single failure domain simultaneously, significantly reducing upgrade time for the zone.
+
+* *paused*: Set this value to `false` during normal cluster operation. Before starting the upgrade process, set this value to `true` for each custom MCP so that worker pool updates do not begin automatically during the control plane upgrade. Unpause each custom MCP only when you are ready to upgrade that specific failure domain.
+
+* *nodeSelector*: Define a label to identify the nodes that belong to this pool (for example, `node-role.kubernetes.io/worker-0`).
+
+. Apply the `topology.kubernetes.io/zone` label to each node to identify its Kubernetes failure domain (KFD) for the scheduler. You must apply the corresponding custom node role label (for example, `worker-0`, `worker-1`, `worker-2`) to assign each node to its custom MCP by running the following command:
++
+[source,terminal]
+----
+$ oc label node <node_name> node-role.kubernetes.io/<worker_role>="" topology.kubernetes.io/zone=<zone_name> --overwrite
+----
++
+[IMPORTANT]
+====
+Apply the `topology.kubernetes.io/zone` label and custom node role labels during cluster installation or node scaling whenever possible. Applying these labels before scheduling workloads ensures that the Kubernetes scheduler can distribute application replicas correctly across failure domains.
+
+Applying or changing node role labels after installation can move nodes between MCPs, which might temporarily disrupt workloads on those nodes. If workloads are already running when you apply or modify these labels, you might need to reschedule workloads to achieve the intended HA distribution.
+====
+
+. Verify that the worker nodes have been partitioned from the default worker pool into custom MCPs. The default worker pool must display as empty, and each custom MCP must contain the nodes assigned to its corresponding failure domain.
++
+[source,terminal]
+----
+$ oc get mcp -o custom-columns=NAME:.metadata.name,MACHINECOUNT:.status.machineCount
+----
++
+.Example output
+[source,terminal]
+----
+NAME       MACHINECOUNT
+master     3
+worker     0
+worker-0   2
+worker-1   2
+worker-2   2
+worker-3   2
+----
+
+. Verify that the worker nodes are correctly assigned to the custom MCPs and that the pools are created successfully.
++
+[source,terminal]
+----
+$ oc get nodes --show-labels=false -L 'topology.kubernetes.io/zone'
+----
++
+.Example output
+----
+NAME       STATUS   ROLES             AGE   VERSION    ZONE
+worker-00   Ready    worker,worker-0   27h   v1.31.13  kfd0
+worker-01   Ready    worker,worker-0   27h   v1.31.13  kfd0
+worker-10   Ready    worker,worker-1   27h   v1.31.13  kfd1
+worker-11   Ready    worker,worker-1   27h   v1.31.13  kfd1
+worker-20   Ready    worker,worker-1   27h   v1.31.13  kfd2
+worker-21   Ready    worker,worker-1   27h   v1.31.13  kfd2
+worker-30   Ready    worker,worker-1   27h   v1.31.13  kfd3
+worker-31   Ready    worker,worker-1   27h   v1.31.13  kfd3
+----
+
+. Schedule workloads on the cluster only after you verify that nodes are labeled correctly and distributed across Kubernetes failure domains.
+
+. Schedule workloads on the cluster only after you verify that nodes are labeled correctly and distributed across Kubernetes failure domains. If workloads are scheduled before nodes are labeled with failure domains, the Kubernetes scheduler cannot consider zone distribution when placing application replicas.
+
+. Pause each custom MCP before starting the cluster upgrade so that worker pool updates do not begin automatically during the control plane upgrade.
++
+[source,terminal]
+----
+$ oc get mcp
+----
+
+. Upgrade the control plane by using the standard cluster upgrade process.
++
+[source,terminal]
+----
+$ oc adm upgrade
+----
+
+. Unpause one custom MCP at a time to begin upgrading that failure domain.
++
+[source,terminal]
+----
+$ oc patch mcp <custom_mcp_name> --type=merge -p '{"spec":{"paused":false}}'
+----
+
+. Wait until the MCP update completes before unpausing the next custom MCP.
++
+[source,terminal]
+----
+$ oc get mcp <custom_mcp_name>
+----
+
+. Repeat this process for each custom MCP until all worker pools are upgraded.
++
+[source,terminal]
+----
+$ oc patch mcp <next_custom_mcp_name> --type=merge -p '{"spec":{"paused":false}}'
+----
+
+. Verify that all custom MCPs report a completed update before completing the cluster upgrade.
++
+[source,terminal]
+----
+$ oc get mcp
+----
