@@ -1,41 +1,255 @@
 // Module included in the following assemblies:
 //
-// * infrastructure_lifecycle_management/ocloud-configuring-advanced-hardware-management.adoc
+// * infrastructure_lifecycle_management/ocloud-defining-templates-and-onboarding-servers.adoc
 
 :_mod-docs-content-type: PROCEDURE
 [id="ocloud-define-multi-node-template_{context}"]
-= Define a multi-node template with distinct node groups
+= Create a ClusterTemplate CR for multi-node cluster provisioning
 
 [role="_abstract"]
-You can define a `ClusterTemplate` CR with multiple node groups in `hwMgmtDefaults` when your cluster topology requires controller and worker nodes with distinct hardware. Each node group defines its own role, hardware profile, and resource selectors, allowing the O-Cloud Manager to allocate different classes of hardware for each node role. This base configuration applies to all clusters provisioned with this template unless overridden with `hwMgmtParameters` in the `ProvisioningRequest` CR.
+You can define a `ClusterTemplate` CR with multiple node groups in the `hwMgmtDefaults.nodeGroupData[]` field when your cluster topology includes multiple groups of nodes, such as control plane and worker nodes. Each node group can define its own role, hardware profile, and resource selectors, to enable the O-Cloud Manager to allocate hardware independently for each group. 
+
+A `ClusterTemplate` CR references `ConfigMap` resources that contain defaults for cluster installation and Day 2 policy configuration. The cluster installation defaults `ConfigMap` CR defines the common configuration across all clusters provisioned with a template, including cluster-level settings and the shared node configuration for each node group. 
+
+When a site engineer creates a `ProvisioningRequest` resource, the O-Cloud Manager merges the site-specific parameters from the request with these defaults to produce the final cluster and policy definitions.
 
 .Prerequisites
 
 * The O-Cloud Manager Operator is installed on the hub cluster.
-* Multiple server types are onboarded with distinct resource selector labels.
-* `HardwareProfile` CRs are defined in the O-Cloud Manager Operator namespace, `oran-o2ims`, for each server type that requires firmware or BIOS management.
-* The `clusterinstance-defaults` ConfigMap includes node definitions for both `master` and `worker` roles.
+* The GitOps repository is configured and synchronized with ArgoCD.
+* Bare-metal servers are onboarded to resource pools with appropriate resource selector labels.
+* If firmware or BIOS management is required, `HardwareProfile` resources are defined.
 
 .Procedure
 
-. Create a `ClusterTemplate` CR with multiple entries in `hwMgmtDefaults.nodeGroupData[]`, one per node group. The following example defines a controller group and a worker group with distinct hardware requirements:
+. Create a `ConfigMap` CR that defines the cluster installation defaults for a multi-node topology. The `ConfigMap` CR must include a `nodeGroup` entry for each node role. The following example defines `master` and `worker` groups with distinct network interface configurations:
++
+[source,yaml]
+----
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: clusterinstance-defaults-v1
+  namespace: <template_namespace>
+data:
+  clusterinstance-defaults: |
+    baseDomain: example.com
+    extraLabels:
+      ManagedCluster:
+        cluster-version: "v4-Y-Z"
+        std-ran-du-policy: "v1"
+    clusterType: HighlyAvailable
+    clusterImageSetNameRef: "4.Y.Z"
+    pullSecretRef:
+      name: pull-secret
+    networkType: OVNKubernetes
+    clusterNetwork:
+      - cidr: 203.0.113.0/24
+        hostPrefix: 25
+    serviceNetwork:
+      - cidr: 198.51.100.0/24
+    additionalNTPSources:
+      - 1.pool.ntp.org
+    templateRefs:
+      - name: ai-cluster-templates-v1
+        namespace: open-cluster-management
+    cpuPartitioningMode: AllNodes
+    extraManifestsRefs:
+      - name: std-ran-du-extra-manifest-v1
+    nodeGroups:
+      - name: master
+        role: master
+        bootMode: UEFI
+        ironicInspect: "disabled"
+        automatedCleaningMode: disabled
+        rootDeviceHints:
+          deviceName: /dev/disk/by-path/pci-0000:01:00.0-nvme-1
+        nodeNetwork:
+          interfaces:
+            - name: ens1f0
+              label: boot-interface
+            - name: ens1f1
+              label: data-interface
+          config:
+            routes:
+              config:
+                - destination: 0.0.0.0/0
+                  next-hop-interface: ens1f0
+                  table-id: 254
+            interfaces:
+              - ipv6:
+                  enabled: false
+                ipv4:
+                  enabled: true
+                name: ens1f0
+                state: up
+                type: ethernet
+        templateRefs:
+          - name: ai-node-templates-v1
+            namespace: open-cluster-management
+      - name: worker
+        role: worker
+        bootMode: UEFI
+        ironicInspect: "disabled"
+        automatedCleaningMode: disabled
+        rootDeviceHints:
+          deviceName: /dev/disk/by-path/pci-0000:01:00.0-nvme-1
+        nodeNetwork:
+          interfaces:
+            - name: ens3f0
+              label: boot-interface
+            - name: ens3f1
+              label: data-interface
+            - name: ens2f0
+              label: sriov-1
+            - name: ens2f1
+              label: sriov-2
+          config:
+            routes:
+              config:
+                - destination: 0.0.0.0/0
+                  next-hop-interface: ens3f0
+                  table-id: 254
+            interfaces:
+              - ipv6:
+                  enabled: false
+                ipv4:
+                  enabled: true
+                name: ens3f0
+                state: up
+                type: ethernet
+        templateRefs:
+          - name: ai-node-templates-v1
+            namespace: open-cluster-management
+----
++
+`extraLabels.ManagedCluster`:: The `cluster-version` label is mandatory. This label, along with any additional custom labels such as `std-ran-du-policy`, is used to bind {rh-rhacm-first} policies for cluster configuration rendered from the PolicyGenerator manifest.
+`nodeGroups[].name`:: Must match `hwMgmtDefaults.nodeGroupData[].name` in the `ClusterTemplate` CR and the `MachineConfigPool` name on the managed cluster. Define one entry for each hardware node group.
+* Worker nodes in this example include additional SR-IOV interfaces (`sriov-1`, `sriov-2`) for data-plane traffic, demonstrating how different node roles can have distinct network configurations.
+
+. Create a `ConfigMap` CR containing default values for Day 2 configuration policy parameters, such as the following example:
++
+[source,yaml]
+----
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: policytemplates-defaults-v1
+  namespace: <template_namespace>
+data:
+  policytemplate-defaults: |
+    sriov-network-vlan-1: "140"
+    sriov-network-pfNames-1: '["ens2f0"]'
+    sriov-network-vlan-2: "150"
+    sriov-network-pfNames-2: '["ens2f1"]'
+    cpu-isolated: "0-1,64-65"
+    cpu-reserved: "2-10"
+    hugepages-default: "1G"
+    hugepages-size: "1G"
+    hugepages-count: "32"
+    install-plan-approval: "Automatic"
+----
++
+The `ConfigMap` CR must contain a `policytemplate-defaults` key. The value is a YAML string defining the default policy parameters. Site-specific values from the `ProvisioningRequest` CR take precedence over these defaults when both specify the same parameter. All parameters referenced as placeholders in the `PolicyGenerator` manifest must be declared here or supplied through the `ProvisioningRequest` CR.
+
+. Create an {rh-rhacm} `PolicyGenerator` manifest, such as the following example, that defines the Day 2 configuration policies for clusters provisioned with this `ClusterTemplate` CR:
++
+[NOTE]
+====
+The `PolicyGenerator` CR is the mechanism that turns policy defaults into enforceable policies on managed clusters. When a `ProvisioningRequest` CR is created, the O-Cloud Manager creates a `ConfigMap` CR named `<cluster-name>-pg` on the hub cluster, populated by merging the values from the policy defaults `ConfigMap` with any overrides from the `ProvisioningRequest` CR.
+
+The `PolicyGenerator` CR uses templating expressions (`{{hub ... hub}}`) as placeholders that {rh-rhacm} resolves at runtime by reading values from this `<cluster-name>-pg` `ConfigMap` CR. The result is `Policy` CRs that {rh-rhacm} enforces on the managed cluster.
+====
++
+[source,yaml]
+----
+apiVersion: policy.open-cluster-management.io/v1
+kind: PolicyGenerator
+metadata:
+  name: std-ran-du-pg-v4-Y-Z-v1
+policyDefaults:
+  namespace: ztp-<template_namespace>
+  placement:
+    labelSelector:
+      cluster-version: "v4-Y-Z"
+      std-ran-du-policy: "v1"
+  policyAnnotations:
+    clustertemplates.clcm.openshift.io/templates: "std-ran-du.v4-Y-Z-1"
+  remediationAction: enforce
+policies:
+- name: v1-subscriptions-policy
+  manifests:
+    - path: source-crs/cluster-logging/ClusterLogSubscription.yaml
+      patches:
+      - spec:
+          source: redhat-operators
+          installPlanApproval:
+            '{{hub $configMap:=(lookup "v1" "ConfigMap" "" (printf "%s-pg" .ManagedClusterName)) hub}}{{hub dig "data" "install-plan-approval" "Manual" $configMap hub}}'
+- name: v1-config-policy
+  manifests:
+    - path: source-crs/node-tuning-operator/x86_64/PerformanceProfile-SetSelector.yaml
+      patches:
+      - spec:
+          cpu:
+            isolated: '{{hub fromConfigMap "" (printf "%s-pg" .ManagedClusterName) "cpu-isolated" hub}}'
+            reserved: '{{hub fromConfigMap "" (printf "%s-pg" .ManagedClusterName) "cpu-reserved" hub}}'
+          hugepages:
+            defaultHugepagesSize: '{{hub fromConfigMap "" (printf "%s-pg" .ManagedClusterName) "hugepages-default" hub}}'
+            pages:
+              - size: '{{hub fromConfigMap "" (printf "%s-pg" .ManagedClusterName) "hugepages-size" hub}}'
+                count: '{{hub fromConfigMap "" (printf "%s-pg" .ManagedClusterName) "hugepages-count" | toInt hub}}'
+          machineConfigPoolSelector:
+            pools.operator.machineconfiguration.openshift.io/worker: ""
+          nodeSelector:
+            node-role.kubernetes.io/worker: ''
+    - path: source-crs/sriov-operator/SriovNetwork.yaml
+      patches:
+      - metadata:
+          name: sriov-nw-du-fh
+        spec:
+          resourceName: du_fh
+          vlan: '{{hub fromConfigMap "" (printf "%s-pg" .ManagedClusterName) "sriov-network-vlan-1" | toInt hub}}'
+    - path: source-crs/sriov-operator/SriovNetworkNodePolicy-SetSelector.yaml
+      patches:
+      - metadata:
+          name: sriov-nnp-du-fh
+        spec:
+          deviceType: netdevice
+          nicSelector:
+            pfNames: '{{hub fromConfigMap "" (printf "%s-pg" .ManagedClusterName) "sriov-network-pfNames-1" | toLiteral hub}}'
+          nodeSelector:
+            node-role.kubernetes.io/worker: ""
+          resourceName: du_fh
+----
++
+`policyDefaults.namespace`:: Must follow the naming convention `ztp-<clustertemplate-namespace>`. The O-Cloud Manager uses this convention to locate policies associated with a `ClusterTemplate` namespace.
+`policyDefaults.placement.labelSelector`:: Must match the `extraLabels.ManagedCluster` labels defined in the `clusterinstance-defaults` `ConfigMap` CR. These labels bind the policies to the correct managed clusters.
+`policyAnnotations.clustertemplates.clcm.openshift.io/templates`:: A comma-separated list of `ClusterTemplate` CRs, populated using the `metadata.name` field, that this `PolicyGenerator` CR is associated with. This enables the O-Cloud Manager to track policy compliance for provisioning status reporting.
+`source-crs/`:: Contains the base manifests for Day 2 configuration resources such as `PerformanceProfile` CRs, `SriovNetworkNodePolicy` CRs, and Operator subscriptions. These CRs must match the target {product-title} release version.
++
+[NOTE]
+====
+All parameters referenced as placeholders, such as `cpu-isolated` and `sriov-network-vlan-1`, must be declared in the `templateParameterSchema.policyTemplateParameters` section of the `ClusterTemplate` CR and supplied either through the policy defaults `ConfigMap` CR or the `ProvisioningRequest` CR.
+====
+
+. Create a `ClusterTemplate` CR for the multi-node cluster topology, such as the following example that defines distinct hardware for each node group:
 +
 [source,yaml]
 ----
 apiVersion: clcm.openshift.io/v1alpha1
 kind: ClusterTemplate
 metadata:
-  name: multi-node-ran-du.v4-Y-Z-1
-  namespace: ocloud-templates
+  name: std-ran-du.v4-Y-Z-1
+  namespace: <template_namespace>
 spec:
-  name: multi-node-ran-du
+  name: std-ran-du
   version: v4-Y-Z-1
   release: 4.Y.Z
   templateDefaults:
     hwMgmtDefaults:
       hardwareProvisioningTimeout: "120m"
       nodeGroupData:
-        - name: controller
+        - name: master
           role: master
           hwProfile: rh-profile-bios-standard
           resourceSelector:
@@ -65,46 +279,199 @@ spec:
           hardwareProvisioningTimeout:
             type: string
           nodeGroupData:
+            type: array
             items:
+              type: object
+              required:
+                - name
               properties:
                 name:
                   type: string
+                  minLength: 1
+                role:
+                  type: string
+                  enum:
+                    - master
+                    - worker
                 hwProfile:
+                  type: string
+                resourcePoolId:
                   type: string
                 resourceSelector:
                   type: object
                   additionalProperties:
                     type: string
-              required:
-                - name
-              type: object
-            type: array
         type: object
       policyTemplateParameters:
         properties:
+          sriov-network-vlan-1:
+            type: string
+          sriov-network-vlan-2:
+            type: string
+          sriov-network-pfNames-1:
+            type: string
+          sriov-network-pfNames-2:
+            type: string
           cpu-isolated:
             type: string
           cpu-reserved:
             type: string
+          hugepages-default:
+            type: string
+          hugepages-size:
+            type: string
+          hugepages-count:
+            type: string
+          install-plan-approval:
+            type: string
         type: object
       clusterInstanceParameters:
         properties:
-          clusterName:
-            type: string
+          additionalNTPSources:
+            items:
+              type: string
+            type: array
+          apiVIPs:
+            items:
+              type: string
+            maxItems: 2
+            type: array
           baseDomain:
             type: string
-          nodes:
+          clusterName:
+            type: string
+          extraAnnotations:
+            additionalProperties:
+              additionalProperties:
+                type: string
+              type: object
+            type: object
+          extraLabels:
+            additionalProperties:
+              additionalProperties:
+                type: string
+              type: object
+            type: object
+          ingressVIPs:
+            items:
+              type: string
+            maxItems: 2
+            type: array
+          machineNetwork:
             items:
               properties:
-                hostName:
+                cidr:
                   type: string
               required:
-                - hostName
+                - cidr
               type: object
             type: array
+          nodeGroups:
+            items:
+              properties:
+                name:
+                  type: string
+                  minLength: 1
+                extraAnnotations:
+                  additionalProperties:
+                    additionalProperties:
+                      type: string
+                    type: object
+                  type: object
+                extraLabels:
+                  additionalProperties:
+                    additionalProperties:
+                      type: string
+                    type: object
+                  type: object
+                nodeLabels:
+                  additionalProperties:
+                    type: string
+                  type: object
+                nodeNetwork:
+                  properties:
+                    config:
+                      type: object
+                      x-kubernetes-preserve-unknown-fields: true
+                  type: object
+                nodes:
+                  items:
+                    properties:
+                      hostName:
+                        type: string
+                      extraAnnotations:
+                        additionalProperties:
+                          additionalProperties:
+                            type: string
+                          type: object
+                        type: object
+                      extraLabels:
+                        additionalProperties:
+                          additionalProperties:
+                            type: string
+                          type: object
+                        type: object
+                      nodeLabels:
+                        additionalProperties:
+                          type: string
+                        type: object
+                      nodeNetwork:
+                        properties:
+                          interfaces:
+                            minItems: 1
+                            items:
+                              properties:
+                                name:
+                                  type: string
+                                  minLength: 1
+                                addresses:
+                                  properties:
+                                    ipv4:
+                                      items:
+                                        type: string
+                                        minLength: 1
+                                      minItems: 1
+                                      type: array
+                                    ipv6:
+                                      items:
+                                        type: string
+                                        minLength: 1
+                                      minItems: 1
+                                      type: array
+                                  minProperties: 1
+                                  type: object
+                              required:
+                                - name
+                                - addresses
+                              type: object
+                            type: array
+                        required:
+                          - interfaces
+                        type: object
+                    required:
+                      - hostName
+                      - nodeNetwork
+                    type: object
+                  type: array
+              required:
+                - name
+                - nodes
+              type: object
+            type: array
+          serviceNetwork:
+            items:
+              properties:
+                cidr:
+                  type: string
+              required:
+                - cidr
+              type: object
+            type: array
+          sshPublicKey:
+            type: string
         required:
           - clusterName
-          - nodes
+          - nodeGroups
         type: object
     required:
       - nodeClusterName
@@ -116,11 +483,16 @@ spec:
 +
 where:
 +
-`nodeGroupData[].name`:: A unique identifier for the node group within the template. This name is used to match override entries in a `ProvisioningRequest` CR's `hwMgmtParameters.nodeGroupData[]`.
-`nodeGroupData[].role`:: Maps the node group to a cluster node role. Valid values are `master` for control plane nodes and `worker` for compute nodes. The O-Cloud Manager uses this role when rendering the `ClusterInstance` CR.
-`nodeGroupData[].hwProfile`:: Specifies the `HardwareProfile` CR to apply to this node group. Each group can reference a different profile, for example a standard BIOS profile for controllers and a DPDK-optimized profile for workers. The referenced `HardwareProfile` CRs must exist in the O-Cloud Manager Operator namespace, `oran-o2ims`, not in the `ClusterTemplate` namespace.
+`nodeGroupData[].name`:: Must match the `MachineConfigPool` name on the managed cluster and the corresponding `nodeGroups[].name` in the `clusterinstance-defaults` ConfigMap.
+`nodeGroupData[].role`:: Maps the node group to a cluster node role. Valid values are `master` for control plane nodes and `worker` for compute nodes.
+`nodeGroupData[].hwProfile`:: Specifies the `HardwareProfile` CR to apply to this node group. Each group can reference a different profile, for example a standard BIOS profile for controllers and a DPDK-optimized profile for workers. The referenced `HardwareProfile` CRs must exist in the O-Cloud Manager Operator namespace, `oran-o2ims`.
 `nodeGroupData[].resourceSelector`:: Defines independent selection criteria for each node group. Each group's selector is evaluated separately against the pool of available `BareMetalHost` CRs. The controller and worker groups can target completely different server types and hardware specifications.
-`templateParameterSchema.hwMgmtParameters`:: Enables per-site overrides of hardware profiles and resource selectors. Including this in the schema allows site engineers to adjust hardware selection for individual node groups in their `ProvisioningRequest` CR without modifying the template.
+`templateParameterSchema.hwMgmtParameters`:: Enables site-specific overrides of hardware profiles and resource selectors. Including this in the schema allows site engineers to adjust hardware selection for individual node groups in their `ProvisioningRequest` CR without modifying the template.
++
+[NOTE]
+====
+The `templateParameterSchema` is identical for both single-node and multi-node topologies. The schema defines which fields are permitted; the number of `nodeGroups` entries is determined by the deployment.
+====
 
 . Apply the `ClusterTemplate` CR to the hub cluster, or commit it to the GitOps repository for ArgoCD synchronization.
 
@@ -130,14 +502,14 @@ where:
 +
 [source,terminal]
 ----
-$ oc get clustertemplates.clcm.openshift.io -n ocloud-templates multi-node-ran-du.v4-Y-Z-1
+$ oc get clustertemplates.clcm.openshift.io -n <template_namespace> std-ran-du.v4-Y-Z-1
 ----
 +
 .Example output
 [source,terminal]
 ----
 NAMESPACE          NAME                         AGE   STATE       DETAILS
-ocloud-templates   multi-node-ran-du.v4-Y-Z-1   12s   Completed   The cluster template validation succeeded
+ocloud-templates   std-ran-du.v4-Y-Z-1   12s   Completed   The cluster template validation succeeded
 ----
 +
-A `STATE` of `Completed` confirms that all node group configurations, resource selectors, and the parameter schema are valid. When a `ProvisioningRequest` references this template, the O-Cloud Manager allocates hosts independently per node group, matching each group's `resourceSelector` against available `BareMetalHost` CRs.
+A `STATE` of `Completed` confirms that all node group configurations, resource selectors, and the parameter schema are valid. When a `ProvisioningRequest` CR references this template, the O-Cloud Manager allocates hosts independently for each node group, matching each group's `resourceSelector` against available `BareMetalHost` CRs.
