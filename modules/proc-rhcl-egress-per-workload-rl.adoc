@@ -1,0 +1,101 @@
+// Module included in the following assemblies:
+//
+// * deployment/rhcl-egress-gateway.adoc
+
+:_mod-docs-content-type: PROCEDURE
+[id="proc-rhcl-egress-per-workload-rl_{context}"]
+= Applying per-workload rate limiting
+
+[role="_abstract"]
+With workload identity established through `AuthPolicy`, you can give each workload its own rate limit bucket. The `RateLimitPolicy` uses the service account username as a counter, so each workload identity is tracked independently.
+
+.Prerequisites
+
+* An egress gateway is deployed and operational.
+* An `AuthPolicy` with `kubernetesTokenReview` authentication is applied to the egress `HTTPRoute`.
+* A test client pod is available in the `egress-test` namespace.
+
+.Procedure
+
+. Export the egress gateway address:
++
+[source,terminal]
+----
+$ export EGRESS_IP=$(oc get gtw kuadrant-egressgateway -n gateway-system \
+    -o jsonpath='{.status.addresses[0].value}')
+----
+
+. Apply a `RateLimitPolicy` that uses the service account username of the workload as a counter:
++
+[source,terminal]
+----
+$ oc apply -f - <<EOF
+apiVersion: kuadrant.io/v1
+kind: RateLimitPolicy
+metadata:
+  name: egress-per-workload
+  namespace: gateway-system
+spec:
+  targetRef:
+    group: gateway.networking.k8s.io
+    kind: HTTPRoute
+    name: httpbin-external
+  limits:
+    per-workload:
+      rates:
+        - limit: 5
+          window: 10s
+      counters:
+        - expression: "auth.identity.username"
+EOF
+----
++
+Each service account gets an independent bucket of 5 requests every 10 seconds. For example, `system:serviceaccount:team-a:default` and `system:serviceaccount:team-b:default` are tracked separately. The identity is stable across pod restarts and reschedules.
+
+.Verification
+
+* Send requests in a loop with the service account token and observe per-workload rate limiting:
++
+[source,terminal]
+----
+$ for i in $(seq 1 10); do
+    oc exec test-client -n egress-test -- sh -c '
+      curl -s -o /dev/null -w "%{http_code}" \
+          -H "Host: httpbin.org" \
+          -H "Authorization: Bearer $(cat /var/run/secrets/kubernetes.io/serviceaccount/token)" \
+          http://'"${EGRESS_IP}"'/get
+    '
+    sleep 0.5
+  done
+----
++
+The first 5 requests return `200`. Subsequent requests return `429` until the 10-second window resets.
+
+.Identity path reference
+
+The resolved identity contains the following fields. `AuthPolicy` selectors and `RateLimitPolicy` expressions resolve identity paths differently because they are evaluated by different engines.
+
+[cols="1,2,2,2",options="header"]
+|===
+| Field | Example value | AuthPolicy selector | RateLimitPolicy expression
+
+| Username
+| `system:serviceaccount:egress-test:default`
+| `auth.identity.user.username`
+| `auth.identity.username`
+
+| UID
+| `425214f1-cf45-...`
+| `auth.identity.user.uid`
+| `auth.identity.uid`
+
+| Groups
+| `[system:serviceaccounts, system:serviceaccounts:egress-test]`
+| `auth.identity.user.groups`
+| `auth.identity.groups`
+|===
+
+[NOTE]
+====
+`AuthPolicy` uses the full TokenReview structure, such as `auth.identity.user.username`, while `RateLimitPolicy` counter expressions use a flattened representation, such as `auth.identity.username`. This is by design because the two are evaluated by different engines: Authorino and wasm-shim.
+====

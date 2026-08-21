@@ -1,0 +1,171 @@
+// Module included in the following assemblies:
+//
+// * deployment/rhcl-egress-gateway.adoc
+
+:_mod-docs-content-type: PROCEDURE
+[id="proc-rhcl-egress-gateway-setup_{context}"]
+= Deploying an egress gateway
+
+[role="_abstract"]
+Deploy the egress gateway infrastructure to route outbound traffic from your cluster to an external service through a centralized gateway. This procedure uses `httpbin.org` as an example external service.
+
+.Prerequisites
+
+* {prodname} is installed on the {ocp} cluster.
+* {service-mesh} is installed and configured on the {ocp} cluster.
+* The {oc-first} is installed.
+* You have administrator privileges on the {ocp} cluster.
+
+.Procedure
+
+. Create the `Gateway` resource with a `ClusterIP` service type. Egress traffic originates inside the cluster, so no external IP is needed:
++
+[source,terminal]
+----
+$ oc apply -f - <<EOF
+apiVersion: gateway.networking.k8s.io/v1
+kind: Gateway
+metadata:
+  name: kuadrant-egressgateway
+  namespace: gateway-system
+  annotations:
+    networking.istio.io/service-type: ClusterIP
+spec:
+  gatewayClassName: istio
+  listeners:
+    - name: http
+      port: 80
+      protocol: HTTP
+      allowedRoutes:
+        namespaces:
+          from: All
+EOF
+----
+
+. Create the `ServiceEntry` resource to register the external service in the {service-mesh} service registry:
++
+[source,terminal]
+----
+$ oc apply -f - <<EOF
+apiVersion: networking.istio.io/v1
+kind: ServiceEntry
+metadata:
+  name: httpbin-external
+  namespace: gateway-system
+spec:
+  hosts:
+    - httpbin.org
+  ports:
+    - number: 443
+      name: https
+      protocol: HTTPS
+  location: MESH_EXTERNAL
+  resolution: DNS
+EOF
+----
+
+. Create the `DestinationRule` resource to configure TLS origination. The gateway establishes TLS to the external service on behalf of the application:
++
+[source,terminal]
+----
+$ oc apply -f - <<EOF
+apiVersion: networking.istio.io/v1
+kind: DestinationRule
+metadata:
+  name: httpbin-external
+  namespace: gateway-system
+spec:
+  host: httpbin.org
+  trafficPolicy:
+    tls:
+      mode: SIMPLE
+      sni: httpbin.org
+EOF
+----
+
+. Create the `HTTPRoute` resource to route traffic through the gateway to the external service:
++
+[source,terminal]
+----
+$ oc apply -f - <<EOF
+apiVersion: gateway.networking.k8s.io/v1
+kind: HTTPRoute
+metadata:
+  name: httpbin-external
+  namespace: gateway-system
+spec:
+  parentRefs:
+    - name: kuadrant-egressgateway
+      namespace: gateway-system
+  hostnames:
+    - httpbin.org
+  rules:
+    - filters:
+        - type: URLRewrite
+          urlRewrite:
+            hostname: httpbin.org
+      backendRefs:
+        - group: networking.istio.io
+          kind: Hostname
+          name: httpbin.org
+          port: 443
+EOF
+----
++
+The `Hostname` backend is provided by the `ServiceEntry`. The `URLRewrite` filter ensures the correct `Host` header reaches the external service.
+
+. Wait for the gateway to be ready:
++
+[source,terminal]
+----
+$ oc wait --timeout=5m -n gateway-system gateway/kuadrant-egressgateway --for=condition=Programmed
+----
+
+. Export the gateway address for use in subsequent procedures:
++
+[source,terminal]
+----
+$ export EGRESS_IP=$(oc get gtw kuadrant-egressgateway -n gateway-system \
+    -o jsonpath='{.status.addresses[0].value}')
+----
+
+.Verification
+
+. Create a test namespace and deploy a test client pod:
++
+[source,terminal]
+----
+$ oc create namespace egress-test
+----
++
+[source,terminal]
+----
+$ oc apply -f - <<EOF
+apiVersion: v1
+kind: Pod
+metadata:
+  name: test-client
+  namespace: egress-test
+spec:
+  containers:
+    - name: curl
+      image: curlimages/curl:latest
+      command: ["sleep", "infinity"]
+  restartPolicy: Never
+EOF
+----
++
+[source,terminal]
+----
+$ oc wait --timeout=2m -n egress-test pod/test-client --for=condition=Ready
+----
+
+. Send a request through the egress gateway to verify connectivity:
++
+[source,terminal]
+----
+$ oc exec test-client -n egress-test -- \
+    curl -s -o /dev/null -w "%{http_code}" -H "Host: httpbin.org" http://${EGRESS_IP}/get
+----
++
+Expected output: `200`

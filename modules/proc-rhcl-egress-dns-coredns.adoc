@@ -1,0 +1,191 @@
+// Module included in the following assemblies:
+//
+// * deployment/rhcl-egress-dns-routing.adoc
+
+:_mod-docs-content-type: PROCEDURE
+[id="proc-rhcl-egress-dns-coredns_{context}"]
+= Routing egress traffic using CoreDNS
+
+[role="_abstract"]
+You can route egress traffic transparently by configuring workload pods to use a CoreDNS instance as their nameserver. A `DNSPolicy` on the egress gateway creates DNS records that resolve the external hostname to the gateway IP. Use this approach when the application cannot be changed to use an internal hostname.
+
+.How it works
+
+When a workload sends a request using the real external hostname:
+
+. The pod `dnsConfig` directs the DNS query to the CoreDNS instance.
+. CoreDNS resolves the external hostname to the egress gateway IP.
+. The egress gateway receives the HTTP request with the real `Host` header.
+. The `HTTPRoute` matches on the external hostname.
+. The `DestinationRule` initiates TLS to the external service.
+. The external service responds.
+
+Split DNS is handled by design: workload pods use CoreDNS, which returns the gateway IP, while the gateway pod uses standard cluster DNS, which returns the real external IP. These separate resolution paths prevent routing loops.
+
+.Prerequisites
+
+* An egress gateway is deployed with a `ServiceEntry`, `DestinationRule`, and `Gateway` resource.
+* The DNS Operator is installed. The DNS Operator is included with {prodname}.
+* CoreDNS is deployed. For deployment instructions, see xref:../deployment/coredns.adoc#rhcl-using-on-prem-dns-coredns[Using on-premise DNS with CoreDNS].
+* The {oc-first} is installed.
+* You have administrator privileges on the {ocp} cluster.
+
+.Procedure
+
+. Configure the CoreDNS instance with a zone block for the external hostname and a forward block for all other queries. Add the following to the CoreDNS `Corefile` configuration:
++
+[source,text,subs="+quotes"]
+----
+httpbin.org {
+    kuadrant
+}
+. {
+    forward . _<cluster_dns_ip>_
+}
+----
++
+Replace `_<cluster_dns_ip>_` with your cluster DNS service IP. On {ocp}, retrieve the IP by running the following command:
++
+[source,terminal]
+----
+$ oc get svc dns-default -n openshift-dns -o jsonpath='{.spec.clusterIP}'
+----
++
+The `httpbin.org` zone block serves egress records through the kuadrant plugin. The `.` block forwards all other queries, including `*.svc.cluster.local`, to the cluster DNS so that pods can still resolve cluster-internal services. Add one zone block per external hostname that should be routed through the egress gateway.
+
+. Update the egress gateway listener to specify the external hostname. `DNSPolicy` reads listener hostnames to create DNS records:
++
+[source,terminal]
+----
+$ oc apply -f - <<EOF
+apiVersion: gateway.networking.k8s.io/v1
+kind: Gateway
+metadata:
+  name: kuadrant-egressgateway
+  namespace: gateway-system
+  annotations:
+    networking.istio.io/service-type: ClusterIP
+spec:
+  gatewayClassName: istio
+  listeners:
+    - name: httpbin
+      port: 80
+      protocol: HTTP
+      hostname: httpbin.org
+      allowedRoutes:
+        namespaces:
+          from: All
+EOF
+----
++
+Add one listener per external hostname that should be routed through the egress gateway.
+
+. Create a CoreDNS provider secret with the external hostname as the zone:
++
+[source,terminal]
+----
+$ oc create secret generic dns-provider-credentials-coredns \
+    --namespace=gateway-system \
+    --type=kuadrant.io/coredns \
+    --from-literal=ZONES="httpbin.org"
+----
+
+. Create a `DNSPolicy` targeting the egress gateway. The `DNSPolicy` reads the listener hostnames and the gateway status address and creates a `DNSRecord` mapping the external hostname to the gateway IP:
++
+[source,terminal]
+----
+$ oc apply -f - <<EOF
+apiVersion: kuadrant.io/v1
+kind: DNSPolicy
+metadata:
+  name: egress-dns
+  namespace: gateway-system
+spec:
+  targetRef:
+    group: gateway.networking.k8s.io
+    kind: Gateway
+    name: kuadrant-egressgateway
+  providerRefs:
+    - name: dns-provider-credentials-coredns
+EOF
+----
++
+The DNS Operator processes the resulting `DNSRecord` and publishes it to the CoreDNS instance, which serves it to pods.
+
++
+[NOTE]
+====
+The `HTTPRoute` from the egress gateway setup already matches `httpbin.org` and routes to the external service. No changes to the `HTTPRoute` are needed.
+====
+
+. Configure workload pods with `dnsPolicy: None` and a `dnsConfig` pointing to the CoreDNS instance:
++
+[source,yaml,subs="+quotes"]
+----
+spec:
+  dnsPolicy: None
+  dnsConfig:
+    nameservers:
+      - "_<kuadrant_coredns_ip>_"
+    searches:
+      - _<namespace>_.svc.cluster.local
+      - svc.cluster.local
+      - cluster.local
+----
++
+Replace `_<kuadrant_coredns_ip>_` with the CoreDNS service `ClusterIP`. Retrieve the IP by running the following command:
++
+[source,terminal]
+----
+$ oc get svc kuadrant-coredns -n kuadrant-coredns -o jsonpath='{.spec.clusterIP}'
+----
++
+Replace `_<namespace>_` with the namespace of the workload pod.
++
+[IMPORTANT]
+====
+Use only the CoreDNS IP as the nameserver. Do not add the cluster DNS as a second nameserver. Some resolver implementations, such as musl libc used by Alpine-based images, send queries to all nameservers simultaneously and use whichever responds first, which can bypass the egress routing. The CoreDNS instance forwards non-egress queries to the cluster DNS through the `.` forward block, so all DNS resolution continues to work.
+====
+
+.TLS considerations
+
+This approach has the same TLS model as the internal hostname approach:
+
+* *Application to gateway:* Plain HTTP. The application sends unencrypted HTTP. DNS resolves the external hostname to the gateway IP within the cluster.
+* *Gateway to external service:* TLS origination. The `DestinationRule` establishes a TLS connection to the external service.
+
+The application must send HTTP, not HTTPS, for {prodname} policies to inspect request headers. If the application sends HTTPS, the gateway cannot terminate TLS because it does not hold a certificate for the external hostname, and policies cannot inspect the encrypted traffic.
+
+.Verification
+
+. Send a request from a pod with custom `dnsConfig` using the real external hostname:
++
+[source,terminal]
+----
+$ oc exec egress-dns-test -- curl -s http://httpbin.org/get
+----
++
+The response confirms the traffic went through the egress gateway:
++
+[source,json]
+----
+{
+  "headers": {
+    "Host": "httpbin.org",
+    "X-Envoy-Decorator-Operation": "httpbin.org:443/*"
+  },
+  "url": "https://httpbin.org/get"
+}
+----
++
+* `X-Envoy-Decorator-Operation: httpbin.org:443/*` confirms the request was routed through the egress gateway.
+* `url: https://httpbin.org/get` confirms TLS origination occurred at the gateway.
+
+. Verify that cluster DNS resolution continues to work through the forward block:
++
+[source,terminal]
+----
+$ oc exec egress-dns-test -- nslookup kubernetes.default.svc.cluster.local
+----
++
+The output should resolve to the Kubernetes API server `ClusterIP`.
