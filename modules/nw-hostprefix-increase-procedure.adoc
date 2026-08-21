@@ -1,0 +1,145 @@
+// Module included in the following assemblies:
+//
+// * networking/configuring_network_settings/increasing-cluster-network-hostprefix.adoc
+
+:_mod-docs-content-type: PROCEDURE
+[id="nw-hostprefix-increase-procedure_{context}"]
+= Increasing the cluster network host prefix
+
+[role="_abstract"]
+To increase the number of pod IP addresses available per node, patch the cluster `Network.config.openshift.io` object with a smaller `hostPrefix` value and then process each node one at a time so that node subnets are reallocated.
+
+[IMPORTANT]
+====
+* This workflow supports increasing per-node subnet size only. Do not use this workflow to decrease per-node subnet size.
+
+* Complete this full workflow in a representative non-production environment before you apply it to production.
+====
+
+.Prerequisites
+
+* You have installed the OpenShift CLI (`oc`).
+* You are logged in with a user that has `cluster-admin` privileges.
+* Your cluster uses the OVN-Kubernetes network plugin.
+* You verified that the target `hostPrefix` and cluster CIDR provide sufficient address capacity for your node count.
+* You reviewed workload disruption risks and validated node maintenance windows.
+
+.Procedure
+
+. Monitor cluster health during the full migration by entering the following command:
++
+[source,terminal]
+----
+$ watch 'oc get nodes -o wide && oc get co && oc get po -o wide -A | egrep -v "Completed|Running"'
+----
+
+. Clear residual migration state from previous migrations by entering the following command:
++
+[source,terminal]
+----
+$ oc patch Network.operator.openshift.io cluster --type='merge' --patch '{"spec":{"migration":null}}'
+----
+
+. Set the target network type to OVN-Kubernetes by entering the following command:
++
+[source,terminal]
+----
+$ oc patch Network.operator.openshift.io cluster --type='merge' --patch \
+  '{ "spec": { "migration": { "networkType": "OVNKubernetes" } } }'
+----
+
+. Set the target cluster network values, including the new `hostPrefix`, by entering the following command:
++
+[source,terminal]
+----
+$ oc patch Network.config.openshift.io cluster --type='merge' --patch \
+  '{ "spec": { "clusterNetwork": [ { "cidr": "<cidr>", "hostPrefix": <prefix> } ], "networkType": "OVNKubernetes" } }'
+----
++
+--
+where:
+
+`<cidr>`:: Specifies the current cluster network CIDR.
+`<prefix>`:: Specifies the new `hostPrefix` value. This value must be smaller than the current value to increase the per-node subnet size.
+--
+
+. Clear migration state again so the Cluster Network Operator can reconcile current status by entering the following command:
++
+[source,terminal]
+----
+$ oc patch Network.operator.openshift.io cluster --type='merge' --patch '{"spec":{"migration":null}}'
+----
+
+. Determine the expected behavior:
+* If the cluster network CIDR changed, OVN pods in `openshift-ovn-kubernetes` restart automatically.
+* If only `hostPrefix` changed and the cluster network CIDR did not change, restart OVN control plane pods manually by entering the following command:
++
+[source,terminal]
+----
+$ oc delete po -n openshift-ovn-kubernetes -l app=ovnkube-control-plane
+----
+
+. Verify cluster operator health, with focus on `etcd` and `kube-apiserver`, by entering the following command:
++
+[source,terminal]
+----
+$ oc get co
+----
+
+. For each node, complete the following steps one node at a time:
+.. Drain the node by entering the following command:
++
+[source,terminal]
+----
+$ oc adm drain --force --ignore-daemonsets --delete-emptydir-data <node_name>
+----
+
+.. Reboot the node by entering the following command:
++
+[source,terminal]
+----
+$ oc debug node/<node_name> -- chroot /host /bin/bash -c 'systemctl reboot'
+----
+
+.. While the node reboots, delete the node object by entering the following command:
++
+[source,terminal]
+----
+$ oc delete node <node_name>
+----
++
+You will notice Cluster Operators going from a `degraded` to `progressing` state. This is expected and they will stay like that until the migration is completed
+.. Verify that the node returns and reaches `Ready` by entering the following command:
++
+[source,terminal]
+----
+$ watch "oc get nodes -o wide"
+----
+
+.. Verify the node subnet annotations by entering the following command:
++
+[source,terminal]
+----
+$ oc get node -o custom-columns='NODE_NAME:.metadata.name,Node_SUBNET:.metadata.annotations.\k8s\.ovn\.org/node-subnets,gateway_router_ip:.metadata.annotations.\k8s\.ovn\.org/node-gateway-router-lrp-ifaddr,transit_switch_IP:.metadata.annotations.\k8s\.ovn\.org/node-transit-switch-port-ifaddr,primary_ip:.metadata.annotations.\k8s\.ovn\.org/node-primary-ifaddr,zone_name:.metadata.annotations.\k8s\.ovn\.org/zone-name'
+----
+
+. Before proceeding to the next node, confirm that:
+* The current node is `Ready`.
+* `kube-apiserver` is no longer progressing.
+* `etcd` is no longer progressing.
+* Cluster operators can remain degraded or progressing temporarily during migration.
+
+. Repeat the process for all nodes in the cluster.
+
+. After all nodes are processed, run post-change validation:
+.. Verify the cluster network specification still shows the new `hostPrefix` value.
+.. Verify node readiness across the cluster.
+.. Verify critical workloads and pod scheduling behavior.
+.. If operator instability persists, perform an OVN DB rebuild on all nodes as described in link:https://access.redhat.com/articles/6963671#rebuild_ovn_on_ocp_4_14_later[Rebuild OVN on OCP 4.14 and later].
+
+[IMPORTANT]
+====
+During node migration, some cluster Operators such as authentication, monitoring, console, `etcd`, `openshift-apiserver`, and `kube-apiserver`,will move between `Progressing` and `Degraded` states. This behavior is expected while migration is in progress. You must wait until `kube-apiserver` but most importantly `etcd` are done progressing before proceeding to the next node.
+
+If your workloads require modified drain behavior, adjust the `oc adm drain` options. Review the "Node drain options for host prefix changes" reference before executing node maintenance.
+====
