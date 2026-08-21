@@ -1,0 +1,139 @@
+// Module included in the following assemblies:
+//
+// * hosted_control_planes/hcp-machine-config.adoc
+
+:_mod-docs-content-type: PROCEDURE
+[id="hcp-autoscaling-to-from-zero-configure_{context}"]
+= Configuring autoscaling to and from zero on {hcp} node pools
+
+[role="_abstract"]
+Configure a `NodePool` object to autoscale between zero and a maximum replica count on supported {aws-first} or {azure-short} hosted clusters.
+After configuration, verify the `AutoscalingEnabled` condition and validate scale-down and scale-up behavior.
+
+.Prerequisites
+
+* A hosted cluster on {aws-first} or {azure-short} running {product-title} 4.18 or later
+* Permission to edit `NodePool` objects in the hosted cluster namespace
+* Understanding of scale-to-zero use cases, platform support, and Operator implications
+* The HyperShift Operator is configured with `--enable-scale-from-zero` and, on {aws-first}, scale-from-zero provider credentials
+
+.Procedure
+
+. Confirm that your hosted cluster platform supports `spec.autoScaling.min: 0`.
++
+On {aws-first} and {azure-short}, the `NodePool` API accepts `min: 0`. On other platforms, `min` must be at least `1`.
+
+. Confirm that the HyperShift Operator enables scale-from-zero.
++
+Verify that the Operator deployment includes the `--enable-scale-from-zero` flag. On {aws-first}, confirm that `--scale-from-zero-provider` and `--scale-from-zero-creds` are configured so instance-type metadata is available.
+
+. Enable autoscaling on the target `NodePool` object by removing fixed replicas and setting autoscaling bounds.
++
+Replace `<hosted_cluster_namespace>`, `<nodepool_name>`, and `<max_replicas>` with your values.
++
+[source,terminal]
+----
+$ oc -n <hosted_cluster_namespace> patch nodepool <nodepool_name> \
+  --type=json \
+  -p '[{"op": "remove", "path": "/spec/replicas"}, \
+       {"op": "add", "path": "/spec/autoScaling", \
+        "value": {"min": 0, "max": <max_replicas>}}]'
+----
++
+[NOTE]
+====
+`spec.replicas` and `spec.autoScaling` are mutually exclusive. When autoscaling is enabled, omit `spec.replicas` so the cluster autoscaler manages pool size.
+====
+
+. Optional: Configure hosted cluster-level autoscaling behavior on the `HostedCluster` resource.
++
+For example, set scaling behavior to `ScaleUpAndScaleDown`:
++
+[source,terminal]
+----
+$ oc patch -n <hosted_cluster_namespace> \
+  hostedcluster <hosted_cluster_name> \
+  --type=merge \
+  --patch='{"spec": {"autoscaling": {"scaling": "ScaleUpAndScaleDown"}}}'
+----
++
+Hosted cluster autoscaling settings apply cluster-wide autoscaler behavior. Node pool autoscaling bounds are configured on each `NodePool` object.
+
+. Verify that the `AutoscalingEnabled` condition on the `NodePool` is `True`.
++
+[source,terminal]
+----
+$ oc get nodepool -n <hosted_cluster_namespace> <nodepool_name> \
+  -o jsonpath='{range .status.conditions[*]}\
+{.type}={.status}{"\n"}{end}'
+----
++
+The output must include `AutoscalingEnabled=True`.
+
+. Verify scale-down to zero by removing schedulable workloads from the pool.
++
+Remove or reschedule deployments, jobs, or other workloads that schedule on the target pool. If the pool uses taints, only workloads with matching tolerations count toward pool utilization.
++
+Wait for the cluster autoscaler to scale the pool down. When no schedulable workloads remain, the pool can reach zero nodes if `spec.autoScaling.min` is `0`.
+
+. Verify scale-up from zero by deploying a workload that creates pending pods on the pool.
++
+For example, create a deployment with resource requests that exceed available capacity:
++
+[source,yaml]
+----
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: scale-from-zero-test
+  namespace: default
+spec:
+  replicas: 3
+  selector:
+    matchLabels:
+      app: scale-from-zero-test
+  template:
+    metadata:
+      labels:
+        app: scale-from-zero-test
+    spec:
+      tolerations:
+      - key: "<taint_key>"
+        operator: "Equal"
+        value: "<taint_value>"
+        effect: "NoSchedule"
+      containers:
+      - name: app
+        image: registry.redhat.io/ubi9/ubi-minimal
+        resources:
+          requests:
+            cpu: "1"
+            memory: 1Gi
+----
++
+Apply the manifest and wait for the cluster autoscaler to provision nodes from zero.
+
+. Extract the hosted cluster kubeconfig and verify node count changes.
++
+[source,terminal]
+----
+$ oc extract -n <hosted_cluster_namespace> \
+  secret/<hosted_cluster_name>-admin-kubeconfig \
+  --to=./hostedcluster-secrets --confirm
+----
++
+[source,terminal]
+----
+$ oc --kubeconfig ./hostedcluster-secrets/kubeconfig get nodes
+----
+
+.Verification
+
+* The `AutoscalingEnabled` condition on the `NodePool` is `True`.
+* After workloads are removed, the pool scales down and `CURRENT NODES` can reach `0` when `min` is `0`.
+* After pending pods are created, new nodes appear and reach `Ready` status.
+
+[NOTE]
+====
+When pools are at zero nodes, platform Operators on non-tainted baseline pools can report degraded status if minimum replica constraints are not satisfied.
+====
