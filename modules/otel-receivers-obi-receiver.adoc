@@ -1,0 +1,369 @@
+// Module included in the following assemblies:
+//
+// * otel-collector/otel-collector-receivers.adoc
+
+:_mod-docs-content-type: REFERENCE
+[id="otel-receivers-obi-receiver_{context}"]
+= OBI Receiver
+
+[role="_abstract"]
+The OpenTelemetry eBPF Instrumentation (OBI) Receiver uses eBPF to instrument applications at the kernel level, producing traces and RED (rate, errors, and duration) metrics without code changes or language-specific agents. The receiver inspects processes and the operating system networking stack, and combines OBI's zero-code instrumentation with the Collector's processing capabilities, such as tail-based sampling, data filtering, and multi-backend export.
+
+:FeatureName: The OBI Receiver
+include::snippets/technology-preview.adoc[]
+:!FeatureName:
+
+The OBI Receiver runs as a `daemonset` and requires `hostPID: true` and elevated privileges to load eBPF programs. On {ocp-product-title}, you grant these privileges through a `SecurityContextConstraints` (SCC) object that is bound to the Collector service account.
+
+In accordance with the principle of least privilege, run the OBI Receiver with only the Linux capabilities that it requires, as described in the following configuration. Use a fully privileged container only if the capability-based configuration is not sufficient in your environment, as described in the "Running the OBI Receiver in a privileged container" section.
+
+The required capabilities and host access are a function of the features that you enable. The following table maps common use cases to the additional configuration that each one requires:
+
+[cols="2a,1a,3a",options="header"]
+|===
+|Use case |Signals |Configuration beyond the baseline
+
+|Service RED metrics and per-service traces
+|Metrics, traces
+|None. Use the baseline configuration in this section.
+
+|Distributed tracing across services
+|Traces
+|Set `hostNetwork: true` and the `dnsPolicy` field, and mount the host `/sys/kernel/tracing` directory. See the "Enabling distributed trace context propagation" section.
+
+|Distributed tracing for Go applications
+|Traces
+|Add the distributed tracing configuration and the `SYS_ADMIN` capability, and ensure that the kernel is not in lockdown mode. See the "Enabling distributed trace context propagation" section.
+
+|Instrumenting encrypted (TLS) traffic
+|Metrics, traces
+|Attach uprobes to the TLS libraries. On kernels that restrict uprobe attachment, add the `SYS_ADMIN` capability or run a privileged container. See the "Running the OBI Receiver in a privileged container" section.
+|===
+
+The following `OpenTelemetryCollector` custom resource (CR) configures the OBI Receiver with only the Linux capabilities that it requires for producing traces and metrics. To also correlate spans across services into distributed traces, see the "Enabling distributed trace context propagation" section.
+
+[source,yaml]
+----
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: obi-collector
+  namespace: <namespace>
+# ...
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: obi
+rules:
+  - apiGroups: ['apps']
+    resources: ['replicasets']
+    verbs: ['list', 'watch']
+  - apiGroups: ['']
+    resources: ['pods', 'services', 'nodes']
+    verbs: ['list', 'watch']
+  - apiGroups: ['config.openshift.io']
+    resources: ['infrastructures']
+    verbs: ['get']
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: obi
+subjects:
+  - kind: ServiceAccount
+    name: obi-collector
+    namespace: <namespace>
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: obi
+---
+apiVersion: security.openshift.io/v1
+kind: SecurityContextConstraints
+metadata:
+  name: obi-unprivileged
+allowHostPorts: false
+allowHostDirVolumePlugin: true
+allowHostIPC: false
+allowHostNetwork: false
+allowHostPID: true
+allowPrivilegedContainer: false
+readOnlyRootFilesystem: true
+allowedCapabilities:
+  - BPF
+  - SYS_PTRACE
+  - NET_RAW
+  - NET_ADMIN
+  - CHECKPOINT_RESTORE
+  - DAC_READ_SEARCH
+  - PERFMON
+runAsUser:
+  type: RunAsAny
+seLinuxContext:
+  type: RunAsAny
+volumes:
+  - emptyDir
+  - hostPath
+  - configMap
+  - secret
+  - downwardAPI
+  - projected
+users:
+- system:serviceaccount:<namespace>:obi-collector
+# ...
+---
+apiVersion: opentelemetry.io/v1beta1
+kind: OpenTelemetryCollector
+metadata:
+  name: obi-collector
+  namespace: <namespace>
+spec:
+  mode: daemonset
+  serviceAccount: obi-collector
+  hostPID: true # <1>
+  securityContext:
+    runAsUser: 0
+    readOnlyRootFilesystem: true
+    capabilities:
+      add:
+        - BPF
+        - SYS_PTRACE
+        - NET_RAW
+        - NET_ADMIN
+        - CHECKPOINT_RESTORE
+        - DAC_READ_SEARCH
+        - PERFMON
+      drop:
+        - ALL
+  volumes:
+    - name: var-run-obi
+      emptyDir: {}
+    - name: cgroup
+      hostPath:
+        path: /sys/fs/cgroup
+        type: Directory
+  volumeMounts:
+    - name: var-run-obi
+      mountPath: /var/run/obi
+    - name: cgroup
+      mountPath: /sys/fs/cgroup
+      readOnly: true
+  config:
+    receivers:
+      obi:
+        discovery:
+          instrument:
+            - k8s_namespace: <application_namespace> # <2>
+              k8s_pod_labels:
+                obi.instrument: "true"
+        attributes:
+          kubernetes:
+            enable: "true" # <3>
+    exporters:
+      debug:
+        verbosity: detailed
+    service:
+      pipelines:
+        traces:
+          receivers: [obi]
+          exporters: [debug]
+# ...
+----
+<1> Required so that the receiver can access the processes on the host.
+<2> Selects the workloads to instrument. See the "Selecting workloads" section.
+<3> Enables Kubernetes attribute enrichment. See the "Kubernetes attribute enrichment" section.
+
+The receiver requires the following Linux capabilities:
+
+`BPF` and `PERFMON`:: Load the eBPF programs.
+`SYS_PTRACE`:: Inspect processes and executables through the `/proc` filesystem.
+`NET_RAW`:: Attach socket filters to capture HTTP requests.
+`NET_ADMIN`:: Enter the network namespace of instrumented processes to attach eBPF socket iterators.
+`CHECKPOINT_RESTORE` and `DAC_READ_SEARCH`:: Open the ELF files of the instrumented processes.
+
+The receiver mounts the host `/sys/fs/cgroup` directory as read-only so that it can monitor newly created sockets for outgoing requests.
+
+[id="otel-receivers-obi-receiver-context-propagation_{context}"]
+== Enabling distributed trace context propagation
+
+The preceding configuration produces traces for individual services but does not propagate trace context between them. To correlate spans across services into distributed traces, enable context propagation by configuring additional host access.
+
+Context propagation uses traffic control (TC) eBPF programs that inject and read trace context at the network level. Network-level propagation is language-independent. To enable it, make the following changes to the `OpenTelemetryCollector` CR from the preceding configuration:
+
+* Set the `hostNetwork` field to `true` and the `dnsPolicy` field to `ClusterFirstWithHostNet`, because the TC programs operate in the host network namespace.
+* Mount the host `/sys/kernel/tracing` directory.
+
+Update the CR with host networking and the tracing mount:
+
+[source,yaml]
+----
+apiVersion: opentelemetry.io/v1beta1
+kind: OpenTelemetryCollector
+metadata:
+  name: obi-collector
+  namespace: <namespace>
+spec:
+  mode: daemonset
+  serviceAccount: obi-collector
+  hostPID: true
+  hostNetwork: true # <1>
+  dnsPolicy: ClusterFirstWithHostNet
+  securityContext:
+    runAsUser: 0
+    readOnlyRootFilesystem: true
+    capabilities:
+      add:
+        - BPF
+        - SYS_PTRACE
+        - NET_RAW
+        - NET_ADMIN
+        - CHECKPOINT_RESTORE
+        - DAC_READ_SEARCH
+        - PERFMON
+      drop:
+        - ALL
+  volumes:
+    - name: var-run-obi
+      emptyDir: {}
+    - name: cgroup
+      hostPath:
+        path: /sys/fs/cgroup
+        type: Directory
+    - name: tracefs
+      hostPath:
+        path: /sys/kernel/tracing
+  volumeMounts:
+    - name: var-run-obi
+      mountPath: /var/run/obi
+    - name: cgroup
+      mountPath: /sys/fs/cgroup
+      readOnly: true
+    - name: tracefs
+      mountPath: /sys/kernel/tracing
+# ...
+----
+<1> Runs the receiver in the host network namespace, which the TC programs require. The `dnsPolicy` field must be set to `ClusterFirstWithHostNet` so that the pods can still resolve cluster DNS names.
+
+[NOTE]
+====
+The preceding configuration propagates context at the network level for all languages. To additionally propagate context within Go applications, add the `SYS_ADMIN` capability. Go propagation injects the trace context directly into application memory by using the eBPF `bpf_probe_write_user` helper, which requires the `SYS_ADMIN` capability and a kernel that is not in lockdown mode. To verify the lockdown mode, run `cat /sys/kernel/security/lockdown`; the output must be `[none]`. Because the `SYS_ADMIN` capability grants broad privileges, consider running the OBI Receiver in a privileged container instead, as described in the following section.
+====
+
+[id="otel-receivers-obi-receiver-privileged_{context}"]
+== Running the OBI Receiver in a privileged container
+
+If the capability-based configuration is not sufficient in your environment, you can run the OBI Receiver in a fully privileged container instead.
+
+The following `OpenTelemetryCollector` CR configures the OBI Receiver by using a privileged container. The `ServiceAccount`, `ClusterRole`, and `ClusterRoleBinding` are the same as in the capability-based configuration.
+
+[source,yaml]
+----
+apiVersion: security.openshift.io/v1
+kind: SecurityContextConstraints
+metadata:
+  name: obi-privileged
+allowHostPorts: false
+allowHostDirVolumePlugin: false
+allowHostIPC: false
+allowHostNetwork: false
+allowHostPID: true
+allowPrivilegedContainer: true
+readOnlyRootFilesystem: false
+runAsUser:
+  type: RunAsAny
+seLinuxContext:
+  type: RunAsAny
+users:
+- system:serviceaccount:<namespace>:obi-collector
+# ...
+---
+apiVersion: opentelemetry.io/v1beta1
+kind: OpenTelemetryCollector
+metadata:
+  name: obi-collector
+  namespace: <namespace>
+spec:
+  mode: daemonset
+  serviceAccount: obi-collector
+  hostPID: true
+  securityContext:
+    runAsUser: 0
+    privileged: true
+  config:
+    receivers:
+      obi:
+        discovery:
+          instrument:
+            - k8s_namespace: <application_namespace>
+              k8s_pod_labels:
+                obi.instrument: "true"
+        attributes:
+          kubernetes:
+            enable: "true"
+    exporters:
+      debug:
+        verbosity: detailed
+    service:
+      pipelines:
+        traces:
+          receivers: [obi]
+          exporters: [debug]
+# ...
+----
+
+[id="otel-receivers-obi-receiver-selecting-workloads_{context}"]
+== Selecting workloads
+
+The `discovery.instrument` list controls which processes the OBI Receiver attaches to. The following example filters by namespace and pod labels, so that only pods matching all of the fields are instrumented:
+
+[source,yaml]
+----
+# ...
+receivers:
+  obi:
+    discovery:
+      instrument:
+        - k8s_namespace: frontend
+          k8s_pod_labels:
+            obi.instrument: "true"
+        - k8s_namespace: backend
+          k8s_pod_labels:
+            obi.instrument: "true"
+# ...
+----
+
+Add the matching label to the workload pod templates to opt them in:
+
+[source,yaml]
+----
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: my-app
+  namespace: frontend
+spec:
+  template:
+    metadata:
+      labels:
+        obi.instrument: "true"
+    spec:
+      containers:
+        - name: my-app
+          image: my-app:latest
+# ...
+----
+
+To match on pod annotations instead of pod labels, use the `k8s_pod_annotations` field in place of the `k8s_pod_labels` field.
+
+[id="otel-receivers-obi-receiver-attribute-enrichment_{context}"]
+== Kubernetes attribute enrichment
+
+Setting the `attributes.kubernetes.enable` field to `"true"` adds resource attributes such as `k8s.namespace.name`, `k8s.pod.name`, and `service.name` to the traces. For this enrichment, the Collector `ServiceAccount` requires `list` and `watch` permissions on the following resources: pods, nodes, services, replicationcontrollers, deployments, replicasets, statefulsets, and daemonsets.
+
+[role="_additional-resources"]
+.Additional resources
+* link:https://opentelemetry.io/docs/zero-code/obi/[OpenTelemetry documentation: OpenTelemetry eBPF Instrumentation (OBI)]
+* link:https://opentelemetry.io/docs/zero-code/obi/configure/collector-receiver/[OpenTelemetry documentation: Run OBI as a Collector receiver]
+* link:https://opentelemetry.io/docs/zero-code/obi/configure/service-discovery/[OpenTelemetry documentation: OBI service discovery]
+* link:https://opentelemetry.io/docs/zero-code/obi/setup/kubernetes/[OpenTelemetry documentation: Deploy OBI in Kubernetes]
