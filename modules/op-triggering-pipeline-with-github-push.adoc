@@ -1,0 +1,199 @@
+// This module is included in the following assemblies:
+// * create/using-clustertriggerbindings.adoc
+
+:_mod-docs-content-type: PROCEDURE
+[id="triggering-pipeline-with-github-push_{context}"]
+= Triggering a pipeline run from a GitHub push event
+
+[role="_abstract"]
+Trigger a pipeline run automatically when code is pushed to a GitHub repository by using the pre-installed `github-push` `ClusterTriggerBinding` resource in {pipelines-shortname}.
+
+.Prerequisites
+
+* You have access to an {OCP} cluster with {pipelines-title} installed.
+* You have installed the {pipelines-shortname} CLI (`tkn`).
+* You have `cluster-admin` or equivalent permissions, or you have permission to create `EventListener`, `TriggerTemplate`, `Route`, and `Secret` resources in your namespace.
+* You have a GitHub repository to which you have admin access, so that you can configure webhooks.
+* You have a pipeline that accepts `git-url` and `git-revision` parameters, or you can adapt the `TriggerTemplate` in this procedure to match your pipeline.
+
+.Procedure
+
+. Verify that the `github-push` `ClusterTriggerBinding` resource is installed:
++
+[source,terminal]
+----
+$ oc get clustertriggerbinding github-push -o yaml
+----
++
+The output shows the binding and its parameter definitions extracted from the GitHub push event payload.
+
+. Create a webhook secret to validate incoming GitHub events. Replace `<your-secret-token>` with a secure, random string that you will also enter when configuring the GitHub webhook:
++
+[source,yaml]
+----
+apiVersion: v1
+kind: Secret
+metadata:
+  name: github-webhook-secret
+type: Opaque
+stringData:
+  secretToken: "<your-secret-token>"
+----
++
+Apply the manifest by running the following command:
++
+[source,terminal]
+----
+$ oc apply -f github-webhook-secret.yaml
+----
+
+. Create a `TriggerTemplate` resource that defines how to create a `PipelineRun` from the parameters supplied by the `github-push` `ClusterTriggerBinding`. Replace `<your-pipeline-name>` with the name of your pipeline:
++
+[source,yaml]
+----
+apiVersion: triggers.tekton.dev/v1
+kind: TriggerTemplate
+metadata:
+  name: github-push-pipeline
+spec:
+  params:
+  - name: git-revision
+    description: The SHA of the commit that triggered the push
+  - name: git-repo-clone-url
+    description: The HTTPS clone URL of the repository
+  - name: git-repo-name
+    description: The name of the repository
+  resourcetemplates:
+  - apiVersion: tekton.dev/v1
+    kind: PipelineRun
+    metadata:
+      generateName: github-push-run-
+    spec:
+      serviceAccountName: pipeline
+      pipelineRef:
+        name: <your-pipeline-name>
+      params:
+      - name: git-url
+        value: $(tt.params.git-repo-clone-url)
+      - name: git-revision
+        value: $(tt.params.git-revision)
+      - name: deployment-name
+        value: $(tt.params.git-repo-name)
+      workspaces:
+      - name: shared-workspace
+        volumeClaimTemplate:
+          spec:
+            accessModes:
+            - ReadWriteOnce
+            resources:
+              requests:
+                storage: 500Mi
+----
++
+[IMPORTANT]
+====
+Use the `git-repo-clone-url` parameter, not `git-repo-url`, when you need the repository URL for cloning. The `git-repo-url` parameter maps to `$(body.repository.url)`, which is the GitHub REST API URL and cannot be used for cloning. The `git-repo-clone-url` parameter maps to `$(body.repository.html_url)`, which is the correct HTTPS URL for cloning the repository with `git-clone` or similar tasks.
+====
++
+Apply the manifest by running the following command:
++
+[source,terminal]
+----
+$ oc apply -f github-push-pipeline-template.yaml
+----
+
+. Create an `EventListener` resource that exposes an HTTP endpoint, references the `github-push` `ClusterTriggerBinding`, and uses the GitHub interceptor to validate the webhook signature and filter for push events only:
++
+[source,yaml]
+----
+apiVersion: triggers.tekton.dev/v1
+kind: EventListener
+metadata:
+  name: github-push-listener
+spec:
+  serviceAccountName: pipeline
+  triggers:
+  - interceptors:
+    - ref:
+        name: github
+      params:
+      - name: secretRef
+        value:
+          secretName: github-webhook-secret
+          secretKey: secretToken
+      - name: eventTypes
+        value: ["push"]
+    bindings:
+    - ref: github-push
+      kind: ClusterTriggerBinding
+    template:
+      ref: github-push-pipeline
+----
++
+The `kind: ClusterTriggerBinding` field is required to distinguish the `github-push` binding from a namespace-scoped `TriggerBinding` resource with the same name.
++
+The `eventTypes: ["push"]` interceptor parameter ensures the event listener processes only push events and ignores all other event types, such as pull requests or releases.
++
+Apply the manifest by running the following command:
++
+[source,terminal]
+----
+$ oc apply -f github-push-listener.yaml
+----
+
+. Expose the `EventListener` service as a publicly accessible route:
++
+[source,terminal]
+----
+$ oc expose svc el-github-push-listener
+----
++
+Get the route URL by running the following command:
++
+[source,terminal]
+----
+$ oc get route el-github-push-listener --template='http://{{.spec.host}}'
+----
++
+Save the URL displayed in the output. You provide this URL to GitHub when configuring the webhook.
++
+[NOTE]
+====
+For a production environment, create a secure HTTPS route instead. See "Securing webhooks with event listeners" in the Additional resources section.
+====
+
+. Configure a webhook on your GitHub repository to send push events to the `EventListener` route:
+
+.. Open your GitHub repository in a browser.
+.. Click *Settings* -> *Webhooks* -> *Add webhook*.
+.. On the *Add webhook* page:
+... Enter the `EventListener` route URL from the previous step in the *Payload URL* field.
+... Select *application/json* for the *Content type*.
+... Enter the secret token you set in the `github-webhook-secret` `Secret` resource in the *Secret* field.
+... Select *Just the push event*.
+... Select *Active*.
+... Click *Add webhook*.
+
+.Verification
+
+. Push a commit to your GitHub repository by running the following commands:
++
+[source,terminal]
+----
+$ git commit --allow-empty -m "Test pipeline trigger"
+----
++
+[source,terminal]
+----
+$ git push
+----
+
+. List the pipeline runs to confirm that a new run was created:
++
+[source,terminal]
+----
+$ tkn pipelinerun list
+----
++
+A new `PipelineRun` with a name prefixed by `github-push-run-` appears in the output within a few seconds of the push event.
+
