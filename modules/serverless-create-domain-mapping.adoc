@@ -1,0 +1,80 @@
+// Module included in the following assemblies:
+//
+// * serverless/knative-serving/config-custom-domains/create-domain-mapping.adoc
+
+:_mod-docs-content-type: PROCEDURE
+[id="serverless-create-domain-mapping_{context}"]
+= Creating a custom domain mapping
+
+You can customize the domain for your Knative service by mapping a custom domain name that you own to a Knative service. To map a custom domain name to a custom resource (CR), you must create a `DomainMapping` CR that maps to an Addressable target CR, such as a Knative service or a Knative route.
+
+.Prerequisites
+
+* The {ServerlessOperatorName} and Knative Serving are installed on your cluster.
+* Install the OpenShift CLI (`oc`).
+* You have created a project or have access to a project with the appropriate roles and permissions to create applications and other workloads in {product-title}.
+* You have created a Knative service and control a custom domain that you want to map to that service.
++
+[NOTE]
+====
+Your custom domain must point to the IP address of the {product-title} cluster.
+====
+
+.Procedure
+
+. Create a YAML file containing the `DomainMapping` CR in the same namespace as the target CR you want to map to:
++
+[source,yaml]
+----
+apiVersion: serving.knative.dev/v1alpha1
+kind: DomainMapping
+metadata:
+ name: <domain_name> <1>
+ namespace: <namespace> <2>
+spec:
+ ref:
+   name: <target_name> <3>
+   kind: <target_type> <4>
+   apiVersion: serving.knative.dev/v1
+----
+<1> The custom domain name that you want to map to the target CR.
+<2> The namespace of both the `DomainMapping` CR and the target CR.
+<3> The name of the target CR to map to the custom domain.
+<4> The type of CR being mapped to the custom domain.
++
+.Example service domain mapping
+[source,yaml]
+----
+apiVersion: serving.knative.dev/v1alpha1
+kind: DomainMapping
+metadata:
+ name: example.com
+ namespace: default
+spec:
+ ref:
+   name: example-service
+   kind: Service
+   apiVersion: serving.knative.dev/v1
+----
++
+.Example route domain mapping
+[source,yaml]
+----
+apiVersion: serving.knative.dev/v1alpha1
+kind: DomainMapping
+metadata:
+ name: example.com
+ namespace: default
+spec:
+ ref:
+   name: example-route
+   kind: Route
+   apiVersion: serving.knative.dev/v1
+----
+
+. Apply the `DomainMapping` CR as a YAML file:
++
+[source,terminal]
+----
+$ oc apply -f <filename>
+----

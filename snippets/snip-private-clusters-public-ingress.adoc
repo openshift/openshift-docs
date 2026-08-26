@@ -1,0 +1,12 @@
+// Text snippet included in the following modules:
+//
+// * modules/private-clusters-default.adoc
+// * modules/private-clusters-about.adoc
+// * modules/private-clusters-about-aws.adoc
+
+:_mod-docs-content-type: SNIPPET
+
+[IMPORTANT]
+====
+If the cluster has any public subnets, load balancer services created by administrators might be publicly accessible. To ensure cluster security, verify that these services are explicitly annotated as private.
+====

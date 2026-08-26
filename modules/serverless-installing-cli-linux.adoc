@@ -1,0 +1,55 @@
+// Module included in the following assemblies:
+//
+// * serverless/cli_tools/installing-kn.adoc
+
+:_mod-docs-content-type: PROCEDURE
+[id="installing-cli-linux_{context}"]
+= Installing the Knative CLI for Linux
+
+If you are using a Linux distribution that does not have RPM or another package manager installed, you can install the Knative (`kn`) CLI as a binary file. To do this, you must download and unpack a `tar.gz` archive and add the binary to a directory on your `PATH`.
+
+.Prerequisites
+
+* If you are not using RHEL or Fedora, ensure that *libc* is installed in a directory on your library path.
++
+[IMPORTANT]
+====
+If *libc* is not available, you might see the following error when you run CLI commands:
+
+[source,terminal]
+----
+$ kn: No such file or directory
+----
+====
+
+.Procedure
+
+. Download the relevant Knative (`kn`) CLI `tar.gz` archive:
++
+--
+* link:https://mirror.openshift.com/pub/openshift-v4/clients/serverless/latest/kn-linux-amd64.tar.gz[Linux (x86_64, amd64)]
+ifndef::openshift-rosa[]
+
+* link:https://mirror.openshift.com/pub/openshift-v4/clients/serverless/latest/kn-linux-s390x.tar.gz[Linux on {ibm-z-name} and {ibm-linuxone-name} (s390x)]
+
+* link:https://mirror.openshift.com/pub/openshift-v4/clients/serverless/latest/kn-linux-ppc64le.tar.gz[Linux on {ibm-power-name} (ppc64le)]
+endif::openshift-rosa[]
+--
++
+You can also download any version of `kn` by navigating to that version's corresponding directory in the link:https://mirror.openshift.com/pub/openshift-v4/clients/serverless/[Serverless client download mirror].
+
+. Unpack the archive:
++
+[source,terminal]
+----
+$ tar -xf <filename>
+----
+
+. Move the `kn` binary to a directory on your `PATH`.
+
+. To check your `PATH`, run:
++
+[source,terminal]
+----
+$ echo $PATH
+----

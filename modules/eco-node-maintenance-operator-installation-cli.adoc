@@ -1,0 +1,120 @@
+// Module included in the following assemblies:
+//
+// nodes/nodes/eco-node-maintenance-operator.adoc
+
+:_mod-docs-content-type: PROCEDURE
+[id="installing-maintenance-operator-using-cli_{context}"]
+= Installing the Node Maintenance Operator by using the CLI
+You can use the OpenShift CLI (`oc`) to install the Node Maintenance Operator.
+
+You can install the Node Maintenance Operator in your own namespace or in the `openshift-operators` namespace.
+
+To install the Operator in your own namespace, follow the steps in the procedure.
+
+To install the Operator in the `openshift-operators` namespace, skip to step 3 of the procedure because the steps to create a new `Namespace` custom resource (CR) and an `OperatorGroup` CR are not required.
+
+.Prerequisites
+
+* Install the OpenShift CLI (`oc`).
+* Log in as a user with `cluster-admin` privileges.
+
+.Procedure
+
+. Create a `Namespace` CR for the Node Maintenance Operator:
+.. Define the `Namespace` CR and save the YAML file, for example, `node-maintenance-namespace.yaml`:
++
+[source,yaml]
+----
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: nmo-test
+----
+.. To create the `Namespace` CR, run the following command:
++
+[source,terminal]
+----
+$ oc create -f node-maintenance-namespace.yaml
+----
+
+. Create an `OperatorGroup` CR:
+.. Define the `OperatorGroup` CR and save the YAML file, for example, `node-maintenance-operator-group.yaml`:
++
+[source,yaml]
+----
+apiVersion: operators.coreos.com/v1
+kind: OperatorGroup
+metadata:
+  name: node-maintenance-operator
+  namespace: nmo-test
+----
+.. To create the `OperatorGroup` CR, run the following command:
++
+[source,terminal]
+----
+$ oc create -f node-maintenance-operator-group.yaml
+----
+
+. Create a `Subscription` CR:
+.. Define the `Subscription` CR and save the YAML file, for example, `node-maintenance-subscription.yaml`:
++
+[source,yaml,subs="attributes+"]
+----
+apiVersion: operators.coreos.com/v1alpha1
+kind: Subscription
+metadata:
+  name: node-maintenance-operator
+  namespace: nmo-test <1>
+spec:
+  channel: stable
+  InstallPlaneApproval: Automatic
+  name: node-maintenance-operator
+  source: redhat-operators
+  sourceNamespace: openshift-marketplace
+  StartingCSV: node-maintenance-operator.v{product-version}.0
+----
++
+<1> Specify the `Namespace` where you want to install the Node Maintenance Operator.
++
+[IMPORTANT]
+====
+To install the Node Maintenance Operator in the `openshift-operators` namespace, specify `openshift-operators` in the `Subscription` CR.
+====
+
+.. To create the `Subscription` CR, run the following command:
++
+[source,terminal]
+----
+$ oc create -f node-maintenance-subscription.yaml
+----
+
+.Verification
+
+. Verify that the installation succeeded by inspecting the CSV resource:
++
+[source,terminal]
+----
+$ oc get csv -n openshift-operators
+----
++
+.Example output
+
+[source,terminal,subs="attributes+"]
+----
+NAME                               DISPLAY                     VERSION   REPLACES  PHASE
+node-maintenance-operator.v{product-version}    Node Maintenance Operator   {product-version}                Succeeded
+----
+. Verify that the Node Maintenance Operator is running:
++
+[source,terminal]
+----
+$ oc get deploy -n openshift-operators
+----
++
+.Example output
+
+[source,terminal]
+----
+NAME                                           READY   UP-TO-DATE   AVAILABLE   AGE
+node-maintenance-operator-controller-manager   1/1     1            1           10d
+----

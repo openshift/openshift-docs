@@ -1,0 +1,122 @@
+// Module included in the following assemblies:
+//
+// * /serverless/eventing/event-sources/serverless-custom-event-sources.adoc
+
+:_mod-docs-content-type: PROCEDURE
+[id="serverless-sinkbinding-odc_{context}"]
+= Creating a sink binding by using the web console
+
+After Knative Eventing is installed on your cluster, you can create a sink binding by using the web console. Using the {product-title} web console provides a streamlined and intuitive user interface to create an event source.
+
+.Prerequisites
+
+* You have logged in to the {product-title} web console.
+* The {ServerlessOperatorName}, Knative Serving, and Knative Eventing are installed on your {product-title} cluster.
+* You have created a project or have access to a project with the appropriate roles and permissions to create applications and other workloads in {product-title}.
+
+.Procedure
+
+. Create a Knative service to use as a sink:
+
+.. In the *Developer* perspective, navigate to *+Add* -> *YAML*.
+.. Copy the example YAML:
++
+[source,yaml]
+----
+apiVersion: serving.knative.dev/v1
+kind: Service
+metadata:
+  name: event-display
+spec:
+  template:
+    spec:
+      containers:
+        - image: quay.io/openshift-knative/knative-eventing-sources-event-display:latest
+----
+.. Click *Create*.
+
+. Create a `CronJob` resource that is used as an event source and sends an event every minute.
+
+.. In the *Developer* perspective, navigate to *+Add* -> *YAML*.
+.. Copy the example YAML:
++
+[source,yaml]
+----
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: heartbeat-cron
+spec:
+  # Run every minute
+  schedule: "*/1 * * * *"
+  jobTemplate:
+    metadata:
+      labels:
+        app: heartbeat-cron
+        bindings.knative.dev/include: true <1>
+    spec:
+      template:
+        spec:
+          restartPolicy: Never
+          containers:
+            - name: single-heartbeat
+              image: quay.io/openshift-knative/heartbeats
+              args:
+              - --period=1
+              env:
+                - name: ONE_SHOT
+                  value: "true"
+                - name: POD_NAME
+                  valueFrom:
+                    fieldRef:
+                      fieldPath: metadata.name
+                - name: POD_NAMESPACE
+                  valueFrom:
+                    fieldRef:
+                      fieldPath: metadata.namespace
+----
+<1> Ensure that you include the `bindings.knative.dev/include: true` label. The default namespace selection behavior of {ServerlessProductName} uses inclusion mode.
+.. Click *Create*.
+
+. Create a sink binding in the same namespace as the service created in the previous step, or any other sink that you want to send events to.
+
+.. In the *Developer* perspective, navigate to *+Add* -> *Event Source*. The  *Event Sources* page is displayed.
+.. Optional: If you have multiple providers for your event sources, select the required provider from the *Providers* list to filter the available event sources from the provider.
+.. Select *Sink Binding* and then click *Create Event Source*. The *Create Event Source* page is displayed.
++
+[NOTE]
+====
+You can configure the *Sink Binding* settings by using the *Form view* or *YAML view* and can switch between the views. The data is persisted when switching between the views.
+====
++
+.. In the *apiVersion* field enter `batch/v1`.
+.. In the *Kind* field enter `Job`.
++
+[NOTE]
+====
+The `CronJob` kind is not supported directly by {ServerlessProductName} sink binding, so the *Kind* field must target the `Job` objects created by the cron job, rather than the cron job object itself.
+====
+.. Select a *Sink*. This can be either a *Resource* or a *URI*. In this example, the `event-display` service created in the previous step is used as the *Resource* sink.
+.. In the *Match labels* section:
+... Enter `app` in the *Name* field.
+... Enter `heartbeat-cron` in the *Value* field.
++
+[NOTE]
+====
+The label selector is required when using cron jobs with sink binding, rather than the resource name. This is because jobs created by a cron job do not have a predictable name, and contain a randomly generated string in their name. For example, `hearthbeat-cron-1cc23f`.
+====
+.. Click *Create*.
+
+.Verification
+
+You can verify that the sink binding, sink, and cron job have been created and are working correctly by viewing the *Topology* page and pod logs.
+
+. In the *Developer* perspective, navigate to *Topology*.
+
+. View the sink binding, sink, and heartbeats cron job.
++
+image::verify-sinkbinding-odc.png[View the sink binding and service in the Topology view]
+
+. Observe that successful jobs are being registered by the cron job once the sink binding is added. This means that the sink binding is successfully reconfiguring the jobs created by the cron job.
+
+. Browse the logs of the `event-display` service pod to see events produced by the heartbeats cron job.

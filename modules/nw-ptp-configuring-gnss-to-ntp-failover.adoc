@@ -1,0 +1,546 @@
+// Module included in the following assemblies:
+//
+// * networking/ptp/configuring-ptp.adoc
+
+:_mod-docs-content-type: PROCEDURE
+[id="configuring-gnss-to-ntp-failover_{context}"]
+= Creating a PTP Grandmaster configuration with GNSS failover
+
+[role="_abstract"]
+Configure a Precision Time Protocol (PTP) Telecom Grandmaster clock with automatic failover from global navigation satellite system (GNSS) to Network Time Protocol (NTP) when satellite signals are unavailable.
+
+This procedure configures a T-GM (Telecom Grandmaster) clock that uses an Intel E810 Westport Channel NIC as the PTP grandmaster clock with GNSS to NTP failover capabilities.
+
+.Prerequisites
+
+* For T-GM clocks in production environments, install an Intel E810 Westport Channel NIC in the bare-metal cluster host.
+
+* Install the OpenShift CLI (`oc`).
+
+* Log in as a user with `cluster-admin` privileges.
+
+* Install the PTP Operator.
+
+.Procedure
+
+. Verify the PTP Operator installation by running the following command:
++
+[source,terminal]
+----
+$ oc get pods -n openshift-ptp -o wide
+----
++
+The output is similar to the following listing the PTP Operator pod and the `linuxptp-daemon` pods:
++
+[source,terminal]
+----
+NAME                            READY   STATUS    RESTARTS   AGE   IP              NODE                       NOMINATED NODE   READINESS GATES
+linuxptp-daemon-4xk9m           2/2     Running   0          15m   192.168.1.101   worker-0.cluster.local     <none>           <none>
+linuxptp-daemon-7bv2n           2/2     Running   0          15m   192.168.1.102   worker-1.cluster.local     <none>           <none>
+linuxptp-daemon-9cp4r           2/2     Running   0          15m   192.168.1.103   worker-2.cluster.local     <none>           <none>
+linuxptp-daemon-kw8h5           2/2     Running   0          15m   192.168.1.104   worker-3.cluster.local     <none>           <none>
+linuxptp-daemon-m3j7t           2/2     Running   0          15m   192.168.1.105   worker-4.cluster.local     <none>           <none>
+ptp-operator-75c77dbf86-xm9kl   1/1     Running   0          20m   10.129.0.45     master-1.cluster.local     <none>           <none>
+----
++
+* `ptp-operator-*`: The PTP Operator pod (one instance in the cluster)
+* `linuxptp-daemon-*`: The linuxptp daemon pods. A daemon pod runs on each node that matches the PtpConfig profile. Each daemon pod should show `2/2` in the READY column, indicating both containers (`linuxptp-daemon-container` and `kube-rbac-proxy`) are running.
++
+[NOTE]
+====
+The number of `linuxptp-daemon` pods is determined by the node labels defined in the `PtpOperatorConfig` which controls the DaemonSet deployment. The PtpConfig profile matching, as shown in Step 4, only determines which specific PTP settings are applied on the running daemons. In this example, the operator configuration targets all 5 worker nodes. For {sno} clusters, you will see only one `linuxptp-daemon` pod, as the configuration targets only the control plane node which acts as the worker.
+====
+
+. Check which network interfaces support hardware timestamping by running the following command:
++
+[source,terminal]
+----
+$ oc get NodePtpDevice -n openshift-ptp -o yaml
+----
++
+The output is similar to the following showing NodePtpDevice resources for nodes with PTP-capable network interfaces:
++
+[source,yaml]
+----
+apiVersion: v1
+items:
+- apiVersion: ptp.openshift.io/v1
+  kind: NodePtpDevice
+  metadata:
+    name: worker-0.cluster.local
+    namespace: openshift-ptp
+  spec: {}
+  status:
+    devices:
+    - name: ens7f0
+      hwConfig:
+        phcIndex: 0
+    - name: ens7f1
+      hwConfig:
+        phcIndex: 1
+- apiVersion: ptp.openshift.io/v1
+  kind: NodePtpDevice
+  metadata:
+    name: worker-1.cluster.local
+    namespace: openshift-ptp
+  spec: {}
+  status:
+    devices:
+    - name: ens7f0
+      hwConfig:
+        phcIndex: 0
+    - name: ens7f1
+      hwConfig:
+        phcIndex: 1
+kind: List
+metadata:
+  resourceVersion: ""
+----
++
+In this example output:
++
+* `ens7f0` and `ens7f1` are PTP-capable interfaces (Intel E810 NIC ports).
+* `phcIndex` indicates the PTP Hardware Clock number (maps to `/dev/ptp0`, `/dev/ptp1`, and so on).
++
+[NOTE]
+====
+The output shows one NodePtpDevice resource for each node with PTP-capable interfaces. In this example, five worker nodes have Intel E810 NICs. For {sno} clusters, you would see only one NodePtpDevice resource.
+====
+
+. The PTP profile uses node labels for matching. Check your machine config pool (MCP) to find the node labels by running the following command:
++
+[source,terminal]
+----
+$ oc get mcp
+----
++
+The output is similar to the following:
++
+[source,terminal]
+----
+NAME     CONFIG                   UPDATED   UPDATING   DEGRADED   MACHINECOUNT   READYMACHINECOUNT   UPDATEDMACHINECOUNT DEGRADEDMACHINECOUNT AGE
+master   rendered-master-a1b1**   True      False      False      3              3                   3                   0                    45d
+worker   rendered-worker-f6e5**   True      False      False      5              5                   5                   0                    45d
+----
++
+[NOTE]
+====
+The CONFIG column shows a truncated hash of the rendered MachineConfig. In actual output, this will be a full 64-character hash such as `rendered-master-a1b2c3d4e5f6a7b8c9d0e1f2a3b4c5d6`.
+====
++
+* In this example, the `<MCP-name>` is `worker` for worker nodes and `master` for control plane nodes. Most T-GM deployments use worker nodes, so you would use `worker` as the `<MCP-name>`.
+* For {sno} clusters, the `<MCP-name>` is `master` (the worker MCP will show `MACHINECOUNT` of 0).
+
+. Create a `PtpConfig` custom resource (CR) that configures the T-GM clock with GNSS to NTP failover. Save the following YAML configuration to a file named `ptp-config-gnss-ntp-failover.yaml`, replacing `<MCP-name>` with the name of your machine config pool from the previous step.
++
+[source,yaml,subs="verbatim"]
+----
+# The grandmaster profile is provided for testing only
+# It is not installed on production clusters
+apiVersion: ptp.openshift.io/v1
+kind: PtpConfig
+metadata:
+  name: grandmaster
+  namespace: openshift-ptp
+  annotations:
+    ran.openshift.io/ztp-deploy-wave: "10"
+spec:
+  profile:
+  - name: "grandmaster"
+    ptp4lOpts: "-2 --summary_interval -4"
+    phc2sysOpts: -r -u 0 -m -N 8 -R 16 -s ens7f0 -n 24
+    ptpSchedulingPolicy: SCHED_FIFO
+    ptpSchedulingPriority: 10
+    ptpSettings:
+      logReduce: "true"
+
+    # --- FAILOVER CONFIGURATION ---
+    # Holdover time: 14400 seconds (4 hours) before switching to NTP
+    ts2phcOpts: "--ts2phc.holdover 14400"
+
+    # Configure Chronyd (Secondary Time Source)
+    chronydOpts: "-d"
+    chronydConf: |
+      server time.nist.gov iburst
+      makestep 1.0 -1
+      pidfile /var/run/chronyd.pid
+
+    plugins:
+      # E810 Hardware-Specific Configuration
+      e810:
+        enableDefaultConfig: false
+        settings:
+          LocalHoldoverTimeout: 14400
+          LocalMaxHoldoverOffSet: 1500
+          MaxInSpecOffset: 1500
+        pins:
+          # Syntax guide:
+          # - The 1st number in each pair must be one of:
+          #    0 - Disabled
+          #    1 - RX
+          #    2 - TX
+          # - The 2nd number in each pair must match the channel number
+          ens7f0:
+            SMA1: 0 1
+            SMA2: 0 2
+            U.FL1: 0 1
+            U.FL2: 0 2
+        ublxCmds:
+          - args: #ubxtool -P 29.20 -z CFG-HW-ANT_CFG_VOLTCTRL,1
+              - "-P"
+              - "29.20"
+              - "-z"
+              - "CFG-HW-ANT_CFG_VOLTCTRL,1"
+            reportOutput: false
+          - args: #ubxtool -P 29.20 -e GPS
+              - "-P"
+              - "29.20"
+              - "-e"
+              - "GPS"
+            reportOutput: false
+          - args: #ubxtool -P 29.20 -d Galileo
+              - "-P"
+              - "29.20"
+              - "-d"
+              - "Galileo"
+            reportOutput: false
+          - args: #ubxtool -P 29.20 -d GLONASS
+              - "-P"
+              - "29.20"
+              - "-d"
+              - "GLONASS"
+            reportOutput: false
+          - args: #ubxtool -P 29.20 -d BeiDou
+              - "-P"
+              - "29.20"
+              - "-d"
+              - "BeiDou"
+            reportOutput: false
+          - args: #ubxtool -P 29.20 -d SBAS
+              - "-P"
+              - "29.20"
+              - "-d"
+              - "SBAS"
+            reportOutput: false
+          - args: #ubxtool -P 29.20 -t -w 5 -v 1 -e SURVEYIN,600,50000
+              - "-P"
+              - "29.20"
+              - "-t"
+              - "-w"
+              - "5"
+              - "-v"
+              - "1"
+              - "-e"
+              - "SURVEYIN,600,50000"
+            reportOutput: true
+          - args: #ubxtool -P 29.20 -p MON-HW
+              - "-P"
+              - "29.20"
+              - "-p"
+              - "MON-HW"
+            reportOutput: true
+          - args: #ubxtool -P 29.20 -p CFG-MSG,1,38,248
+              - "-P"
+              - "29.20"
+              - "-p"
+              - "CFG-MSG,1,38,248"
+            reportOutput: true
+
+      # NTP Failover Plugin
+      ntpfailover:
+        gnssFailover: true
+
+    # --- GNSS (ts2phc) CONFIGURATION (Primary Source) ---
+    ts2phcConf: |
+      [nmea]
+      ts2phc.master 1
+      [global]
+      use_syslog  0
+      verbose 1
+      logging_level 7
+      ts2phc.pulsewidth 100000000
+      ts2phc.nmea_serialport /dev/ttyGNSS_1700_0
+      leapfile  /usr/share/zoneinfo/leap-seconds.list
+      [ens7f0]
+      ts2phc.extts_polarity rising
+      ts2phc.extts_correction 0
+
+    # --- PTP4L CONFIGURATION (Grandmaster Role) ---
+    ptp4lConf: |
+      [ens7f0]
+      masterOnly 1
+      [ens7f1]
+      masterOnly 1
+      [global]
+      #
+      # Default Data Set
+      #
+      twoStepFlag 1
+      priority1 128
+      priority2 128
+      domainNumber 24
+      #utc_offset 37
+      clockClass 6
+      clockAccuracy 0x27
+      offsetScaledLogVariance 0xFFFF
+      free_running 0
+      freq_est_interval 1
+      dscp_event 0
+      dscp_general 0
+      dataset_comparison G.8275.x
+      G.8275.defaultDS.localPriority 128
+      #
+      # Port Data Set
+      #
+      logAnnounceInterval -3
+      logSyncInterval -4
+      logMinDelayReqInterval -4
+      logMinPdelayReqInterval 0
+      announceReceiptTimeout 3
+      syncReceiptTimeout 0
+      delayAsymmetry 0
+      fault_reset_interval -4
+      neighborPropDelayThresh 20000000
+      masterOnly 0
+      G.8275.portDS.localPriority 128
+      #
+      # Run time options
+      #
+      assume_two_step 0
+      logging_level 6
+      path_trace_enabled 0
+      follow_up_info 0
+      hybrid_e2e 0
+      inhibit_multicast_service 0
+      net_sync_monitor 0
+      tc_spanning_tree 0
+      tx_timestamp_timeout 50
+      unicast_listen 0
+      unicast_master_table 0
+      unicast_req_duration 3600
+      use_syslog 1
+      verbose 0
+      summary_interval -4
+      kernel_leap 1
+      check_fup_sync 0
+      clock_class_threshold 7
+      #
+      # Servo Options
+      #
+      pi_proportional_const 0.0
+      pi_integral_const 0.0
+      pi_proportional_scale 0.0
+      pi_proportional_exponent -0.3
+      pi_proportional_norm_max 0.7
+      pi_integral_scale 0.0
+      pi_integral_exponent 0.4
+      pi_integral_norm_max 0.3
+      step_threshold 2.0
+      first_step_threshold 0.00002
+      clock_servo pi
+      sanity_freq_limit  200000000
+      ntpshm_segment 0
+      #
+      # Transport options
+      #
+      transportSpecific 0x0
+      ptp_dst_mac 01:1B:19:00:00:00
+      p2p_dst_mac 01:80:C2:00:00:0E
+      udp_ttl 1
+      udp6_scope 0x0E
+      uds_address /var/run/ptp4l
+      #
+      # Default interface options
+      #
+      clock_type BC
+      network_transport L2
+      delay_mechanism E2E
+      time_stamping hardware
+      tsproc_mode filter
+      delay_filter moving_median
+      delay_filter_length 10
+      egressLatency 0
+      ingressLatency 0
+      boundary_clock_jbod 0
+      #
+      # Clock description
+      #
+      productDescription ;;
+      revisionData ;;
+      manufacturerIdentity 00:00:00
+      userDescription ;
+      timeSource 0x20
+    ptpClockThreshold:
+      holdOverTimeout: 5
+      maxOffsetThreshold: 100
+      minOffsetThreshold: -100
+  recommend:
+  - profile: "grandmaster"
+    priority: 4
+    match:
+    - nodeLabel: node-role.kubernetes.io/<MCP-name>
+----
++
+[IMPORTANT]
+====
+Replace the example interface names (`ens7f0`, `ens7f1`) with your actual E810 NIC interface names found in step 2. Common E810 interface naming patterns include `ens7f0`, `ens8f0`, `eth0`, `enp2s0f0`, and so on. The exact name depends on your system firmware settings and Linux network device naming conventions. Also replace `/dev/ttyGNSS_1700_0` with your actual GNSS serial port device path. For {sno} clusters, replace `<MCP-name>` with `master` in the nodeLabel match. For multi-node clusters using worker nodes as T-GM, use `worker`.
+====
++
+The configuration includes the following components:
++
+** **PTP4L options:**
++
+*** `-2`: Use PTP version 2
+*** `--summary_interval -4`: Log summary every 2^(-4) = 0.0625 seconds
++
+** **PHC2SYS options:**
++
+*** `-r`: Synchronize system clock from PTP hardware clock
+*** `-u 0`: Update rate multiplier
+*** `-m`: Print messages to stdout
+*** `-N 8`: Domain number for ptp4l
+*** `-R 16`: Update rate
+*** `-s ens7f0`: Source interface (replace with your E810 interface name)
+*** `-n 24`: Domain number
++
+** **Failover configuration:**
++
+*** `ts2phcOpts --ts2phc.holdover 14400`: 4-hour holdover before switching to NTP
+*** `chronydConf`: NTP server configuration for failover replace `time.nist.gov` with your preferred NTP server
+*** `ntpfailover plugin`: Enables automatic GNSS-to-NTP switching with `gnssFailover: true`
++
+** **E810 plugin configuration:**
++
+*** `LocalHoldoverTimeout: 14400`: E810 hardware holdover timeout (4 hours)
+*** `pins`: Configuration for 1PPS input on E810 physical pins (U.FL2, SMA1, SMA2, U.FL1)
+*** `ublxCmds`: Commands to configure u-blox GNSS receiver (enable GPS, disable other constellations, set survey-in mode)
++
+** **GNSS (ts2phc) configuration:**
++
+*** `ts2phc.nmea_serialport /dev/ttyGNSS_1700_0`: GNSS serial port device path (replace with your actual GNSS device)
+*** `ts2phc.extts_polarity rising`: 1PPS signal on rising edge
+*** `ts2phc.pulsewidth 100000000`: 1PPS pulse width in nanoseconds
++
+** **PTP4L configuration:**
++
+*** `masterOnly 1`: Interface acts only as PTP master
+*** `clockClass 6`: GPS-synchronized quality level
+*** `domainNumber 24`: PTP domain
+*** `clock_type BC`: Boundary Clock mode
+*** `time_stamping hardware`: Use hardware timestamps from E810 NIC
+
+. Apply the `PtpConfig` CR by running the following command:
++
+[source,terminal]
+----
+$ oc apply -f ptp-config-gnss-ntp-failover.yaml
+----
++
+The output is similar to the following:
++
+[source,terminal]
+----
+ptpconfig.ptp.openshift.io/grandmaster created
+----
+
+.Verification
+
+. The PTP daemon checks for profile updates every 30 seconds. Wait approximately 30 seconds, then verify by running the following command:
++
+[source,terminal]
+----
+$ oc get ptpconfig -n openshift-ptp
+----
++
+The output is similar to the following:
++
+[source,terminal]
+----
+NAME           AGE
+grandmaster    2m
+----
+
+. Check the NodePtpDevice to see if the profile is applied by running the following command, replacing `<node_name>` with your node hostname:
++
+[source,terminal]
+----
+$ oc describe nodeptpdevice <node_name> -n openshift-ptp
+----
++
+For example, on a multi-node cluster with worker nodes: `worker-0.cluster.local`
++
+For {sno} clusters, use the control plane node name, which you can find by running:
++
+[source,terminal]
+----
+$ oc get nodes
+----
+
+. Check if the profile is being loaded by monitoring the daemon logs:
++
+[source,terminal]
+----
+$ oc get pods -n openshift-ptp | grep linuxptp-daemon
+----
++
+Then check the logs, replacing `<linuxptp-daemon-pod>` with the actual pod name from the previous command:
++
+[source,terminal]
+----
+$ oc logs -n openshift-ptp <linuxptp-daemon-pod> -c linuxptp-daemon-container --tail=100
+----
++
+Success indicators in the logs are:
++
+* `load profiles` - Profile is being loaded
+* `in applyNodePTPProfiles` - Profile is being applied
+* No `ptp profile doesn't exist for node` errors
+
+. Check `chronyd` status to verify NTP is running as the secondary time source by running the following command:
++
+[source,terminal]
+----
+$ oc logs -n openshift-ptp <linuxptp-daemon-pod> -c linuxptp-daemon-container | grep chronyd
+----
++
+The output is similar to the following:
++
+[source,terminal]
+----
+chronyd version 4.5 starting
+Added source ID#0000000001 (time.nist.gov)
+----
+
+. Check GNSS/gpsd by running the following command:
++
+[source,terminal]
+----
+$ oc logs -n openshift-ptp <linuxptp-daemon-pod> -c linuxptp-daemon-container | grep gpsd
+----
++
+The output shows the following when GNSS is functioning correctly:
+
+* `gpsd` starting successfully
+*  No `No such file or directory` errors exist
+
+. Check `ts2phc` (GNSS synchronization) status by running the following command:
++
+[source,terminal]
+----
+$ oc logs -n openshift-ptp <linuxptp-daemon-pod> -c linuxptp-daemon-container | grep ts2phc
+----
+
+. Check `phc2sys` (system clock sync) status by running the following command:
++
+[source,terminal]
+----
+$ oc logs -n openshift-ptp <linuxptp-daemon-pod> -c linuxptp-daemon-container | grep phc2sys
+----
++
+The output shows synchronization status messages for `phc2sys`.
++
+[source,terminal]
+----
+phc2sys[xxx]: CLOCK_REALTIME phc offset -17 s2 freq -13865 delay 2305
+----
+

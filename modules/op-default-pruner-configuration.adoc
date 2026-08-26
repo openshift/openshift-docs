@@ -1,0 +1,57 @@
+// This module is included in the following assembly:
+//
+// cicd/pipelines/automatic-pruning-taskrun-pipelinerun.adoc
+
+:_mod-docs-content-type: REFERENCE
+[id="default-pruner-configuration_{context}"]
+= Configuring the pruner
+
+You can use the `TektonConfig` custom resource to configure periodic pruning of resources associated with pipeline runs and task runs.
+
+The following example corresponds to the default configuration:
+
+.Example of the pruner configuration
+[source,yaml]
+----
+apiVersion: operator.tekton.dev/v1alpha1
+kind: TektonConfig
+metadata:
+  name: config
+# ...
+spec:
+  pruner:
+    resources:
+      - taskrun
+      - pipelinerun
+    keep: 100
+    prune-per-resource: false
+    schedule: "* 8 * * *"
+# ...
+----
+
+.Supported parameters for pruner configuration
+|===
+| Parameter | Description
+
+|`schedule`
+|The Cron schedule for running the pruner process. The default schedule runs the process at 08:00 every day. For more information about the Cron schedule syntax, see link:https://kubernetes.io/docs/concepts/workloads/controllers/cron-jobs/#cron-schedule-syntax[Cron schedule syntax] in the Kubernetes documentation.
+
+|`resources`
+|The resource types to which the pruner applies. The available resource types are `taskrun` and `pipelinerun`
+
+|`keep`
+|The number of most recent resources of every type to keep.
+
+|`prune-per-resource`
+|If set to `false`, the value for the `keep` parameter denotes the total number of task runs or pipeline runs. For example, if `keep` is set to `100`, then the pruner keeps 100 most recent task runs and 100 most recent pipeline runs and removes all other resources.
+
+If set to `true`, the value for the `keep` parameter is calculated separately for pipeline runs referencing each pipeline and for task runs referencing each task. For example, if `keep` is set to `100`, then the pruner keeps 100 most recent pipeline runs for `Pipeline1`, 100 most recent pipeline runs for `Pipeline2`, 100 most recent task runs for `Task1`, and so on, and removes all other resources.
+
+|`keep-since`
+|The maximum time for which to keep resources, in minutes. For example, to retain resources which were created not more than five days ago, set `keep-since` to `7200`.
+|===
+
+[NOTE]
+====
+The `keep` and `keep-since` parameters are mutually exclusive. Use only one of them in your configuration.
+====

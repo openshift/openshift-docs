@@ -1,0 +1,227 @@
+////
+This module is included in the following assemblies:
+* service_mesh/v2x/ossm-observability.adoc
+////
+
+:_mod-docs-content-type: PROCEDURE
+[id="ossm-configuring-distr-tracing-tempo_{context}"]
+= Configuring the {TempoName} and the {OTELName}
+
+You can expose tracing data to the {TempoName} by appending a named element and the `opentelemetry` provider to the `spec.meshConfig.extensionProviders` specification in the `ServiceMeshControlPlane`. Then, a telemetry custom resource configures Istio proxies to collect trace spans and send them to the OpenTelemetry Collector endpoint.
+
+//As of July 2, 2024, there is no common attribute for OpenTelemetry Collector.
+
+You can create a {OTELName} instance in a mesh namespace and configure it to send tracing data to a tracing platform backend service.
+
+.Prerequisites
+
+* You created a TempoStack instance using the Red Hat {TempoOperator} in the `tracing-system` namespace. For more information, see "Installing {TempoName}".
+
+* You installed the {OTELOperator} in either the recommended namespace or the `openshift-operators` namespace. For more information, see "Installing the {OTELName}".
+
+* If using {SMProductName} 2.5 or earlier, set the `spec.tracing.type` parameter of the `ServiceMeshControlPlane` resource to `None` so tracing data can be sent to the OpenTelemetry Collector.
+
+.Procedure
+
+. Create an OpenTelemetry Collector instance in a mesh namespace. This example uses the `bookinfo` namespace:
++
+.Example OpenTelemetry Collector configuration
+[source, yaml]
+----
+apiVersion: opentelemetry.io/v1alpha1
+kind: OpenTelemetryCollector
+metadata:
+  name: otel
+  namespace: bookinfo  # <1>
+spec:
+  mode: deployment
+  config: |
+    receivers:
+      otlp:
+        protocols:
+          grpc:
+            endpoint: 0.0.0.0:4317
+    exporters:
+      otlp:
+        endpoint: "tempo-sample-distributor.tracing-system.svc.cluster.local:4317" # <2>
+        tls:
+          insecure: true
+    service:
+      pipelines:
+        traces:
+          receivers: [otlp]
+          processors: []
+          exporters: [otlp]
+----
+<1> Include the namespace in the `ServiceMeshMemberRoll` member list.
+<2> In this example, a TempoStack instance is running in the `tracing-system` namespace. You do not have to include the TempoStack namespace, such as`tracing-system`, in the `ServiceMeshMemberRoll` member list.
++
+[NOTE]
+====
+* Create a single  instance of the OpenTelemetry Collector in one of the `ServiceMeshMemberRoll` member namespaces.
+* You can add an `otel-collector` as a part of the mesh by adding `sidecar.istio.io/inject: 'true'` to the `OpenTelemetryCollector` resource.
+====
+
+. Check the `otel-collector` pod log and verify that the pod is running:
++
+.Example `otel-collector` pod log check
+[source,terminal]
+----
+$ oc logs -n bookinfo  -l app.kubernetes.io/name=otel-collector
+----
++
+. Create or update an existing `ServiceMeshControlPlane` custom resource (CR) in the `istio-system` namespace:
++
+.Example SMCP custom resource
+[source,yaml]
+----
+kind: ServiceMeshControlPlane
+apiVersion: maistra.io/v2
+metadata:
+  name: basic
+  namespace: istio-system
+spec:
+  addons:
+    grafana:
+      enabled: false
+    kiali:
+      enabled: true
+    prometheus:
+      enabled: true
+  meshConfig:
+    extensionProviders:
+      - name: otel
+        opentelemetry:
+          port: 4317
+          service: otel-collector.bookinfo.svc.cluster.local
+  policy:
+    type: Istiod
+  telemetry:
+    type: Istiod
+  version: v2.6
+----
++
+[NOTE]
+====
+When upgrading from SMCP 2.5 to 2.6, set the `spec.tracing.type` parameter to `None`:
+
+.Example SMCP `spec.tracing.type` parameter
+[source,yaml]
+----
+spec:
+  tracing:
+    type: None
+----
+====
+
+. Create a Telemetry resource in the `istio-system` namespace:
++
+.Example Telemetry resource
+[source,yaml]
+----
+apiVersion: telemetry.istio.io/v1alpha1
+kind: Telemetry
+metadata:
+  name: mesh-default
+  namespace: istio-system
+spec:
+  tracing:
+  - providers:
+    - name: otel
+    randomSamplingPercentage: 100
+----
+
+. Verify the `istiod` log.
+
+. Configure the Kiali resource specification to enable a Kiali workload traces dashboard. You can use the dashboard to view tracing query results.
++
+.Example Kiali resource
+[source,yaml]
+----
+apiVersion: kiali.io/v1alpha1
+kind: Kiali
+# ...
+spec:
+  external_services:
+    tracing:
+      query_timeout: 30 #<1>
+      enabled: true
+      in_cluster_url: 'http://tempo-sample-query-frontend.tracing-system.svc.cluster.local:16685'
+      url: '[Tempo query frontend Route url]'
+      use_grpc: true # <2>
+----
+<1> The default `query_timeout` integer value is 30 seconds. If you set the value to greater than 30 seconds, you must update `.spec.server.write_timeout` in the Kiali CR and add the annotation `haproxy.router.openshift.io/timeout=50s` to the Kiali route. Both `.spec.server.write_timeout` and `haproxy.router.openshift.io/timeout=` must be greater than `query_timeout`.
+<2> If you are not using the default HTTP or gRPC port, replace the `in_cluster_url:` port with your custom port.
++
+[NOTE]
+====
+Kiali 1.73 uses the Jaeger Query API, which causes a longer response time depending on Tempo resource limits. If you see a `Could not fetch spans` error message in the Kiali UI, then check your Tempo configuration or reduce the limit per query in Kiali.
+====
+
+. Send requests to your application.
+
+. Verify the `istiod` pod logs and the `otel-collector` pod logs.
+
+[id="configuring-otel-collector-mtls-encrypted-namespace_{context}"]
+== Configuring the `OpenTelemetryCollector` in a mTLS encrypted Service Mesh member namespace
+
+All traffic is TLS encrypted when you enable Service Mesh `dataPlane` mTLS encryption.
+
+To enable the mesh to communicate with the `OpenTelemetryCollector` service, disable the TLS `trafficPolicy` by applying a `DestinationRule` for the `OpenTelemetryCollector` service:
+
+.Example `DestinationRule` Tempo CR
+[source, yaml]
+----
+apiVersion: networking.istio.io/v1alpha3
+kind: DestinationRule
+metadata:
+  name: otel-disable-tls
+spec:
+  host: "otel-collector.bookinfo.svc.cluster.local"
+  trafficPolicy:
+    tls:
+      mode: DISABLE
+----
+
+
+[id="configuring-distr-tracing-tempo-mtls-encrypted-namespace_{context}"]
+== Configuring the {TempoName} in a mTLS encrypted Service Mesh member namespace
+
+[NOTE]
+====
+You don't need this additional `DestinationRule` configuration if you created a TempoStack instance in a namespace that is not a Service Mesh member namespace.
+====
+
+All traffic is TLS encrypted when you enable Service Mesh `dataPlane` mTLS encryption and you create a TempoStack instance in a Service Mesh member namespace such as `tracing-system-mtls`. This encryption is not expected from the Tempo distributed service and returns a TLS error.
+
+To fix the TLS error, disable the TLS `trafficPolicy` by applying a `DestinationRule` for Tempo and Kiali:
+
+.Example `DestinationRule` Tempo
+[source,yaml]
+----
+apiVersion: networking.istio.io/v1alpha3
+kind: DestinationRule
+metadata:
+  name: tempo
+  namespace: tracing-system-mtls
+spec:
+  host: "*.tracing-system-mtls.svc.cluster.local"
+  trafficPolicy:
+    tls:
+      mode: DISABLE
+----
+
+.Example `DestinationRule` Kiali
+[source,yaml]
+----
+apiVersion: networking.istio.io/v1alpha3
+kind: DestinationRule
+metadata:
+  name: kiali
+  namespace: istio-system
+spec:
+  host: kiali.istio-system.svc.cluster.local
+  trafficPolicy:
+    tls:
+      mode: DISABLE
+----

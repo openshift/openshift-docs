@@ -1,0 +1,10 @@
+:_mod-docs-content-type: ASSEMBLY
+include::_attributes/common-attributes.adoc[]
+[id="https-redirect-per-service"]
+= HTTPS redirection per service
+:context: https-redirect-per-service
+
+You can enable or disable HTTPS redirection for a service by configuring the `networking.knative.dev/http-option` annotation.
+
+include::modules/serverless-https-redirect-service.adoc[leveloffset=+1]
+

@@ -1,0 +1,221 @@
+// Module included in the following assemblies:
+//
+// * networking/ingress-operator.adoc
+
+:_mod-docs-content-type: PROCEDURE
+[id="nw-autoscaling-ingress-controller_{context}"]
+= Autoscaling an Ingress Controller
+
+You can automatically scale an Ingress Controller to dynamically meet routing performance or availability requirements. For example, the requirement to increase throughput.
+
+The following procedure provides an example for scaling up the default Ingress Controller.
+
+.Prerequisites
+
+* You have the {oc-first} installed.
+* You have access to an {product-title} cluster as a user with the `cluster-admin` role.
+* On {vmw-first}, bare-metal, and Nutanix installer-provisioned infrastructure, scaling up Ingress Controller pods does not improve external traffic performance. To improve performance, ensure that you complete the following prerequisites:
+** You manually configured a user-managed load balancer for your cluster. 
+** You ensured that the load balancer was configured for the cluster nodes that handle incoming traffic from the Ingress Controller.
+* You installed the Custom Metrics Autoscaler Operator and an associated KEDA Controller.
+** You can install the Operator by using the software catalog on the web console. After you install the Operator, you can create an instance of `KedaController`.
+
+.Procedure
+
+. Create a service account to authenticate with Thanos by running the following command:
++
+[source,terminal]
+----
+$ oc create -n openshift-ingress-operator serviceaccount thanos && oc describe -n openshift-ingress-operator serviceaccount thanos
+----
++
+.Example output
+[source,terminal]
+----
+Name:                thanos
+Namespace:           openshift-ingress-operator
+Labels:              <none>
+Annotations:         <none>
+Image pull secrets:  thanos-dockercfg-kfvf2
+Mountable secrets:   thanos-dockercfg-kfvf2
+Tokens:              <none>
+Events:              <none>
+----
+
+. Manually create the service account secret token with the following command:
++
+[source,terminal]
+----
+$ oc apply -f - <<EOF
+apiVersion: v1
+kind: Secret
+metadata:
+  name: thanos-token
+  namespace: openshift-ingress-operator
+  annotations:
+    kubernetes.io/service-account.name: thanos
+type: kubernetes.io/service-account-token
+EOF
+----
+
+. Define a `TriggerAuthentication` object within the `openshift-ingress-operator` namespace by using the service account's token.
+
+.. Create the `TriggerAuthentication` object and pass the value of the `secret` variable to the `TOKEN` parameter:
++
+[source,terminal]
+----
+$ oc apply -f - <<EOF
+apiVersion: keda.sh/v1alpha1
+kind: TriggerAuthentication
+metadata:
+  name: keda-trigger-auth-prometheus
+  namespace: openshift-ingress-operator
+spec:
+  secretTargetRef:
+  - parameter: bearerToken
+    name: thanos-token
+    key: token
+  - parameter: ca
+    name: thanos-token
+    key: ca.crt
+EOF
+----
+
+. Create and apply a role for reading metrics from Thanos:
+
+.. Create a new role, `thanos-metrics-reader.yaml`, that reads metrics from pods and nodes:
++
+.thanos-metrics-reader.yaml
+[source,yaml]
+----
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: thanos-metrics-reader
+  namespace: openshift-ingress-operator
+rules:
+- apiGroups:
+  - ""
+  resources:
+  - pods
+  - nodes
+  verbs:
+  - get
+- apiGroups:
+  - metrics.k8s.io
+  resources:
+  - pods
+  - nodes
+  verbs:
+  - get
+  - list
+  - watch
+- apiGroups:
+  - ""
+  resources:
+  - namespaces
+  verbs:
+  - get
+----
+
+.. Apply the new role by running the following command:
++
+[source,terminal]
+----
+$ oc apply -f thanos-metrics-reader.yaml
+----
+
+. Add the new role to the service account by entering the following commands:
++
+[source,terminal]
+----
+$ oc adm policy -n openshift-ingress-operator add-role-to-user thanos-metrics-reader -z thanos --role-namespace=openshift-ingress-operator
+----
++
+[source,terminal]
+----
+$ oc adm policy -n openshift-ingress-operator add-cluster-role-to-user cluster-monitoring-view -z thanos
+----
++
+[NOTE]
+====
+The argument `add-cluster-role-to-user` is only required if you use cross-namespace queries. The following step uses a query from the `kube-metrics` namespace which requires this argument.
+====
+
+. Create a new `ScaledObject` YAML file, `ingress-autoscaler.yaml`, that targets the default Ingress Controller deployment:
++
+.Example `ScaledObject` definition
+[source,yaml]
+----
+apiVersion: keda.sh/v1alpha1
+kind: ScaledObject
+metadata:
+  name: ingress-scaler
+  namespace: openshift-ingress-operator
+spec:
+  scaleTargetRef: <1>
+    apiVersion: operator.openshift.io/v1
+    kind: IngressController
+    name: default
+    envSourceContainerName: ingress-operator
+  minReplicaCount: 1
+  maxReplicaCount: 20 <2>
+  cooldownPeriod: 1
+  pollingInterval: 1
+  triggers:
+  - type: prometheus
+    metricType: AverageValue
+    metadata:
+      serverAddress: https://thanos-querier.openshift-monitoring.svc.cluster.local:9091 <3>
+      namespace: openshift-ingress-operator <4>
+      metricName: 'kube-node-role'
+      threshold: '1'
+      query: 'sum(kube_node_role{role="worker",service="kube-state-metrics"})' <5>
+      authModes: "bearer"
+    authenticationRef:
+      name: keda-trigger-auth-prometheus
+----
+<1> The custom resource that you are targeting. In this case, the Ingress Controller.
+<2> Optional: The maximum number of replicas. If you omit this field, the default maximum is set to 100 replicas.
+<3> The Thanos service endpoint in the `openshift-monitoring` namespace.
+<4> The Ingress Operator namespace.
+<5> This expression evaluates to however many worker nodes are present in the deployed cluster.
++
+[IMPORTANT]
+====
+If you are using cross-namespace queries, you must target port 9091 and not port 9092 in the `serverAddress` field. You also must have elevated privileges to read metrics from this port.
+====
+
+. Apply the custom resource definition by running the following command:
++
+[source,terminal]
+----
+$ oc apply -f ingress-autoscaler.yaml
+----
+
+.Verification
+
+* Verify that the default Ingress Controller is scaled out to match the value returned by the `kube-state-metrics` query by running the following commands:
+
+** Use the `grep` command to search the Ingress Controller YAML file for the number of replicas:
++
+[source,terminal]
+----
+$ oc get -n openshift-ingress-operator ingresscontroller/default -o yaml | grep replicas:
+----
+
+** Get the pods in the `openshift-ingress` project:
++
+[source,terminal]
+----
+$ oc get pods -n openshift-ingress
+----
++
+.Example output
+[source,terminal]
+----
+NAME                             READY   STATUS    RESTARTS   AGE
+router-default-7b5df44ff-l9pmm   2/2     Running   0          17h
+router-default-7b5df44ff-s5sl5   2/2     Running   0          3d22h
+router-default-7b5df44ff-wwsth   2/2     Running   0          66s
+----

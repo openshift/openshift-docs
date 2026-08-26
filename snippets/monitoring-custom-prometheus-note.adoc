@@ -1,0 +1,10 @@
+// Text snippet included in the following modules:
+//
+// * modules/monitoring-enabling-monitoring-for-user-defined-projects.adoc
+
+:_mod-docs-content-type: SNIPPET
+
+[NOTE]
+====
+Versions of Prometheus Operator installed using Operator Lifecycle Manager (OLM) are not compatible with user-defined monitoring. Therefore, custom Prometheus instances installed as a Prometheus custom resource (CR) managed by the OLM Prometheus Operator are not supported in {product-title}.
+====

@@ -1,0 +1,47 @@
+// Module included in the following assemblies:
+//
+// * serverless/develop/serverless-traffic-management.adoc
+
+:_mod-docs-content-type: PROCEDURE
+[id="serverless-create-traffic-split-kn_{context}"]
+= Creating a traffic split by using the Knative CLI
+
+.Prerequisites
+
+* The {ServerlessOperatorName} and Knative Serving are installed on your cluster.
+* You have installed the Knative (`kn`) CLI.
+* You have created a Knative service.
+
+.Procedure
+
+* Specify the revision of your service and what percentage of traffic you want to route to it by using the `--traffic` tag with a standard `kn service update` command:
++
+.Example command
+[source,terminal]
+----
+$ kn service update <service_name> --traffic <revision>=<percentage>
+----
++
+Where:
++
+** `<service_name>` is the name of the Knative service that you are configuring traffic routing for.
+** `<revision>` is the revision that you want to configure to receive a percentage of traffic. You can either specify the name of the revision, or a tag that you assigned to the revision by using the `--tag` flag.
+** `<percentage>` is the percentage of traffic that you want to send to the specified revision.
+
+* Optional: The `--traffic` flag can be specified multiple times in one command. For example, if you have a revision tagged as `@latest` and a revision named `stable`, you can specify the percentage of traffic that you want to split to each revision as follows:
++
+.Example command
+[source,terminal]
+----
+$ kn service update example-service --traffic @latest=20,stable=80
+----
++
+If you have multiple revisions and do not specify the percentage of traffic that should be split to the last revision, the `--traffic` flag can calculate this automatically. For example, if you have a third revision named `example`, and you use the following command:
++
+.Example command
+[source,terminal]
+----
+$ kn service update example-service --traffic @latest=10,stable=60
+----
++
+The remaining 30% of traffic is split to the `example` revision, even though it was not specified.

@@ -1,0 +1,25 @@
+// Module included in the following assemblies:
+//
+// * serverless/knative-serving/autoscaling/serverless-autoscaling-developer.adoc
+
+:_mod-docs-content-type: REFERENCE
+[id="serverless-autoscaling-developer-maxscale_{context}"]
+= Maximum scale bounds
+
+The maximum number of replicas that can serve an application is determined by the `max-scale` annotation. If the `max-scale` annotation is not set, there is no upper limit for the number of replicas created.
+
+.Example service spec with `max-scale` annotation
+[source,yaml]
+----
+apiVersion: serving.knative.dev/v1
+kind: Service
+metadata:
+  name: example-service
+  namespace: default
+spec:
+  template:
+    metadata:
+      annotations:
+        autoscaling.knative.dev/max-scale: "10"
+...
+----

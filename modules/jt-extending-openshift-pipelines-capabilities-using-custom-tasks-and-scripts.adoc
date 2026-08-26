@@ -1,0 +1,49 @@
+// Module included in the following assembly:
+//
+// jenkins/migrating-from-jenkins-to-openshift-pipelines.adoc
+
+:_mod-docs-content-type: PROCEDURE
+[id="jt-extending-openshift-pipelines-capabilities-using-custom-tasks-and-scripts_{context}"]
+= Extending {pipelines-shortname} capabilities using custom tasks and scripts
+
+In {pipelines-shortname}, if you do not find the right task in Tekton Hub, or need greater control over tasks, you can create custom tasks and scripts to extend the capabilities of {pipelines-shortname}.
+
+.Example: A custom task for running the `maven test` command
+[source,yaml,subs="attributes+"]
+----
+apiVersion: tekton.dev/v1beta1
+kind: Task
+metadata:
+  name: maven-test
+spec:
+  workspaces:
+  - name: source
+  steps:
+  - image: my-maven-image
+    command: ["mvn test"]
+    workingDir: $(workspaces.source.path)
+----
+
+.Example: Run a custom shell script by providing its path
+[source,yaml,subs="attributes+"]
+----
+...
+steps:
+  image: ubuntu
+  script: |
+      #!/usr/bin/env bash
+      /workspace/my-script.sh
+...
+----
+
+.Example: Run a custom Python script by writing it in the YAML file
+[source,yaml,subs="attributes+"]
+----
+...
+steps:
+  image: python
+  script: |
+      #!/usr/bin/env python3
+      print(“hello from python!”)
+...
+----

@@ -1,0 +1,74 @@
+// Module included in the following assemblies:
+//
+// * serverless/serverless-release-notes.adoc
+
+:_mod-docs-content-type: REFERENCE
+[id="serverless-deprecated-removed-features_{context}"]
+= Deprecated and removed features
+
+Some features that were Generally Available (GA) or a Technology Preview (TP) in previous releases have been deprecated or removed. Deprecated functionality is still included in {ServerlessProductName} and continues to be supported; however, it will be removed in a future release of this product and is not recommended for new deployments.
+
+For the most recent list of major functionality deprecated and removed within {ServerlessProductName}, refer to the following table:
+
+// OCP + OSD table
+ifdef::openshift-enterprise,openshift-dedicated[]
+.Deprecated and removed features tracker
+[cols="3,1,1,1,1,1",options="header"]
+|====
+|Feature |1.20|1.21|1.22 to 1.26|1.27|1.28
+
+|`KafkaBinding` API
+|Deprecated
+|Deprecated
+|Removed
+|Removed
+|Removed
+
+|`kn func emit` (`kn func invoke` in 1.21+)
+|Deprecated
+|Removed
+|Removed
+|Removed
+|Removed
+
+|Serving and Eventing `v1alpha1` API
+|-
+|-
+|-
+|Deprecated
+|Deprecated
+
+|`enable-secret-informer-filtering` annotation
+|-
+|-
+|-
+|-
+|Deprecated
+
+|====
+endif::[]
+
+// ROSA table
+ifdef::openshift-rosa[]
+.Deprecated and removed features tracker
+[cols="3,1,1,1",options="header"]
+|====
+|Feature |1.23 to 1.26|1.27|1.28
+
+|`KafkaBinding` API
+|Removed
+|Removed
+|Removed
+
+|`kn func emit` (`kn func invoke` in 1.21+)
+|Removed
+|Removed
+|Removed
+
+|Serving and Eventing `v1alpha1` API
+|-
+|Deprecated
+|Deprecated
+
+|====
+endif::[]

@@ -1,0 +1,274 @@
+// Module included in the following assemblies:
+//
+// * backup_and_restore/application_backup_and_restore/oadp-use-cases/oadp-usecase-backup-using-odf.adoc
+
+:_mod-docs-content-type: PROCEDURE
+[id="oadp-usecase-backup-odf_{context}"]
+= Backing up an application using {oadp-short} and {odf-short}
+
+[role="_abstract"]
+In this use case, you back up an application by using {oadp-short} and store the backup in an object storage provided by {odf-first}.
+
+* You create an object bucket claim (OBC) to configure the backup storage location. You use {odf-short} to configure an Amazon S3-compatible object storage bucket. {odf-short} provides MultiCloud Object Gateway (NooBaa MCG) and Ceph Object Gateway, also known as RADOS Gateway (RGW), object storage service. In this use case, you use NooBaa MCG as the backup storage location.
+* You use the NooBaa MCG service with {oadp-short} by using the `aws` provider plugin.
+* You configure the Data Protection Application (DPA) with the backup storage location (BSL).
+* You create a backup custom resource (CR) and specify the application namespace to back up.
+* You create and verify the backup.
+
+.Prerequisites
+
+* You installed the {oadp-short} Operator.
+* You installed the {odf-short} Operator.
+* You have an application with a database running in a separate namespace.
+
+.Procedure
+
+. Create an OBC manifest file to request a NooBaa MCG bucket as shown in the following example:
++
+[source,yaml]
+----
+apiVersion: objectbucket.io/v1alpha1
+kind: ObjectBucketClaim
+metadata:
+  name: test-obc
+  namespace: openshift-adp
+spec:
+  storageClassName: openshift-storage.noobaa.io
+  generateBucketName: test-backup-bucket
+----
++
+where:
++
+`test-obc`:: Specifies the name of the object bucket claim.
+`test-backup-bucket`:: Specifies the name of the bucket.
+
+. Create the OBC by running the following command:
++
+[source,terminal]
+----
+$ oc create -f <obc_file_name>
+----
++
+where:
++
+`<obc_file_name>`:: Specifies the file name of the object bucket claim manifest.
+
+. When you create an OBC, {odf-short} creates a `secret` and a `config map` with the same name as the object bucket claim. The `secret` has the bucket credentials, and the `config map` has information to access the bucket. To get the bucket name and bucket host from the generated config map, run the following command:
++
+[source,terminal]
+----
+$ oc extract --to=- cm/test-obc
+----
+`test-obc` is the name of the OBC.
++
+.Example output
+[source,terminal]
+----
+# BUCKET_NAME
+backup-c20...41fd
+# BUCKET_PORT
+443
+# BUCKET_REGION
+
+# BUCKET_SUBREGION
+
+# BUCKET_HOST
+s3.openshift-storage.svc
+----
+
+. To get the bucket credentials from the generated `secret`, run the following command:
++
+[source,terminal]
+----
+$ oc extract --to=- secret/test-obc
+----
++
+.Example output
+[source,terminal]
+----
+# AWS_ACCESS_KEY_ID
+ebYR....xLNMc
+# AWS_SECRET_ACCESS_KEY
+YXf...+NaCkdyC3QPym
+----
+
+. Get the public URL for the S3 endpoint from the s3 route in the `openshift-storage` namespace by running the following command:
++
+[source,terminal]
+----
+$ oc get route s3 -n openshift-storage
+----
+
+. Create a `cloud-credentials` file with the object bucket credentials as shown in the following command:
++
+[source,terminal]
+----
+[default]
+aws_access_key_id=<AWS_ACCESS_KEY_ID>
+aws_secret_access_key=<AWS_SECRET_ACCESS_KEY>
+----
+
+. Create the `cloud-credentials` secret with the `cloud-credentials` file content as shown in the following command:
++
+[source,terminal]
+----
+$ oc create secret generic \
+  cloud-credentials \
+  -n openshift-adp \
+  --from-file cloud=cloud-credentials
+----
+
+. Configure the Data Protection Application (DPA) as shown in the following example:
++
+[source,yaml]
+----
+apiVersion: oadp.openshift.io/v1alpha1
+kind: DataProtectionApplication
+metadata:
+  name: oadp-backup
+  namespace: openshift-adp
+spec:
+  configuration:
+    nodeAgent:
+      enable: true
+      uploaderType: kopia
+    velero:
+      defaultPlugins:
+        - aws
+        - openshift
+        - csi
+      defaultSnapshotMoveData: true
+  backupLocations:
+    - velero:
+        config:
+          profile: "default"
+          region: noobaa
+          s3Url: https://s3.openshift-storage.svc
+          s3ForcePathStyle: "true"
+          insecureSkipTLSVerify: "true"
+        provider: aws
+        default: true
+        credential:
+          key: cloud
+          name:  cloud-credentials
+        objectStorage:
+          bucket: <bucket_name>
+          prefix: oadp
+----
++
+where:
++
+`defaultSnapshotMoveData`:: Set to `true` to use the {oadp-short} Data Mover to enable movement of Container Storage Interface (CSI) snapshots to a remote object storage.
+`s3Url`:: Specifies the S3 URL of {odf-short} storage.
+`<bucket_name>`:: Specifies the bucket name.
+
+. Create the DPA by running the following command:
++
+[source,terminal]
+----
+$ oc apply -f <dpa_filename>
+----
+
+. Verify that the DPA is created successfully by running the following command. In the example output, you can see the `status` object has `type` field set to `Reconciled`. This means, the DPA is successfully created.
++
+[source,terminal]
+----
+$ oc get dpa -o yaml
+----
++
+.Example output
+[source,yaml]
+----
+apiVersion: v1
+items:
+- apiVersion: oadp.openshift.io/v1alpha1
+  kind: DataProtectionApplication
+  metadata:
+    namespace: openshift-adp
+    #...#
+  spec:
+    backupLocations:
+    - velero:
+        config:
+          #...#
+  status:
+    conditions:
+    - lastTransitionTime: "20....9:54:02Z"
+      message: Reconcile complete
+      reason: Complete
+      status: "True"
+      type: Reconciled
+kind: List
+metadata:
+  resourceVersion: ""
+----
+
+. Verify that the backup storage location (BSL) is available by running the following command:
++
+[source,terminal]
+----
+$ oc get backupstoragelocations.velero.io -n openshift-adp
+----
++
+.Example output
+[source,terminal]
+----
+NAME           PHASE       LAST VALIDATED   AGE   DEFAULT
+dpa-sample-1   Available   3s               15s   true
+----
+
+. Configure a backup CR as shown in the following example:
++
+[source,yaml]
+----
+apiVersion: velero.io/v1
+kind: Backup
+metadata:
+  name: test-backup
+  namespace: openshift-adp
+spec:
+  includedNamespaces:
+  - <application_namespace>
+----
++
+where:
++
+`<application_namespace>`:: Specifies the namespace for the application to back up.
+
+. Create the backup CR by running the following command:
++
+[source,terminal]
+----
+$ oc apply -f <backup_cr_filename>
+----
+
+.Verification
+
+* Verify that the backup object is in the `Completed` phase by running the following command. For more details, see the example output.
++
+[source,terminal]
+----
+$ oc describe backup test-backup -n openshift-adp
+----
++
+.Example output
+[source,terminal]
+----
+Name:         test-backup
+Namespace:    openshift-adp
+# ....#
+Status:
+  Backup Item Operations Attempted:  1
+  Backup Item Operations Completed:  1
+  Completion Timestamp:              2024-09-25T10:17:01Z
+  Expiration:                        2024-10-25T10:16:31Z
+  Format Version:                    1.1.0
+  Hook Status:
+  Phase:  Completed
+  Progress:
+    Items Backed Up:  34
+    Total Items:      34
+  Start Timestamp:    2024-09-25T10:16:31Z
+  Version:            1
+Events:               <none>
+----

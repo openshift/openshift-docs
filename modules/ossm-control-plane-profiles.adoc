@@ -1,0 +1,47 @@
+// Module included in the following assemblies:
+//
+// * service_mesh/v2x/prepare-to-deploy-applications-ossm.adoc
+
+:_mod-docs-content-type: PROCEDURE
+[id="ossm-control-plane-profiles_{context}"]
+= Creating {SMProductShortName} control plane profiles
+
+You can create reusable configurations with `ServiceMeshControlPlane` profiles. Individual users can extend the profiles they create with their own configurations. Profiles can also inherit configuration information from other profiles. For example, you can create an accounting control plane for the accounting team and a marketing control plane for the marketing team. If you create a development template and a production template, members of the marketing team and the accounting team can extend the development and production profiles with team-specific customization.
+
+When you configure {SMProductShortName} control plane profiles, which follow the same syntax as the `ServiceMeshControlPlane`, users inherit settings in a hierarchical fashion. The Operator is delivered with a `default` profile with default settings for {SMProductName}.
+
+[id="ossm-create-configmap_{context}"]
+== Creating the ConfigMap
+
+To add custom profiles, you must create a `ConfigMap` named `smcp-templates` in the `openshift-operators` project. The Operator container automatically mounts the `ConfigMap`.
+
+.Prerequisites
+
+* An installed, verified {SMProductShortName} Operator.
+* An account with the `cluster-admin` role. If you use {product-dedicated}, you must have an account with the `dedicated-admin` role.
+* Location of the Operator deployment.
+* Access to the OpenShift CLI (`oc`).
+
+.Procedure
+
+. Log in to the {product-title} CLI as a `cluster-admin`. If you use {product-dedicated}, you must have an account with the `dedicated-admin` role.
+
+. From the CLI, run this command to create the ConfigMap named `smcp-templates` in the `openshift-operators` project and replace `<profiles-directory>` with the location of the `ServiceMeshControlPlane` files on your local disk:
++
+[source,terminal]
+----
+$ oc create configmap --from-file=<profiles-directory> smcp-templates -n openshift-operators
+----
+
+. You can use the `profiles` parameter in the `ServiceMeshControlPlane` to specify one or more templates.
++
+[source,yaml]
+----
+  apiVersion: maistra.io/v2
+  kind: ServiceMeshControlPlane
+  metadata:
+    name: basic
+  spec:
+    profiles:
+    - default
+----

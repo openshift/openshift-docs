@@ -1,0 +1,169 @@
+// Module is included in the following assemblies:
+//
+// * serverless/serverless-tracing.adoc
+
+:_mod-docs-content-type: PROCEDURE
+[id="serverless-open-telemetry_{context}"]
+= Using {DTProductName} to enable distributed tracing
+
+{DTProductName} is made up of several components that work together to collect, store, and display tracing data.
+
+.Prerequisites
+
+* You have access to an {product-title} account with cluster administrator access.
+* You have not yet installed the {ServerlessOperatorName}, Knative Serving, and Knative Eventing. These must be installed after the {DTProductName} installation.
+* You have installed {DTProductName} by following the {product-title} "Installing distributed tracing" documentation.
+* You have installed the OpenShift CLI (`oc`).
+* You have created a project or have access to a project with the appropriate roles and permissions to create applications and other workloads in {product-title}.
+
+.Procedure
+
+. Create an `OpenTelemetryCollector` custom resource (CR):
++
+.Example OpenTelemetryCollector CR
+[source,yaml]
+----
+apiVersion: opentelemetry.io/v1alpha1
+kind: OpenTelemetryCollector
+metadata:
+  name: cluster-collector
+  namespace: <namespace>
+spec:
+  mode: deployment
+  config: |
+    receivers:
+      zipkin:
+    processors:
+    exporters:
+      jaeger:
+        endpoint: jaeger-all-in-one-inmemory-collector-headless.tracing-system.svc:14250
+        tls:
+          ca_file: "/var/run/secrets/kubernetes.io/serviceaccount/service-ca.crt"
+      logging:
+    service:
+      pipelines:
+        traces:
+          receivers: [zipkin]
+          processors: []
+          exporters: [jaeger, logging]
+----
+
+. Verify that you have two pods running in the namespace where {DTProductName} is installed:
++
+[source,terminal]
+----
+$ oc get pods -n <namespace>
+----
++
+.Example output
+[source,terminal]
+----
+NAME                                          READY   STATUS    RESTARTS   AGE
+cluster-collector-collector-85c766b5c-b5g99   1/1     Running   0          5m56s
+jaeger-all-in-one-inmemory-ccbc9df4b-ndkl5    2/2     Running   0          15m
+----
+
+. Verify that the following headless services have been created:
++
+[source,terminal]
+----
+$ oc get svc -n <namespace> | grep headless
+----
++
+.Example output
+[source,terminal]
+----
+cluster-collector-collector-headless            ClusterIP   None             <none>        9411/TCP                                 7m28s
+jaeger-all-in-one-inmemory-collector-headless   ClusterIP   None             <none>        9411/TCP,14250/TCP,14267/TCP,14268/TCP   16m
+----
++
+These services are used to configure Jaeger, Knative Serving, and Knative Eventing. The name of the Jaeger service may vary.
+
+. Install the {ServerlessOperatorName} by following the "Installing the {ServerlessOperatorName}" documentation.
+
+. Install Knative Serving by creating the following `KnativeServing` CR:
++
+.Example KnativeServing CR
+[source,yaml]
+----
+apiVersion: operator.knative.dev/v1beta1
+kind: KnativeServing
+metadata:
+    name: knative-serving
+    namespace: knative-serving
+spec:
+  config:
+    tracing:
+      backend: "zipkin"
+      zipkin-endpoint: "http://cluster-collector-collector-headless.tracing-system.svc:9411/api/v2/spans"
+      debug: "false"
+      sample-rate: "0.1" <1>
+----
+<1> The `sample-rate` defines sampling probability. Using `sample-rate: "0.1"` means that 1 in 10 traces are sampled.
+
+. Install Knative Eventing by creating the following `KnativeEventing` CR:
++
+.Example KnativeEventing CR
+[source,yaml]
+----
+apiVersion: operator.knative.dev/v1beta1
+kind: KnativeEventing
+metadata:
+    name: knative-eventing
+    namespace: knative-eventing
+spec:
+  config:
+    tracing:
+      backend: "zipkin"
+      zipkin-endpoint: "http://cluster-collector-collector-headless.tracing-system.svc:9411/api/v2/spans"
+      debug: "false"
+      sample-rate: "0.1" <1>
+----
+<1> The `sample-rate` defines sampling probability. Using `sample-rate: "0.1"` means that 1 in 10 traces are sampled.
+
+. Create a Knative service:
++
+.Example service
+[source,yaml]
+----
+apiVersion: serving.knative.dev/v1
+kind: Service
+metadata:
+  name: helloworld-go
+spec:
+  template:
+    metadata:
+      labels:
+        app: helloworld-go
+      annotations:
+        autoscaling.knative.dev/minScale: "1"
+        autoscaling.knative.dev/target: "1"
+    spec:
+      containers:
+      - image: quay.io/openshift-knative/helloworld:v1.2
+        imagePullPolicy: Always
+        resources:
+          requests:
+            cpu: "200m"
+        env:
+        - name: TARGET
+          value: "Go Sample v1"
+----
+
+. Make some requests to the service:
++
+.Example HTTPS request
+[source,terminal]
+----
+$ curl https://helloworld-go.example.com
+----
+
+. Get the URL for the Jaeger web console:
++
+.Example command
+[source,terminal]
+----
+$ oc get route jaeger-all-in-one-inmemory  -o jsonpath='{.spec.host}' -n <namespace>
+----
++
+You can now examine traces by using the Jaeger console.

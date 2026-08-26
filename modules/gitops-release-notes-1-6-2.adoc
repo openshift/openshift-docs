@@ -1,0 +1,28 @@
+// Module included in the following assembly:
+//
+// * gitops/gitops-release-notes.adoc
+
+:_mod-docs-content-type: REFERENCE
+
+[id="gitops-release-notes-1-6-2_{context}"]
+= Release notes for {gitops-title} 1.6.2
+
+{gitops-title} 1.6.2 is now available on {product-title} 4.8, 4.9, 4.10 and 4.11.
+
+[id="new-features-1-6-2_{context}"]
+== New features
+
+* This release removes the `DISABLE_DEX` environment variable from the `openshift-gitops-operator` CSV file. As a result, this environment variable is no longer set when you perform a fresh installation of {gitops-title}. link:https://issues.redhat.com/browse/GITOPS-2360[GITOPS-2360]
+
+[id="fixed-issues-1-6-2_{context}"]
+== Fixed issues
+
+The following issues have been resolved in the current release:
+
+* Before this update, the subscription health check was marked *degraded* for missing *InstallPlan* when more than 5 Operators were installed in a project. This update fixes the issue. link:https://issues.redhat.com/browse/GITOPS-2018[GITOPS-2018]
+
+* Before this update, the {gitops-title} Operator would spam the cluster with a deprecation notice warning whenever it detected that an Argo CD instance used deprecated fields. This update fixes this issue and shows only one warning event for each instance that detects a field. link:https://issues.redhat.com/browse/GITOPS-2230[GITOPS-2230]
+
+* From {product-title} 4.12, it is optional to install the console. This fix updates the {gitops-title} Operator to prevent errors with the Operator if the console is not installed. link:https://issues.redhat.com/browse/GITOPS-2352[GITOPS-2352]
+
+

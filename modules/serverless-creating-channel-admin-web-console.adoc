@@ -1,0 +1,35 @@
+// Module included in the following assemblies:
+//
+// * serverless/admin_guide/serverless-cluster-admin-eventing.adoc
+
+:_mod-docs-content-type: PROCEDURE
+[id="serverless-creating-channel-admin-web-console_{context}"]
+= Creating a channel by using the Administrator perspective
+
+After Knative Eventing is installed on your cluster, you can create a channel by using the Administrator perspective.
+
+.Prerequisites
+
+* The {ServerlessOperatorName} and Knative Eventing are installed on your {product-title} cluster.
+
+* You have logged in to the web console and are in the *Administrator* perspective.
+
+ifdef::openshift-enterprise[]
+* You have cluster administrator permissions for {product-title}.
+endif::[]
+
+ifdef::openshift-dedicated,openshift-rosa[]
+* You have cluster or dedicated administrator permissions for {product-title}.
+endif::[]
+
+.Procedure
+
+. In the *Administrator* perspective of the {product-title} web console, navigate to *Serverless* -> *Eventing*.
+. In the *Create* list, select *Channel*. You will be directed to the *Channel* page.
+. Select the type of `Channel` object that you want to create in the *Type* list.
++
+[NOTE]
+====
+Currently only `InMemoryChannel` channel objects are supported by default. Knative channels for Apache Kafka are available if you have installed the Knative broker implementation for Apache Kafka on {ServerlessProductName}.
+====
+. Click *Create*.

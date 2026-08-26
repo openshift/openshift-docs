@@ -1,0 +1,40 @@
+// Module included in the following assemblies:
+//
+// * serverless/knative-serving/external-ingress-routing/routing-overview.adoc
+
+:_mod-docs-content-type: PROCEDURE
+[id="knative-service-cluster-local_{context}"]
+= Setting cluster availability to cluster local
+
+
+// remove note for 4.10, OSD
+
+.Prerequisites
+
+* The {ServerlessOperatorName} and Knative Serving are installed on the cluster.
+* You have created a Knative service.
+
+.Procedure
+
+* Set the visibility for your service by adding the `networking.knative.dev/visibility=cluster-local` label:
++
+[source,terminal]
+----
+$ oc label ksvc <service_name> networking.knative.dev/visibility=cluster-local
+----
+
+.Verification
+
+* Check that the URL for your service is now in the format `\http://<service_name>.<namespace>.svc.cluster.local`, by entering the following command and reviewing the output:
++
+[source,termina]
+----
+$ oc get ksvc
+----
++
+.Example output
+[source,terminal]
+----
+NAME            URL                                                                         LATESTCREATED     LATESTREADY       READY   REASON
+hello           http://hello.default.svc.cluster.local                                      hello-tx2g7       hello-tx2g7       True
+----
