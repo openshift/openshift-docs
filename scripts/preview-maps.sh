@@ -132,9 +132,10 @@ for distro in "${DISTROS[@]}"; do
     "maps/$distro/navigation.adoc" \
     -D "$WORKTREE/$BRANCH/$distro" \
     -a toc=left \
+    -a toclevels=2 \
     -a doctype=book \
     -a docinfo=shared-footer \
-    -a multipage-level=1
+    -a multipage-level=4
 done
 
 # ── Generate index pages ─────────────────────────────────────────
