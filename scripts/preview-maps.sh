@@ -133,8 +133,9 @@ for distro in "${DISTROS[@]}"; do
     -D "$WORKTREE/$BRANCH/$distro" \
     -a toc=left \
     -a doctype=book \
+    -a toclevels=2 \
     -a docinfo=shared-footer \
-    -a multipage-level=1
+    -a multipage-level=4
 done
 
 # ── Generate index pages ─────────────────────────────────────────
