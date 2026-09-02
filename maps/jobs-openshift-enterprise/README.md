@@ -1,1 +1,0 @@
-This directory should contain the job maps that are included in the category maps.
