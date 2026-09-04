@@ -1,0 +1,333 @@
+// Module included in the following assemblies:
+//
+// * edge_computing/ztp-replacing-cluster-nodes.adoc
+
+:_mod-docs-content-type: PROCEDURE
+[id="ztp-replacing-failed-control-plane-node_{context}"]
+= Replacing a failed control plane node by using the ClusterInstance CR
+
+[role="_abstract"]
+You restore `etcd` quorum after a control plane node fails on a {product-title} cluster by removing the failed node from the `ClusterInstance` custom resource (CR) and then adding a replacement node.
+Complete the replacement before a second control plane failure can lose quorum.
+
+[WARNING]
+====
+Scale in the failed node before you scale out the replacement node.
+Adding a new control plane node first and then removing the failed node is not supported.
+Replace only one control plane node at a time.
+Replacing two control plane nodes in parallel can lose `etcd` quorum and make the cluster unrecoverable with this workflow.
+====
+
+.Prerequisites
+
+* You have installed the SiteConfig Operator on the hub cluster.
+* You have deployed the managed cluster by using a `ClusterInstance` CR that Argo CD synchronizes from a Git repository.
+* At least two of the three control plane nodes are in the `Ready` state so that `etcd` still has a quorum.
+* You have a replacement bare-metal host with baseboard management controller (BMC) credentials.
+If you reuse the same hardware, you can keep the existing BMC secret.
+* Control plane nodes do not host {rh-storage} object storage daemons (OSDs) or monitors.
+* You have the `kubeconfig` file for the hub cluster and the `kubeconfig` file for the managed cluster.
+
+.Procedure
+
+. Identify the failed control plane node on the managed cluster by running the following command:
++
+[source,terminal]
+----
+$ oc --kubeconfig <managed_cluster_kubeconfig> get nodes
+----
++
+.Example output
+[source,terminal]
+----
+NAME                           STATUS     ROLES                  AGE   VERSION
+control-plane-0.example.com    Ready      control-plane,master   10d   v1.33.0
+control-plane-1.example.com    Ready      control-plane,master   10d   v1.33.0
+control-plane-2.example.com    NotReady   control-plane,master   10d   v1.33.0
+compute-1.example.com          Ready      worker                 10d   v1.33.0
+----
++
+where:
++
+`<managed_cluster_kubeconfig>`:: Specifies the `kubeconfig` file for the managed cluster.
++
+The failed node reports `NotReady` or is missing from the list.
+Note the `hostName` value that matches that node in the `ClusterInstance` CR.
+
+. Confirm that two control plane nodes remain `Ready` by running the following command:
++
+[source,terminal]
+----
+$ oc --kubeconfig <managed_cluster_kubeconfig> get nodes -l node-role.kubernetes.io/control-plane
+----
+
+. In the `ClusterInstance` CR, add the `bmac.agent-install.openshift.io/remove-agent-and-node-on-delete` annotation to the failed node, and push the change to the Git repository:
++
+[source,yaml]
+----
+apiVersion: siteconfig.open-cluster-management.io/v1alpha1
+kind: ClusterInstance
+metadata:
+  name: "example-cluster"
+  namespace: "example-cluster"
+spec:
+  # ...
+  nodes:
+    - hostName: "control-plane-2.example.com"
+      role: "master"
+      extraAnnotations:
+        BareMetalHost:
+          bmac.agent-install.openshift.io/remove-agent-and-node-on-delete: "true"
+# ...
+----
+
+. Verify that the Argo CD application that monitors the Git repository is `Synced` by running the following command:
++
+[source,terminal]
+----
+$ oc --kubeconfig <hub_cluster_kubeconfig> get applications.argoproj.io -n openshift-gitops
+----
++
+.Example output
+[source,terminal]
+----
+NAME       SYNC STATUS   HEALTH STATUS
+clusters   Synced        Healthy
+----
++
+where:
++
+`<hub_cluster_kubeconfig>`:: Specifies the `kubeconfig` file for the hub cluster.
++
+Wait until the application that contains the `ClusterInstance` CR reports `Synced` and `Healthy`.
+
+. Verify that the `BareMetalHost` resource on the hub cluster has the annotation by running the following command:
++
+[source,terminal]
+----
+$ oc --kubeconfig <hub_cluster_kubeconfig> get bmh -n <cluster_namespace> <bmh_name> \
+  -o jsonpath='{.metadata.annotations.bmac\.agent-install\.openshift.io/remove-agent-and-node-on-delete}{"\n"}'
+----
++
+.Example output
+[source,terminal]
+----
+true
+----
++
+where:
++
+`<cluster_namespace>`:: Specifies the namespace of the `ClusterInstance` CR.
+`<bmh_name>`:: Specifies the name of the `BareMetalHost` resource, which matches the node `hostName` value.
+
+. Configure the `pruneManifests` field for the failed node so that the SiteConfig Operator deletes the `BareMetalHost` resource.
+Keep the deletion annotation.
+Push the change to the Git repository:
++
+[source,yaml]
+----
+apiVersion: siteconfig.open-cluster-management.io/v1alpha1
+kind: ClusterInstance
+metadata:
+  name: "example-cluster"
+  namespace: "example-cluster"
+spec:
+  # ...
+  nodes:
+    - hostName: "control-plane-2.example.com"
+      role: "master"
+      extraAnnotations:
+        BareMetalHost:
+          bmac.agent-install.openshift.io/remove-agent-and-node-on-delete: "true"
+      pruneManifests:
+        - apiVersion: metal3.io/v1alpha1
+          kind: BareMetalHost
+# ...
+----
++
+Wait until the Argo CD application reports `Synced`.
+The status of the `BareMetalHost` resource changes to `deprovisioning`.
+If the BMC is unreachable, deprovisioning can take significantly longer than a graceful removal.
+Wait until the `BareMetalHost` resource is fully deleted.
+
+. Verify that the `BareMetalHost` resource is deleted from the hub cluster by running the following command:
++
+[source,terminal]
+----
+$ oc --kubeconfig <hub_cluster_kubeconfig> get bmh -n <cluster_namespace>
+----
+
+. Verify that the `Agent` resource for the failed node is deleted from the hub cluster by running the following command:
++
+[source,terminal]
+----
+$ oc --kubeconfig <hub_cluster_kubeconfig> get agent -n <cluster_namespace>
+----
++
+[IMPORTANT]
+====
+Do not add the replacement node until the `Agent` resource is gone.
+====
+
+. Verify that the failed node is no longer listed on the managed cluster by running the following command:
++
+[source,terminal]
+----
+$ oc --kubeconfig <managed_cluster_kubeconfig> get nodes
+----
+
+. Identify an `etcd` pod on a remaining control plane node by running the following command:
++
+[source,terminal]
+----
+$ oc --kubeconfig <managed_cluster_kubeconfig> get pods -n openshift-etcd
+----
++
+Note the name of an `etcd` pod that runs on a remaining `Ready` control plane node.
+
+. Verify that `etcd` has two healthy members by running the following command:
++
+[source,terminal]
+----
+$ oc --kubeconfig <managed_cluster_kubeconfig> rsh -n openshift-etcd <etcd_pod> \
+  etcdctl member list -w table
+----
++
+.Example output
+[source,terminal]
+----
++------------------+---------+-----------------------------+--------------------------+--------------------------+------------+
+|        ID        | STATUS  |            NAME             |        PEER ADDRS        |       CLIENT ADDRS       | IS LEARNER |
++------------------+---------+-----------------------------+--------------------------+--------------------------+------------+
+| 1111111111111111 | started | control-plane-0.example.com | https://192.0.2.10:2380 | https://192.0.2.10:2379 |      false |
+| 2222222222222222 | started | control-plane-1.example.com | https://192.0.2.11:2380 | https://192.0.2.11:2379 |      false |
++------------------+---------+-----------------------------+--------------------------+--------------------------+------------+
+----
++
+where:
++
+`<etcd_pod>`:: Specifies the name of an `etcd` pod on a remaining `Ready` control plane node.
++
+The failed member is not in the table.
+
+. Configure the replacement node in `spec.nodes`.
+Remove the `pruneManifests` field and the deletion annotation.
+Then complete one of the following actions:
++
+* To reuse the same hardware, keep the existing node entry and the same `hostName` value.
+Leave the BMC address, boot MAC address, and node network configuration unchanged.
+* To install replacement hardware, update at least the BMC address, BMC secret name, boot MAC address, and node network configuration.
+If the replacement uses a different `hostName` value, delete the failed node entry and add a new entry.
++
+The following example reuses the `control-plane-2.example.com` hostname on replacement hardware:
++
+[source,yaml]
+----
+apiVersion: siteconfig.open-cluster-management.io/v1alpha1
+kind: ClusterInstance
+metadata:
+  name: "example-cluster"
+  namespace: "example-cluster"
+spec:
+  # ...
+  nodes:
+    - hostName: "control-plane-2.example.com"
+      role: "master"
+      bmcAddress: "redfish-virtualmedia+https://192.0.2.22/redfish/v1/Systems/System.Embedded.1"
+      bmcCredentialsName:
+        name: "control-plane-2-bmc-secret"
+      bootMACAddress: "AA:BB:CC:DD:EE:22"
+      bootMode: "UEFI"
+      nodeNetwork:
+        interfaces:
+          - name: eno1
+            macAddress: "AA:BB:CC:DD:EE:22"
+        config:
+          interfaces:
+            - name: eno1
+              type: ethernet
+              state: up
+              macAddress: "AA:BB:CC:DD:EE:22"
+              ipv4:
+                enabled: true
+                address:
+                  - ip: 192.0.2.12
+                    prefix-length: 24
+              ipv6:
+                enabled: false
+# ...
+----
+
+. If the replacement host uses a new BMC secret, create the secret in the same namespace as the `ClusterInstance` CR:
++
+[source,yaml]
+----
+apiVersion: v1
+kind: Secret
+metadata:
+  name: "control-plane-2-bmc-secret"
+  namespace: example-cluster
+stringData:
+  username: "username"
+  password: "password"
+type: Opaque
+----
+
+. Commit the `ClusterInstance` CR and any new secret, and push the changes to the Git repository that Argo CD monitors.
+Wait until the Argo CD application reports `Synced` and `Healthy`.
+The SiteConfig Operator creates a new `BareMetalHost` resource.
+The Assisted Installer provisions the host and joins it to the cluster.
+
+. Monitor provisioning on the hub cluster by running the following command:
++
+[source,terminal]
+----
+$ oc --kubeconfig <hub_cluster_kubeconfig> get bmh -n <cluster_namespace>
+----
++
+.Example output
+[source,terminal]
+----
+NAME                           STATE          CONSUMER   ONLINE   ERROR   AGE
+control-plane-0.example.com    provisioned               true             10d
+control-plane-1.example.com    provisioned               true             10d
+control-plane-2.example.com    provisioning              true             5m
+----
+
+.Verification
+
+. Verify that the replacement node is `Ready` on the managed cluster by running the following command:
++
+[source,terminal]
+----
+$ oc --kubeconfig <managed_cluster_kubeconfig> get nodes -l node-role.kubernetes.io/control-plane
+----
+
+. Verify that `etcd` has three healthy members by running the following command:
++
+[source,terminal]
+----
+$ oc --kubeconfig <managed_cluster_kubeconfig> rsh -n openshift-etcd <etcd_pod> \
+  etcdctl member list -w table
+----
++
+where:
++
+`<etcd_pod>`:: Specifies the name of an `etcd` pod on a remaining `Ready` control plane node.
+
+. Verify that every `etcd` endpoint is healthy by running the following command:
++
+[source,terminal]
+----
+$ oc --kubeconfig <managed_cluster_kubeconfig> rsh -n openshift-etcd <etcd_pod> \
+  etcdctl endpoint health --cluster
+----
+
+. Verify that the `etcd` and `kube-apiserver` Operators have finished reconciling by running the following command:
++
+[source,terminal]
+----
+$ oc --kubeconfig <managed_cluster_kubeconfig> get clusteroperators etcd kube-apiserver
+----
++
+Wait until both Operators report `True` in the `AVAILABLE` column and `False` in the `PROGRESSING` column.
