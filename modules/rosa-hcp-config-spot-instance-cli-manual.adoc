@@ -1,0 +1,154 @@
+// Module included in the following assemblies:
+//
+// * rosa_hcp/rosa-hcp-config-aws-spot-instances-cli.adoc
+:_mod-docs-content-type: PROCEDURE
+[id="rosa-hcp-config-spot-instance-cli-manual_{context}"]
+= Setting up the AWS infrastructure for Spot instances manually
+
+[role="_abstract"]
+You can set up the required AWS infrastructure manually by creating the AWS resources individually.
+
+.Procedure
+
+. Create the SQS queue by running the following command:
++
+[source,terminal]
+----
+$ QUEUE_URL=$(aws sqs create-queue \
+  --queue-name "$<cluster-name>-spot-interruption-queue" \
+  --region "us-east-1" \
+  --output text --query 'QueueUrl')
+----
+
+. Tag the SQS queue with the `red-hat=true` tag:
++
+[source,terminal]
+----
+$ aws sqs tag-queue-resource \
+  --queue-url "${QUEUE_URL}" \
+  --tags Key=red-hat,Value=true
+----
++
+[IMPORTANT]
+====
+You must include this tag. Omitting this tag will cause the AWS Node Termination Handler to fail when polling the queue.
+====
+
+. Retreive the queue ARN:
++
+[source,terminal]
+----
+$ ACCOUNT_ID=$(aws sts get-caller-identity --query Account --output text) && \
+  QUEUE_ARN="arn:aws:sqs:us-east-1:${ACCOUNT_ID}:<cluster-name>-spot-interruption-queue"
+----
+
+. Create two separate EventBridge rules:
+.. Create one rule for Spot interruption warnings:
++
+[source,terminal]
+----
+$ aws events put-rule \
+  --name "<cluster-name>-spot-interruption" \
+  --event-pattern '{"source": ["aws.ec2"], "detail-type": ["EC2 Spot Instance Interruption Warning"]}' \
+  --region "us-east-1"
+----
+
+.. Create another rule for rebalance recommendations:
++
+[source,terminal]
+----
+$ aws events put-rule \
+  --name "<cluster-name>-rebalance-recommendation" \
+  --event-pattern '{"source": ["aws.ec2"], "detail-type": ["EC2 Instance Rebalance Recommendation"]}' \
+  --region "us-east-1"
+----
+
+. Set the EventBridge target so both rules are routed to the SQS queue:
++
+[source,terminal]
+----
+$ aws events put-targets \
+  --rule "<cluster-name>-spot-interruption" \
+  --targets "Id=1,Arn=${QUEUE_ARN}" \
+  --region "us-east-1"
+----
++
+[source,terminal]
+----
+$ aws events put-targets \
+  --rule "<cluster-name>-rebalance-recommendation" \
+  --targets "Id=1,Arn=${QUEUE_ARN}" \
+  --region "us-east-1"
+----
+
+. Apply the SQS queue resource policy:
++
+This policy grants access to two principals:
++
+EventBridge:: to send interruption events to the queue
+NodePoolManagement role:: to receive and delete messages from the queue
++
+.. Determine the NodePoolManagement role ARN. The ARN typically follows this pattern:
++
+[source,text]
+----
+arn:aws:iam::<account-id>:role/ManagedOpenShift-HCP-ROSA-NodePoolManagement-Role
+----
+
+.. Optional: Retreive the ARN from an existing cluster:
++
+[source,terminal]
+----
+$ rosa describe cluster -c <cluster-name> -o json | jq -r '.aws.sts.role_arn'
+----
+
+.. Set the role ARN and apply the policy:
++
+[source,terminal]
+----
+$ NODEPOOL_ROLE_ARN="arn:aws:iam::${ACCOUNT_ID}:role/ManagedOpenShift-HCP-ROSA-NodePoolManagement-Role"
+----
++
+[source,terminal]
+----
+$ cat > /tmp/sqs-policy.json <<EOF
+{
+  "Version": "2012-10-17",
+  "Statement": [
+    {
+      "Sid": "AllowNodePoolManagementRole",
+      "Effect": "Allow",
+      "Principal": {
+        "AWS": "${NODEPOOL_ROLE_ARN}"
+      },
+      "Action": [
+        "sqs:DeleteMessage",
+        "sqs:ReceiveMessage"
+      ],
+      "Resource": "${QUEUE_ARN}"
+    },
+    {
+      "Sid": "AllowEventBridgeToSendMessages",
+      "Effect": "Allow",
+      "Principal": {
+        "Service": "events.amazonaws.com"
+      },
+      "Action": "sqs:SendMessage",
+      "Resource": "${QUEUE_ARN}"
+    }
+  ]
+}
+EOF
+----
++
+[source,terminal]
+----
+$ aws sqs set-queue-attributes \
+  --queue-url "${QUEUE_URL}" \
+  --attributes "Policy=$(cat /tmp/sqs-policy.json)"
+----
+
+[NOTE]
+====
+This resource policy provides defense-in-depth alongside the managed IAM policy. The IAM policy restricts access by the tag `red-hat=true`. The resource policy restricts access by principal ARN.
+====
