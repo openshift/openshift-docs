@@ -1,0 +1,182 @@
+// Module included in the following assemblies:
+//
+// * edge_computing/ztp-advanced-install-ztp.adoc
+
+:_mod-docs-content-type: PROCEDURE
+[id="ztp-customizing-br-ex-bridge-install_{context}"]
+= Customizing the br-ex bridge at installation time in the {ztp} pipeline
+
+[role="_abstract"]
+By default, {product-title} automatically configures the Open vSwitch (OVS) `br-ex` bridge on bare-metal nodes. For advanced networking requirements, you can override this default behavior by defining a customized `br-ex` bridge in an NMState configuration. When you configure the customized `br-ex` bridge as part of the {ztp-first} installation, the configuration is applied during cluster provisioning. This avoids the Day 2 migration procedure, which requires a node reboot.
+
+To customize the `br-ex` bridge at installation time, you define the NMState configuration, base64-encode it, embed the encoded value in a `MachineConfig` object, and include that object as an extra manifest in the {ztp} pipeline.
+
+[NOTE]
+====
+Use the default OVS br-ex bridge for standard environments, such as single network interface controller (NIC) environments with default network settings.
+====
+
+[WARNING]
+====
+The following list of interface names are reserved and you cannot use the names with NMState configurations:
+
+* `br-ext`
+* `br-int`
+* `br-local`
+* `br-nexthop`
+* `br0`
+* `ext-vxlan`
+* `ext`
+* `genev_sys_*`
+* `int`
+* `k8s-*`
+* `ovn-k8s-*`
+* `patch-br-*`
+* `tun0`
+* `vxlan_sys_*`
+====
+
+.Prerequisites
+
+* You configured a Git repository where you manage your custom site configuration data. The repository must be accessible from the hub cluster and be defined as a source repository for the Argo CD application.
+* Optional: You installed the link:https://nmstate.io/user/quick_guide.html[`nmstatectl`] CLI tool to validate your NMState configuration.
+
+.Procedure
+
+. Create an NMState configuration file and define a customized `br-ex` bridge network configuration in the file:
++
+.Example of an NMState configuration for a customized `br-ex` bridge network
+[source,yaml]
+----
+interfaces:
+- name: enp2s0
+  type: ethernet
+  state: up
+  mtu: 9000
+  ipv4:
+    enabled: false
+  ipv6:
+    enabled: false
+- name: br-ex
+  type: ovs-bridge
+  state: up
+  ipv4:
+    enabled: false
+    dhcp: false
+  ipv6:
+    enabled: false
+    dhcp: false
+  bridge:
+    options:
+      mcast-snooping-enable: true
+    port:
+    - name: enp2s0
+    - name: br-ex
+- name: br-ex
+  type: ovs-interface
+  state: up
+  copy-mac-from: enp2s0
+  mtu: 9000
+  ipv4:
+    enabled: true
+    dhcp: true
+    auto-route-metric: 48
+  ipv6:
+    enabled: true
+    dhcp: true
+    auto-route-metric: 48
+# ...
+----
++
+where:
++
+`interfaces.name`:: Specifies the name of the interface.
+`interfaces.type`:: Specifies the type of ethernet.
+`interfaces.state`:: Specifies the requested state for the interface after creation.
+`mtu`:: To ensure network stability and performance, you must explicitly declare the MTU in the manifest for every interface. Do not rely on automatic MTU configuration. The MTU configured on a bridge port or VLAN-tagged interface must not exceed the maximum frame size supported by the attached physical medium. A mismatch causes packet fragmentation or connectivity loss.
+`ipv4.enabled`:: Disables IPv4 and IPv6 in this example.
+`port.name`:: Specifies the node NIC to which the bridge attaches.
+`auto-route-metric`:: Sets the parameter to `48` to ensure the `br-ex` default route always has the highest precedence (lowest metric). This configuration prevents routing conflicts with any other interfaces that are automatically configured by the `NetworkManager` service.
+
+. Use the `cat` command to base64-encode the contents of the NMState configuration:
++
+[source,terminal]
+----
+$ cat <nmstate_configuration>.yml | base64
+----
++
+where:
++
+`<nmstate_configuration>`:: Replace `<nmstate_configuration>` with the name of your NMState resource YAML file.
+
+. In your `/clusterinstance` directory, create an `extra-manifest` subdirectory and add a `MachineConfig` object that references the base64-encoded NMState configuration:
++
+.Example `MachineConfig` object for a customized `br-ex` bridge
+[source,yaml]
+----
+apiVersion: machineconfiguration.openshift.io/v1
+kind: MachineConfig
+metadata:
+  labels:
+    machineconfiguration.openshift.io/role: master
+  name: 10-br-ex-master
+spec:
+  config:
+    ignition:
+      version: 3.2.0
+    storage:
+      files:
+      - contents:
+          source: data:text/plain;charset=utf-8;base64,<base64_encoded_nmstate_configuration>
+        mode: 0644
+        overwrite: true
+        path: /etc/nmstate/openshift/cluster.yml
+----
++
+where:
++
+`metadata.labels`:: Specifies the machine config pool role, for example `master`, that the configuration applies to.
+`metadata.name`:: Specifies the name of the machine config.
+`contents.source`:: Writes the encoded base64 information to the specified path. Replace `<base64_encoded_nmstate_configuration>` with the base64-encoded value that you generated in an earlier step.
+`path`:: Applies a single global configuration to all nodes with the specified role by using the `/etc/nmstate/openshift/cluster.yml` configuration file.
+
+. Create or update the `kustomization.yaml` file to use `configMapGenerator` to package the `MachineConfig` object into a `ConfigMap`:
++
+[source,yaml]
+----
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+resources:
+  - site1-sno-du.yaml
+configMapGenerator:
+  - name: extra-manifests-cm
+    namespace: site1-sno-du
+    files:
+      - extra-manifest/10-br-ex-master.yaml
+generatorOptions:
+  disableNameSuffixHash: true
+----
++
+* The `configMapGenerator.namespace` value must match the `ClusterInstance` namespace.
+* Setting `generatorOptions.disableNameSuffixHash` to `true` disables the hash suffix so the `ConfigMap` name is predictable.
+
+. In your `ClusterInstance` CR, reference the `ConfigMap` in the `extraManifestsRefs` field:
++
+[source,yaml]
+----
+apiVersion: siteconfig.open-cluster-management.io/v1alpha1
+kind: ClusterInstance
+metadata:
+  name: "site1-sno-du"
+  namespace: "site1-sno-du"
+spec:
+  clusterName: "site1-sno-du"
+  networkType: "OVNKubernetes"
+  extraManifestsRefs:
+    - name: extra-manifests-cm
+  # ...
+----
+
+. Commit the `ClusterInstance` CR, `MachineConfig` object, and `kustomization.yaml` file to your Git repository and push the changes.
++
+During cluster provisioning, the SiteConfig Operator applies the `MachineConfig` object as an extra manifest, and the customized `br-ex` bridge configuration is applied to each node without requiring a reboot.
