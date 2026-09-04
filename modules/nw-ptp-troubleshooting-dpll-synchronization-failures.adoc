@@ -1,0 +1,194 @@
+// Module included in the following assemblies:
+//
+// * networking/advanced_networking/ptp/configuring-ptp.adoc
+
+:_mod-docs-content-type: PROCEDURE
+[id="nw-ptp-troubleshooting-dpll-synchronization-failures_{context}"]
+= Troubleshoot DPLL synchronization failures on Intel Granite Rapids-D
+
+[role="_abstract"]
+You can diagnose and resolve digital phase-locked loop (DPLL) synchronization failures on Telecom Grandmaster (T-GM) deployments using Intel Granite Rapids-D hardware.
+Common failure scenarios include DPLL stuck in FREERUN state, inability to achieve LOCKED state, and frequent transitions between LOCKED and HOLDOVER states.
+
+:FeatureName: Telecom Grandmaster clocks on Intel Granite Rapids-D hardware
+include::snippets/technology-preview.adoc[]
+
+.Prerequisites
+
+* You have configured a Telecom Grandmaster on Intel Granite Rapids-D hardware.
+* The T-GM is operational but experiencing DPLL synchronization issues.
+* You have access to the `linuxptp-daemon` container on the T-GM node.
+* You understand the expected DPLL operational states (LOCKED, HOLDOVER, FREERUN).
+
+.Procedure
+
+. Verify the current DPLL operational state:
++
+[source,terminal]
+----
+$ oc rsh -n openshift-ptp -c linuxptp-daemon-container <linuxptp-daemon-pod-name>
+sh-4.4# cat /sys/class/ptp/ptp0/device/dpll_0/state
+----
++
+Replace `<linuxptp-daemon-pod-name>` with the name of your `linuxptp-daemon` pod.
++
+Expected states:
++
+* `LOCKED`: Normal operation, DPLL synchronized to GNSS time source
+* `HOLDOVER`: GNSS signal lost but timing maintained within specification
+* `FREERUN`: DPLL not synchronized, no valid reference source
+
+. Verify the GNSS reference source status:
++
+[source,terminal]
+----
+sh-4.4# cat /dev/gnss0
+----
++
+.Example output showing GNSS NMEA sentences
+[source,terminal]
+----
+$GNRMC,123456.00,A,4012.1234,N,07357.5678,W,0.0,0.0,040926,,,A*6A
+$GNVTG,0.0,T,,M,0.0,N,0.0,K,A*3D
+$GNGGA,123456.00,4012.1234,N,07357.5678,W,1,08,1.2,100.0,M,-34.0,M,,*5E
+----
++
+If no output appears or the file is empty, the GNSS signal is not present.
+Proceed to "Troubleshoot GNSS connectivity issues on Intel Granite Rapids-D" for GNSS-specific troubleshooting.
+
+. Check the `ts2phc` process for GNSS time input synchronization:
++
+[source,terminal]
+----
+$ oc logs -n openshift-ptp <linuxptp-daemon-pod-name> -c linuxptp-daemon-container | grep ts2phc | tail -20
+----
++
+.Example output showing ts2phc synchronization
+[source,terminal]
+----
+ts2phc[1234.567]: [ptp0] master offset         -12 s2 freq  +34567
+ts2phc[1235.568]: [ptp0] master offset          +8 s2 freq  +34571
+----
++
+If the `ts2phc` output shows large offsets (> 1000 nanoseconds) or frequent state changes, the GNSS signal quality is poor or intermittent.
+
+. Diagnose common DPLL synchronization failure scenarios:
++
+.. *Scenario 1: DPLL stuck in FREERUN state*
++
+*Symptom*: Clock Class 248, DPLL state shows FREERUN.
++
+*Cause*: No valid reference source, GNSS signal lost for extended period.
++
+*Resolution*:
++
+... Verify GNSS antenna connection to NAC adapter.
+... Check GNSS signal quality (satellite count and SNR values).
+... Verify `ts2phc` configuration in the `PtpConfig` CR.
+... Restart the `linuxptp-daemon` pod if the GNSS signal is restored:
++
+[source,terminal]
+----
+$ oc delete pod -n openshift-ptp <linuxptp-daemon-pod-name>
+----
+
+.. *Scenario 2: DPLL cannot achieve LOCKED state*
++
+*Symptom*: DPLL cycles between FREERUN and HOLDOVER, never reaches LOCKED.
++
+*Cause*: Poor GNSS signal quality, incorrect antenna placement, `ts2phc` configuration error.
++
+*Resolution*:
++
+... Check GNSS signal-to-noise ratio (SNR) values. Healthy SNR is > 30 dB.
+... Verify antenna placement has clear sky view with no obstructions.
+... Review `ts2phc` configuration parameters in the `PtpConfig` CR.
+... Check for electromagnetic interference sources near the GNSS antenna.
+
+.. *Scenario 3: Frequent LOCKED to HOLDOVER transitions*
++
+*Symptom*: DPLL frequently transitions between LOCKED and HOLDOVER states.
++
+*Cause*: Intermittent GNSS signal, antenna cable issues, electromagnetic interference.
++
+*Resolution*:
++
+... Verify antenna cable integrity. Check for sharp bends, damage to cable jacket.
+... Check for interference sources near the antenna or cable routing.
+... Monitor GNSS signal stability over an extended period (1 hour minimum).
+... Replace the GNSS antenna or cable if intermittent connection is detected.
+
+. Verify `phc2sys` and `ts2phc` synchronization:
++
+.. Check `phc2sys` synchronization between system clock and NAC adapter PHC:
++
+[source,terminal]
+----
+$ oc logs -n openshift-ptp <linuxptp-daemon-pod-name> -c linuxptp-daemon-container | grep phc2sys | tail -10
+----
+
+.. Check for socket path mismatches between `ts2phc` and `ptp4l`:
++
+[source,terminal]
+----
+$ oc logs -n openshift-ptp <linuxptp-daemon-pod-name> -c linuxptp-daemon-container | grep -i socket
+----
++
+Socket path mismatches prevent inter-process communication and cause synchronization failures.
+
+.. Check for domain number mismatches:
++
+[source,terminal]
+----
+$ oc logs -n openshift-ptp <linuxptp-daemon-pod-name> -c linuxptp-daemon-container | grep -i domain
+----
++
+PTP processes must use the same domain number to communicate.
+
+. Monitor DPLL state transitions:
++
+[source,terminal]
+----
+$ oc logs -n openshift-ptp <linuxptp-daemon-pod-name> -c linuxptp-daemon-container -f | grep -i dpll
+----
++
+Expected transitions during GNSS loss: LOCKED → HOLDOVER → FREERUN
++
+Expected transitions during GNSS recovery: FREERUN → LOCKED
++
+Unexpected transitions indicate configuration or hardware issues.
+
+. Verify that the `HardwareConfig` CR is applied correctly:
++
+.. Check that the `HardwareConfig` resource exists:
++
+[source,terminal]
+----
+$ oc get hardwareconfig -n openshift-ptp
+----
+
+.. Verify that `relatedPtpProfileName` matches the `PtpConfig` profile name:
++
+[source,terminal]
+----
+$ oc get hardwareconfig -n openshift-ptp -o yaml | grep relatedPtpProfileName
+----
+
+.. Check that holdover parameters are applied to the DPLL:
++
+[source,terminal]
+----
+$ oc get hardwareconfig -n openshift-ptp -o yaml | grep -A 5 holdover
+----
+
+.Verification
+
+. If the issue persists after troubleshooting, contact Red Hat Support.
+Technology Preview features are supported with Severity 3 (moderate impact) or Severity 4 (low impact) cases only.
+
+[role="_additional-resources"]
+.Additional resources
+
+* Troubleshoot GNSS connectivity issues on Intel Granite Rapids-D
+* DPLL operational states reference
+* Verify Telecom Grandmaster DPLL synchronization on Intel Granite Rapids-D
