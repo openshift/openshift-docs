@@ -1,0 +1,245 @@
+// Module included in the following assemblies:
+//
+// * networking/advanced_networking/bgp_routing/about-bgp-routing.adoc
+
+:_mod-docs-content-type: PROCEDURE
+[id="nw-configuring-aws-peer-aws-route-server_{context}"]
+= Configuring BGP to peer with AWS Route Server
+
+[role="_abstract"]
+After you prepare the {aws-short} environment, configure BGP Cloud Connector so that {product-title} compute nodes establish BGP peering sessions with the {aws-short} Route Server and advertise {VirtProductName} virtual machine (VM) network routes.
+
+.Prerequisites
+
+* You prepared the {aws-short} environment for BGP peering.
+* You installed the BGP Cloud Connector Operator on your cluster.
+* You have the {aws-short} Region, Route Server ID, and local autonomous system number (ASN) that you noted while preparing the {aws-short} environment.
+
+.Procedure
+
+. Get the OpenID Connect (OIDC) provider and account ID for the cluster by entering the following commands:
++
+[source,terminal]
+----
+$ OIDC_PROVIDER=$(rosa describe cluster -c <cluster_name> -o json | jq -r '.aws.sts.oidc_endpoint_url' | sed 's|https://||')
+$ AWS_ACCOUNT_ID=$(aws sts get-caller-identity --query Account --output text)
+----
++
+Replace `<cluster_name>` with the name of your cluster.
+
+. Create an IAM role that trusts the Operator's service account by entering the following command:
++
+[source,terminal]
+----
+$ aws iam create-role --role-name bgp-cloud-connector-operator --assume-role-policy-document '{
+  "Version": "2012-10-17",
+  "Statement": [{
+    "Effect": "Allow",
+    "Principal": {"Federated": "arn:aws:iam::'$AWS_ACCOUNT_ID':oidc-provider/'$OIDC_PROVIDER'"},
+    "Action": "sts:AssumeRoleWithWebIdentity",
+    "Condition": {
+      "StringEquals": {
+        "'$OIDC_PROVIDER':sub": "system:serviceaccount:openshift-bgp-cloud-connector:openshift-bgp-cloud-connector-controller-manager"
+      }
+    }
+  }]
+}'
+----
+
+. Attach the required permissions policy to the role by entering the following command:
++
+[source,terminal]
+----
+$ aws iam put-role-policy --role-name bgp-cloud-connector-operator --policy-name bgp-cloud-connector-operator-policy --policy-document '{
+  "Version": "2012-10-17",
+  "Statement": [{
+    "Effect": "Allow",
+    "Action": [
+      "sts:GetCallerIdentity",
+      "ec2:DescribeRouteServers",
+      "ec2:DescribeRouteServerEndpoints",
+      "ec2:DescribeSubnets",
+      "ec2:DescribeRouteServerPeers",
+      "ec2:CreateRouteServerPeer",
+      "ec2:DeleteRouteServerPeer",
+      "ec2:CreateTags",
+      "ec2:DescribeInstances",
+      "ec2:ModifyNetworkInterfaceAttribute"
+    ],
+    "Resource": "*"
+  }]
+}'
+----
+
+. Annotate the service account for the Operator with the role ARN by entering the following command:
++
+[source,terminal]
+----
+$ oc annotate serviceaccount openshift-bgp-cloud-connector-routing-controller-manager -n openshift-bgp-cloud-connector-routing eks.amazonaws.com/role-arn=arn:aws:iam::${AWS_ACCOUNT_ID}:role/bgp-cloud-connector-operator
+----
++
+[IMPORTANT]
+====
+The OIDC webhook injects credentials only when a pod starts. If the Operator is already running, restart it so it picks up the new role:
+
+[source,terminal]
+----
+$ oc rollout restart deployment/openshift-bgp-cloud-connector-routing-controller-manager -n openshift-bgp-cloud-connector-routing
+----
+====
+
+. Create a `BGPCloudConfiguration` custom resource (CR) to define the cluster-wide BGP configuration:
++
+[source,yaml]
+----
+apiVersion: networking.openshift.io/v1beta1
+kind: BGPCloudConfiguration
+metadata:
+  name: cluster
+spec:
+  platform: AWS
+  bgp:
+    localASN: <local_asn>
+    livenessDetection: bgp-keepalive
+  routerNodeSelector:
+    bgp_router: "true"
+  aws:
+    region: <aws_region>
+    routeServerIDs:
+      - <route_server_id>
+----
++
+Replace `<local_asn>` with the local ASN that you chose while preparing the {aws-short} environment.
+Replace `<aws_region>` with the {aws-short} Region of your Route Server.
+Replace `<route_server_id>` with the Route Server ID that you noted while preparing the {aws-short} environment.
++
+[source,terminal]
+----
+$ oc apply -f bgpcloudconfiguration.yaml
+----
++
+[NOTE]
+====
+`BGPCloudConfiguration` is a cluster-scoped singleton.
+You must provide the name `cluster` to the CR.
+====
+
+. Label each compute node that you want to participate in BGP peering. Ensure the labels matches the `spec.routerNodeSelector` label from an earlier step.
++
+[source,terminal]
+----
+$ oc label node <node_name> bgp_router=true
+----
++
+Replace `<node_name>` with the name of the compute node.
+
+. Create a namespace for your workload. Use the labels that the BGP Cloud Connector requires.
++
+[source,yaml]
+----
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: <namespace_name>
+  labels:
+    k8s.ovn.org/primary-user-defined-network: ""
+    cluster-udn: <network_name>
+----
++
+Replace `<namespace_name>` with a name for the namespace.
+Replace `<network_name>` with the network name that you plan to use in the following step.
++
+[IMPORTANT]
+====
+You must set the `k8s.ovn.org/primary-user-defined-network` label when you create the namespace.
+{product-title} admission policy prevents you from adding this label to an existing namespace.
+====
++
+[source,terminal]
+----
+$ oc apply -f namespace.yaml
+----
+
+. Create a `BGPRouting` CR to declare the network to advertise over BGP:
++
+[source,yaml]
+----
+apiVersion: networking.openshift.io/v1beta1
+kind: BGPRouting
+metadata:
+  name: <routing_name>
+spec:
+  network:
+    name: <network_name>
+    subnets:
+      - <pod_network_cidr>
+----
++
+Replace `<routing_name>` with a name for the CR.
+Replace `<network_name>` with the same value that you used for `cluster-udn` in the previous step.
+Replace `<pod_network_cidr>` with the CIDR for the pod network, for example `10.100.0.0/16`.
++
+[source,terminal]
+----
+$ oc apply -f bgprouting.yaml
+----
+
+.Verification
+
+. Confirm that both custom resources report a `Ready` phase by entering the following commands:
++
+[source,terminal]
+----
+$ oc get bgpcloudconfiguration cluster -o jsonpath='{.status.phase}'
+----
++
+[source,terminal]
+----
+$ oc get bgprouting <routing_name> -o jsonpath='{.status.phase}'
+----
++
+If either resource reports `Degraded`, inspect its conditions for the failure reason:
++
+[source,terminal]
+----
+$ oc get bgpcloudconfiguration cluster -o jsonpath='{.status.conditions}' | jq .
+----
+
+. Confirm that the Operator generated the supporting resources by entering the following commands:
++
+[source,terminal]
+----
+$ oc get frrconfiguration -n openshift-frr-k8s
+----
++
+[source,terminal]
+----
+$ oc get clusteruserdefinednetwork
+----
++
+[source,terminal]
+----
+$ oc get routeadvertisements
+----
+
+. Deploy a virtual machine into the namespace that you created, and verify that it uses `bridge` binding on its network interface:
++
+[source,yaml]
+----
+spec:
+  domain:
+    devices:
+      interfaces:
+        - name: default
+          bridge: {}
+  networks:
+    - name: default
+      pod: {}
+----
++
+[IMPORTANT]
+====
+Use `bridge` binding, not `masquerade` binding. `masquerade` binding installs nftables rules that drop inbound traffic on the user-defined network (UDN) interface, which blocks the direct connectivity that this feature provides.
+====
+
+. From a host on the on-premises network that connects to your VPC over {aws-short} Direct Connect or a VPN, verify that you can reach the VM at its pod network IP address without any NAT device in the path.
