@@ -1,0 +1,162 @@
+// This module is included in the following assemblies:
+// * create/creating-applications-with-cicd-pipelines.adoc
+
+:_mod-docs-content-type: PROCEDURE
+[id="triggering-pipeline-from-image-registry-webhook_{context}"]
+= Triggering a pipeline from an image registry webhook
+
+[role="_abstract"]
+You can use {pipelines-shortname} Triggers to start a pipeline when an image is pushed to a container registry. A common use case is rebuilding an application image whenever a mirrored Red Hat base image is updated in Red Hat Quay.
+
+The `registry.redhat.io` catalog does not expose customer-configurable webhooks. To react to Red Hat image updates, mirror the image into a Red Hat Quay or Quay.io repository, then configure a *Webhook POST* notification on that repository. When Quay finishes a push or a repository mirror, it sends a JSON payload to your `EventListener` route and {pipelines-shortname} starts a `PipelineRun`.
+
+.Prerequisites
+
+* You have created a pipeline that rebuilds or redeploys an application when a base image changes. The examples in this procedure use a pipeline named `rebuild-application-image` with the `base-image` and `image-tag` parameters. Replace these values with the name and parameters of your pipeline.
+* You have the `pipeline` service account in the target namespace.
+* You have administrator access to a Red Hat Quay or Quay.io repository. To start a pipeline when a Red Hat catalog image changes, configure repository mirroring from `registry.redhat.io` into that Quay repository.
+
+.Procedure
+
+. Create a `TriggerBinding` resource that extracts fields from the Quay *Repository Push* payload:
++
+[source,yaml]
+----
+apiVersion: triggers.tekton.dev/v1
+kind: TriggerBinding
+metadata:
+  name: image-push-binding
+spec:
+  params:
+  - name: docker-url
+    value: $(body.docker_url)
+  - name: repository
+    value: $(body.repository)
+  - name: image-tag
+    value: $(body.updated_tags[0])
+----
++
+The Quay push payload includes `docker_url`, `repository`, `namespace`, and `updated_tags`. The binding uses the first updated tag. If a mirror operation updates several tags, Quay can send more than one notification.
+
+. Create the `TriggerBinding` resource:
++
+[source,terminal]
+----
+$ oc create -f image-push-binding.yaml
+----
+
+. Create a `TriggerTemplate` resource that starts your rebuild pipeline:
++
+[source,yaml]
+----
+apiVersion: triggers.tekton.dev/v1
+kind: TriggerTemplate
+metadata:
+  name: image-push-template
+spec:
+  params:
+  - name: docker-url
+    description: Image repository URL from the registry webhook
+  - name: repository
+    description: Namespace and repository name
+  - name: image-tag
+    description: Tag that was pushed or mirrored
+    default: latest
+  resourcetemplates:
+  - apiVersion: tekton.dev/v1
+    kind: PipelineRun
+    metadata:
+      generateName: rebuild-application-image-
+    spec:
+      taskRunTemplate:
+        serviceAccountName: pipeline
+      pipelineRef:
+        name: rebuild-application-image
+      params:
+      - name: base-image
+        value: $(tt.params.docker-url)
+      - name: image-tag
+        value: $(tt.params.image-tag)
+----
+
+. Create the `TriggerTemplate` resource:
++
+[source,terminal]
+----
+$ oc create -f image-push-template.yaml
+----
+
+. Create an `EventListener` resource that uses the binding and template:
++
+[source,yaml]
+----
+apiVersion: triggers.tekton.dev/v1
+kind: EventListener
+metadata:
+  name: image-push
+spec:
+  serviceAccountName: pipeline
+  triggers:
+  - name: image-push-trigger
+    bindings:
+    - ref: image-push-binding
+    template:
+      ref: image-push-template
+----
+
+. Create the `EventListener` resource:
++
+[source,terminal]
+----
+$ oc create -f image-push-eventlistener.yaml
+----
+
+. Expose the `EventListener` service as a route. The service name is `el-` followed by the `EventListener` name:
++
+* For an HTTP connection:
++
+[source,terminal]
+----
+$ oc expose svc el-image-push
+----
++
+* For a secure HTTPS connection, create a re-encrypt route as described in xref:adding-triggers_{context}[Adding triggers to a pipeline].
+
+. Get the webhook URL:
++
+[source,terminal]
+----
+$ echo "URL: $(oc get route el-image-push --template='http://{{.spec.host}}')"
+----
++
+For HTTPS, replace `http` with `https` in the template.
+
+. In the Quay repository, create a notification:
++
+.. Open the repository and click *Settings* -> *Events and notifications* -> *Create Notification*.
+.. For *Event*, select *Push to Repository*.
+.. For *Method*, select *Webhook POST*.
+.. In *Webhook URL*, paste the `EventListener` route URL from the previous step.
+.. Optional: Add a title such as `Start pipeline on image push`.
+.. Click *Create Notification*.
+
+. Optional: Verify the listener without waiting for a registry push by sending a sample Quay payload:
++
+[source,terminal]
+----
+$ curl -X POST -H "Content-Type: application/json" \
+  --data '{"name":"repository","repository":"example/ubi9","namespace":"example","docker_url":"quay.io/example/ubi9","homepage":"https://quay.io/repository/example/ubi9","updated_tags":["latest"]}' \
+  $(oc get route el-image-push --template='http://{{.spec.host}}')
+----
+
+. Confirm that a pipeline run started:
++
+[source,terminal]
+----
+$ tkn pipelinerun list
+----
+
+[NOTE]
+====
+The same `EventListener` URL works for Quay.io and self-managed Red Hat Quay. Point the notification at a repository that mirrors `registry.redhat.io` if you want a pipeline run after a Red Hat base image is published.
+====
