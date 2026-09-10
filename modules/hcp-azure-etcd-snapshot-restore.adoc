@@ -1,0 +1,123 @@
+//Module included in the following assemblies:
+// hosted_control_planes/hcp-deploy/hcp-deploy-azure.adoc
+
+:_mod-docs-content-type: PROCEDURE
+[id="hcp-azure-etcd-snapshot-restore_{context}"]
+= Restoring a hosted cluster on {azure-short} from an etcd snapshot
+
+[role="_abstract"]
+You can restore a self-managed {azure-short} hosted control plane from an etcd snapshot by using the HyperShift {oadp-short} plugin. The plugin automates the restore sequence through the Control Plane Operator and an `etcd-init` init container.
+
+:FeatureName: The etcd snapshot method
+include::snippets/technology-preview.adoc[]
+
+The etcd snapshot restore sequence follows this order:
+
+. The {oadp-short} plugin creates the `HostedCluster` resource and injects the etcd snapshot URL into the `spec.etcd.managed.storage.restoreSnapshotURL` field. The plugin sets this field automatically from the backup; you do not set it manually. The field is immutable after creation, enforced by validation, `MaxItems=1`.
+
+. The Control Plane Operator detects the snapshot URL and adds an `etcd-init` init container to the etcd `StatefulSet`.
+
+. The `etcd-init` container downloads the snapshot from the Azure Blob Storage URL and restores it into the etcd data directory. Azure Blob Storage URLs are already HTTPS and are passed through unchanged.
+
+. After a successful restore, the Control Plane Operator sets the `EtcdSnapshotRestored` condition to `True` on the `HostedControlPlane` resource and removes the `etcd-init` init container. The container is not re-run on pod restart after `EtcdSnapshotRestored=True`.
+
+[IMPORTANT]
+====
+Cross-management-cluster restore is not currently supported. You can only restore to the same management cluster from which the backup was taken.
+====
+
+.Prerequisites
+
+* You installed {oadp-short} 1.6 on the management cluster with the built-in `hypershift` plugin.
+* You enabled the `HCPEtcdBackup` feature gate on the HyperShift Operator.
+* You have a completed backup, including a valid etcd snapshot URL in the `HostedCluster.status.lastSuccessfulEtcdBackupURL` field.
+* The Velero `BackupStorageLocation` for Azure Blob Storage is configured and accessible.
+
+.Procedure
+
+. Delete the existing `HostedCluster` and its `NodePool` resources by entering the following command:
++
+[source,terminal]
+----
+$ hcp destroy cluster azure \
+  --name <hosted_cluster_name> \
+  --namespace <hosted_cluster_namespace>
+----
++
+Replace `<hosted_cluster_name>` and `<hosted_cluster_namespace>` with the cluster to delete.
+
+. Wait for the `HostedCluster` resource deletion to complete before proceeding by entering the following command:
++
+[source,terminal]
+----
+$ oc wait --for=delete hostedcluster/<hosted_cluster_name> \
+  -n <hosted_cluster_namespace> --timeout=10m
+----
+
+. Verify that all etcd persistent volume claims (PVCs) are removed by entering the following command:
++
+[source,terminal]
+----
+$ oc get pvc -n <hosted_cluster_namespace>-<hosted_cluster_name>
+----
++
+The command must return no resources. If PVCs remain, delete them before proceeding by entering the following command:
++
+[source,terminal]
+----
+$ oc delete pvc --all -n <hosted_cluster_namespace>-<hosted_cluster_name>
+----
+
+. Enter the {oadp-short} restore command to re-create the hosted cluster from the backup:
++
+[source,terminal]
+----
+$ hcp create oadp-restore \
+  --hc-name <hosted_cluster_name> \
+  --hc-namespace <hosted_cluster_namespace> \
+  --from-backup <backup_name> \
+  --use-etcd-snapshot
+----
++
+where:
++
+`<hosted_cluster_name>`:: Specifies the name of the `HostedCluster` resource to restore.
+`<hosted_cluster_namespace>`:: Specifies the namespace of the `HostedCluster` resource.
+`<backup_name>`:: Specifies the name of the Velero `Backup` custom resource to restore from.
+
+.Verification
+
+. Check the `EtcdSnapshotRestored` condition on the `HostedControlPlane` resource by entering the following command:
++
+[source,terminal]
+----
+$ oc get hostedcontrolplane <hosted_cluster_name> -n <hosted_cluster_namespace>-<hosted_cluster_name> \
+  -o jsonpath='{.status.conditions[?(@.type=="EtcdSnapshotRestored")].status}'
+----
++
+The output must be `True`.
+
+. Verify that the `HostedCluster` resource reports an `Available` status by entering the following command:
++
+[source,terminal]
+----
+$ oc get hostedcluster <hosted_cluster_name> -n <hosted_cluster_namespace> \
+  -o jsonpath='{.status.conditions[?(@.type=="Available")].status}'
+----
++
+The output must be `True`.
+
+. Inspect the etcd pod init container logs to confirm the snapshot download succeeded by entering the following command:
++
+[source,terminal]
+----
+$ oc logs -n <hosted_cluster_namespace>-<hosted_cluster_name> \
+  statefulset/etcd -c etcd-init
+----
++
+A successful restore produces an output message of `restored snapshot`.
++
+[NOTE]
+====
+The Control Plane Operator automatically removes the `etcd-init` init container after `EtcdSnapshotRestored=True`. This log check is only feasible while the restore is still in progress. If the container not in the etcd pod because the restore has already completed, check the `EtcdSnapshotRestored` condition in the preceding step rather than the init container logs.
+====
