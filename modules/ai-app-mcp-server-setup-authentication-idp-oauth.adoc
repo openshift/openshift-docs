@@ -1,0 +1,260 @@
+// Module included in the following assemblies:
+//
+// * ai_applications/mcp_server/mcp-server-overview.adoc
+
+:_mod-docs-content-type: PROCEDURE
+[id="ai-app-mcp-server-setup-authentication-idp-oauth_{context}"]
+= Set up MCP gateway authentication
+
+[role="_abstract"]
+To ensure that only verified users can access MCP server for Red Hat OpenShift tools and cluster resources, set up OAuth-based authentication for the Model Context Protocol (MCP) gateway.
+
+.Prerequisites
+* Access to OpenShift console with admin rights.
+* MCP gateway is installed.
+* MCP Lifecycle Operator is enabled.
+* The MCP server is installed.
+* MCP gateway is configured and verified.
+* MCP-compatible client connected.
+* RBAC is configured.
+* You have revoked access to specific Custom Resources (CRs) as needed.
+* You have access to an identity provider (IdP): Entra ID or Keycloak.
+* The {product-title} cluster is configured to trust your IdP as an external OIDC provider (see "Enabling direct authentication with an external OIDC identity provider").
+
+.Procedure
+. Configure OAuth metadata discovery by setting environment variables on the MCP gateway broker-router deployment by running the following command:
++
+[source,terminal]
+----
+$ oc set env mcp-gateway/gateway-namespace -n mcp-system\
+OAUTH_RESOURCE_NAME="MCP Server" \
+OAUTH_RESOURCE="https://<mcp_gateway_host>/mcp" \
+OAUTH_AUTHORIZATION_SERVERS=<authorization_server_url> \
+OAUTH_BEARER_METHODS_SUPPORTED="header" \
+OAUTH_SCOPES_SUPPORTED=<oauth-scopes-supported>
+----
++
+[NOTE]
+====
+These environment variables enable the OAuth 2.0 Protected Resource Metadata endpoint that clients use for authentication discovery.
+====
++
+* For `<oauth-scopes-supported>` use either:
+** For Entra ID: "api://<MCP_SERVER_CLIENT_ID>/mcp-server"
+** For Keycloak: "mcp-server"
++
+* For `<authorization_server_url>` use either:
+** Entra ID: https://login.microsoftonline.com/<tenant-id>/v2.0
+** Keycloak: https://<keycloak_host>/realms/<realm>
+
+. Create the HTTPRoute for OAuth discovery by running the following command:
++
+[source,terminal]
+----
+$ oc apply -f - <<EOF
+apiVersion: gateway.networking.k8s.io/v1
+kind: HTTPRoute
+metadata:
+  name: mcp-gateway-oauth-metadata
+  namespace: gateway-namespace
+spec:
+  parentRefs:
+  - group: gateway.networking.k8s.io
+    kind: Gateway
+    name: mcp-gateway
+    namespace: gateway-namespace
+    sectionName: mcp
+  hostnames:
+  - ${MCP_GATEWAY_HOST}
+  rules:
+  - matches:
+    - path:
+        type: PathPrefix
+        value: /.well-known/oauth-protected-resource
+    backendRefs:
+    - name: mcp-gateway
+      port: 8080
+EOF
+----
++
+`${MCP_GATEWAY_HOST}` is the fully qualified domain name for your MCP gateway (for example, `mcp.127-0-0-1.sslip.io`).
++
+This route enables clients to discover OAuth metadata, which is required for the authentication flow. Without this route, clients receive a 404 error when attempting OAuth discovery.
+
+. Configure the IdP (Entra ID or Keycloak) App Registration:
++
+* For _Entra ID_:
+.. In the Azure Portal or Entra admin center, go to your Entra ID App Registration.
+
+.. Under *Expose an API*, add a custom scope named `mcp-server`.
+
+.. Ensure that the following scopes are available: `openid`, `offline_access`, and `mcp-server`.
+
+.. If required by your organization, grant admin consent for these scopes.
++
+For more information about configuring Entra ID app registrations, see "Microsoft Entra ID".
+
+* For _Keycloak_:
+.. Ensure that the following required scopes exist in your Keycloak realm:
++
+** openid (built-in)
+** offline_access (built-in)
+** mcp-server (custom — create it if it does not exist)
+
+.. In the admin console, go to *Realm Settings* > *Client Registration* > *Authenticated Access Policies*, and add these scopes to the realm's DCR Allowed Client Scopes policy.
++
+For more information about Keycloak, see "Red{nbsp}Hat build of Keycloak".
+
+. Configure certificate trust for JWT validation by mounting the IdP's CA certificate into the Authorino deployment by running the following commands:
++
+[IMPORTANT]
+====
+Skip this step if the IdP uses a publicly trusted certificate.
+====
++
+[source,terminal]
+----
+$ oc create configmap idp-ca --from-file=ca.crt=/path/to/idp-ca.crt -n kuadrant-system
+----
++
+[source,terminal]
+----
+$ oc patch deployment authorino -n kuadrant-system --type=json -p='[
+  {
+    "op": "add",
+    "path": "/spec/template/spec/volumes/-",
+    "value": {"name": "idp-ca", "configMap": {"name": "idp-ca"}}
+  },
+  {
+    "op": "add",
+    "path": "/spec/template/spec/containers/0/volumeMounts/-",
+    "value": {"name": "idp-ca", "mountPath": "/etc/ssl/certs/idp-ca.crt", "subPath": "ca.crt"}
+  }
+]'
+----
++
+This ensures that Authorino can verify JWT token signatures from the IdP.
+
+. Configure the MCP gateway authentication by applying the authentication policy that validates JWT tokens by running the following command:
++
+[source,terminal]
+----
+$ oc apply -f - <<EOF
+apiVersion: kuadrant.io/v1
+kind: AuthPolicy
+metadata:
+  name: mcp-auth-policy
+  namespace: gateway-namespace
+spec:
+  targetRef:
+    group: gateway.networking.k8s.io
+    kind: Gateway
+    name: mcp-gateway
+    sectionName: mcp
+  defaults:
+    when:
+      - predicate: "!request.path.contains('/.well-known')"
+    rules:
+      authentication:
+        'idp':
+          jwt:
+            issuerUrl: <authorization_server_url>
+      response:
+        unauthenticated:
+          code: 401
+          headers:
+            'WWW-Authenticate':
+              value: Bearer resource_metadata=https://<mcp_gateway_host>/.well-known/oauth-protected-resource/mcp
+            body:
+              value: |
+                {
+                  "error": "Unauthorized",
+                  "message": "Authentication required."
+                }
+
+        success:
+          headers:
+            authorization:
+              plain:
+                expression: "request.headers['authorization']"
+
+EOF
+----
++
+* For `<authorization_server_url>` use either:
+** Entra ID: http://login.microsoftonline.com/<tenant-id>/v2.0
+** Keycloak: https://<keycloak_host>/realms/<realm>
+
+. Grant the authenticated user permissions on the cluster by creating a `ClusterRoleBinding` by using a file similar to the following:
++
+[source,yaml]
+----
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: oidc-mcp-cluster-reader
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: view
+subjects:
+- apiGroup: rbac.authorization.k8s.io
+  kind: User
+  name: <issuer_url>#<username>
+----
++
+* `name`: The user subject, in the format `<issuer_url>#<username>`.
+* Adjust the `ClusterRole` (for example, `view`) to the level of access the user requires.
+
+.Verification
+
+. Verify OAuth Discovery by testing that the broker now serves OAuth discovery information by running the following command:
++
+[source,terminal]
+----
+curl ${MCP_GATEWAY_HOST}/.well-known/oauth-protected-resource
+----
++
+For `${MCP_GATEWAY_HOST}` use your MCP gateway domain.
++
+The command should show OAuth 2.0 Protected Resource Metadata similar to the following:
++
+.Example
+[source,terminal]
+----
+{
+  "resource_name": "MCP Server",
+  "resource": "http://mcp.127-0-0-1.sslip.io:8001/mcp",
+  "authorization_servers": [
+    "https://login.microsoftonline.com/<tenant-id>/v2.0"
+  ],
+  "bearer_methods_supported": [
+    "header"
+  ],
+  "scopes_supported": [
+    "mcp-server",
+  ]
+}
+----
+
+. Test that protected endpoints now require authentication by running the following command:
++
+[source,terminal]
+----
+$ curl -v ${MCP_GATEWAY_HOST}/mcp \
+  -H "Content-Type: application/json" \
+  -d '{"jsonrpc": "2.0", "id": 1, "method": "tools/list"}'
+----
++
+* For `${MCP_GATEWAY_HOST}` use your MCP gateway domain.
++
+.Example
+[source,terminal]
+----
+{
+  "error": "Unauthorized",
+  "message": "Authentication required."
+}
+----
+
+
