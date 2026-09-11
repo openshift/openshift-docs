@@ -1,0 +1,253 @@
+// Module included in the following assemblies:
+// * installing_tnf/tuning-tnf-fencing-parameters.adoc
+
+:_mod-docs-content-type: PROCEDURE
+[id="tnf-applying-fencing-tuning-preset_{context}"]
+= Applying a fencing tuning preset
+
+[role="_abstract"]
+Use a preset configuration when your symptom matches one of the following categories. Presets override only the parameters relevant to the scenario and leave all other values at their defaults.
+
+`tolerant-detection`::
+Raises the Corosync token from 3000 ms to 5000 ms. Use this preset when nodes are fenced during `MachineConfig` rollouts, heavy I/O, or network reconfiguration such as the OVS bridge race on IPv6 reboots.
+
+`slow-bmc`::
+Increases fence agent timeouts for BMC hardware where the default values are insufficient, for example HPE ProLiant with iLO. Sets `power_timeout=120`, `shell_timeout=15`, `login_timeout=15`, and `retry_on=3`.
+
+.Prerequisites
+
+* You have access to the cluster as a user with the `cluster-admin` role.
+* You have the `oc` CLI tool installed.
+* Both control plane nodes are `Ready` and all Pacemaker resources are started.
+
+.Procedure
+
+. Create a file named `apply-fencing-tuning.sh` with the following content:
++
+[source,bash,subs="none"]
+----
+#!/bin/bash
+set -euo pipefail
+
+# === DEFAULT VALUES (used when no preset is selected) ===
+COROSYNC_TOKEN=3000
+KUBELET_OP_START_TIMEOUT=180s
+KUBELET_OP_STOP_TIMEOUT=100s
+KUBELET_OP_MONITOR_TIMEOUT=100s
+KUBELET_OP_MONITOR_INTERVAL=60s
+ETCD_OP_STOP_TIMEOUT=90s
+ETCD_OP_START_TIMEOUT=600s
+FENCE_POWER_TIMEOUT=25
+FENCE_SHELL_TIMEOUT=3
+FENCE_LOGIN_TIMEOUT=5
+FENCE_POWER_WAIT=0
+FENCE_RETRY_ON=1
+FENCE_DELAY=0
+
+# === PRESETS ===
+apply_preset_tolerant_detection() { COROSYNC_TOKEN=5000; }
+apply_preset_slow_bmc() {
+  FENCE_POWER_TIMEOUT=120; FENCE_SHELL_TIMEOUT=15
+  FENCE_LOGIN_TIMEOUT=15; FENCE_RETRY_ON=3
+}
+print_presets() {
+  cat <<'EOF'
+Available presets:
+  tolerant-detection  Corosync token 3000ms -> 5000ms (load spike tolerance)
+  slow-bmc            Fence agent timeouts for slow BMC hardware (e.g. HPE iLO)
+EOF
+}
+
+# === ARGUMENT HANDLING ===
+if [ "${1:-}" = "--preset" ]; then
+  PRESET="${2:-}"
+  if [ -z "$PRESET" ] || [ "$PRESET" = "list" ]; then
+    print_presets; [ "$PRESET" = "list" ] && exit 0
+    echo "ERROR: --preset requires a name." >&2; exit 1
+  fi
+  case "$PRESET" in
+    tolerant-detection) apply_preset_tolerant_detection ;;
+    slow-bmc) apply_preset_slow_bmc ;;
+    *) echo "ERROR: unknown preset '$PRESET'." >&2; print_presets; exit 1 ;;
+  esac
+  echo "Using preset: $PRESET"
+elif [ "${1:-}" = "--revert" ]; then
+  echo "Reverting to default values..."
+  COROSYNC_TOKEN=3000; KUBELET_OP_START_TIMEOUT=180s
+  KUBELET_OP_STOP_TIMEOUT=100s; KUBELET_OP_MONITOR_TIMEOUT=100s
+  KUBELET_OP_MONITOR_INTERVAL=60s; ETCD_OP_STOP_TIMEOUT=90s
+  ETCD_OP_START_TIMEOUT=600s; FENCE_POWER_TIMEOUT=25
+  FENCE_SHELL_TIMEOUT=3; FENCE_LOGIN_TIMEOUT=5
+  FENCE_POWER_WAIT=0; FENCE_RETRY_ON=1; FENCE_DELAY=0
+fi
+
+if [ "$COROSYNC_TOKEN" -lt 3000 ] || [ "$COROSYNC_TOKEN" -gt 10000 ]; then
+  echo "ERROR: COROSYNC_TOKEN=$COROSYNC_TOKEN outside safe range (3000-10000ms)." >&2
+  exit 1
+fi
+command -v oc >/dev/null 2>&1 || { echo "ERROR: oc not found in PATH." >&2; exit 1; }
+oc whoami >/dev/null 2>&1 || { echo "ERROR: not logged in. Run 'oc login' first." >&2; exit 1; }
+
+VALUES_CONF="COROSYNC_TOKEN=${COROSYNC_TOKEN}
+KUBELET_OP_START_TIMEOUT=${KUBELET_OP_START_TIMEOUT}
+KUBELET_OP_STOP_TIMEOUT=${KUBELET_OP_STOP_TIMEOUT}
+KUBELET_OP_MONITOR_TIMEOUT=${KUBELET_OP_MONITOR_TIMEOUT}
+KUBELET_OP_MONITOR_INTERVAL=${KUBELET_OP_MONITOR_INTERVAL}
+ETCD_OP_STOP_TIMEOUT=${ETCD_OP_STOP_TIMEOUT}
+ETCD_OP_START_TIMEOUT=${ETCD_OP_START_TIMEOUT}
+FENCE_POWER_TIMEOUT=${FENCE_POWER_TIMEOUT}
+FENCE_SHELL_TIMEOUT=${FENCE_SHELL_TIMEOUT}
+FENCE_LOGIN_TIMEOUT=${FENCE_LOGIN_TIMEOUT}
+FENCE_POWER_WAIT=${FENCE_POWER_WAIT}
+FENCE_RETRY_ON=${FENCE_RETRY_ON}
+FENCE_DELAY=${FENCE_DELAY}"
+
+TUNING_SCRIPT='#!/bin/bash
+set -euo pipefail
+source /etc/fencing-parameter-tuning/values.conf
+MY_HOST=$(hostname)
+PEER_HOST=$(pcs status nodes 2>/dev/null | grep " Online:" | tr '"'"' '"'"' '"'"'\n'"'"' | \
+  grep -v "Online:\|^$" | grep -v "^${MY_HOST}$" | sort | head -1)
+if [ -n "$PEER_HOST" ] && [ "$MY_HOST" \> "$PEER_HOST" ]; then
+  echo "Not the primary node, skipping."; exit 0
+fi
+pcs_retry() {
+  for i in 1 2 3; do
+    if "$@"; then return 0; fi; echo "Retry $i/3..."; sleep 5
+  done; return 1
+}
+if [ "$COROSYNC_TOKEN" -lt 3000 ] || [ "$COROSYNC_TOKEN" -gt 10000 ]; then
+  echo "ERROR: token out of range"; exit 1
+fi
+FENCE_TYPE=$(pcs stonith config | grep "class=stonith type=" | \
+  awk -F"type=" "{print \$2}" | tr -d ")" | head -1)
+pcs_retry pcs cluster config update totem token="${COROSYNC_TOKEN}"
+pcs_retry pcs resource update kubelet op start \
+  timeout="${KUBELET_OP_START_TIMEOUT}" start-delay=15s
+pcs_retry pcs resource update kubelet op stop \
+  timeout="${KUBELET_OP_STOP_TIMEOUT}"
+pcs_retry pcs resource update kubelet op monitor \
+  timeout="${KUBELET_OP_MONITOR_TIMEOUT}" interval="${KUBELET_OP_MONITOR_INTERVAL}"
+pcs_retry pcs resource update etcd op stop timeout="${ETCD_OP_STOP_TIMEOUT}"
+pcs_retry pcs resource update etcd op start timeout="${ETCD_OP_START_TIMEOUT}"
+for SID in $(pcs stonith config | grep "^Resource:" | awk "{print \$2}"); do
+  if pcs stonith describe "$FENCE_TYPE" | grep -q "^  power_timeout"; then
+    pcs_retry pcs stonith update "$SID" power_timeout="${FENCE_POWER_TIMEOUT}" \
+      shell_timeout="${FENCE_SHELL_TIMEOUT}" login_timeout="${FENCE_LOGIN_TIMEOUT}" \
+      power_wait="${FENCE_POWER_WAIT}" retry_on="${FENCE_RETRY_ON}" delay="${FENCE_DELAY}"
+  fi
+done
+echo "Fencing parameter tuning applied successfully."'
+
+VALUES_B64=$(echo "$VALUES_CONF" | base64 | tr -d '\n')
+SCRIPT_B64=$(echo "$TUNING_SCRIPT" | base64 | tr -d '\n')
+
+cat <<MCEOF | oc apply -f -
+apiVersion: machineconfiguration.openshift.io/v1
+kind: MachineConfig
+metadata:
+  name: 99-fencing-parameter-tuning
+  labels:
+    machineconfiguration.openshift.io/role: master
+spec:
+  config:
+    ignition:
+      version: 3.5.0
+    systemd:
+      units:
+        - name: fencing-parameter-tuning.service
+          enabled: true
+          contents: |
+            [Unit]
+            Description=Apply fencing parameter tuning for TNF clusters
+            After=pacemaker.service
+            Requires=pacemaker.service
+            StartLimitIntervalSec=300
+            StartLimitBurst=5
+            [Service]
+            Type=oneshot
+            ExecStart=/usr/local/bin/fencing-parameter-tuning.sh
+            RemainAfterExit=yes
+            TimeoutStartSec=120
+            Restart=on-failure
+            RestartSec=30
+            [Install]
+            WantedBy=multi-user.target
+    storage:
+      files:
+        - path: /etc/fencing-parameter-tuning/values.conf
+          mode: 0644
+          overwrite: true
+          contents:
+            source: "data:text/plain;charset=utf-8;base64,${VALUES_B64}"
+        - path: /usr/local/bin/fencing-parameter-tuning.sh
+          mode: 0755
+          overwrite: true
+          contents:
+            source: "data:text/plain;charset=utf-8;base64,${SCRIPT_B64}"
+MCEOF
+
+echo "MachineConfig applied. MCO will roll out to both master nodes (~10-15 min)."
+echo "Monitor: oc get mcp master -w"
+if [ "${1:-}" = "--revert" ]; then
+  echo "After rollout, remove: oc delete mc 99-fencing-parameter-tuning"
+fi
+----
+
+. Make the script executable:
++
+[source,terminal]
+----
+$ chmod +x apply-fencing-tuning.sh
+----
+
+. List the available presets:
++
+[source,terminal]
+----
+$ ./apply-fencing-tuning.sh --preset list
+----
+
+. Apply the preset that matches your scenario:
++
+[source,terminal]
+----
+$ ./apply-fencing-tuning.sh --preset <preset_name> <1>
+----
+<1> Replace `<preset_name>` with `tolerant-detection` or `slow-bmc`.
+
+. Wait for the Machine Config Operator (MCO) to roll out the change to both control plane nodes. This process takes approximately 10-15 minutes and reboots each node sequentially.
++
+[source,terminal]
+----
+$ oc get mcp master -w
+----
++
+Wait until `UPDATED` is `True` and `UPDATING` is `False`.
+
+.Verification
+
+. Verify that both nodes are `Ready`:
++
+[source,terminal]
+----
+$ oc get nodes
+----
+
+. For the `tolerant-detection` preset, verify the Corosync token value:
++
+[source,terminal]
+----
+$ oc debug node/<master-node> -- chroot /host pcs cluster config show | grep token
+----
++
+The output shows `token: 5000`.
+
+. For the `slow-bmc` preset, verify the fence agent timeouts:
++
+[source,terminal]
+----
+$ oc debug node/<master-node> -- chroot /host pcs stonith config | grep -E "power_timeout|shell_timeout|login_timeout|retry_on"
+----
++
+The output shows `power_timeout=120`, `shell_timeout=15`, `login_timeout=15`, and `retry_on=3`.
