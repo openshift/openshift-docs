@@ -1,0 +1,144 @@
+// Module included in the following assemblies:
+//
+// * resource/configuring-tekton-results-multicluster.adoc
+
+:_mod-docs-content-type: REFERENCE
+[id="op-tekton-results-multicluster-considerations_{context}"]
+= Considerations for Tekton Results in multicluster environments
+
+[role="_abstract"]
+When using Tekton Results in a multicluster environment, consider the following operational requirements, limitations, and best practices.
+
+[id="namespace-requirements-logs_{context}"]
+== Namespace requirements for log collection
+
+By default, the ClusterLogForwarder configuration excludes logs from certain namespaces to reduce log volume and avoid collecting system logs. Logs from the following namespaces are not forwarded to the hub cluster:
+
+* `default`
+* All namespaces starting with `kube-` (such as `kube-system`, `kube-public`)
+* All namespaces starting with `openshift-` (such as `openshift-pipelines`, `openshift-operators`)
+
+To ensure that pipeline run logs are collected and forwarded to the hub cluster, create and run pipeline runs in custom namespaces, such as `tekton-test` or other application-specific namespaces.
+
+[id="authentication-token-management_{context}"]
+== Authentication token management
+
+The bearer token generated for spoke cluster authentication to the hub LokiStack has a validity period of one year (8760 hours). Consider the following when managing these tokens:
+
+Token expiration::
+After one year, the token expires and spoke clusters can no longer forward logs to the hub cluster. You must generate a new token on the hub cluster and update the spoke cluster configuration.
+
+Token rotation::
+To rotate tokens before expiration:
++
+. Generate a new token on the hub cluster using the hub setup script.
+. Update the `hub-loki-token` secret on each spoke cluster with the new token value.
+. Restart the collector pods on spoke clusters to use the new token.
+
+Security considerations::
+Store the token securely and limit access to the `hub-loki-token` secret. The token provides write access to the hub cluster's LokiStack.
+
+[id="database-connectivity_{context}"]
+== Database connectivity requirements
+
+All clusters (hub and spokes) must have network connectivity to the external PostgreSQL database. Consider the following:
+
+Network access::
+Ensure that firewall rules and security groups allow connections from all cluster networks to the PostgreSQL database port (typically 5432).
+
+Connection pooling::
+For environments with many spoke clusters, consider configuring PostgreSQL connection pooling to manage the number of concurrent connections efficiently.
+
+High availability::
+Use a highly available PostgreSQL configuration (such as managed database services with automatic failover) to ensure that records storage remains available even if the database instance fails.
+
+SSL/TLS configuration::
+The `db_sslmode` parameter controls SSL/TLS for database connections. Valid values include:
++
+* `disable`: No SSL/TLS (not recommended for production)
+* `allow`: SSL/TLS if the server supports it
+* `prefer`: SSL/TLS if available, otherwise unencrypted (default)
+* `require`: Require SSL/TLS, fail if unavailable
+* `verify-ca`: Require SSL/TLS and verify the server certificate
+* `verify-full`: Require SSL/TLS and verify the server certificate and hostname
+
+[id="results-component-distribution_{context}"]
+== Results component distribution
+
+In a multicluster environment, Tekton Results components are distributed as follows:
+
+Hub cluster::
+* Runs only the Tekton Results API server
+* Does not run the Results watcher or retention policy agent
+* Provides a unified query interface for all clusters
+
+Spoke clusters::
+* Run the complete set of Results components: API server, watcher, and retention policy agent
+* The watcher monitors local pipeline runs and sends records to the central database
+* The retention policy agent manages cleanup of completed pipeline runs
+
+This distribution prevents conflicts where both hub and spoke clusters might attempt to manage the same pipeline run records.
+
+[id="log-forwarding-architecture_{context}"]
+== Log forwarding architecture
+
+Spoke clusters use the OpenShift Logging operator with Vector as the collector to forward logs to the hub cluster's LokiStack. The ClusterLogForwarder configuration:
+
+* Uses label selectors to identify Tekton-managed pods based on the `app.kubernetes.io/managed-by` label
+* Forwards only logs from pods managed by `tekton-pipelines` or `pipelinesascode.tekton.dev`
+* Uses bearer token authentication to securely send logs to the hub cluster
+* Includes metadata labels such as namespace, pod name, and container name for log filtering and querying
+
+[id="troubleshooting-logs_{context}"]
+== Troubleshooting log collection
+
+If pipeline run logs are not appearing in the hub cluster's LokiStack:
+
+. Verify that the pipeline run is in a namespace other than `default`, `kube-*`, or `openshift-*`.
+
+. Check the collector pod status on the spoke cluster:
++
+[source,terminal]
+----
+$ oc get pods -n openshift-logging -l app.kubernetes.io/component=collector
+----
+
+. Verify that the ClusterLogForwarder is configured correctly:
++
+[source,terminal]
+----
+$ oc get clusterlogforwarder collector -n openshift-logging -o yaml
+----
+
+. Check collector metrics to verify logs are being sent:
++
+[source,terminal]
+----
+$ oc exec -n openshift-logging $(oc get pods -n openshift-logging -l app.kubernetes.io/component=collector -o jsonpath='{.items[0].metadata.name}') -- curl -sk https://127.0.0.1:24231/metrics | grep hub_loki
+----
+
+. Verify that the hub Loki gateway is accessible from the spoke cluster:
++
+[source,terminal]
+----
+$ curl -k https://<hub_loki_host>/
+----
+
+. Check the collector pod logs for authentication or connectivity errors:
++
+[source,terminal]
+----
+$ oc logs -n openshift-logging -l app.kubernetes.io/component=collector
+----
+
+[id="performance-considerations_{context}"]
+== Performance considerations
+
+Database sizing::
+Size the PostgreSQL database based on the expected number of pipeline runs across all clusters. Each pipeline run and task run generates records in the database.
+
+LokiStack storage::
+Configure adequate object storage capacity for LokiStack based on the expected log volume from all spoke clusters. Monitor storage usage and adjust retention policies as needed.
+
+Network bandwidth::
+Log forwarding from spoke clusters to the hub cluster requires network bandwidth. In environments with high pipeline run volumes, ensure sufficient network capacity between spoke clusters and the hub cluster.

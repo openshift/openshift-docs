@@ -1,0 +1,156 @@
+// Module included in the following assemblies:
+//
+// * resource/configuring-tekton-results-multicluster.adoc
+
+:_mod-docs-content-type: PROCEDURE
+[id="op-configuring-tekton-results-logs-hub_{context}"]
+= Configuring the hub cluster for logs storage
+
+You can configure the hub cluster to collect and store pipeline run logs from all spoke clusters using LokiStack.
+
+.Prerequisites
+
+* You have access to the hub cluster using an account with `cluster-admin` permissions.
+* You have installed the `oc` CLI.
+* You have configured the hub cluster for multicluster support.
+
+.Procedure
+
+. Install the OpenShift Logging and Loki operators on the hub cluster.
++
+// TODO: OCHROMY - The original .txt file references cloning an internal GitLab repository (https://gitlab.cee.redhat.com/tekton/plumbing.git) and running ./config/operators/install-logging.sh. For customer-facing documentation, we need to either:
+// 1. Document the manual OperatorHub installation steps for both operators
+// 2. Make the plumbing repository public and reference it
+// 3. Provide equivalent installation steps without the script
+// For now, providing basic OperatorHub installation guidance:
++
+.. In the {product-title} web console, navigate to *Operators* -> *OperatorHub*.
+.. Search for *Red Hat OpenShift Logging* and install the operator in the `openshift-logging` namespace.
+.. Search for *Loki Operator* and install the operator in the `openshift-logging` namespace.
+.. Wait for both operators to be successfully installed and ready.
++
+[NOTE]
+====
+You must configure object storage (such as MinIO or S3) for LokiStack. For detailed installation and configuration instructions, see the OpenShift Container Platform Logging documentation.
+====
+
+. Create a route to expose the LokiStack gateway externally and generate an authentication token for spoke clusters.
++
+Run the following script on the hub cluster to create the route and generate a token:
++
+[source,bash]
+----
+#!/usr/bin/env bash
+# Hub cluster setup script for spoke log forwarding
+
+set -euo pipefail
+
+NAMESPACE="openshift-logging"
+SA_NAME="spoke-collector"
+
+echo "==> Checking for existing Loki route"
+
+# Prefer the existing 'logging-loki' route (reencrypt) if it exists
+# Otherwise create a new passthrough route
+if oc get route logging-loki -n ${NAMESPACE} &>/dev/null; then
+    ROUTE_NAME="logging-loki"
+    echo "Using existing route: ${ROUTE_NAME}"
+else
+    ROUTE_NAME="loki-gateway"
+    echo "Creating passthrough route: ${ROUTE_NAME}"
+    # Use 'passthrough' - Loki gateway serves HTTPS on port 8080
+    oc create route passthrough ${ROUTE_NAME} \
+      --service=logging-loki-gateway-http \
+      --port=8080 \
+      -n ${NAMESPACE} 2>/dev/null || echo "Route already exists"
+fi
+
+echo "==> Fetching Loki gateway host"
+
+HUB_LOKI_HOST=$(oc get route ${ROUTE_NAME} -n ${NAMESPACE} -o jsonpath='{.spec.host}')
+echo "HUB_LOKI_HOST=https://${HUB_LOKI_HOST}"
+
+echo
+echo "==> Creating ServiceAccount for log ingestion"
+
+oc create sa ${SA_NAME} -n ${NAMESPACE} 2>/dev/null || echo "ServiceAccount already exists"
+
+echo "==> Granting log-writer permissions"
+
+oc adm policy add-cluster-role-to-user logging-collector-logs-writer \
+  system:serviceaccount:${NAMESPACE}:${SA_NAME} 2>/dev/null || true
+
+echo
+echo "==> Generating token for ServiceAccount (valid for 1 year)"
+
+HUB_LOKI_TOKEN=$(oc create token ${SA_NAME} -n ${NAMESPACE} --duration=8760h)
+
+echo
+echo "=============================================="
+echo "Use these on the SPOKE cluster:"
+echo "=============================================="
+echo "export HUB_LOKI_HOST=\"https://${HUB_LOKI_HOST}\""
+echo "export HUB_LOKI_TOKEN=\"${HUB_LOKI_TOKEN}\""
+echo "=============================================="
+
+echo
+echo "==> Testing connectivity"
+if curl -sk "https://${HUB_LOKI_HOST}/" | grep -q "paths"; then
+    echo "✓ Loki gateway is reachable"
+else
+    echo "WARNING: Could not verify Loki gateway connectivity"
+    echo "Test manually: curl -k https://${HUB_LOKI_HOST}/"
+fi
+
+echo
+echo "Done."
+----
++
+Save the `HUB_LOKI_HOST` and `HUB_LOKI_TOKEN` values displayed at the end of the script. You will need these values when configuring spoke clusters.
++
+[IMPORTANT]
+====
+The token is valid for one year (8760 hours). After expiration, you must generate a new token and update the spoke cluster configuration.
+====
+
+. Configure the TektonConfig custom resource to enable log support by running the following command:
++
+[source,terminal]
+----
+$ oc patch tektonconfig config --type=merge -p '
+{
+  "spec": {
+    "result": {
+      "logs_api": true,
+      "logs_type": "Loki",
+      "loki_stack_name": "logging-loki",
+      "loki_stack_namespace": "openshift-logging"
+    }
+  }
+}'
+----
++
+where:
++
+`logs_api`::
+Set to `true` to enable the Tekton Results logs API.
++
+`logs_type`::
+Specifies the log storage backend. Use `Loki` for LokiStack.
++
+`loki_stack_name`::
+Specifies the name of the LokiStack custom resource. The default is `logging-loki`.
++
+`loki_stack_namespace`::
+Specifies the namespace where LokiStack is deployed. The default is `openshift-logging`.
+
+.Verification
+
+* Verify that the Loki gateway route is accessible by running the following command:
++
+[source,terminal]
+----
+$ curl -k https://$(oc get route logging-loki -n openshift-logging -o jsonpath='{.spec.host}')/
+----
++
+The command should return JSON output containing available API paths.
