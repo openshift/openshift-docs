@@ -1,0 +1,163 @@
+// Module included in the following assemblies:
+//
+// * otel-collector/otel-collector-receivers.adoc
+
+[id="otel-run-obi-receiver-with-privileges_{context}"]
+= Collect metrics and traces without instrumenting your application
+
+[role="_abstract"]
+You can collect metrics and traces without instrumenting your application in environments where the capability-based configuration is not sufficient. To do so, run the OBI Receiver in a fully privileged container.
+
+.Prerequisites
+
+* The OBI Receiver requires nodes that use the `amd64` or `arm64` CPU architecture. The receiver is not available on IBM Z (`s390x`) or IBM Power (`ppc64le`) architectures.
+* The receiver requires the following Linux capabilities:
+** `BPF` and `PERFMON` for loading the eBPF programs.
+** `SYS_PTRACE` for inspecting processes and executables through the `/proc` filesystem.
+** `NET_RAW` for attaching socket filters to capture HTTP requests.
+** `CHECKPOINT_RESTORE` and `DAC_READ_SEARCH` for opening the ELF files of the instrumented processes.
+
+.Procedure
+
+. Apply the service account:
++
+[source,yaml]
+----
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: obi-collector
+  namespace: <namespace>
+# ...
+----
+
+. Apply the cluster role:
++
+[source,yaml]
+----
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: obi
+rules:
+  - apiGroups: ['apps']
+    resources: ['replicasets']
+    verbs: ['list', 'watch']
+  - apiGroups: ['']
+    resources: ['pods', 'services', 'nodes']
+    verbs: ['list', 'watch']
+----
+
+. Apply the cluster role binding:
++
+[source,yaml]
+----
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: obi
+subjects:
+  - kind: ServiceAccount
+    name: obi-collector
+    namespace: <namespace>
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: obi
+----
+
+. Apply the security context constraints:
++
+[source,yaml]
+----
+apiVersion: security.openshift.io/v1
+kind: SecurityContextConstraints
+metadata:
+  name: obi-privileged
+allowHostPorts: false
+allowHostDirVolumePlugin: false
+allowHostIPC: false
+allowHostNetwork: false
+allowHostPID: true
+allowPrivilegedContainer: true
+readOnlyRootFilesystem: false
+runAsUser:
+  type: RunAsAny
+seLinuxContext:
+  type: RunAsAny
+users:
+- system:serviceaccount:<namespace>:obi-collector
+# ...
+----
+
+. Apply the `OpenTelemetryCollector` custom resource:
++
+[source,yaml]
+----
+apiVersion: opentelemetry.io/v1beta1
+kind: OpenTelemetryCollector
+metadata:
+  name: obi-collector
+  namespace: <namespace>
+spec:
+  mode: daemonset
+  serviceAccount: obi-collector
+  hostPID: true
+  securityContext:
+    runAsUser: 0
+    privileged: true
+  config:
+    receivers:
+      obi:
+        discovery:
+          instrument:
+            - k8s_namespace: <application_namespace>
+              k8s_pod_labels:
+                obi.instrument: "true"
+        attributes:
+          kubernetes:
+            enable: "true"
+    exporters:
+      debug:
+        verbosity: detailed
+    service:
+      pipelines:
+        traces:
+          receivers: [obi]
+          exporters: [debug]
+# ...
+----
+where:
+
+`hostPID: true`::
+Required so that the receiver can access the processes on the host.
+
+`discovery.instrument`::
+Lists controls which processes the OBI Receiver attaches to. This example filters by namespace and pod labels, so that only pods matching all of the fields are instrumented.
+
+`k8s_namespace: <application_namespace>`::
+Selects the workloads to instrument. See the "Selecting workloads" section.
+
+`attributes.kubernetes.enable`::
+Setting this field to `"true"` adds resource attributes such as `k8s.namespace.name`, `k8s.pod.name`, and `service.name` to the traces. Enables Kubernetes attribute enrichment. For enrichment, the Collector `ServiceAccount` requires `list` and `watch` permissions on pods, services, and nodes in the core API group and on replica sets in the `apps` API group. These permissions are granted by the `ClusterRole` in a previous step.
+
+. Add the matching label to the workload pod templates to opt them in:
++
+[source,yaml]
+----
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: <application>
+  namespace: <application_namespace>
+spec:
+  template:
+    metadata:
+      labels:
+        obi.instrument: "true"
+    spec:
+      containers:
+        - name: <application>
+          image: <application>:latest
+# ...
+----
