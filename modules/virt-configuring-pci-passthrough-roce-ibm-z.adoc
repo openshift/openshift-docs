@@ -1,0 +1,227 @@
+// Module included in the following assemblies:
+//
+// * virt/managing_vms/advanced_vm_management/virt-configuring-pci-passthrough.adoc
+
+:_mod-docs-content-type: PROCEDURE
+[id="virt-configuring-pci-passthrough-roce-ibm-z_{context}"]
+= Configuring PCI passthrough for Network Express RoCE adapters on {ibm-z-title}
+
+[role="_abstract"]
+On {ibm-z-name} and {ibm-linuxone-name}, you can configure PCI passthrough for Network Express RoCE adapters by using `vfio-pci`. This procedure applies only when the adapter is configured in RoCE mode through the Hardware Management Console (HMC).
+
+On {ibm-z-name} and {ibm-linuxone-name} systems, Network Express adapters can be configured in two modes through the HMC:
+
+* *Network Express RoCE*: The adapter is exposed as a PCI virtual function, managed by the `mlx5_core` kernel driver, and can be passed through to VMs by using `vfio-pci`.
+* *Network Express OSA*: The adapter uses {ibm-z-name} channel-based I/O (OSH PCI functions). OSH functions are not supported on Linux and are not exposed as PCI devices. Do not configure `vfio-pci` passthrough for adapters in OSA mode.
+
+To use `vfio-pci` for PCI passthrough of RoCE virtual function devices, you must prevent the `mlx5_core` kernel driver from binding to the device. Because `mlx5_core` is included in the initramfs image and loads before the root filesystem is mounted, you must add the driver to a blocklist by using both a `modprobe.d` configuration file and a kernel boot argument. You then bind the device to `vfio-pci` by using a second `MachineConfig`.
+
+[IMPORTANT]
+====
+For `vfio-pci` to allocate a PCI device, no other kernel driver can manage that device. Adding a kernel module to a blocklist makes all devices handled by that module unavailable to the host.
+====
+
+.Prerequisites
+
+* You have installed {product-title} 4.21 or later.
+* You have installed the {VirtProductName} Operator.
+* You have cluster administrator permissions.
+* You have installed the Butane tool for generating Ignition-compatible `MachineConfig` manifests.
+* The Network Express adapter is configured in RoCE mode through the HMC.
+* You have installed the {oc-first}.
+
+.Procedure
+
+. On each node, identify the RoCE virtual function PCI address and vendor ID by running the following command:
++
+[source,terminal]
+----
+$ lspci | grep -i mellanox
+----
++
+.Example output
+[source,terminal]
+----
+0000:00:00.0 Ethernet controller: Mellanox Technologies ConnectX Family mlx5Gen Virtual Function [15b3:101e]
+----
++
+Record the combined PCI vendor and device ID `15b3:101e`. This value is used in the `vfio-pci` and `HyperConverged` configuration.
+
+. Create a Butane configuration file named `machine-config-roce.bu` to add the `mlx5_core` driver to the blocklist:
++
+[source,yaml,subs="attributes+"]
+----
+variant: openshift
+version: {product-version}.0
+metadata:
+  name: 100-worker-blocklist-mlx5
+  labels:
+    machineconfiguration.openshift.io/role: master
+storage:
+  files:
+    - path: /etc/modprobe.d/blocklist-mlx5.conf
+      mode: 0644
+      overwrite: true
+      contents:
+        inline: |
+          blocklist mlx5_core
+openshift:
+  kernel_arguments:
+    - rd.driver.blacklist=mlx5_core
+----
++
+[NOTE]
+====
+The `rd.driver.blacklist=mlx5_core` kernel argument is required in addition to the `modprobe.d` blocklist entry because `mlx5_core` is included in the initramfs image and loads before `/etc/modprobe.d/` is accessible. The kernel argument blocks the driver at the initramfs stage.
+====
+
+. Convert the Butane file to a `MachineConfig` manifest by running the following command:
++
+[source,terminal]
+----
+$ butane machine-config-roce.bu --output machine-config-roce.yaml
+----
+
+. Apply the `MachineConfig` to the cluster by running the following command:
++
+[source,terminal]
+----
+$ oc apply -f machine-config-roce.yaml
+----
+
+. Watch the `MachineConfig` rollout and wait for completion before proceeding:
++
+[source,terminal]
+----
+$ oc get mcp master -w
+----
+
+. Create a Butane configuration file named `machine-config-roce1.bu` to bind RoCE devices to `vfio-pci`:
++
+[source,yaml,subs="attributes+"]
+----
+variant: openshift
+version: {product-version}.0
+metadata:
+  name: 100-worker-vfiopci
+  labels:
+    machineconfiguration.openshift.io/role: master
+storage:
+  files:
+    - path: /etc/modprobe.d/vfio.conf
+      mode: 0644
+      overwrite: true
+      contents:
+        inline: |
+          options vfio-pci ids=15b3:101e
+    - path: /etc/modules-load.d/vfio-pci.conf
+      mode: 0644
+      overwrite: true
+      contents:
+        inline: vfio-pci
+----
+
+. Convert the Butane file to a `MachineConfig` manifest by running the following command:
++
+[source,terminal]
+----
+$ butane machine-config-roce1.bu --output machine-config-roce1.yaml
+----
+
+. Apply the `MachineConfig` and wait for the rollout to complete:
++
+[source,terminal]
+----
+$ oc apply -f machine-config-roce1.yaml
+----
++
+[source,terminal]
+----
+$ oc get mcp master -w
+----
+
+. Edit the `HyperConverged` custom resource to expose the RoCE device:
++
+[source,terminal]
+----
+$ oc edit hyperconverged kubevirt-hyperconverged -n openshift-cnv
+----
++
+Add the device under `spec.virtualization.permittedHostDevices`:
++
+[source,yaml]
+----
+spec:
+  virtualization:
+    permittedHostDevices:
+      pciHostDevices:
+        - pciDeviceSelector: "15b3:101e"
+          resourceName: ibm.com/roce_vf
+----
+
+. Add a `hostDevices` entry to the `VirtualMachine` manifest:
++
+[source,yaml]
+----
+apiVersion: kubevirt.io/v1
+kind: VirtualMachine
+metadata:
+  name: <vm_name>
+  namespace: <namespace>
+spec:
+  template:
+    spec:
+      domain:
+        devices:
+          hostDevices:
+            - deviceName: ibm.com/roce_vf
+              name: hostdevices1
+----
+
+. Apply the `VirtualMachine` manifest by running the following command:
++
+[source,terminal]
+----
+$ oc apply -f <vm_manifest>.yaml
+----
+
+.Verification
+
+. Verify `vfio-pci` binding on the nodes by running the following command:
++
+[source,terminal]
+----
+$ lspci -nnk | grep -A 3 "15b3:101e"
+----
++
+.Example output
+[source,terminal]
+----
+0000:00:00.0 Ethernet controller [0200]: Mellanox Technologies ConnectX Family mlx5Gen Virtual Function [15b3:101e]
+        Subsystem: Mellanox Technologies Device [15b3:0002]
+        Kernel driver in use: vfio-pci
+        Kernel modules: mlx5_core
+----
++
+The `Kernel driver in use: vfio-pci` line confirms that the device is bound to `vfio-pci` on the host.
+
+. Verify that the RoCE device is present inside the VM by running the following command:
++
+[source,terminal]
+----
+$ lspci -nnk | grep -A 3 "15b3:101e"
+----
++
+.Example output
+[source,terminal]
+----
+0001:00:00.0 Ethernet controller [0200]: Mellanox Technologies ConnectX Family mlx5Gen Virtual Function [15b3:101e]
+        Subsystem: Mellanox Technologies Device [15b3:0002]
+        Kernel driver in use: mlx5_core
+        Kernel modules: mlx5_core
+----
++
+[NOTE]
+====
+Inside the VM, the RoCE device is managed by the guest kernel's own `mlx5_core` driver. The host uses `vfio-pci` to pass the device through; the guest uses its native driver to operate it.
+====
