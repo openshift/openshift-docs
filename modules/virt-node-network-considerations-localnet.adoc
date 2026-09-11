@@ -1,0 +1,205 @@
+// Module included in the following assemblies:
+//
+// * virt/vm_networking/virt-connecting-vm-to-physical-network-ovs-bridge.adoc
+
+:_mod-docs-content-type: CONCEPT
+[id="virt-node-network-considerations-localnet_{context}"]
+= Node network considerations for localnet
+
+[role="_abstract"]
+Before attaching a VM to the physical network by using a localnet topology, you must prepare the node network by creating an Open vSwitch (OVS) bridge mapping.
+
+The following are key considerations when preparing the node network.
+
+Uplink setup::
+The uplink connection determines how the network traffic enters and exits the node. You can either share the default machine network with VM traffic or use a dedicated network interface to connect to the physical network.
++
+--
+* Sharing the default machine network: The default network of the node is shared with the VM network. You can achieve this by connecting your VM through the `br-ex` bridge by using a localnet network. This bridge and its underlying configuration must be defined during installation. For more information about creating a customized `br-ex` bridge, see the 'Additional resources' section.
+
+* Using a dedicated network interface: To prevent network congestion and isolate traffic, you can use a dedicated network interface controller (NIC) for the VM network. After installing your {product-title} cluster, you can use the Kubernetes NMState Operator and the `NodeNetworkConfigurationPolicy` CR to create a bridge that maps localnet to the physical network.
+--
++
+The following snippet shows configuration of a secondary bridge with a single uplink interface:
++
+[source,yaml]
+----
+apiVersion: nmstate.io/v1
+kind: NodeNetworkConfigurationPolicy
+metadata:
+  name: network-config
+spec:
+  desiredState:
+    interfaces:
+    - name: br1
+      type: ovs-bridge
+      state: up
+      bridge:
+        ...
+        port:
+        - name: eno1np0
+----
+
+Bonding::
+Regardless of how the uplink connection is set up, it is recommended to run VM traffic over a bonded interface to increase resiliency. For details about supported bonding modes and their configuration, see 'Supported bonding modes for OVS bridges' in the 'Additional resources' section.
++
+[IMPORTANT]
+====
+{VirtProductName} does not support bridge bonding modes 0, 5, and 6. Bond mode 1 (`active-backup`) is only partially supported. For more information, see "Which bonding modes work when used with a bridge that virtual machine guests or containers connect to?" in the _Additional resources_ section.
+====
+
+Node selection::
+By default, the node network configuration policy (NNCP) is applied to all nodes in the cluster. This works if your cluster nodes are homogeneous and each node has network interfaces of the same names connected to the same networks.
++
+If your cluster is heterogeneous, you might need to apply multiple NNCPs, each selecting a group of nodes. The following example shows two NNCPs that target different node groups:
++
+[source,yaml]
+----
+apiVersion: nmstate.io/v1
+kind: NodeNetworkConfigurationPolicy
+metadata:
+  name: network-config-gen1
+spec:
+  nodeSelector:
+    node-role.kubernetes.io/worker: gen1
+  interfaces:
+    - name: br1
+      ...
+      bridge:
+        ...
+        port:
+        - name: eno1np0
+---
+apiVersion: nmstate.io/v1
+kind: NodeNetworkConfigurationPolicy
+metadata:
+  name: network-config-gen2
+spec:
+  nodeSelector:
+    node-role.kubernetes.io/worker: gen2
+  interfaces:
+    - name: br1
+      ...
+      bridge:
+        ...
+        port:
+        - name: eno2np1
+----
+
+MTU configuration::
+During installation, the cluster network MTU is set automatically based on the primary network interface MTU of cluster nodes. Although you can change the cluster network MTU after installation, it is recommended to configure the MTU during cluster deployment if you are using a dedicated uplink.
++
+If you created a custom bridge, set the desired MTU on the bridge uplink by using the `NodeNetworkConfigurationPolicy` manifest. For example:
++
+[source,yaml]
+----
+apiVersion: nmstate.io/v1
+kind: NodeNetworkConfigurationPolicy
+metadata:
+  name: network-config
+spec:
+  desiredState:
+    interfaces:
+    - name: eno1np0
+      type: ethernet
+      state: up
+      mtu: 9000
+    - name: br1
+      type: ovs-bridge
+      state: up
+      bridge:
+        ...
+        port:
+        - name: eno1np0
+----
++
+[NOTE]
+====
+If your cluster infrastructure can benefit from a higher MTU value for optimal performance, you must ensure that the VM, localnet network, the bridge uplink, and external routers and switches all support jumbo frames.
+====
+
+VM network requirements::
+To make the OVS bridge work when used for a VM network, set the following attributes in the `NodeNetworkConfigurationPolicy` CR:
++
+--
+* `allow-extra-patch-ports: true` to allow the creation of multiple OVS patch ports
+* `stp: false` to allow VMs to live migrate between nodes
+* `mcast-snooping-enable: true` to prevent flooding multicast packets to every port of the bridge
+--
++
+[source,yaml]
+----
+apiVersion: nmstate.io/v1
+kind: NodeNetworkConfigurationPolicy
+metadata:
+  name: network-config
+spec:
+  desiredState:
+    interfaces:
+    - name: br1
+      type: ovs-bridge
+      state: up
+      bridge:
+        allow-extra-patch-ports: true
+        options:
+          stp: false
+          mcast-snooping-enable: true
+        ...
+----
+
+Internal OVS interface::
+An OVS bridge acts as a virtual switch with virtual ports. The uplink port connects the bridge to the physical network through a NIC or bond. When the uplink is added to the bridge, the internal OVS interface takes over the MAC and IP addresses that the uplink interface previously held, representing the bridge on the host side. Even when no IP address is needed, the internal OVS interface is required for correct OVS operation.
++
+The internal OVS interface is listed as one of the bridge ports in the `NodeNetworkConfigurationPolicy` manifest. Use the same name for the internal OVS interface as the OVS bridge.
++
+[source,yaml]
+----
+apiVersion: nmstate.io/v1
+kind: NodeNetworkConfigurationPolicy
+metadata:
+  name: network-config
+spec:
+  desiredState:
+    interfaces:
+    - name: br1
+      type: ovs-bridge
+      state: up
+      bridge:
+        port:
+        - name: eno1np0
+        - name: br1
+    - name: br1
+      type: ovs-interface
+      state: up
+      ipv4:
+        enabled: false
+      ipv6:
+        enabled: false
+----
+
+Localnet identifier::
+To make the OVS bridge available for VM networks, the NNCP must include the `ovn.bridge-mappings.localnet` identifier. This attribute must match the value of the `spec.network.localnet.physicalNetworkName` field of the `ClusterUserDefinedNetwork` object that defines the custom localnet network.
++
+[source,yaml]
+----
+apiVersion: nmstate.io/v1
+kind: NodeNetworkConfigurationPolicy
+metadata:
+  name: network-config
+spec:
+  ...
+  desiredState:
+    interfaces:
+    - name: br1
+      type: ovs-bridge
+      state: up
+      ...
+    ovn:
+      bridge-mappings:
+      - localnet: provider-network # <1>
+        bridge: br1 # <2>
+        state: present # <3>
+----
+<1> The name of the localnet identifier. This value must match the `spec.network.localnet.physicalNetworkName` field of the `ClusterUserDefinedNetwork` CR.
+<2> The name of the OVS bridge on the node.
+<3> The state of the mapping. Must be `present` to add the mapping or `absent` to remove it.
