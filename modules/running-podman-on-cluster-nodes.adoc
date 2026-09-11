@@ -1,0 +1,132 @@
+// Module included in the following assemblies:
+//
+// * support/gathering-cluster-data.adoc
+
+:_mod-docs-content-type: PROCEDURE
+[id="running-podman-on-cluster-nodes_{context}"]
+= Running Podman on a cluster node
+
+[role="_abstract"]
+If you run Podman on an {op-system} node, the default bridge uses `10.88.0.0/16`. That route can take precedence over the node's real network, including NFS, and it can stay in the routing table after the container exits. For debug work, attach the container to the host network, or point Podman at a subnet that nothing else on the site uses.
+
+The problem shows up most often during `oc debug node/<node_name>` after `chroot /host`. A command such as `podman run <image>` with no `--network` option creates `podman0` or, on older nodes, `cni-podman0`. Longest-prefix match then prefers the local `/16` over the default gateway. Workloads that talk to addresses in that range start timing out, and the interface does not go away when the debug pod is deleted.
+
+.Prerequisites
+
+ifndef::openshift-rosa,openshift-rosa-hcp,openshift-dedicated[]
+* You have access to the cluster as a user with the `cluster-admin` role.
+endif::openshift-rosa,openshift-rosa-hcp,openshift-dedicated[]
+ifdef::openshift-rosa,openshift-rosa-hcp,openshift-dedicated[]
+* You have access to the cluster as a user with the `dedicated-admin` role.
+endif::openshift-rosa,openshift-rosa-hcp,openshift-dedicated[]
+* You have installed the OpenShift CLI (`oc`).
+ifndef::openshift-rosa,openshift-rosa-hcp,openshift-dedicated[]
+* You have a range that does not overlap the machine, cluster, service, or storage networks if you need bridged Podman.
+endif::openshift-rosa,openshift-rosa-hcp,openshift-dedicated[]
+
+.Procedure
+
+. Start a debug session on the node:
++
+[source,terminal]
+----
+$ oc debug node/<node_name>
+----
+
+. Switch to the host root file system:
++
+[source,terminal]
+----
+# chroot /host
+----
+
+. For a one-off diagnostic container, do not use the default bridge. Either share the host network or give the container no network:
++
+[source,terminal]
+----
+# podman run --network host --rm <image> <command>
+----
++
+[source,terminal]
+----
+# podman run --network none --rm --volume /var/lib/etcd:/var/lib/etcd:Z <image> <command>
+----
++
+`--network none` is enough when the image only needs local disks, for example an `fio` test against etcd storage. Prefer `toolbox` when you are collecting `sosreport` data; that path is meant for node diagnostics.
+
+. If a leftover bridge is already present, delete it. Check the names first:
++
+[source,terminal]
+----
+# ip -br link show
+----
++
+Then remove whichever interface exists:
++
+[source,terminal]
+----
+# ip link delete podman0
+----
++
+[source,terminal]
+----
+# ip link delete cni-podman0
+----
++
+Confirm that `10.88.0.0/16` is gone from the routing table:
++
+[source,terminal]
+----
+# ip route | grep -E '10\.88\.|podman0|cni-podman0'
+----
++
+No output means the collision is cleared. A reboot also removes the route, but deleting the link avoids waiting on a node drain.
+
+ifndef::openshift-rosa,openshift-rosa-hcp,openshift-dedicated[]
+. Optional: If you must run bridged Podman on the nodes, set `default_subnet` before the default network is created. Put the following in a file named `99-podman-default-subnet.conf`:
++
+[source,text]
+----
+[network]
+default_subnet = "<unused_ipv4_cidr>"
+----
++
+Replace `<unused_ipv4_cidr>` with a prefix that is free on that site. Do not reuse `10.88.0.0/16` if that range is already on your network. There is no universal "safe" private range; pick one that does not overlap machine, cluster, service, or storage networks.
+
+. Encode the file:
++
+[source,terminal]
+----
+$ base64 -w0 99-podman-default-subnet.conf
+----
+
+. Create a `MachineConfig` object for each pool that you debug on. The following example targets worker nodes:
++
+[source,yaml]
+----
+apiVersion: machineconfiguration.openshift.io/v1
+kind: MachineConfig
+metadata:
+  labels:
+    machineconfiguration.openshift.io/role: worker
+  name: 99-worker-podman-default-subnet
+spec:
+  config:
+    ignition:
+      version: 3.2.0
+    storage:
+      files:
+      - contents:
+          source: data:text/plain;charset=utf-8;base64,<encoded_content>
+        mode: 0644
+        overwrite: true
+        path: /etc/containers/containers.conf.d/99-podman-default-subnet.conf
+----
++
+Create a second manifest with `machineconfiguration.openshift.io/role: master` if you run Podman on control plane nodes. Apply the manifests with `oc create -f`. `default_subnet` is read when Podman first creates the default network. If `podman0` or `cni-podman0` already exists, delete that interface as shown earlier so the new range can take effect.
++
+[IMPORTANT]
+====
+Do not change the cluster-wide Podman default in the Machine Config Operator payloads. A drop-in on `/etc/containers/containers.conf.d/` is a site override. Replacing `10.88.0.0/16` for every cluster still collides wherever the new range is already in use.
+====
+endif::openshift-rosa,openshift-rosa-hcp,openshift-dedicated[]
