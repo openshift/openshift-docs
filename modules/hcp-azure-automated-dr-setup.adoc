@@ -1,0 +1,168 @@
+//Module included in the following assemblies:
+// hosted_control_planes/hcp-deploy/hcp-deploy-azure.adoc
+
+:_mod-docs-content-type: PROCEDURE
+[id="hcp-azure-automated-dr-setup_{context}"]
+= Setting up automated disaster recovery for {hcp} on {azure-short}
+
+[role="_abstract"]
+You can automate disaster recovery (DR) for {hcp} on {azure-first} by using {oadp-first} 1.6.
+
+The {oadp-short} `hypershift` plugin auto-detects the platform and includes the required platform-specific resources in backup and restore operations.
+
+.Prerequisites
+
+* You installed {oadp-short} 1.6 on the management cluster. For instructions, see xref:../../backup_and_restore/application_backup_and_restore/installing/installing-oadp-azure.adoc#installing-oadp-azure[Configuring {oadp-short} with {azure-short}].
+* You met the `HCPEtcdBackup` feature gate requirement and the etcd snapshot prerequisites listed in xref:../../hosted_control_planes/hcp-deploy/hcp-deploy-azure.adoc#hcp-azure-etcd-snapshot-setup_hcp-deploy-azure[Setting up backup and restore for {hcp} on {azure-short}].
+* You created an Azure Storage Account and Blob Container.
+* You have the Azure service principal credentials with access to the Azure Blob Storage account.
+
+.Procedure
+
+. Create a Kubernetes secret that provides {oadp-short} with access to the Azure Blob Storage account where backups are stored.
+
+.. Create a credentials file with the following content:
++
+[source,ini]
+----
+AZURE_SUBSCRIPTION_ID=<azure_subscription_id>
+AZURE_TENANT_ID=<azure_tenant_id>
+AZURE_CLIENT_ID=<azure_client_id>
+AZURE_CLIENT_SECRET=<azure_client_secret>
+AZURE_RESOURCE_GROUP=<azure_resource_group>
+AZURE_CLOUD_NAME=<azure_cloud_name>
+----
++
+where:
++
+`<azure_subscription_id>`:: Specifies the Azure subscription ID.
+`<azure_tenant_id>`:: Specifies the Azure Active Directory tenant ID.
+`<azure_client_id>`:: Specifies the client ID of the Azure service principal.
+`<azure_client_secret>`:: Specifies the client secret of the Azure service principal.
+`<azure_resource_group>`:: Specifies the Azure resource group that contains the storage account.
+`<azure_cloud_name>`:: Specifies the Azure cloud environment. Use `AzurePublicCloud` for standard Azure or `AzureUSGovernmentCloud` for Azure Government.
+
+.. Create the secret in the `openshift-adp` namespace by entering the following command:
++
+[source,terminal]
+----
+$ oc create secret generic azure-credentials \
+  --namespace openshift-adp \
+  --from-file cloud=<path_to_credentials_file>
+----
++
+Replace `<path_to_credentials_file>` with the path to the credentials file you created in the previous step.
+
+. Create a `DataProtectionApplication` (DPA) custom resource to configure {oadp-short} with the Azure provider and the `hypershift` plugin.
+
+.. Create a `DataProtectionApplication` manifest, as shown in the following example:
++
+[source,yaml]
+----
+apiVersion: oadp.openshift.io/v1alpha1
+kind: DataProtectionApplication
+metadata:
+  name: dpa-azure
+  namespace: openshift-adp
+spec:
+  configuration:
+    velero:
+      defaultPlugins:
+        - openshift
+        - azure
+        - csi
+        - hypershift
+  backupLocations:
+    - velero:
+        provider: azure
+        default: true
+        credential:
+          name: azure-credentials
+          key: cloud
+        objectStorage:
+          bucket: <blob_container_name>
+          prefix: velero
+          config:
+            resourceGroup: <azure_resource_group>
+            storageAccount: <azure_storage_account_name>
+----
++
+where:
++
+`<blob_container_name>`:: Specifies the name of the Azure Blob Storage container.
+`<azure_resource_group>`:: Specifies the Azure resource group containing the storage account.
+`<azure_storage_account_name>`:: Specifies the Azure Storage Account name.
+
+.. Apply the manifest by entering the following command:
++
+[source,terminal]
+----
+$ oc apply -f dpa-azure.yaml
+----
+
+.. Verify that the `BackupStorageLocation` is available by entering the following command:
++
+[source,terminal]
+----
+$ oc get backupstoragelocation -n openshift-adp
+----
++
+The output must show a `Phase` of `Available`.
+
+. Create a Velero `Backup` CR to back up the hosted control plane and associated {azure-short} infrastructure resources.
++
+[NOTE]
+====
+The `hcp create oadp-backup` command auto-detects {azure-short} and automatically includes the three required Azure Cluster API resources in the backup: `azureclusters`, `azuremachinetemplates`, and `azuremachines`. Using the CLI command is the recommended approach.
+====
+
+** Run the backup command:
++
+[source,terminal]
+----
+$ hcp create oadp-backup \
+  --hc-name <hosted_cluster_name> \
+  --hc-namespace <hosted_cluster_namespace> \
+  --storage-location azure-blob
+----
+
+** Alternatively, apply a `Backup` manifest directly. The manifest must include the three Azure Cluster API resources in `includedResources`. The `includedResources` list below is illustrative; the CLI command might auto-detect additional resources not listed here. To generate a baseline manifest that matches the CLI output exactly, use `hcp create oadp-backup --render` and adjust as needed.
++
+.Example `Backup` manifest
+[source,yaml]
+----
+apiVersion: velero.io/v1
+kind: Backup
+metadata:
+  name: <backup_name>
+  namespace: openshift-adp
+spec:
+  storageLocation: azure-blob
+  includedNamespaces:
+    - <hosted_cluster_namespace>
+    - <hosted_cluster_namespace>-<hosted_cluster_name>
+  includedResources:
+    - hostedclusters
+    - nodepools
+    - secrets
+    - hostedcontrolplanes
+    - azureclusters
+    - azuremachinetemplates
+    - azuremachines
+  ttl: 720h0m0s
+----
++
+Replace `<backup_name>`, `<hosted_cluster_namespace>`, and `<hosted_cluster_name>` with the names of the backup and the cluster to back up.
+
+.Verification
+
+* Verify that the backup completed successfully by entering the following command:
++
+[source,terminal]
+----
+$ oc get backup <backup_name> -n openshift-adp -o jsonpath='{.status.phase}'
+----
++
+The output must be `Completed`.
+
+
