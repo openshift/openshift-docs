@@ -1,0 +1,128 @@
+// Module included in the following assemblies:
+//
+// * microshift_networking/microshift-cluster-to-cluster-communication.adoc
+
+:_mod-docs-content-type: REFERENCE
+[id="microshift-c2cc-troubleshooting_{context}"]
+= Troubleshoot cluster-to-cluster communication
+
+[role="_abstract"]
+Use the following guidance to diagnose common C2CC issues related to overlapping CIDRs, connectivity failures, and configuration errors.
+
+== {microshift-short} fails to start after enabling C2CC
+
+{microshift-short} validates the C2CC configuration on startup.
+Invalid configuration prevents the service from starting.
+
+. Check the journal for C2CC validation errors:
++
+[source,terminal]
+----
+$ journalctl -u microshift | grep -i c2cc
+----
+
+. Common validation failures:
++
+* **Overlapping CIDRs**: pod or service CIDRs overlap between the local cluster and a remote cluster, or between two remote clusters.
+  Each cluster must use unique pod and service CIDRs.
+  If {microshift-short} has already started with default CIDRs, wipe data with `microshift-cleanup-data --all` and reconfigure before restarting.
+* **Routing loop**: a remote cluster's CIDRs match the local cluster's CIDRs.
+* **Invalid next-hop**: the next-hop IP equals the local node IP or is duplicated across remotes.
+* **Invalid domain**: the `domain` value is not a valid DNS subdomain, duplicates another remote, or equals `cluster.local`.
+
+== RemoteCluster reports unhealthy status
+
+. Check the `RemoteCluster` resource for error details:
++
+[source,terminal]
+----
+$ oc get remoteclusters.microshift.io -o yaml
+----
+
+. Verify that routes to remote CIDRs exist:
++
+[source,terminal]
+----
+$ ip route show table 200
+----
+
+. Verify that the firewall allows traffic from remote pod and service CIDRs:
++
+[source,terminal]
+----
+$ sudo firewall-cmd --zone=trusted --list-sources
+----
++
+Ensure remote CIDRs are in the trusted zone, not the remote host IP.
+
+. Verify underlay connectivity between the hosts:
++
+[source,terminal]
+----
+$ ping <remote-host-ip>
+----
+
+. Inspect SNAT bypass rules:
++
+[source,terminal]
+----
+$ sudo nft list chain inet ovn-kubernetes ovn-kube-pod-subnet-masq
+$ oc get node -o jsonpath='{.items[0].metadata.annotations.k8s\.ovn\.org/node-ingress-snat-exclude-subnets}'
+----
+
+== Cross-cluster DNS resolution fails
+
+. Verify that the remote cluster has a `domain` configured in `clusterToCluster.remoteClusters`.
+
+. Inspect the CoreDNS Corefile for the remote domain forwarding block:
++
+[source,terminal]
+----
+$ oc get configmap -n openshift-dns dns-default -o jsonpath='{.data.Corefile}'
+----
+
+. Test DNS resolution from a client pod:
++
+[source,terminal]
+----
+$ oc exec <pod> -- nslookup <service>.<namespace>.svc.<domain>
+----
+
+== Pod-to-pod connectivity fails but DNS works
+
+. Verify that NetworkPolicies on the remote cluster allow traffic from the originating pod CIDR.
+  C2CC preserves source pod IPs, so `ipBlock` selectors must include the remote cluster's pod CIDR.
+
+. Test connectivity using the remote pod IP directly:
++
+[source,terminal]
+----
+$ oc exec <pod> -- curl -s http://<remote-pod-ip>:<port>
+----
+
+== Stale routes after changing routing table IDs
+
+{microshift-short} does not clean up C2CC routes on shutdown.
+If you change `routing.routeTableID` or `routing.serviceRouteTableID` while C2CC is enabled, routes and rules in the old tables remain until a reboot or manual cleanup:
+
+[source,terminal]
+----
+$ sudo ip route flush table <old-table-id>
+$ sudo ip rule del to <remote-cidr> lookup <old-table-id>
+----
+
+== Overlapping CIDRs
+
+C2CC requires non-overlapping pod and service CIDRs across all clusters.
+If multiple clusters use the default CIDRs (`10.42.0.0/16` and `10.43.0.0/16`), only one cluster can keep the defaults.
+
+To resolve overlapping CIDRs:
+
+. Plan unique CIDRs for each cluster before the first boot.
+. On clusters that need non-default CIDRs, set `network.clusterNetwork` and `network.serviceNetwork` before starting {microshift-short}.
+. If {microshift-short} has already run with overlapping CIDRs, wipe data on affected clusters with `microshift-cleanup-data --all`, reconfigure with unique CIDRs, and restart.
+
+[IMPORTANT]
+====
+Changing `network.clusterNetwork` or `network.serviceNetwork` on a cluster that has already started requires wiping {microshift-short} data, which deletes all workloads.
+====
