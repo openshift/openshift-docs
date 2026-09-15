@@ -1,0 +1,114 @@
+// Module included in the following assemblies:
+//
+// * deployment/egress_gateway/rhcl-egress-token-rate-limiting.adoc
+
+:_mod-docs-content-type: PROCEDURE
+[id="proc-rhcl-egress-tiered-token-limits_{context}"]
+= Apply tiered token limits to egress traffic
+
+[role="_abstract"]
+Assign different artificial intelligence (AI) token budgets to different groups of workloads by combining `when` predicates with per-identity counters in a single `TokenRateLimitPolicy` custom resource (CR).
+
+Each named limit in the policy applies only to the requests that match its predicates. A counter expression inside each limit keeps the budget of each workload separate from the budgets of the other workloads in the same tier.
+
+.Prerequisites
+
+include::snippets/egress-gateway-prereqs.adoc[]
+include::snippets/egress-ai-service-prereqs.adoc[]
+
+* You applied an `AuthPolicy` CR that resolves workload identity on the route of your external AI service.
+* You created a second test client pod that uses a different service account, such as `team-gold` in the `egress-test` namespace.
+
+.Procedure
+
+. Create a `TokenRateLimitPolicy` CR that defines one limit for each tier by using the following example:
++
+[source,yaml,subs="+quotes"]
+----
+apiVersion: kuadrant.io/v1alpha1
+kind: TokenRateLimitPolicy
+metadata:
+  name: _<ai_per_tier>_
+  namespace: _<gateway_system>_
+spec:
+  targetRef:
+    group: gateway.networking.k8s.io
+    kind: HTTPRoute
+    name: _<ai_external>_
+  limits:
+    default-tier:
+      rates:
+        - limit: 100
+          window: 1m
+      when:
+        - predicate: auth.identity.username == 'system:serviceaccount:egress-test:default'
+      counters:
+        - expression: auth.identity.username
+    gold-tier:
+      rates:
+        - limit: 500
+          window: 1m
+      when:
+        - predicate: auth.identity.username == 'system:serviceaccount:egress-test:team-gold'
+      counters:
+        - expression: auth.identity.username
+----
++
+* Replace the `spec.targetRef.name` value with the name of the `HTTPRoute` object of your external AI service.
+* The `default-tier` limit applies to workloads that run under the `default` service account and caps them at 100 tokens per minute.
+* The `gold-tier` limit applies to workloads that run under the `team-gold` service account and caps them at 500 tokens per minute.
+* Each tier keeps a separate counter for each service account, so workloads in the same tier do not share a budget.
+
+. Apply the `TokenRateLimitPolicy` CR by running the following command:
++
+[source,terminal,subs="+quotes"]
+----
+$ oc apply -f _<ai_per_tier>_
+----
++
+Replace `_<ai_per_tier>_` with the name of the file that holds your token rate limit policy.
+
+.Verification
+
+. Exhaust the budget of the default tier by running the following command:
++
+[source,terminal,subs="+quotes"]
+----
+$ for i in $(seq 1 20); do
+    CODE=$(oc exec test-client -n egress-test -- sh -c '
+        curl -s -o /dev/null -w "%{http_code}" \
+            -H "Host: _<api.example.com>_" \
+            -H "Content-Type: application/json" \
+            -H "Authorization: Bearer $(cat /var/run/secrets/kubernetes.io/serviceaccount/token)" \
+            -X POST http://'"${EGRESS_IP}"'/v1/chat/completions \
+            -d "{\"model\": \"_<model_name>_\", \"messages\": [{\"role\": \"user\", \"content\": \"Hello\"}], \"max_tokens\": 100, \"stream\": false, \"usage\": true}"
+    ')
+    echo "default-tier request $i: HTTP $CODE"
+    [ "$CODE" = "429" ] && break
+  done
+----
++
+* Replace `_<api.example.com>_` with the hostname of your external AI service.
+* Replace `_<model_name>_` with a model that your external AI service provides.
+
+. Send a request from the workload in the gold tier by running the following command:
++
+[source,terminal,subs="+quotes"]
+----
+$ oc exec team-gold -n egress-test -- sh -c '
+    curl -s -o /dev/null -w "%{http_code}" \
+        -H "Host: _<api.example.com>_" \
+        -H "Content-Type: application/json" \
+        -H "Authorization: Bearer $(cat /var/run/secrets/kubernetes.io/serviceaccount/token)" \
+        -X POST http://'"${EGRESS_IP}"'/v1/chat/completions \
+        -d "{\"model\": \"_<model_name>_\", \"messages\": [{\"role\": \"user\", \"content\": \"Hello\"}], \"max_tokens\": 100, \"stream\": false, \"usage\": true}"
+'
+----
++
+.Expected output
+[source,text]
+----
+200
+----
++
+The default tier reaches its limit, and the gold tier still has budget remaining.
