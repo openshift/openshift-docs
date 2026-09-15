@@ -2,26 +2,29 @@
 //
 // * etcd/KMS_v2/kms-configuring.adoc
 
+// openshift/api: 9edb1b2 (2026-09-15)
+// openshift/enhancements: 66c24fe (2026-09-15)
+
 :_mod-docs-content-type: PROCEDURE
 [id="kms-configuring_{context}"]
-= Enable KMS encryption
+= Enabling KMS encryption
 
 [role="_abstract"]
-You can enable external Key Management Service (KMS) encryption for etcd data to centralize key management and meet compliance requirements.
+You can enable Key Management Service (KMS) encryption for etcd data to centralize key management and meet compliance requirements.
 
 .Prerequisites
 
 * You have access to the cluster as a user with the `cluster-admin` role.
 * You have enabled the `TechPreviewNoUpgrade` feature set to enable the `KMSEncryption` feature gate.
-* You have a `HashiCorp Vault Enterprise` instance accessible from your control plane nodes. Vault Community Edition is not available.
-* Your control plane nodes have network access to the Vault server.
+* You have a HashiCorp Vault Enterprise instance that is externally hosted and accessible from your cluster. Vault Enterprise must not be hosted inside the cluster service network. Vault Community Edition is not supported.
 * You have configured your Vault instance with:
-** Transit secrets engine enabled at the default `transit/` mount path
+** Transit secrets engine enabled at a mount path, such as the default `transit/` path
 ** Encryption key created with type `aes256-gcm96` (recommended for FIPS 140-3 compliance)
-** Vault policy allowing the {KMS} plugin to encrypt, decrypt, and read key information
-** Authentication method (token, `AppRole`, or `userpass`) configured with the policy attached
+** Vault policy that allows the KMS plugin to encrypt, decrypt, and read key information
+** Authentication method, such as `AppRole`, configured with the policy attached
+* You have the fully qualified OCI image pull spec with SHA256 digest for the KMS plugin image. You can obtain the image from the Red Hat Ecosystem Catalog or from Docker Hub. For more information, see "HashiCorp Vault KMS plugin container image" and "Red Hat Ecosystem Catalog". In disconnected environments, mirror the image to an accessible registry.
 
-The {KMS} plugin requires a Vault policy with the following capabilities:
+The KMS plugin requires a Vault policy with the following capabilities:
 
 [source,hcl]
 ----
@@ -37,11 +40,11 @@ path "transit/keys/kms-key" {
   capabilities = ["read"]
 }
 
-path "auth/token/lookup-self" {
+path "sys/license/status" {
   capabilities = ["read"]
 }
 ----
-Replace `kms-key` with your Vault Transit key name if using a different name.
+Replace `kms-key` with your Vault Transit key name.
 
 [IMPORTANT]
 ====
@@ -50,128 +53,37 @@ Create an etcd backup before enabling KMS encryption.
 
 .Procedure
 
-. Deploy the KMS plugin on each control plane host as a static pod:
+. Obtain the SHA256 digest for the KMS plugin image by entering the following command:
 +
---
-* Configure the plugin to listen at `unix:///var/run/kmsplugin/kms.sock`
-* For your static pod, mount `/var/run/kmsplugin` as `hostPath`
-* Configure KMS provider connection details and authentication credentials
+[source,terminal]
+----
+$ skopeo inspect docker://quay.io/redhat-isv-containers/698df066f8d1ddf179c15ef9:<version> | jq -r '.Digest'
+----
++
+Replace `<version>` with the plugin version compatible with your cluster, such as `0.1.0-beta-ubi`.
++
+Use the resulting digest to construct the fully qualified pull spec in the format `quay.io/redhat-isv-containers/698df066f8d1ddf179c15ef9@sha256:<digest>`.
 
-The following steps show how to deploy the `HashiCorp` Vault KMS plugin as a static pod.
---
+. Create a secret in the `openshift-config` namespace with your Vault authentication credentials by entering the following command:
++
+[source,terminal]
+----
+$ oc create secret generic vault-approle-secret \
+  --from-literal=role-id=<your_role_id> \
+  --from-literal=secret-id=<your_secret_id> \
+  -n openshift-config
+----
++
+Replace `<your_role_id>` and `<your_secret_id>` with your Vault AppRole credentials.
 
-. Create a static pod manifest file:
+. Optional: If your Vault server uses a custom TLS certificate authority, create a config map in the `openshift-config` namespace with the CA bundle by entering the following command:
 +
 [source,terminal]
 ----
-$ cat > /tmp/vault-kms-plugin.yaml <<'EOF'
-apiVersion: v1
-kind: Pod
-metadata:
-  name: vault-kms-plugin
-  namespace: kube-system
-  labels:
-    app: vault-kms-plugin
-    tier: control-plane
-spec:
-  priorityClassName: system-node-critical
-  hostNetwork: true
-  containers:
-  - name: vault-kms-plugin
-    image: quay.io/redhat-isv-containers/698df066f8d1ddf179c15ef9:<version>
-    command:
-    - /vault-kubernetes-kms
-    - -vault-address=<https://vault.example.com:8200>
-    - -<vault_namespace>=admin
-    - -auth-method=userpass
-    - -userpass-username=<vault_username>
-    - -userpass-password=<vault_password>
-    - -transit-mount=transit
-    - -transit-key=kms-key
-    - -socket=unix:///var/run/kmsplugin/kms.sock
-    volumeMounts:
-    - name: kmsplugin
-      mountPath: /var/run/kmsplugin
-    resources:
-      requests:
-        cpu: 100m
-        memory: 128Mi
-      limits:
-        cpu: 500m
-        memory: 512Mi
-    securityContext:
-      privileged: true
-  volumes:
-  - name: kmsplugin
-    hostPath:
-      path: /var/run/kmsplugin
-      type: DirectoryOrCreate
-EOF
+$ oc create configmap vault-ca-bundle \
+  --from-file=ca-bundle.crt=<path_to_ca_bundle> \
+  -n openshift-config
 ----
-+
-Replace the following values to match your environment:
-+
-<version>:: The Vault KMS plugin image version tag. Use `0.1.0-beta-ubi`.
-<vault_username>:: Your Vault username for authentication.
-<vault_password>:: Your Vault password for authentication.
-<https://vault.example.com:8200>:: The Vault address. Update this field to match your Vault server URL.
-<vault_namespace>:: Optional field.
-+
-The manifest uses the Red Hat certified container image from Quay.io (`quay.io/redhat-isv-containers/698df066f8d1ddf179c15ef9`), which is the recommended image for {product-title}.
-+
-[NOTE]
-====
-Alternatively, you can use the link:https://hub.docker.com/r/hashicorp/vault-kube-kms[HashiCorp image from Docker Hub] by replacing the image field with `docker.io/hashicorp/vault-kube-kms:0.1.0-beta-ubi`.
-====
-
-. Deploy the static pod manifest to each control plane node by running the following commands:
-+
-[source,terminal]
-----
-$ MANIFEST=$(cat /tmp/vault-kms-plugin.yaml | base64)
-$ for node in $(oc get nodes --selector=node-role.kubernetes.io/master -o name | cut -d/ -f2); do
-    echo "Deploying to $node..."
-    oc debug node/$node -- chroot /host bash -c \
-      "echo '$MANIFEST' | base64 -d > /etc/kubernetes/manifests/vault-kms-plugin.yaml"
-  done
-----
-+
-The kubelet automatically detects and starts static pods from `/etc/kubernetes/manifests/`.
-
-. Verify the static pods are running by entering the following command:
-+
-[source,terminal]
-----
-$ oc get pods -n kube-system -o wide | grep vault-kms
-----
-+
-.Example output
-[source,terminal]
-----
-vault-kms-plugin-ip-10-0-16-7.compute.internal    1/1  Running  0  2m  10.0.16.7
-vault-kms-plugin-ip-10-0-32-93.compute.internal   1/1  Running  0  2m  10.0.32.93
-vault-kms-plugin-ip-10-0-69-106.compute.internal  1/1  Running  0  2m  10.0.69.106
-----
-+
-Static pod names include the node name as a suffix. You should see one pod per control plane node.
-
-. Verify the socket exists on a control plane node by entering the following command:
-+
-[source,terminal]
-----
-$ oc debug node/<node_name> -- chroot /host ls -la /var/run/kmsplugin/kms.sock
-----
-+
-.Example output
-[source,terminal]
-----
-srwxr-xr-x. 1 root root 0 <timestamp> /var/run/kmsplugin/kms.sock
-----
-+
-[NOTE]
-====
-Static pods are managed by kubelet on each node and cannot be deleted with `oc delete pod`. To remove a static pod, delete the manifest file from `/etc/kubernetes/manifests/` on each control plane node.
-====
 
 . Edit the `APIServer` custom resource by entering the following command:
 +
@@ -191,16 +103,40 @@ metadata:
 spec:
   encryption:
     type: KMS
+    kms:
+      type: Vault
+      vault:
+        kmsPluginImage: <registry>/<repository>@sha256:<digest>
+        vaultAddress: https://vault.example.com:8200
+        vaultNamespace: my-namespace
+        vaultAuthNamespace: my-auth-namespace
+        vaultKeyPath: transit/keys/kms-key
+        tls:
+          caBundle:
+            name: vault-ca-bundle
+          serverName: vault.example.com
+        authentication:
+          type: AppRole
+          appRole:
+            secret:
+              name: vault-approle-secret
 ----
++
+where:
++
+`kmsPluginImage`:: Specifies the KMS plugin container image as a fully qualified OCI pull spec with SHA256 digest. Image tags and short names are not allowed. In disconnected environments, use the mirrored location.
+`vaultAddress`:: Specifies the HTTPS URL of the Vault server. Paths, query parameters, and fragments are not allowed.
+`vaultNamespace`:: Specifies the Vault namespace. This value is optional.
+`vaultAuthNamespace`:: Specifies the Vault namespace for authentication when it differs from the Transit namespace. Defaults to the `vaultNamespace` value. This value is optional.
+`vaultKeyPath`:: Specifies the Transit encryption key path in the format `<mount>/keys/<key-name>`.
+`tls.caBundle.name`:: Specifies the config map in the `openshift-config` namespace containing the CA bundle. Required only if Vault uses a custom CA.
+`tls.serverName`:: Specifies the TLS server name for certificate verification. This value is optional.
+`authentication.appRole.secret.name`:: Specifies the secret name in the `openshift-config` namespace containing the AppRole credentials.
 
 . Save and exit.
 +
-Migration begins automatically. The `kube-apiserver`, `openshift-apiserver` and `oauth-apiserver` Operators will restart and roll out new revisions.
-+
-[NOTE]
-====
-The `openshift-apiserver` and `authentication` operators typically complete migration in 5-10 minutes. The `kube-apiserver` operator uses a conservative rollout strategy, updating one control plane node at a time and waiting for health checks before proceeding to the next node. This process can take 30 minutes or longer depending on cluster load.
-====
+The `kube-apiserver`, `openshift-apiserver`, and `authentication` operators validate the configuration and roll out new revisions.
+
 
 .Verification
 
@@ -211,24 +147,32 @@ The `openshift-apiserver` and `authentication` operators typically complete migr
 $ oc get apiserver cluster -o jsonpath='{.spec.encryption.type}'
 ----
 +
-Output should show `KMS`.
+The output shows `KMS`.
+
+. Check the KMS plugin health and configuration validation by entering the following command:
++
+[source,terminal]
+----
+$ oc get kubeapiserver cluster -ojsonpath='{.status.encryptionStatus}' | jq .
+----
++
+Verify that `preflight.result.status` shows `Succeeded` and all nodes in `healthReports` show `Healthy`.
 
 . Monitor the `kube-apiserver` rollout progress by entering the following command:
 +
 [source,terminal]
 ----
-$ oc get kubeapiserver cluster -o jsonpath='{.status.nodeStatuses}' | jq -r '.[] | "\(.nodeName | split(".")[0]): current=\(.currentRevision) target=\(.targetRevision)"'
+$ oc get co kube-apiserver
 ----
 +
 .Example output during rollout
 [source,terminal]
 ----
-ip-10-0-16-166: current=10 target=0
-ip-10-0-32-93: current=9 target=10
-ip-10-0-69-106: current=9 target=0
+NAME             VERSION      AVAILABLE   PROGRESSING   DEGRADED   SINCE   MESSAGE
+kube-apiserver   5.0.0-rc.4   True        True          False      35m     NodeInstallerProgressing: 2 nodes are at revision 6; 1 node is at revision 7
 ----
 +
-The operator rolls out one node at a time. When all nodes show the same `current` revision and `target` is `0`, the rollout is complete.
+When `PROGRESSING` shows `False`, the rollout is complete.
 
 . Check the encryption migration status by entering the following command:
 +
@@ -238,10 +182,10 @@ $ oc get kubeapiserver cluster -o jsonpath='{.status.conditions[?(@.type=="Encry
 ----
 +
 .Example output when complete
-[source,terminal]
+[source,json]
 ----
 {
-  "lastTransitionTime": "2026-05-15T17:39:02Z",
+  "lastTransitionTime": "2026-09-24T16:41:48Z",
   "message": "All resources encrypted: secrets, configmaps",
   "reason": "EncryptionCompleted",
   "status": "True",
@@ -249,13 +193,13 @@ $ oc get kubeapiserver cluster -o jsonpath='{.status.conditions[?(@.type=="Encry
 }
 ----
 +
-Wait for `reason` to show `EncryptionCompleted` before proceeding to verify encryption in etcd.
+Wait for `reason` to show `EncryptionCompleted` before you verify encryption in etcd.
 
-. Verify secrets are encrypted in etcd:
+. Verify that secrets are encrypted in etcd:
 +
 [WARNING]
 ====
-Wait for the `kube-apiserver` rollout to complete on all control plane nodes before verifying encryption. During the rollout, API requests are distributed across nodes, and secrets created while some nodes are still on an earlier revision will not be encrypted with {KMS}.
+Wait for the `kube-apiserver` rollout to complete on all control plane nodes before you verify encryption. Secrets created while nodes run an earlier revision are not encrypted with KMS.
 ====
 +
 --
@@ -280,7 +224,13 @@ $ oc get pods -n openshift-etcd -l app=etcd -o name | head -1
 $ oc exec -n openshift-etcd <etcd_pod_name> -- etcdctl get /kubernetes.io/secrets/default/test-secret --print-value-only | hexdump -C | head -1
 ----
 +
-Output should begin with `k8s:enc:kms:v2:` followed by encrypted binary data.
+.Example output
+[source,terminal]
+----
+00000000  6b 38 73 3a 65 6e 63 3a  6b 6d 73 3a 76 32 3a 31  |k8s:enc:kms:v2:1|
+----
++
+The output begins with `k8s:enc:kms:v2:` followed by encrypted binary data.
 
 .. Delete the test secret by entering the following command:
 +
@@ -293,6 +243,8 @@ $ oc delete secret test-secret -n default
 [role="_additional-resources"]
 .Additional resources
 
+* link:https://hub.docker.com/r/hashicorp/vault-kube-kms[HashiCorp Vault KMS plugin container image]
+* link:https://catalog.redhat.com/search?gs&q=vault-kms[Red Hat Ecosystem Catalog]
 * link:https://developer.hashicorp.com/vault/docs/secrets/transit[Vault Transit Secrets Engine]
 * link:https://developer.hashicorp.com/vault/api-docs/secret/transit#create-key[Vault API: Create Key]
 * link:https://developer.hashicorp.com/vault/docs/concepts/policies[Vault Policies]
