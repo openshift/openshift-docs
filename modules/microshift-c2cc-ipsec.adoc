@@ -1,0 +1,143 @@
+// Module included in the following assemblies:
+//
+// * microshift_networking/microshift-cluster-to-cluster-communication.adoc
+
+:_mod-docs-content-type: PROCEDURE
+[id="microshift-c2cc-ipsec_{context}"]
+= Encrypting C2CC traffic with IPsec
+
+[role="_abstract"]
+C2CC routes cross-cluster pod and service traffic as raw IP between nodes.
+This traffic traverses the physical network unencrypted by default.
+You can use IPsec to protect it using standard Linux tools on the host operating system.
+
+{microshift-short} does not configure or manage IPsec.
+Setting up and maintaining the IPsec tunnels is your responsibility.
+This procedure provides a minimal working example using Libreswan in tunnel mode.
+
+For comprehensive IPsec/VPN documentation, see link:https://docs.redhat.com/en/documentation/red_hat_enterprise_linux/9/html/configuring_and_managing_networking/setting-up-an-ipsec-vpn_configuring-and-managing-networking[Setting up an IPsec VPN] in the RHEL documentation.
+
+.Prerequisites
+
+* Two or more RHEL hosts running {microshift-short} with C2CC configured (non-overlapping pod and service CIDRs, `clusterToCluster.remoteClusters` populated in each node's configuration).
+* IP connectivity between the hosts on the underlay network.
+* Libreswan installed on every host:
++
+[source,terminal]
+----
+$ sudo dnf install -y libreswan
+----
+
+.Procedure
+
+. Open the firewall for IKE negotiation and ESP on each host:
++
+[source,terminal]
+----
+$ sudo firewall-cmd --permanent --zone=public --add-service=ipsec
+$ sudo firewall-cmd --reload
+----
++
+This allows UDP ports 500 and 4500 (IKE/NAT-T) and IP protocol 50 (ESP).
+
+. Generate a pre-shared key on one host and distribute it to all others through a secure channel:
++
+[source,terminal]
+----
+$ openssl rand -hex 32
+----
+
+. On each host, create `/etc/ipsec.d/c2cc.secrets` with entries for every remote host.
++
+On **Host A**:
++
+[source]
+----
+192.168.1.10 192.168.1.20 : PSK "<your-hex-key>"
+----
++
+Set permissions:
++
+[source,terminal]
+----
+$ sudo chmod 600 /etc/ipsec.d/c2cc.secrets
+$ sudo restorecon -v /etc/ipsec.d/c2cc.secrets
+----
+
+. On **Host A**, create `/etc/ipsec.d/c2cc-tunnel.conf`:
++
+[source]
+----
+conn c2cc-to-host-b
+    type=tunnel
+    authby=secret
+    left=192.168.1.10
+    right=192.168.1.20
+    leftsubnets={10.42.0.0/16 10.43.0.0/16}
+    rightsubnets={10.45.0.0/16 10.46.0.0/16}
+    auto=start
+    ike=aes256-sha2_256-modp2048
+    esp=aes256-sha2_256
+    failureshunt=drop
+    negotiationshunt=drop
+    ikev2=insist
+----
++
+On **Host B**, create the same file with `left`/`right` and subnet values swapped:
++
+[source]
+----
+conn c2cc-to-host-a
+    type=tunnel
+    authby=secret
+    left=192.168.1.20
+    right=192.168.1.10
+    leftsubnets={10.45.0.0/16 10.46.0.0/16}
+    rightsubnets={10.42.0.0/16 10.43.0.0/16}
+    auto=start
+    ike=aes256-sha2_256-modp2048
+    esp=aes256-sha2_256
+    failureshunt=drop
+    negotiationshunt=drop
+    ikev2=insist
+----
++
+[NOTE]
+====
+* `type=tunnel` — Tunnel mode encrypts the original IP packet and wraps it in a new IP header.
+  This is required because C2CC traffic uses pod/service CIDRs as source and destination, which are not routable on the underlay.
+* `leftsubnets` / `rightsubnets` — Must match the pod and service CIDRs configured in {microshift-short}.
+* `failureshunt=drop` / `negotiationshunt=drop` — Drop traffic that matches the tunnel selectors if the security association (SA) fails or is still negotiating, preventing fallback to plain text.
+====
+
+. Initialize the NSS database (first time only) and start the IPsec service:
++
+[source,terminal]
+----
+$ sudo ipsec checknss
+$ sudo systemctl enable --now ipsec
+----
+
+. Verify that tunnel SAs are established:
++
+[source,terminal]
+----
+$ sudo ipsec trafficstatus
+#8: "c2cc-to-host-b/1x1", type=ESP, add_time=..., inBytes=..., outBytes=..., id='192.168.1.20'
+----
++
+You should see `type=ESP` entries for each subnet pair.
+
+.Verification
+
+* `ipsec trafficstatus` shows `type=ESP` entries for each remote host.
+* Cross-cluster connectivity continues to work through the encrypted tunnels.
+* Byte counters in `ip -s xfrm state` increase while cross-cluster traffic is running.
+
+[IMPORTANT]
+====
+IPsec adds overhead.
+ESP tunnel mode adds roughly 73–93 bytes per packet.
+On jumbo-frame networks (physical MTU 9000), set the pod MTU to leave headroom for ESP overhead by creating `/etc/microshift/ovn.yaml` with `mtu: 8900`.
+Changing the pod MTU requires a node reboot to take effect.
+====
