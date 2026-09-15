@@ -2,6 +2,10 @@
 //
 // * etcd/KMS_v2/kms-configuring.adoc
 
+// citations-needed: pinned SHAs
+// openshift/enhancements: 66c24fe (2026-09-15)
+// openshift/api: 9edb1b2 (2026-09-15)
+
 :_mod-docs-content-type: REFERENCE
 [id="kms-troubleshooting_{context}"]
 = KMS encryption troubleshooting
@@ -9,10 +13,69 @@
 [role="_abstract"]
 You can diagnose and resolve common KMS encryption issues to maintain secure key management and cluster availability.
 
+[id="kms-preflight-failure_{context}"]
+== Pre-flight check failure
+
+*Symptom:* KMS encryption does not activate after you configure the `APIServer` resource. The `kube-apiserver` Operator reports a degraded condition. // cite:1
+// cite:1 VERIFIED [88]: https://github.com/openshift/enhancements/blob/66c24fe/enhancements/kube-apiserver/kms-encryption-foundations.md#L449 - Pre-flight checks prevent deploying misconfigured plugin; causes degraded condition
+
+// Verify: Confirm the exact namespace, label, and pod name for the pre-flight checker pod
+*Diagnosis:* Check the pre-flight pod logs: // cite:2
+[source,terminal]
+----
+$ oc logs -n openshift-kube-apiserver -l app=kms-preflight --tail=100
+----
+// cite:2 INFERRED [30]: Enhancement L465-468 says preflight runs as static pod for kas-o in openshift-kube-apiserver namespace, but exact label "app=kms-preflight" is UNVERIFIED — enhancement does not specify pod labels
+
+Check the kube-apiserver Operator conditions:
+[source,terminal]
+----
+$ oc get kubeapiserver cluster -o jsonpath='{.status.conditions[?(@.type=="EncryptionKMSPreflightSucceeded")]}' | jq . // cite:3
+----
+
+// cite:3 VERIFIED [88]: https://github.com/openshift/enhancements/blob/66c24fe/enhancements/kube-apiserver/kms-encryption-foundations.md#L489 - EncryptionKMSPreflightSucceeded condition set by KMSPreflightController
+
+*Solutions:*
+
+* Verify that the Vault server is reachable from control plane nodes
+* Verify that the credential secret in the `openshift-config` namespace contains valid credentials
+* Verify that the Transit encryption key exists at the path specified in the `VaultKMSConfig` custom resource
+* Verify that the Vault policy grants encrypt, decrypt, and read permissions on the key // cite:4
+// cite:4 VERIFIED [88]: https://github.com/openshift/enhancements/blob/66c24fe/enhancements/kube-apiserver/kms-encryption-foundations.md#L472-L476 - Preflight binary checks status (healthz=ok), encrypt, decrypt via KMS v2 gRPC API
+
+[id="kms-olm-operator-not-reconciling_{context}"]
+== OLM Operator not reconciling
+
+*Symptom:* The `VaultKMSConfig` custom resource status is empty. The `status.image` field is not populated. // cite:5
+// cite:5 VERIFIED [88]: https://github.com/openshift/enhancements/blob/66c24fe/enhancements/kube-apiserver/kms-encryption-foundations.md#L232-L264 - OLM operator mirrors spec to status and adds image reference
+// cite:5 VERIFIED [88]: https://github.com/openshift/enhancements/blob/66c24fe/enhancements/kube-apiserver/kms-encryption-foundations.md#L777 - keyController goes degraded when CR status is missing
+
+*Diagnosis:* Check the OLM Operator pod: // cite:6
+// Verify: Confirm the exact namespace and label selectors for the Vault KMS plugin OLM operator
+[source,terminal]
+----
+$ oc get pods -n vault-kms-provider -l app=vault-kms-operator
+----
+// cite:6 VERIFIED [85]: https://github.com/openshift/enhancements/blob/66c24fe/enhancements/kube-apiserver/kms-encryption-foundations.md#L770 - Vault KMS plugin operator runs in vault-kms-provider namespace
+// cite:6 UNVERIFIED [10]: Label "app=vault-kms-operator" not specified in enhancement — requires engineering confirmation
+
+Check the Operator logs:
+[source,terminal]
+----
+$ oc logs -n vault-kms-provider deploy/vault-kms-operator --tail=100
+----
+// cite:6 UNVERIFIED [10]: Deployment name "vault-kms-operator" not specified in enhancement — requires engineering confirmation
+
+*Solutions:*
+
+* Verify that the OLM Operator is installed and running
+* Check the `ClusterServiceVersion` status for the Operator
+* Verify that the `VaultKMSConfig` custom resource spec is valid
+
 [id="kms-invalid-configuration_{context}"]
 == Invalid KMS configuration
 
-*Symptom:* APIServer resource shows validation errors during KMS encryption configuration.
+*Symptom:* `APIServer` resource shows validation errors during KMS encryption configuration.
 
 *Diagnosis:* Check kube-apiserver Operator logs:
 [source,terminal]
@@ -22,21 +85,18 @@ $ oc logs -n openshift-kube-apiserver-operator deploy/kube-apiserver-operator | 
 
 *Solutions:*
 
-* Verify plugin configuration follows provider requirements
-* Ensure all required fields are specified
-* Verify plugin is running on all control plane nodes:
-+
-[source,terminal]
-----
-$ oc debug node/<node_name> -- chroot /host ls -la /var/run/kmsplugin/kms.sock
-----
+* Verify that the `VaultKMSConfig` custom resource exists and is referenced correctly in the `APIServer` resource
+* Verify that the `pluginConfig` fields in the `APIServer` resource match the custom resource `apiVersion`, `kind`, and `name` // cite:7
+// cite:7 VERIFIED [88]: https://github.com/openshift/enhancements/blob/66c24fe/enhancements/kube-apiserver/kms-encryption-foundations.md#L267-L280 - APIServer spec references VaultKMSConfig by apiVersion, kind, name
+* Check that the OLM Operator has reconciled the custom resource status
 
 [id="kms-permissions-errors_{context}"]
 == KMS permissions errors
 
 *Symptom:* Encryption migration fails with permission errors.
 
-*Diagnosis:* Check Operator and plugin logs:
+*Diagnosis:* Check Operator and KMS plugin sidecar logs: // cite:8
+// cite:8 VERIFIED [88]: https://github.com/openshift/enhancements/blob/66c24fe/enhancements/kube-apiserver/kms-encryption-foundations.md#L139 - KMS plugin runs as sidecar container alongside API server pods in TP v2
 [source,terminal]
 ----
 $ oc logs -n openshift-kube-apiserver-operator deploy/kube-apiserver-operator | grep -i "kms\|permission\|access denied"
@@ -44,21 +104,21 @@ $ oc logs -n openshift-kube-apiserver-operator deploy/kube-apiserver-operator | 
 
 [source,terminal]
 ----
-$ oc debug node/<node_name> -- chroot /host journalctl -u kms-plugin
+// Verify: Confirm the exact sidecar container name for the KMS plugin in API server pods
+$ oc logs -n openshift-kube-apiserver -l apiserver=true -c vault-kms-plugin --tail=100
 ----
+// cite:9 UNVERIFIED [10]: Container name "vault-kms-plugin" not specified in enhancement — requires engineering confirmation of sidecar container naming convention
 
 *Solutions:*
 
-* Verify plugin has valid authentication credentials
-* Check if credentials have expired
-* Ensure plugin principal has encrypt and decrypt permissions
-* Verify KMS provider key policy allows plugin access
-* Confirm encryption key is enabled and not scheduled for deletion
+* Verify that the credential secret contains valid and unexpired credentials
+* Verify that the Vault policy grants encrypt and decrypt permissions
+* Verify that the encryption key is enabled and not scheduled for deletion
 
 [id="kms-expired-deleted-key_{context}"]
 == Expired or deleted KMS key
 
-*Symptom:* API server cannot decrypt secrets when accessing encrypted resources.
+*Symptom:* API server cannot decrypt secrets when it accesses encrypted resources.
 
 *Diagnosis:* Check logs and verify key status:
 [source,terminal]
@@ -68,15 +128,17 @@ $ oc logs -n openshift-kube-apiserver -l apiserver=true | grep -i "decrypt\|kms.
 
 [source,terminal]
 ----
-$ oc debug node/<node_name> -- chroot /host journalctl -u kms-plugin | grep -i "key\|error"
+// Verify: Confirm the exact sidecar container name for the KMS plugin in API server pods
+$ oc logs -n openshift-kube-apiserver -l apiserver=true -c vault-kms-plugin --tail=100
 ----
+// cite:10 UNVERIFIED [10]: Container name "vault-kms-plugin" not specified in enhancement — same as cite:9
 
 *Solutions:*
 
-* Re-enable the encryption key if disabled
-* Restore from backup if key was permanently deleted
-* Cancel key deletion if scheduled
-* Ensure KMS provider maintains access to previous key versions
+* Re-enable the encryption key if it was disabled
+* Restore from backup if the key was permanently deleted
+* Cancel key deletion if it is scheduled
+* Ensure the KMS provider maintains access to previous key versions
 
 [WARNING]
 ====
@@ -86,7 +148,7 @@ Deleted KMS keys prevent data recovery. Align key retention with backup policies
 [id="kms-api-server-degraded_{context}"]
 == API server degraded or unavailable
 
-*Symptom:* API server becomes degraded or unresponsive after enabling KMS encryption.
+*Symptom:* API server becomes degraded or unresponsive after you enable KMS encryption.
 
 *Diagnosis:* Check Operator status and logs:
 [source,terminal]
@@ -99,17 +161,26 @@ $ oc get clusteroperator kube-apiserver
 $ oc logs -n openshift-kube-apiserver -l apiserver=true --tail=200 | grep -i kms
 ----
 
+Check the KMS health reporter conditions: // cite:11
+[source,terminal]
+----
+$ oc get kubeapiserver cluster -o jsonpath='{range .status.conditions[*]}{.type}: {.status}{"\n"}{end}' | grep -i kms
+----
+// cite:11 VERIFIED [88]: https://github.com/openshift/enhancements/blob/66c24fe/enhancements/kube-apiserver/kms-encryption-foundations.md#L842 - KMSHealthReporter_<nodeName> conditions on kubeapiserver CR
+// cite:11 VERIFIED [88]: https://github.com/openshift/enhancements/blob/66c24fe/enhancements/kube-apiserver/kms-encryption-foundations.md#L845 - KMSPluginsDegraded condition on ClusterOperator
+
 *Solutions:*
 
-* Check network connectivity between control plane and KMS provider
+* Check network connectivity between control plane nodes and the Vault server
 * Verify network policies, firewalls, and routes allow communication
-* Monitor KMS provider rate limits and request increases if needed
+* Monitor the Vault server for rate limits and request increases if needed
 * Verify DNS resolution and TLS certificate validation
-* Confirm plugin is running on all control plane nodes:
+* Verify the KMS plugin sidecar is running in API server pods: // cite:12
+// cite:12 VERIFIED [88]: https://github.com/openshift/enhancements/blob/66c24fe/enhancements/kube-apiserver/kms-encryption-foundations.md#L720-L731 - Sidecar injection into API server pod specs; emptyDir volume at /var/run/kmsplugin
 +
 [source,terminal]
 ----
-$ oc debug node/<node_name> -- chroot /host systemctl status kms-plugin
+$ oc get pods -n openshift-kube-apiserver -l apiserver=true -o jsonpath='{range .items[*]}{.metadata.name}: {range .status.containerStatuses[*]}{.name}={.ready} {end}{"\n"}{end}'
 ----
 
 [id="kms-migration-stuck-slow_{context}"]
@@ -130,9 +201,9 @@ $ oc logs -n openshift-kube-apiserver-operator deploy/kube-apiserver-operator | 
 
 *Solutions:*
 
-* Migration time depends on data size; monitor progress
-* Monitor KMS provider audit logs for rate limiting or throttling events
-* Check network performance between control plane and KMS provider
+* Migration time depends on data size. Monitor progress by using the operator conditions.
+* Monitor Vault audit logs for rate limiting or throttling events
+* Check network performance between control plane nodes and the Vault server
 
 [id="kms-collecting-debug-info_{context}"]
 == Collecting debug information
@@ -161,9 +232,9 @@ $ oc logs -n openshift-kube-apiserver -l apiserver=true --tail=500 > kube-apiser
 
 Collect KMS provider information:
 
-* KMS plugin logs from control plane nodes
-* KMS provider audit logs
-* KMS provider key policy and permissions
+* KMS plugin sidecar logs from API server pods
+* Vault audit logs
+* Vault key policy and permissions
 * Authentication credentials status
 * Network connectivity test results
 
