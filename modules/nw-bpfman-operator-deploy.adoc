@@ -1,6 +1,6 @@
 // Module included in the following assemblies:
 //
-// * networking/network_security/ebpf_manager/ebpf-manager-operator-deploy.adoc
+// * networking/networking_operators/ebpf_manager/ebpf-manager-operator-deploy.adoc
 
 :_mod-docs-content-type: PROCEDURE
 [id="nw-bpfman-operator-deploy_{context}"]
@@ -16,14 +16,138 @@ As a cluster administrator, you can deploy an eBPF program to nodes on your clus
 * You have installed the OpenShift CLI (`oc`).
 * You have an account with administrator privileges.
 * You have installed the eBPF Manager Operator.
+* You have installed the Security Profiles Operator. For more information, see xref:../../../security/security_profiles_operator/spo-enabling.adoc#spo-enabling[Enabling the Security Profiles Operator].
 
 .Procedure
 
-. To download the manifest, enter the following command:
+. Create a YAML file that defines the sample eBPF application:
 +
 [source,terminal]
 ----
-$ curl -L https://github.com/bpfman/bpfman/releases/download/v0.5.1/go-xdp-counter-install-selinux.yaml -o go-xdp-counter-install-selinux.yaml
+$ cat << EOF > go-xdp-counter-install-selinux.yaml
+apiVersion: v1
+kind: Namespace
+metadata:
+  labels:
+    pod-security.kubernetes.io/enforce: privileged
+    pod-security.kubernetes.io/warn: privileged
+  name: go-xdp-counter
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: bpfman-app-go-xdp-counter
+  namespace: go-xdp-counter
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: xdp-binding
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: bpfman-user
+subjects:
+- kind: ServiceAccount
+  name: bpfman-app-go-xdp-counter
+  namespace: go-xdp-counter
+---
+apiVersion: apps/v1
+kind: DaemonSet
+metadata:
+  name: go-xdp-counter-ds
+  namespace: go-xdp-counter
+  labels:
+    k8s-app: go-xdp-counter
+spec:
+  selector:
+    matchLabels:
+      name: go-xdp-counter
+  template:
+    metadata:
+      labels:
+        name: go-xdp-counter
+    spec:
+      serviceAccountName: bpfman-app-go-xdp-counter
+      nodeSelector: {}
+      dnsPolicy: ClusterFirstWithHostNet
+      securityContext:
+        runAsNonRoot: true
+        fsGroup: 65534
+      tolerations:
+      - key: node-role.kubernetes.io/control-plane
+        operator: Exists
+        effect: NoSchedule
+      - key: node-role.kubernetes.io/master
+        operator: Exists
+        effect: NoSchedule
+      containers:
+      - name: go-xdp-counter
+        image: quay.io/bpfman-userspace/go-xdp-counter:latest
+        imagePullPolicy: IfNotPresent
+        securityContext:
+          allowPrivilegeEscalation: false
+          capabilities:
+            drop:
+            - ALL
+          runAsUser: 65534
+          runAsGroup: 65534
+          seLinuxOptions:
+            type: bpfman-secure.process
+        env:
+        - name: NODENAME
+          valueFrom:
+            fieldRef:
+              fieldPath: spec.nodeName
+        volumeMounts:
+        - name: go-xdp-counter-maps
+          mountPath: /run/xdp/maps
+          readOnly: true
+      volumes:
+      - name: go-xdp-counter-maps
+        csi:
+          driver: csi.bpfman.io
+          volumeAttributes:
+            csi.bpfman.io/program: go-xdp-counter-example
+            csi.bpfman.io/maps: xdp_stats_map
+---
+apiVersion: bpfman.io/v1alpha1
+kind: ClusterBpfApplication
+metadata:
+  name: go-xdp-counter-example
+spec:
+  nodeSelector: {}
+  byteCode:
+    image:
+      url: quay.io/bpfman-bytecode/go-xdp-counter:latest
+  programs:
+  - name: xdp_stats
+    type: XDP
+    xdp:
+      links:
+      - interfaceSelector:
+          primaryNodeInterface: true
+        priority: 55
+---
+apiVersion: security-profiles-operator.x-k8s.io/v1alpha2
+kind: SelinuxProfile
+metadata:
+  name: bpfman-secure
+  namespace: go-xdp-counter
+spec:
+  allow:
+    '@self':
+      bpf:
+      - map_read
+      - map_write
+    spc_t:
+      bpf:
+      - map_read
+      - map_write
+  inherit:
+  - kind: System
+    name: container
+EOF
 ----
 
 . To deploy the sample eBPF application, enter the following command:
@@ -40,9 +164,25 @@ namespace/go-xdp-counter created
 serviceaccount/bpfman-app-go-xdp-counter created
 clusterrolebinding.rbac.authorization.k8s.io/xdp-binding created
 daemonset.apps/go-xdp-counter-ds created
-xdpprogram.bpfman.io/go-xdp-counter-example created
+clusterbpfapplication.bpfman.io/go-xdp-counter-example created
 selinuxprofile.security-profiles-operator.x-k8s.io/bpfman-secure created
 ----
+
+. Confirm that the SELinux profile is installed:
++
+[source,terminal]
+----
+$ oc get selinuxprofile bpfman-secure -n go-xdp-counter
+----
++
+.Example output
+[source,text]
+----
+NAME            USAGE                   STATE
+bpfman-secure   bpfman-secure.process   Installed
+----
++
+The `USAGE` value is the SELinux type that the daemon set sets in `seLinuxOptions.type`. Until the profile reports `Installed`, the daemon set pods can report `CreateContainerError`.
 
 . To confirm that the eBPF sample application deployed successfully, enter the following command:
 +
@@ -60,22 +200,21 @@ pod/go-xdp-counter-ds-7hzww   1/1     Running   0          44s   10.130.0.86    
 pod/go-xdp-counter-ds-qm9zx   1/1     Running   0          44s   10.128.0.101   ci-ln-dcbq7d2-72292-ztrkp-master-0   <none>           <none>
 
 NAME                               DESIRED   CURRENT   READY   UP-TO-DATE   AVAILABLE   NODE SELECTOR   AGE   CONTAINERS       IMAGES                                           SELECTOR
-daemonset.apps/go-xdp-counter-ds   3         3         3       3            3           <none>          44s   go-xdp-counter   quay.io/bpfman-userspace/go-xdp-counter:v0.5.0   name=go-xdp-counter
+daemonset.apps/go-xdp-counter-ds   3         3         3       3            3           <none>          44s   go-xdp-counter   quay.io/bpfman-userspace/go-xdp-counter:latest   name=go-xdp-counter
 ----
 
 . To confirm that the example XDP program is running, enter the following command:
 +
 [source,terminal]
 ----
-$ oc get xdpprogram go-xdp-counter-example
+$ oc get clusterbpfapplication go-xdp-counter-example
 ----
 +
 .Example output
 [source,text]
 ----
-
-NAME                     BPFFUNCTIONNAME   NODESELECTOR   STATUS
-go-xdp-counter-example   xdp_stats         {}             ReconcileSuccess
+NAME                     NODESELECTOR   STATUS    AGE
+go-xdp-counter-example                  Success   44s
 ----
 
 . To confirm that the XDP program is collecting data, enter the following command:
