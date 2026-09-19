@@ -1,0 +1,122 @@
+// Module included in the following assemblies:
+//
+// * deployment/rhcl-egress-credential-injection.adoc
+
+:_mod-docs-content-type: PROCEDURE
+[id="proc-rhcl-egress-vault-setup_{context}"]
+= Deploy and configure Vault for egress credential injection
+
+[role="_abstract"]
+Deploy a HashiCorp Vault instance and configure the Kubernetes auth method so that Authorino can authenticate workloads and fetch per-identity credentials for egress requests.
+
+[NOTE]
+====
+The following procedure deploys Vault in dev mode for testing purposes. Dev mode runs Vault in-memory without TLS and uses a static root token. For production deployments, see the HashiCorp Vault documentation.
+====
+
+.Prerequisites
+
+* You created and applied an egress `Gateway` object.
+* A test client pod is available in the `egress-test` namespace.
+* The {oc-first} is installed.
+* Helm is installed.
+
+.Procedure
+
+. Add the HashiCorp Helm repository by running the following command:
++
+[source,terminal]
+----
+$ helm repo add hashicorp https://helm.releases.hashicorp.com
+----
+
+. Get the latest updates for the HashiCorp Helm repository by running the following command:
++
+[source,terminal]
+----
+$ helm repo update hashicorp
+----
+
+. Deploy Vault in developer mode by running the following command:
++
+[source,terminal]
+----
+$ helm install vault hashicorp/vault \
+    --set "server.dev.enabled=true" \
+    --set "server.dev.devRootToken=root" \
+    -n vault --create-namespace --wait --timeout=5m
+----
+
+. Wait for the Vault pod to be ready by running the following command:
++
+[source,terminal]
+----
+$ oc wait --timeout=2m -n vault pod/vault-0 --for=condition=Ready
+----
+
+. Store a test credential at a per-identity Vault path. The path follows the pattern `secret/egress/<namespace>/<service-account-name>` by running the following command:
++
+[source,terminal]
+----
+$ oc exec vault-0 -n vault -- vault kv put secret/egress/egress-test/default \
+    api_key=sk-test-openai-key-for-egress
+----
+
+. Enable the Kubernetes auth method in Vault by running the following command:
++
+[source,terminal]
+----
+$ oc exec vault-0 -n vault -- vault auth enable kubernetes
+----
+
+. Configure the Kubernetes auth method with the cluster API server address by running the following command:
++
+[source,terminal]
+----
+$ oc exec vault-0 -n vault -- vault write auth/kubernetes/config \
+    kubernetes_host="https://kubernetes.default.svc:443"
+----
+
+. Create a Vault policy that grants read access to egress secrets by running the following command:
++
+[source,terminal]
+----
+$ oc exec -i vault-0 -n vault -- vault policy write egress-read /dev/stdin <<'POLICY'
+path "secret/data/egress/*" {
+  capabilities = ["read"]
+}
+POLICY
+----
+
+. Create a Vault role that binds workload service accounts to the policy. This role authorizes workloads from the `egress-test` namespace by running the following command:
++
+[source,terminal]
+----
+$ oc exec vault-0 -n vault -- vault write auth/kubernetes/role/egress-workload \
+    bound_service_account_names=default \
+    bound_service_account_namespaces=egress-test \
+    policies=egress-read \
+    ttl=1h
+----
++
+To authorize workloads from additional namespaces, add them to the `bound_service_account_namespaces` list as a comma-separated value.
+
+.Verification
+
+. Verify that the Kubernetes auth method is enabled by running the following command:
++
+[source,terminal]
+----
+$ oc exec vault-0 -n vault -- vault auth list
+----
++
+The expected output includes `kubernetes/` in the list of auth methods.
+
+. Verify that the egress-workload role is configured by running the following command:
++
+[source,terminal]
+----
+$ oc exec vault-0 -n vault -- vault read auth/kubernetes/role/egress-workload
+----
++
+The expected output displays `bound_service_account_namespaces` including `egress-test`.
