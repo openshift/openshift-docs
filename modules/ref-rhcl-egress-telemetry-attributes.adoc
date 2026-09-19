@@ -1,0 +1,86 @@
+// Module included in the following assemblies:
+//
+// * deployment/egress_gateway/rhcl-egress-observability.adoc
+
+:_mod-docs-content-type: REFERENCE
+[id="ref-rhcl-egress-telemetry-attributes_{context}"]
+= Label expressions for egress metrics
+
+[role="_abstract"]
+The {prodname} data plane attaches each label of a `TelemetryPolicy` custom resource (CR) to both the rate limit check descriptor and the report descriptor. The check runs in the request phase, before the external service responds, so every Common Expression Language (CEL) expression must resolve at that point.
+
+[id="rhcl-egress-telemetry-available-attributes_{context}"]
+== Attributes available on an egress gateway
+
+Response attributes are not available in a label expression, even for a label that is present only on the `report_calls` metric.
+
+.Attributes in label expressions
+[cols="2,1,2",options="header"]
+|===
+| Expression | Available | Example value
+
+| `auth.identity.username`
+| Yes
+| `system:serviceaccount:egress-test:team-gold`
+
+| `request.host`
+| Yes
+| `api.example.com`
+
+| `request.path`
+| Yes
+| `/v1/chat/completions`
+
+| `request.method`
+| Yes
+| `POST`
+
+| `request.scheme`
+| Yes
+| `http`
+
+| `source.address`
+| Yes
+| `192.0.2.25:54146`, which includes the port
+
+| A literal value, such as `"egress"`
+| Yes
+| `egress`
+
+| `response.code`
+| No
+| Stops the metrics for the route
+|===
+
+The `request.scheme` attribute describes the connection from the workload to the gateway, not the connection from the gateway to the external service. A workload that calls the gateway over plain HTTP reports `http` even when the gateway originates TLS to the external service. To break metrics down by response status, use the `response_code` label on the `istio_requests_total` metric instead.
+
+[id="rhcl-egress-telemetry-cardinality_{context}"]
+== Label cardinality
+
+Every distinct combination of label values creates a time series, so a high-cardinality expression on a busy egress `Gateway` object consumes a large amount of storage in your monitoring stack.
+
+The `source.address` attribute is the most common cause of high cardinality, because it includes the ephemeral source port and therefore produces a new series for every connection. Envoy renders the address as `192.0.2.24:54146` for IPv4 and `[2001:0DB8:85a3::8a2e:370:7334]:41235` for IPv6. To record only the address, remove everything after the last colon:
+
+[source,yaml]
+----
+source_ip: source.address.substring(0, source.address.lastIndexOf(":")).replace("[", "").replace("]", "")
+----
+
+The `lastIndexOf` function finds the colon that precedes the port, which leaves the colons inside an IPv6 address unchanged, and the two `replace` functions remove the brackets. Do not use `source.address.split(":")[0]`, which works for IPv4 but truncates an IPv6 address to `[2001`.
+
+Prefer labels with a bounded set of values, such as the workload identity, the destination host, or the request method. Avoid `request.path` unless the set of paths is small and known, because an API with a path for each resource produces an unbounded number of series.
+
+[id="rhcl-egress-telemetry-limitations_{context}"]
+== Effect of an expression that cannot resolve
+
+An expression that references an unavailable attribute is not dropped. Evaluating the Limitador descriptor fails, the gateway logs the following message for every request, and no metrics are recorded for the affected route:
+
+.Example log entry
+[source,text]
+----
+Failed to evaluate message builder: CelError::Resolve { UndeclaredReference("response") }
+----
+
+Whether the request itself succeeds depends on the failure mode of the services on the route. The rate limit services default to a failure mode of `allow`, so a route that carries only a `RateLimitPolicy` CR continues to return a `200` status code but loses its metrics. A route that also carries an `AuthPolicy` CR, which defaults to a failure mode of `deny`, can instead fail with a `500` status code. A route with no rate limit policy builds no descriptor and is unaffected.
+
+The policy continues to report that it is accepted and enforced, so check both the traffic and the metrics after you apply a new label.

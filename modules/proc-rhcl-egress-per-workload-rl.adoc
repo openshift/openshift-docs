@@ -1,0 +1,82 @@
+// Module included in the following assemblies:
+//
+// * deployment/rhcl-egress-gateway.adoc
+
+:_mod-docs-content-type: PROCEDURE
+[id="proc-rhcl-egress-per-workload-rl_{context}"]
+= Apply per-workload rate limiting
+
+[role="_abstract"]
+Give each workload its own rate limit bucket. With workload identity established through `AuthPolicy` custom resource (CR). The `RateLimitPolicy` uses the service account username as a counter, so each workload identity is tracked independently.
+
+.Prerequisites
+
+* An egress gateway is deployed and operational.
+* An `AuthPolicy` with `kubernetesTokenReview` authentication is applied to the egress `HTTPRoute`.
+* A test client pod is available in the `egress-test` namespace.
+
+.Procedure
+
+. Export the egress gateway address by running the following command:
++
+[source,terminal]
+----
+$ export EGRESS_IP=$(oc get gtw _<kuadrant_egressgateway>_ -n _<gateway_system>_ \
+    -o jsonpath='{.status.addresses[0].value}')
+----
++
+Replace `_<kuadrant_egressgateway>_` value with the egress `Gateway` object name.
+
+. Apply a `RateLimitPolicy` that uses the service account username of the workload as a counter:
++
+[source,yaml]
+----
+apiVersion: kuadrant.io/v1
+kind: RateLimitPolicy
+metadata:
+  name: egress-per-workload # user replaceable value?
+  namespace: _<gateway_system>_ # the same as the egress gateway object?
+spec:
+  targetRef:
+    group: gateway.networking.k8s.io
+    kind: HTTPRoute
+    name: httpbin-external
+  limits:
+    per-workload:
+      rates:
+        - limit: 5
+          window: 10s
+      counters:
+        - expression: "auth.identity.username"
+----
++
+Each service account gets an independent bucket of 5 requests every 10 seconds. For example, `system:serviceaccount:team-a:default` and `system:serviceaccount:team-b:default` are tracked separately. The identity is stable across pod restarts and reschedules.
+
+// I don't see service account info in this ratelimitpolicy?
+
+. Apply the CR by running the following command:
++
+[source,terminal]
+----
+$ oc apply -f egress-per-workload
+----
+
+.Verification
+
+* Send requests in a loop with the service account token and observe per-workload rate limiting:
++
+[source,terminal,subs="+quotes"]
+----
+$ for i in $(seq 1 10); do
+    oc exec test-client -n egress-test -- sh -c '
+      curl -s -o /dev/null -w "%{http_code}" \
+          -H "Host: _<httpbin.org>_" \
+          -H "Authorization: Bearer $(cat /var/run/secrets/kubernetes.io/serviceaccount/token)" \
+          http://'"${EGRESS_IP}"'/get
+    '
+    sleep 0.5
+  done
+----
++
+** Replace `_<httpbin.org>_` with your external target service.
+** The first 5 requests return `200`. Subsequent requests return `429` until the 10-second window resets.
