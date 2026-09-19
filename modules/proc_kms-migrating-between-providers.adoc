@@ -1,0 +1,118 @@
+// Module included in the following assemblies:
+//
+// * etcd/KMS_v2/kms-configuring.adoc
+// citations-needed: pinned SHAs
+// openshift/enhancements: 66c24fe (2026-09-15)
+
+:_mod-docs-content-type: PROCEDURE
+[id="kms-migrating-between-providers_{context}"]
+= Migrating between KMS providers
+
+[role="_abstract"]
+You can migrate from one KMS provider configuration to another without an intermediate migration to local encryption. During migration, {product-title} runs both KMS plugins as concurrent sidecar containers until re-encryption completes. // cite:1
+// cite:1 VERIFIED [90]: https://github.com/openshift/enhancements/blob/66c24fe/enhancements/kube-apiserver/kms-encryption-foundations.md#L402-L404 - "Migration from KMS Plugin A to KMS Plugin B: keyController creates a new encryption key secret... Both run as separate sidecars until migration completes"
+// cite:1 VERIFIED [90]: https://github.com/openshift/enhancements/blob/66c24fe/enhancements/kube-apiserver/kms-encryption-foundations.md#L438 - "Both KMS providers run as separate sidecar containers without deduplication, maintaining full isolation"
+
+.Prerequisites
+
+* You have access to the cluster as a user with the `cluster-admin` role.
+* KMS encryption is enabled and functioning with the current provider.
+* You have installed the OLM Operator for the new KMS provider, if it is a different provider.
+* You have created a `VaultKMSConfig` custom resource with the new provider configuration and verified that the OLM Operator has reconciled the status.
+* You have created the credential secret and optional CA bundle config map for the new provider in the `openshift-config` namespace.
+
+[IMPORTANT]
+====
+Create an etcd backup before migrating between KMS providers.
+====
+
+.Procedure
+
+. Edit the `APIServer` custom resource by entering the following command:
++
+[source,terminal]
+----
+$ oc edit apiserver cluster
+----
+
+. Update the `pluginConfig` reference to point to the new `VaultKMSConfig` custom resource:
++
+[source,yaml]
+----
+apiVersion: config.openshift.io/v1
+kind: APIServer
+metadata:
+  name: cluster
+spec:
+  encryption:
+    type: KMS
+    kms:
+      type: Vault
+      pluginConfig:
+        apiVersion: vault.hashicorp.io/v1
+        kind: VaultKMSConfig
+        name: my-new-vault-kms
+----
+
+. Save and exit.
++
+The platform runs pre-flight validation for the new provider, then starts migration. Both the old and new KMS plugins run as separate sidecar containers during migration. The new provider handles new encryption operations, and the old provider decrypts existing data. // cite:2
+// cite:2 VERIFIED [90]: https://github.com/openshift/enhancements/blob/66c24fe/enhancements/kube-apiserver/kms-encryption-foundations.md#L449 - "Before applying any configuration change, a dedicated controller deploys a pod with the KMS plugin to verify status and encrypt/decrypt capability"
+// cite:2 VERIFIED [90]: https://github.com/openshift/enhancements/blob/66c24fe/enhancements/kube-apiserver/kms-encryption-foundations.md#L343-L362 - EncryptionConfiguration with both providers: new as write key, old as read key, separate sidecar containers with different UDS sockets
+
+. Monitor migration progress by entering the following command:
++
+[source,terminal]
+----
+$ oc get kubeapiserver cluster -o jsonpath='{.status.conditions[?(@.type=="Encrypted")]}' | jq .
+----
++
+Wait for `reason` to show `EncryptionCompleted`.
+
+.Verification
+
+. Verify that all API servers have completed migration by running the following commands:
++
+[source,terminal]
+----
+$ oc get openshiftapiserver -o=jsonpath='{range .items[0].status.conditions[?(@.type=="Encrypted")]}{.reason}{"\n"}{end}'
+----
++
+[source,terminal]
+----
+$ oc get kubeapiserver -o=jsonpath='{range .items[0].status.conditions[?(@.type=="Encrypted")]}{.reason}{"\n"}{end}'
+----
++
+[source,terminal]
+----
+$ oc get authentication.operator.openshift.io -o=jsonpath='{range .items[0].status.conditions[?(@.type=="Encrypted")]}{.reason}{"\n"}{end}'
+----
++
+All outputs show `EncryptionCompleted`. // cite:3
+// cite:3 VERIFIED [90]: https://github.com/openshift/enhancements/blob/66c24fe/enhancements/kube-apiserver/kms-encryption-foundations.md#L335 - conditionController updates: EncryptionInProgress, then EncryptionCompleted
+
+. After migration completes, clean up the old provider resources: // cite:4
+// cite:4 VERIFIED [90]: https://github.com/openshift/enhancements/blob/66c24fe/enhancements/kube-apiserver/kms-encryption-foundations.md#L400 - "The removal mechanism is out of scope in Tech Preview v2" — unused plugins not auto-removed, manual cleanup required
++
+--
+.. Delete the old `VaultKMSConfig` custom resource by entering the following command:
++
+[source,terminal]
+----
+$ oc delete vaultkmsconfig my-old-vault-kms
+----
+
+.. Delete the old credential secret by entering the following command:
++
+[source,terminal]
+----
+$ oc delete secret old-vault-approle-secret -n openshift-config
+----
+
+.. After your backup retention period passes, decommission the old KMS key.
+--
+
+[NOTE]
+====
+Do not decommission the old KMS key until migration completes successfully and all backups encrypted with the old key have expired.
+====
