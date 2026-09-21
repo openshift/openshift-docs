@@ -1,65 +1,71 @@
 // Module is included in the following assemblies:
 //
-// * configuring/configuring-the-log-store.adoc
+// * troubleshoot/troubleshoot-log-forwarding.adoc
 
 :_mod-docs-content-type: PROCEDURE
 [id="loki-rate-limit-errors_{context}"]
 = Troubleshoot Loki rate limit errors
 
 [role="_abstract"]
-Resolve Loki rate limit errors when the Log Forwarder API sends large message blocks that exceed ingestion limits.
+Resolve Loki ingestion rate limit errors when log volume persistently exceeds the configured limits for your LokiStack deployment.
 
-If the Log Forwarder API forwards a large block of messages that exceeds the rate limit to Loki, Loki generates rate limit (`429`) errors.
+If the Log Forwarder API forwards logs to Loki at a rate that exceeds the configured ingestion limit, Loki generates rate limit (`429`) errors. Vector retries requests that receive a 429 response. If the rate limit persists over time, Vector might lose log records.
 
-These errors can occur during normal operation. For example, when adding the {logging} to a cluster that already has some logs, rate limit errors might occur while the {logging} tries to process all of the existing log entries. In this case, if the rate of addition of new logs is less than the total rate limit, the historical data is eventually ingested, and the rate limit errors are resolved without requiring user intervention.
+Rate limit errors can occur during normal operation and might not require action. For example, when you first add {logging} to a cluster that already has logs, or after an incident where the collector was temporarily stopped, rate limit errors might occur while the collector processes the backlog. If the rate of new logs is lower than the rate limit, the system recovers without intervention.
 
-In cases where the rate limit errors continue to occur, you can fix the issue by modifying the `LokiStack` custom resource (CR).
+If rate limit errors persist continuously, the log ingestion rate exceeds the LokiStack ingestion rate limit, and you must take action.
 
 [IMPORTANT]
 ====
-The `LokiStack` CR is not available on Grafana-hosted Loki. This topic does not apply to Grafana-hosted Loki servers.
+The `LokiStack` CR is not available on Grafana-hosted Loki. This procedure does not apply to Grafana-hosted Loki servers.
 ====
 
 .Prerequisites
 
-* The Log Forwarder API is configured to forward logs to Loki.
-
-* Your system sends a block of messages that is larger than 2 MB to Loki. For example:
+* You have administrator permissions.
+* You have configured the Log Forwarder API to forward logs to Loki.
+* The collector logs show `429 Too Many Requests` errors. For example:
 +
-[source,text]
-----
-"values":[["1630410392689800468","{\"kind\":\"Event\",\"apiVersion\":\
-.......
-......
-......
-......
-\"received_at\":\"2021-08-31T11:46:32.800278+00:00\",\"version\":\"1.7.4 1.6.0\"}},\"@timestamp\":\"2021-08-31T11:46:32.799692+00:00\",\"viaq_index_name\":\"audit-write\",\"viaq_msg_id\":\"MzFjYjJkZjItNjY0MC00YWU4LWIwMTEtNGNmM2E5ZmViMGU4\",\"log_type\":\"audit\"}"]]}]}
-----
-
-* After you enter `oc logs -n openshift-logging -l component=collector`, the collector logs in your cluster show a line containing one of the following error messages:
-+
-[source,text]
-----
-429 Too Many Requests Ingestion rate limit exceeded
-----
-+
-.Example Vector error message
 [source,text]
 ----
 2023-08-25T16:08:49.301780Z  WARN sink{component_kind="sink" component_id=default_loki_infra component_type=loki component_name=default_loki_infra}: vector::sinks::util::retries: Retrying after error. error=Server responded with an error: 429 Too Many Requests internal_log_rate_limit=true
 ----
-+
-The error is also visible on the receiving end. For example, in the LokiStack ingester pod:
-+
-.Example Loki ingester error message
-[source,text]
-----
-level=warn ts=2023-08-30T14:57:34.155592243Z caller=grpc_logging.go:43 duration=1.434942ms method=/logproto.Pusher/Push err="rpc error: code = Code(429) desc = entry with timestamp 2023-08-30 14:57:32.012778399 +0000 UTC ignored, reason: 'Per stream rate limit exceeded (limit: 3MB/sec) while attempting to ingest for stream
-----
 
 .Procedure
 
-* Update the `ingestionBurstSize` and `ingestionRate` fields in the `LokiStack` CR:
+. Run the following query in the OpenShift web console under *Observe* -> *Metrics* to confirm that rate limiting is active and to discover the log tenants that the rate limit affects:
++
+[source,promql]
+----
+sum by (tenant, reason) (rate(loki_discarded_samples_total[2m]))
+----
++
+A nonzero result with `reason="RateLimit"` confirms that rate limiting is active. Monitor the metric over time to check whether the situation resolves on its own. If the result returns to zero, no further action is necessary.
+
+. If rate limiting persists, reduce the volume of logs sent to LokiStack before adjusting the ingestion limits:
++
+--
+* Apply input rate limits to containers that produce excessive logs.
+* Use drop filters to discard log records that are not required.
+--
++
+For more information, see xref:../optimize/fine-tune-log-forwarding.adoc#fine-tune-log-forwarding[Fine-tune log forwarding] and xref:../configure/configure-filters.adoc#configure-filters[Configure filters].
+
+. If reducing log volume is not enough, update the `ingestionBurstSize` and `ingestionRate` fields in the `LokiStack` CR:
++
+[NOTE]
+====
+Increasing the ingestion rate limit increases resource usage in the LokiStack distributor pods. Before increasing these values, verify that the nodes where LokiStack pods run have enough CPU and memory available.
+====
++
+To find an appropriate value for `ingestionRate`, run the following query in the OpenShift web console under *Observe* -> *Metrics* to measure the actual ingestion rate per tenant:
++
+[source,promql]
+----
+sum by (tenant) (rate(loki_distributor_bytes_received_total[5m]))
+----
++
+Use the result, in bytes per second, as a baseline. Convert to MB and set `ingestionRate` to at least that value.
 +
 [source,yaml]
 ----
@@ -77,8 +83,15 @@ spec:
 # ...
 ----
 
-spec.limits.global.ingestion.ingestionBurstSize::
-  The `ingestionBurstSize` field defines the maximum local rate-limited sample size per distributor replica in MB. This value is a hard limit. Set this value to at least the maximum logs size expected in a single push request. Single requests that are larger than the `ingestionBurstSize` value are not permitted.
+`spec.limits.global.ingestion.ingestionBurstSize`::
+  The maximum local rate-limited sample size per distributor replica, in MB. This value is a hard limit. Set this value to at least the maximum size expected in a single push request. Loki rejects requests that exceed this value.
 
-spec.limits.global.ingestion.ingestionRate::
-  The `ingestionRate` field is a soft limit on the maximum amount of ingested samples per second in MB. Rate limit errors occur if the rate of logs exceeds the limit, but the collector retries sending the logs. If the total average is lower than the limit, the system recovers and errors are resolved without user intervention.
+`spec.limits.global.ingestion.ingestionRate`::
+  The maximum ingestion rate per second across all distributor replicas, in MB. This is a soft limit. When the log rate exceeds the limit, rate limit errors occur, but Vector retries the request. If the average rate is lower than the limit, the system recovers automatically.
+
+[role="_additional-resources"]
+.Additional resources
+
+* xref:../optimize/fine-tune-log-forwarding.adoc#fine-tune-log-forwarding[Fine-tune log forwarding]
+* xref:../configure/configure-filters.adoc#configure-filters[Configure filters]
+* xref:../troubleshoot/troubleshoot-log-forwarding.adoc#loki-per-stream-rate-limit-errors_troubleshoot-log-forwarding[Troubleshoot Loki per-stream rate limit errors]
