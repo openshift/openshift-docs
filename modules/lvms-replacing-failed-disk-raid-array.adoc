@@ -1,0 +1,198 @@
+// Module included in the following assemblies:
+//
+// * storage/persistent_storage_local/persistent-storage-using-lvms.adoc
+
+:_mod-docs-content-type: PROCEDURE
+[id="lvms-replacing-failed-disk-raid-array_{context}"]
+= Replacing a failed disk in a RAID array
+
+[role="_abstract"]
+You can replace a failed disk in an {lvms} software RAID array to restore data redundancy. {lvms} uses LVM RAID (device-mapper), which allows data to remain readable and writable while the array is in a degraded state. 
+
+Manual repair steps on the node are required before updating the `LVMCluster` CR.
+
+.Prerequisites
+
+* You have a running {lvms} software RAID array with redundancy (RAID level greater than 0).
+* A failed disk is identified in the array.
+* A replacement physical disk is available and installed on the node.
+* The RAID array still has redundancy and is operational. Not all disks in the array have failed.
+
+.Procedure
+
+. Check the `LVMCluster` status for the affected device class by running the following command:
++
+[source,terminal]
+----
+$ oc get lvmcluster -o jsonpath='{.status.deviceClassStatuses[?(@.name=="raid1-vg")].state}'
+----
++
+.Example output
+[source,terminal]
+----
+Degraded
+----
++
+[NOTE]
+====
+Data remains readable and writable while the RAID array is in a degraded state.
+====
+
+. Access the node for debugging by running the following command:
++
+[source,terminal]
+----
+$ oc debug node/<node_name>
+----
+
+. Change to the host root by running the following command:
++
+[source,terminal]
+----
+sh-4.4# chroot /host
+----
+
+. List available block devices by running the following command:
++
+[source,terminal]
+----
+sh-4.4# lsblk
+----
++
+Note the replacement device path, such as `/dev/sde`. Ensure that the disk is unused and has capacity equal to or greater than the failed disk.
+
+. Perform the manual LVM repair on the node:
+
+.. Prepare the replacement disk:
++
+[source,terminal]
+----
+sh-4.4# pvcreate -ff -y <replacement>
+----
++
+Replace the `<replacement>` with the replacement disk path.
+
+.. Extend the volume group with the replacement disk:
++
+[source,terminal]
+----
+sh-4.4# vgextend <vg> <replacement>
+----
++
+Replace `<vg>` with the volume group name, `<lv>` with the logical volume name
+
+.. Repair the RAID logical volume:
++
+[source,terminal]
+----
+sh-4.4# lvconvert --repair -y <vg>/<lv> <replacement>
+----
++
+.. Remove the missing disk from the volume group:
++
+[source,terminal]
+----
+sh-4.4# vgreduce --removemissing --force <vg>
+----
++
+.. Exit the debug session:
++
+[source,terminal]
+----
+sh-4.4# exit
+sh-4.4# exit
+----
+
+. Patch the `deviceSelector.paths` to swap the failed disk path with the replacement disk path by running the following command:
++
+[source,terminal]
+----
+$ oc patch lvmcluster <lvmcluster_name> --type='json' -p='[
+  {"op": "replace", "path": "/spec/storage/deviceClasses/0/deviceSelector/paths", "value": ["/dev/sdc", "/dev/sdd", "/dev/sde"]}
+]'
+----
++
+Replace the array index and device paths with your specific configuration.
+
+. Wait for the device class to return to the `Ready` state:
++
+[source,terminal]
+----
+$ oc get lvmcluster -o jsonpath='{.status.deviceClassStatuses[?(@.name=="raid1-vg")].state}'
+----
++
+.Example output
+[source,terminal]
+----
+Ready
+----
+
+. Wait for the RAID resync to complete:
++
+.. Access the node again:
++
+[source,terminal]
+----
+$ oc debug node/<node_name>
+----
++
+.. Change to the host root and check the sync percentage:
++
+[source,terminal]
+----
+sh-4.4# chroot /host
+sh-4.4# lvs -o lv_name,sync_percent --select 'segtype=~raid' <vg>
+----
++
+.Example output showing resync in progress
+[source,terminal]
+----
+  LV       Cpy%Sync
+  raid1-lv 45.67
+----
++
+Wait until the `Cpy%Sync` column shows `100.00`. Redundancy is not fully restored until the resync reaches 100%.
+
+.Verification
+
+. Verify that the device class status is `Ready` in the `LVMCluster`:
++
+[source,terminal]
+----
+$ oc get lvmcluster -o jsonpath='{.status.deviceClassStatuses}' | jq
+----
+
+. Verify that the RAID logical volume shows all disks as active with 100% sync:
++
+[source,terminal]
+----
+$ oc debug node/<node_name>
+sh-4.4# chroot /host
+sh-4.4# lvs -a -o lv_name,segtype,sync_percent,devices <vg>
+----
++
+.Example output showing fully synced RAID1
+[source,terminal]
+----
+  LV             Type   Cpy%Sync Devices
+  raid1-lv       raid1  100.00   raid1-lv_rimage_0(0),raid1-lv_rimage_1(0)
+  [raid1-lv_rimage_0] linear       /dev/sdc(0)
+  [raid1-lv_rimage_1] linear       /dev/sde(0)
+----
+
+. Check the LVMS Operator logs for errors:
++
+[source,terminal]
+----
+$ oc logs -n openshift-storage deployment/lvms-operator
+----
+
+. Verify that running persistent volume claims (PVCs) continue to function without interruption.
+
+[IMPORTANT]
+====
+* The RAID resync process can take a significant amount of time depending on disk size and I/O load on the system.
+* Do not perform multiple disk replacements simultaneously. Wait for the resync to complete before replacing another disk.
+* Ensure that the replacement disk has equal or greater capacity than the failed disk to maintain the same storage capacity.
+* Do not edit `deviceSelector.paths` before performing the manual LVM repair on the node. The operator does not automatically rebuild the RAID array from a CR edit.
+====
