@@ -1,0 +1,168 @@
+// Module included in the following assemblies:
+//
+// * installing/installing_vsphere/vcf-migration-operator.adoc
+
+:_mod-docs-content-type: REFERENCE
+[id="vcf-migration-operator-troubleshooting_{context}"]
+= Troubleshooting the VCF Migration Operator
+
+[role="_abstract"]
+If the VCF migration fails or stalls, you can use the following information to diagnose common issues, gather logs, and recover from failures.
+
+== Collecting migration logs
+
+To collect logs from the VCF Migration Operator, run the following command:
+
+[source,terminal]
+----
+$ oc logs -n openshift-vcf-migration deployment/vcf-migration-operator-controller-manager
+----
+
+To collect events related to the migration CR:
+
+[source,terminal]
+----
+$ oc get events -n openshift-vcf-migration --field-selector involvedObject.name=cluster --sort-by='.lastTimestamp'
+----
+
+To collect the full status of the migration CR:
+
+[source,terminal]
+----
+$ oc get vcfm cluster -n openshift-vcf-migration -o yaml
+----
+
+You can also use `must-gather` to collect cluster-wide diagnostic data:
+
+[source,terminal]
+----
+$ oc adm must-gather
+----
+
+== Common issues
+
+.Migration stuck in `InfrastructurePrepared` phase
+[cols="1,2", options="header"]
+|===
+|Cause
+|Resolution
+
+|The {vmw-short} CSI driver management state is not `Removed`.
+|Set the `ClusterCSIDriver` management state to `Removed`:
+`oc patch clustercsidrivers.operator.openshift.io csi.vsphere.vmware.com --type merge -p '{"spec":{"managementState":"Removed"}}'`
+
+|CSI-backed persistent volumes still exist on the cluster.
+|Remove all persistent volumes that use the `csi.vsphere.vmware.com` driver before starting migration.
+
+|User-defined `MachineHealthCheck`, `ClusterAutoscaler`, or `MachineAutoscaler` resources exist.
+|Remove all user-defined `MachineHealthCheck` resources (except `machine-api-termination-handler` in the `openshift-machine-api` namespace), `ClusterAutoscaler`, and `MachineAutoscaler` resources.
+
+|A cluster upgrade is in progress.
+|Wait for the cluster upgrade to finish before starting migration. The `ClusterVersion` object must show `Progressing=False`.
+
+|One or more cluster operators are unhealthy.
+|Check the status of cluster operators with `oc get clusteroperators` and resolve any degraded or unavailable operators before proceeding.
+
+|The `VSphereMultiVCenterDay2` feature gate is not enabled.
+|Enable the `VSphereMultiVCenterDay2` feature gate on the cluster before starting migration.
+
+|The target vCenter credentials secret is missing or has incorrect keys.
+|Verify that the secret exists in the correct namespace and that keys follow the `<vcenter_fqdn>.username` and `<vcenter_fqdn>.password` format.
+
+|The target vCenter topology is not reachable (data center, cluster, datastore, or network not found).
+|Verify that all topology elements specified in `spec.failureDomains` exist on the target vCenter and are accessible with the provided credentials.
+
+|The target vCenter user lacks required privileges.
+|Grant the target vCenter user the required privileges: `InventoryService.Tagging.CreateCategory`, `InventoryService.Tagging.CreateTag`, `InventoryService.Tagging.AttachTag`, `InventoryService.Tagging.ObjectAttachable`, and `Folder.Create`.
+|===
+
+.Migration stuck in `WorkloadMigrated` phase
+[cols="1,2", options="header"]
+|===
+|Cause
+|Resolution
+
+|Old worker node deletion is blocked by a `PodDisruptionBudget` (PDB).
+|Check for `OldWorkersStalled` warning events. Review PDBs that might prevent node drain: `oc get pdb -A`. Consider temporarily adjusting PDB settings to allow the drain to proceed.
+
+|A node fails to migrate (VM clone or relocation failure).
+|Check the per-node `message` field in `status.nodeMigration.workers.nodes` or `status.nodeMigration.controlPlane.nodes` for the specific error. Verify vCenter task completion in the vSphere client.
+
+|New nodes on the target vCenter are not becoming `Ready`.
+|Verify that the VM template, network configuration, and DHCP settings are correct on the target vCenter. Check kubelet logs on the affected node.
+|===
+
+.Migration stuck in other phases
+[cols="1,2", options="header"]
+|===
+|Cause
+|Resolution
+
+|`DestinationInitialized` stalled: VM folder or tag creation failed.
+|Verify that the target vCenter user has `Folder.Create` privileges and tagging privileges. Check operator logs for the specific error.
+
+|`DestinationImageImported` stalled: OVA download or import failed.
+|If using automatic image resolution, verify that the `coreos-bootimages` ConfigMap exists. For custom OVA URLs, verify that the URL is reachable from the cluster. Check the `status.image` field for details.
+
+|`MultiSiteConfigured` stalled: cluster configuration update failed.
+|Check operator logs for errors updating the `Infrastructure` custom resource, cloud provider ConfigMap, or secrets. Verify that the operator has the necessary RBAC permissions.
+
+|`SourceCleaned` stalled: source vCenter detachment failed.
+|Check operator logs for errors removing the source vCenter from the cluster configuration. The operator removes the source vCenter from the `Infrastructure` resource, cloud provider configuration, and secrets.
+
+|`Ready` condition not reaching `True`: cluster health checks failing.
+|Verify that all cluster operators are healthy with `oc get co`. Check that all `MachineConfigPools` are stable. The `Ready` condition requires sustained health for at least 3 minutes.
+|===
+
+== Credential and connectivity issues
+
+If the operator cannot connect to the target vCenter, the `InfrastructurePrepared` condition shows a failure message that includes the vCenter server name and the specific connection error.
+
+* Verify that the target vCenter FQDN resolves from within the cluster:
++
+[source,terminal]
+----
+$ oc debug node/<node_name> -- chroot /host nslookup <target_vcenter_fqdn>
+----
+
+* Verify that the target vCenter port (443) is reachable from the cluster network.
+
+* Verify that the credentials in the secret are correct by checking the key format. The keys must use the format `<vcenter_fqdn>.username` and `<vcenter_fqdn>.password`, where the prefix matches the `server` field in the failure domain exactly.
+
+== Recovery from partial migration
+
+The VCF Migration Operator does not provide automated rollback.
+If the migration fails partway through, use the following approach to recover:
+
+. Check which phase the migration reached by examining the status conditions:
++
+[source,terminal]
+----
+$ oc get vcfm cluster -n openshift-vcf-migration -o jsonpath='{range .status.conditions[*]}{.type}{"\t"}{.status}{"\t"}{.reason}{"\t"}{.message}{"\n"}{end}'
+----
+
+. If the migration failed during `WorkloadMigrated`, check per-node status:
++
+[source,terminal]
+----
+$ oc get vcfm cluster -n openshift-vcf-migration -o jsonpath='{.status.nodeMigration}'
+----
+
+. Address the root cause of the failure (for example, fix network connectivity, correct vCenter permissions, or resolve PDB conflicts).
+
+. Resume the migration by setting `spec.state` to `Running`. The operator resumes from the last incomplete phase:
++
+[source,terminal]
+----
+$ oc patch vcfm cluster -n openshift-vcf-migration \
+  --type merge -p '{"spec":{"state":"Running"}}'
+----
+
+If you cannot resolve the issue and the cluster is in an inconsistent state, contact Red Hat support with the output of `oc adm must-gather` and the migration CR status.
+
+== Known limitations
+
+* Automated migration of {vmw-short} CSI persistent volumes is not supported in this release. You must remove CSI-backed persistent volumes before migration. Automated persistent volume migration is planned for a future release.
+* Clusters that use user-provisioned infrastructure can use `VMotion` but cannot use the Recreate migration engine because they do not have `MachineSets` or a `ControlPlaneMachineSet`.
+* Third-party CSI drivers are not validated for migration. Verify compatibility with your storage vendor.
+* The operator does not provide automated rollback. If a migration fails, you must manually recover by using the recovery steps.
