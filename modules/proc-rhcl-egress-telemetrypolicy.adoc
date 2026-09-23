@@ -1,0 +1,99 @@
+// Module included in the following assemblies:
+//
+// * deployment/egress_gateway/rhcl-egress-observability.adoc
+
+:_mod-docs-content-type: PROCEDURE
+[id="proc-rhcl-egress-telemetrypolicy_{context}"]
+= Attribute egress traffic to the calling workload
+
+[role="_abstract"]
+Record which workload made an outbound call, and which external service it reached, by attaching a `TelemetryPolicy` custom resource (CR) to your egress `Gateway` object.
+
+[IMPORTANT]
+====
+Editing a `TelemetryPolicy` CR does not remove a label that you rename or delete. The generated configuration keeps the earlier binding, and the bindings accumulate with every edit. Because one expression that fails to evaluate discards the whole descriptor, a single stale label stops the metrics for the route. To change a label, delete the policy and apply it again.
+====
+
+.Prerequisites
+
+include::snippets/egress-gateway-prereqs.adoc[]
+
+* You applied an `AuthPolicy` CR that resolves workload identity on the routes of your egress `Gateway` object.
+* You applied a `RateLimitPolicy` CR or a `TokenRateLimitPolicy` CR to the routes that you want to label.
+
+.Procedure
+
+. Create a `TelemetryPolicy` CR that labels each metric with the authenticated identity of the calling workload, the external destination, and the source IP address by using the following example:
++
+[source,yaml,subs="+quotes"]
+----
+apiVersion: extensions.kuadrant.io/v1alpha1
+kind: TelemetryPolicy
+metadata:
+  name: _<egress_telemetry>_
+  namespace: _<gateway_system>_
+spec:
+  targetRef:
+    group: gateway.networking.k8s.io
+    kind: Gateway
+    name: _<kuadrant_egressgateway>_
+  metrics:
+    default:
+      labels:
+        workload: auth.identity.username
+        destination: request.host
+        source_ip: source.address.substring(0, source.address.lastIndexOf(":")).replace("[", "").replace("]", "")
+----
++
+* Replace the `metadata.name` value with the name of your telemetry policy.
+* Replace the `metadata.namespace` value with the namespace where you applied your egress `Gateway` object.
+* Replace the `spec.targetRef.name` value with the name of your egress `Gateway` object.
+* The `source_ip` expression removes the ephemeral port and the brackets that Envoy adds around an IPv6 address. Recording the address with the port creates a separate time series for every connection.
+
+. Apply the `TelemetryPolicy` CR by running the following command:
++
+[source,terminal,subs="+quotes"]
+----
+$ oc apply -f _<egress_telemetry>_
+----
++
+Replace `_<egress_telemetry>_` with the name of the file that holds your telemetry policy.
+
+. Confirm that the policy is accepted and enforced by running the following command:
++
+[source,terminal,subs="+quotes"]
+----
+$ oc get telemetrypolicy _<egress_telemetry>_ -n _<gateway_system>_ \
+    -o jsonpath='{range .status.conditions[*]}{.type}={.status}{"\n"}{end}'
+----
++
+.Expected output
+[source,text]
+----
+Accepted=True
+Enforced=True
+----
+
+.Verification
+
+. Send authenticated traffic from a workload through the egress `Gateway` object to a rate limited route.
+
+. Read the Limitador metrics by running the following command:
++
+[source,terminal,subs="+quotes"]
+----
+$ oc exec -n egress-test test-client -- \
+    curl -sS --max-time 15 \
+    http://limitador-limitador.kuadrant-system.svc.cluster.local:8080/metrics \
+    | grep -v '^#' | grep authorized_calls
+----
+
+. Confirm that the `workload` label identifies the service account that made the outbound call, similar to the following example:
++
+.Example output
+[source,text]
+----
+authorized_calls{destination="api.example.com",source_ip="192.0.2.25",workload="system:serviceaccount:egress-test:team-gold",limitador_namespace="gateway-system/api-external"} 2
+----
++
+The same labels are present on the `limited_calls` metric when a workload exceeds its limit. These labels show the throttled workload and the destination that it called.

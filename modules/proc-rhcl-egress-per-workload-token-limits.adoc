@@ -1,0 +1,161 @@
+// Module included in the following assemblies:
+//
+// * deployment/egress_gateway/rhcl-egress-token-rate-limiting.adoc
+
+:_mod-docs-content-type: PROCEDURE
+[id="proc-rhcl-egress-per-workload-token-limits_{context}"]
+= Apply per-workload token limits to egress traffic
+
+[role="_abstract"]
+Give each workload its own artificial intelligence (AI) token budget by combining a `TokenRateLimitPolicy` custom resource (CR) with the workload identity that an `AuthPolicy` CR resolves.
+
+A `TokenRateLimitPolicy` CR counts tokens against a counter expression. When the counter expression references the authenticated identity of the calling workload, each service account receives an independent budget.
+
+.Prerequisites
+
+include::snippets/egress-gateway-prereqs.adoc[]
+include::snippets/egress-ai-service-prereqs.adoc[]
+
+* You created a second test client pod that uses a different service account, such as `team-gold` in the `egress-test` namespace.
+
+.Procedure
+
+. Create an `AuthPolicy` CR that authenticates the calling workloads on the route of your external AI service by using the following example:
++
+[source,yaml,subs="+quotes"]
+----
+apiVersion: kuadrant.io/v1
+kind: AuthPolicy
+metadata:
+  name: _<workload_identity>_
+  namespace: _<gateway_system>_
+spec:
+  targetRef:
+    group: gateway.networking.k8s.io
+    kind: HTTPRoute
+    name: _<ai_external>_
+  rules:
+    authentication:
+      "workload-sa":
+        kubernetesTokenReview:
+          audiences:
+            - "https://kubernetes.default.svc.cluster.local"
+    authorization:
+      "allowed-namespaces":
+        patternMatching:
+          patterns:
+            - predicate: auth.identity.user.username.startsWith('system:serviceaccount:egress-test:')
+    response:
+      success:
+        filters:
+          "identity":
+            json:
+              properties:
+                username:
+                  selector: auth.identity.user.username
+----
++
+* Replace the `spec.targetRef.name` value with the name of the `HTTPRoute` object of your external AI service.
+* The `response.success.filters.identity` filter exposes the authenticated user name to the policies that run later in the request. Without this filter, a counter expression that references `auth.identity.username` cannot resolve.
+* Requests that do not carry a valid service account token are rejected with a `401` status code. Requests from namespaces other than `egress-test` are rejected with a `403` status code.
++
+For more information about workload identity on an egress `Gateway` object, see "Authenticate workloads with TokenReview".
+
+. Apply the `AuthPolicy` CR by running the following command:
++
+[source,terminal,subs="+quotes"]
+----
+$ oc apply -f _<workload_identity>_
+----
++
+Replace `_<workload_identity>_` with the name of the file that holds your authentication policy.
+
+. Create a `TokenRateLimitPolicy` CR that counts tokens for each authenticated workload by using the following example:
++
+[source,yaml,subs="+quotes"]
+----
+apiVersion: kuadrant.io/v1alpha1
+kind: TokenRateLimitPolicy
+metadata:
+  name: _<ai_per_workload>_
+  namespace: _<gateway_system>_
+spec:
+  targetRef:
+    group: gateway.networking.k8s.io
+    kind: HTTPRoute
+    name: _<ai_external>_
+  limits:
+    per-workload:
+      rates:
+        - limit: 100
+          window: 1m
+      counters:
+        - expression: auth.identity.username
+----
++
+* Replace the `spec.targetRef.name` value with the name of the `HTTPRoute` object of your external AI service.
+* The `spec.limits.per-workload.counters.expression` setting creates a separate counter for each service account. Each service account receives 100 tokens per minute.
+
+. Apply the `TokenRateLimitPolicy` CR by running the following command:
++
+[source,terminal,subs="+quotes"]
+----
+$ oc apply -f _<ai_per_workload>_
+----
++
+Replace `_<ai_per_workload>_` with the name of the file that holds your token rate limit policy.
+
+.Verification
+
+. Exhaust the token budget of the first workload by running the following command:
++
+[source,terminal,subs="+quotes"]
+----
+$ for i in $(seq 1 20); do
+    CODE=$(oc exec test-client -n egress-test -- sh -c '
+        curl -s -o /dev/null -w "%{http_code}" \
+            -H "Host: _<api.example.com>_" \
+            -H "Content-Type: application/json" \
+            -H "Authorization: Bearer $(cat /var/run/secrets/kubernetes.io/serviceaccount/token)" \
+            -X POST http://'"${EGRESS_IP}"'/v1/chat/completions \
+            -d "{\"model\": \"_<model_name>_\", \"messages\": [{\"role\": \"user\", \"content\": \"Hello\"}], \"max_tokens\": 100, \"stream\": false, \"usage\": true}"
+    ')
+    echo "test-client request $i: HTTP $CODE"
+    [ "$CODE" = "429" ] && break
+  done
+----
++
+* Replace `_<api.example.com>_` with the hostname of your external AI service.
+* Replace `_<model_name>_` with a model that your external AI service provides.
+* The workload consumes its 100 token budget and then receives a `429` status code.
+
+. Send a request from the second workload by running the following command:
++
+[source,terminal,subs="+quotes"]
+----
+$ oc exec team-gold -n egress-test -- sh -c '
+    curl -s -o /dev/null -w "%{http_code}" \
+        -H "Host: _<api.example.com>_" \
+        -H "Content-Type: application/json" \
+        -H "Authorization: Bearer $(cat /var/run/secrets/kubernetes.io/serviceaccount/token)" \
+        -X POST http://'"${EGRESS_IP}"'/v1/chat/completions \
+        -d "{\"model\": \"_<model_name>_\", \"messages\": [{\"role\": \"user\", \"content\": \"Hello\"}], \"max_tokens\": 100, \"stream\": false, \"usage\": true}"
+'
+----
++
+.Expected output
+[source,text]
+----
+200
+----
++
+The second workload has its own counter, so rate limiting the first workload does not affect it.
+
+.Next steps
+
+* Before you configure tiered limits, delete the per-workload policy by running the following command:
++
+[source,terminal,subs="+quotes"]
+----
+$ oc delete tokenratelimitpolicy _<ai_per_workload>_ -n _<gateway_system>_
+----
