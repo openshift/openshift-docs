@@ -1,0 +1,68 @@
+// Module included in the following assemblies:
+//
+// * install/ossm-multi-cluster-topologies.adoc
+
+:_mod-docs-content-type: CONCEPT
+[id="ossm-ambient-multicluster-considerations_{context}"]
+= Ambient multi-primary, multi-network meshes
+
+[role="_abstract"]
+
+Currently, the only multi-cluster topology supported for ambient mode is multi-primary, multi-network. Before deploying the topology, review the following limitations and considerations.
+
+== Foundational considerations
+
+Certificate authority requirements::
+All the clusters must share a common root Certificate Authority (CA) and use the same trust domain. Ambient mode has no equivalent to `meshConfig.caCertificates` in sidecar mode, so a shared root CA is the only option. A single trust domain is also necessary; different domains fail even when using the same root CA.
++
+These concerns surface primarily when you join existing clusters that were set up independently. (The clusters likely have different CAs and trust domains.)
++
+To change the CA or trust domain of an existing cluster to match other clusters in the mesh:
++
+. Uninstall the existing {istio} control plane and data plane components.
+. Back up and preserve your {istio} configurations and custom resources.
+. Redeploy {istio} with the new shared CA and trust domain configurations.
+. Restart workloads to pick up the new certificates.
++
+For new multi-cluster deployments, configure a shared CA and trust domain from the beginning to avoid this complexity.
+
+East-west gateway limitation for API servers::
+Ambient east-west gateways cannot expose API servers because they only handle mesh traffic. Use direct network routing (such as public network load balancers) to connect clusters' API servers. If direct routing is unavailable, deploy a standalone, non-ambient Envoy east-west gateway as a workaround. 
+[NOTE]
+====
+If a remote API server becomes unreachable, the mesh continues running on cached state and only fails at the next istiod restart, serving local-only traffic silently.
+====
+
+== Critical operational considerations
+
+Cross-cluster service naming requirements::
+For a service to be reachable across clusters, every cluster that needs to access it must have a `Service` object with the same name and namespace. How you configure this depends on where the workload pods run:
++
+* *Pods in multiple clusters:* Each cluster that runs pods for the service needs a `Service` definition with a `spec.selector` pointing to those pods.
+* *Pods in only one cluster:* The cluster running the pods needs a normal `Service` definition. Other clusters that need to access it must deploy a stub `Service` (defined without a `spec.selector`).
+
+Service scope configuration::
+After ensuring `Service` objects exist in all relevant clusters, confirm that their scope configurations match. 
++
+The control plane in each cluster uses only its local service scope configuration and ignores remote cluster configurations. Because of this isolation, mismatched scope labels cause asymmetric routing failures with no warnings from `istiod`. Symptoms depend on the traffic path: 503 errors on the waypoint path, or silent local-only traffic on the L4 path.
+
+Waypoint synchronization::
+Across all clusters, `waypoint` deployments and attached policies must match. Policy mismatches can create security vulnerabilities: for example, a `DENY` policy applied in only one cluster allows other clusters to freely access pods that the policy should protect.
++
+To keep `waypoints` in sync, use GitOps tools such as {gitops-title} or synchronize them manually. (Currently, there is no built-in, automatic synchronization mechanism.)
+
+Global waypoint scope::
+Marking a `waypoint` proxy as global forces all attached services to behave as global services, overriding individual service-level scope configurations. If a cluster-local service shares a global `waypoint`, the mesh might route traffic to a remote `waypoint` instance instead of keeping it local. The impacts are: 
++
+* *Availability failures:* Traffic drops or HTTP 503 errors if the backend service lacks pods in the remote cluster 
+* *Performance and cost:* Increased latency from unnecessary cross-cluster network hops and higher egress fees
++
+*Recommended action:* Use separate `waypoints` for local and global services.
+
+== Additional limitations
+
+`DestinationRule` handling::
+`Waypoints` cannot enforce `ISTIO_MUTUAL` `DestinationRules` for egress traffic to gateways. This limitation affects all ambient deployments but is particularly impactful in multi-cluster scenarios where traffic often traverses east-west and ingress gateways.
+
+Validation and monitoring::
+Many of the limitations inherit with ambient multi-primary, multi-network meshes produce silent or misleading failures. Endpoints can appear healthy when they are not; `istiod` fails to generate warnings; gateways report success even when cross-cluster routing fails. To minimize risk, verify multi-cluster functionality with explicit cross-cluster traffic tests, not just control plane health checks or local smoke tests.
