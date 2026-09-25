@@ -133,11 +133,57 @@ ifdef::selinux[]
 $ oc label ns nginx-deploy security.openshift.io/scc.podSecurityLabelSync=false
 ----
 
-. Apply the `privileged` label to the `nginx-deploy` namespace by running the following command:
+. Apply the `privileged` Pod Security labels to the `nginx-deploy` namespace by running the following command:
 +
 [source,terminal]
 ----
-$ oc label ns nginx-deploy --overwrite=true pod-security.kubernetes.io/enforce=privileged
+$ oc label ns nginx-deploy --overwrite \
+    pod-security.kubernetes.io/enforce=privileged \
+    pod-security.kubernetes.io/warn=privileged \
+    pod-security.kubernetes.io/audit=privileged
+----
++
+If you set only `enforce`, `warn` and `audit` stay `restricted`. Creating a pod with a custom SELinux type then returns a Pod Security warning.
+
+. Create a service account for the workload. A custom SELinux type needs an SCC with `seLinuxContext: RunAsAny`. The `edit` role is not enough; `restricted-v2` rejects `seLinuxOptions.type`.
++
+[source,terminal]
+----
+$ oc create sa spo-deploy-test -n nginx-deploy
+----
+
+. Allow that service account to use the `privileged` SCC:
++
+[source,yaml]
+----
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: spo-nginx
+  namespace: nginx-deploy
+rules:
+- apiGroups:
+  - security.openshift.io
+  resources:
+  - securitycontextconstraints
+  resourceNames:
+  - privileged
+  verbs:
+  - use
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: spo-nginx
+  namespace: nginx-deploy
+subjects:
+- kind: ServiceAccount
+  name: spo-deploy-test
+  namespace: nginx-deploy
+roleRef:
+  kind: Role
+  name: spo-nginx
+  apiGroup: rbac.authorization.k8s.io
 ----
 
 . Obtain the SELinux profile usage string by running the following command:
@@ -153,7 +199,7 @@ $ oc get selinuxprofile.security-profiles-operator.x-k8s.io/nginx-secure -ojsonp
 nginx-secure.process
 ----
 
-. Apply the output string in the workload manifest in the `.spec.containers[].securityContext.seLinuxOptions` attribute:
+. Create a pod that uses the service account and the usage string in `.spec.containers[].securityContext.seLinuxOptions`:
 +
 [source,yaml]
 ----
@@ -163,6 +209,7 @@ metadata:
   name: nginx-secure
   namespace: nginx-deploy
 spec:
+  serviceAccountName: spo-deploy-test
   securityContext:
     runAsNonRoot: true
     seccompProfile:
@@ -175,14 +222,26 @@ spec:
         capabilities:
           drop: [ALL]
         seLinuxOptions:
-          # NOTE: This uses an appropriate SELinux type
-          type: nginx-secure.process
+          type: nginx-secure.process <1>
+----
+<1> Use the value from `status.usage`. The type must exist before you create the pod.
+
+.Verification
+
+* Confirm the container is running with the profile:
++
+[source,terminal]
+----
+$ oc exec -n nginx-deploy nginx-secure -- cat /proc/self/attr/current
 ----
 +
-[IMPORTANT]
-====
-The SELinux `type` must exist before creating the workload.
-====
+.Example output
+[source,terminal]
+----
+system_u:system_r:nginx-secure.process:s0:c160,c578
+----
++
+The type in the output must match `status.usage`.
 endif::[]
 
 ifeval::["{context}" == "spo-seccomp"]
