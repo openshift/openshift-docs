@@ -1,0 +1,447 @@
+// Module included in the following assemblies:
+//
+// * nodes/cma/nodes-cma-autoscaling-custom-http-add-on.adoc
+
+:_mod-docs-content-type: PROCEDURE
+[id="nodes-cma-autoscaling-custom-http-add-on-end-to-end-example_{context}"]
+= HTTP Add-on autoscaling end-to-end example
+
+[role="_abstract"]
+This example demonstrates a complete HTTP Add-on deployment with a sample application, traffic routing, and scaling verification. You can use this as a template for configuring the HTTP Add-on with your own applications.
+
+.Prerequisites
+
+* The KEDA HTTP Add-on is installed in your cluster.
+
+* You have access to a terminal with the `oc` command-line tool installed and authenticated to your {product-title} cluster.
+
+* You have permissions to create Deployments, Services, Routes, `InterceptorRoute`, and `ScaledObject` custom resources in the `default` namespace.
+
+.Procedure
+
+. Create a namespace for the example application:
++
+[source,terminal]
+----
+$ oc new-project http-add-on-example
+----
+
+. Create a sample HTTP application deployment.
+
+.. Create a file named `app-deployment.yaml` with the following content:
++
+[source,yaml]
+----
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: sample-http-app
+  namespace: http-add-on-example
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: sample-http-app
+  template:
+    metadata:
+      labels:
+        app: sample-http-app
+    spec:
+      containers:
+      - name: app
+        image: openshift/hello-openshift
+        ports:
+        - containerPort: 8080
+        env:
+        - name: RESPONSE_DELAY
+          value: "0"
+        resources:
+          requests:
+            cpu: 100m
+            memory: 128Mi
+          limits:
+            cpu: 500m
+            memory: 256Mi
+----
+
+.. Apply the deployment:
++
+[source,terminal]
+----
+$ oc apply -f app-deployment.yaml
+----
+
+.. Verify the deployment is running:
++
+[source,terminal]
+----
+$ oc get pods -n http-add-on-example
+----
++
+.Expected output
+[source,terminal]
+----
+NAME                              READY   STATUS    RESTARTS   AGE
+sample-http-app-7d9f8c5dbb-xyz   1/1     Running   0          2m
+----
+
+. Create a Service to expose the application:
+
+.. Create a file named `app-service.yaml` with the following content:
++
+[source,yaml]
+----
+apiVersion: v1
+kind: Service
+metadata:
+  name: sample-http-app
+  namespace: http-add-on-example
+spec:
+  selector:
+    app: sample-http-app
+  ports:
+  - port: 8080
+    targetPort: 8080
+    protocol: TCP
+  type: ClusterIP
+----
+
+.. Apply the Service:
++
+[source,terminal]
+----
+$ oc apply -f app-service.yaml
+----
+
+. Create a Route to expose the application externally:
+
+.. Create a file named `app-route.yaml` with the following content. Note that the route initially points to your application Service; we will update it later to route through the interceptor.
++
+[source,yaml]
+----
+apiVersion: route.openshift.io/v1
+kind: Route
+metadata:
+  name: sample-http-app-route
+  namespace: http-add-on-example
+spec:
+  host: sample-app.example.com
+  to:
+    kind: Service
+    name: sample-http-app
+    weight: 100
+  port:
+    targetPort: 8080
+----
+
+.. Apply the Route:
++
+[source,terminal]
+----
+$ oc apply -f app-route.yaml
+----
+
+.. Get the actual Route hostname if you want to use it instead of `sample-app.example.com`:
++
+[source,terminal]
+----
+$ oc get route sample-http-app-route -n http-add-on-example -o jsonpath='{.spec.host}'
+----
+
+. Create an `InterceptorRoute` custom resource to intercept traffic:
+
+.. Create a file named `interceptor-route.yaml` with the following content:
++
+[source,yaml]
+----
+apiVersion: http.keda.sh/v1alpha1
+kind: InterceptorRoute
+metadata:
+  name: sample-app-interceptor
+  namespace: http-add-on-example
+spec:
+  hosts:
+  - "sample-app.example.com"
+  targetService:
+    name: sample-http-app
+    port: 8080
+  scalingMetrics:
+    rps:
+      threshold: 100
+    concurrency:
+      threshold: 50
+----
+
+.. Apply the InterceptorRoute:
++
+[source,terminal]
+----
+$ oc apply -f interceptor-route.yaml
+----
+
+.. Verify the InterceptorRoute is created:
++
+[source,terminal]
+----
+$ oc get interceptorroute -n http-add-on-example
+----
+
+. Create a `ScaledObject` to configure autoscaling:
+
+.. Create a file named `scaled-object.yaml` with the following content:
++
+[source,yaml]
+----
+apiVersion: keda.sh/v1alpha1
+kind: ScaledObject
+metadata:
+  name: sample-app-scaler
+  namespace: http-add-on-example
+spec:
+  scaleTargetRef:
+    name: sample-http-app
+  minReplicaCount: 0
+  maxReplicaCount: 5
+  triggers:
+  - type: http
+    metadata:
+      namespace: http-add-on-example
+      name: sample-app-interceptor
+      scalingMetric: "rps"
+      activationThreshold: "2"
+      threshold: "10"
+      cooldownPeriod: "30"
+----
++
+This example uses very low thresholds (2 RPS to activate, 10 RPS to scale) and a short cooldown (30 seconds) to make testing easier. Adjust these values for production use.
+
+.. Apply the ScaledObject:
++
+[source,terminal]
+----
+$ oc apply -f scaled-object.yaml
+----
+
+.. Verify the ScaledObject is created:
++
+[source,terminal]
+----
+$ oc get scaledobject -n http-add-on-example
+----
+
+. Update the Route to direct traffic through the HTTP Add-on interceptor:
+
+.. Patch the Route to point to the interceptor service:
++
+[source,terminal]
+----
+$ oc patch route sample-http-app-route -n http-add-on-example -p '{"spec":{"to":{"name":"http-add-on-interceptor"},"host":"sample-app.example.com"}}'
+----
+
+.. Alternatively, update the Route YAML manually:
++
+[source,yaml]
+----
+apiVersion: route.openshift.io/v1
+kind: Route
+metadata:
+  name: sample-http-app-route
+  namespace: http-add-on-example
+spec:
+  host: sample-app.example.com
+  to:
+    kind: Service
+    name: http-add-on-interceptor
+    namespace: openshift-keda
+    weight: 100
+  port:
+    targetPort: 8080
+----
+
+. Verify the autoscaling configuration is active:
+
+.. Check that an HPA was created by the ScaledObject:
++
+[source,terminal]
+----
+$ oc get hpa -n http-add-on-example
+----
++
+.Example output
+[source,terminal]
+----
+NAME                          REFERENCE                          TARGETS   MINPODS   MAXPODS   REPLICAS   AGE
+keda-sample-app-scaler       Deployment/sample-http-app         0m/10     0         5         0          1m
+----
+
+.. Verify that the deployment currently has zero replicas (because there is no traffic):
++
+[source,terminal]
+----
+$ oc get deployment sample-http-app -n http-add-on-example
+----
++
+.Example output
+[source,terminal]
+----
+NAME               READY   UP-TO-DATE   AVAILABLE   AGE
+sample-http-app    0/0     0            0           5m
+----
+
+. Generate traffic to observe autoscaling behavior:
+
+.. Create a load generation pod that sends requests to the application. Create a file named `load-gen-pod.yaml`:
++
+[source,yaml]
+----
+apiVersion: v1
+kind: Pod
+metadata:
+  name: load-generator
+  namespace: http-add-on-example
+spec:
+  containers:
+  - name: load-gen
+    image: busybox
+    command:
+    - sh
+    - -c
+    - |
+      while true; do
+        wget -q -O- http://http-add-on-interceptor.openshift-keda.svc.cluster.local:8080 \
+          -H "Host: sample-app.example.com" >/dev/null 2>&1
+        sleep 0.1
+      done
+  restartPolicy: Never
+----
+
+.. Apply the load generation pod:
++
+[source,terminal]
+----
+$ oc apply -f load-gen-pod.yaml
+----
+
+.. Watch the deployment scale up in response to traffic:
++
+[source,terminal]
+----
+$ oc get deployment sample-http-app -n http-add-on-example -w
+----
++
+You should see:
+* READY and AVAILABLE change from 0 to 1 (activation)
+* Further scaling to multiple replicas as traffic increases
+
+. Observe scaling events:
+
+.. Check the HPA status to see the current metrics and scaling activity:
++
+[source,terminal]
+----
+$ oc describe hpa keda-sample-app-scaler -n http-add-on-example
+----
++
+.Example output
+[source,terminal]
+----
+Name:                                      keda-sample-app-scaler
+Namespace:                                 http-add-on-example
+Labels:                                    <none>
+Annotations:                               <none>
+CreationTimestamp:                         <timestamp>
+Reference:                                 Deployment/sample-http-app
+Metrics:                                   (current / target)
+  http (Custom):                           25m / 10
+Min replicas:                              0
+Max replicas:                              5
+Deployment pods:                           3 currently running / 5 desired
+Events:
+  Type    Reason             Age   From                   Message
+  ----    ------             ----  ----                   -------
+  Normal  SuccessfulRescale  1m    horizontal-pod-autoscaler  New size: 3; reason: Custom metric http above target
+----
+
+.. Check the ScaledObject status:
++
+[source,terminal]
+----
+$ oc describe scaledobject sample-app-scaler -n http-add-on-example
+----
+
+. Stop the load generator and observe scale-to-zero:
+
+.. Delete the load generation pod:
++
+[source,terminal]
+----
+$ oc delete pod load-generator -n http-add-on-example
+----
+
+.. Wait for the cooldown period (30 seconds in this example) and watch the deployment scale down to zero replicas:
++
+[source,terminal]
+----
+$ oc get deployment sample-http-app -n http-add-on-example -w
+----
++
+.Expected behavior
+[source,terminal]
+----
+NAME               READY   UP-TO-DATE   AVAILABLE   AGE
+sample-http-app    0/0     0            0           10m
+----
+
+. Verify the scaling behavior was successful:
+
+.. Check the pod count went to zero:
++
+[source,terminal]
+----
+$ oc get pods -n http-add-on-example | grep sample-http-app
+----
++
+Output should be empty (no pods running).
+
+.. Generate traffic again to verify that the application wakes up:
++
+[source,terminal]
+----
+$ oc apply -f load-gen-pod.yaml
+----
+
+.. Confirm that replicas scale back up within a few seconds:
++
+[source,terminal]
+----
+$ oc get pods -n http-add-on-example -w | grep sample-http-app
+----
++
+You should see the pod transition to `Running` state as the scaler detects traffic and activates the application.
+
+.Verification
+
+* Autoscaling activation works: The application scales from zero to one replica when traffic exceeds the activation threshold.
+
+* Normal scaling works: The application scales to additional replicas as traffic increases beyond the scaling threshold.
+
+* Scale-to-zero works: The application scales to zero replicas after the cooldown period with no traffic.
+
+* Deactivation and reactivation cycle: Stopping and restarting traffic demonstrates repeatable activation and deactivation.
+
+.Next steps
+
+* Adjust activation threshold, scaling threshold, and cooldown period for your actual workload.
+
+* Test scale-to-zero with your real application to ensure it handles being scaled to zero correctly (no in-memory state loss, proper health checks).
+
+* Monitor CPU and memory usage to ensure your maxReplicaCount is sufficient for peak traffic.
+
+* Review the HTTP Add-on trigger configuration reference to understand all available configuration options. See "HTTP Add-on ScaledObject trigger configuration".
+
+* Clean up the example resources when done:
++
+[source,terminal]
+----
+$ oc delete namespace http-add-on-example
+----
