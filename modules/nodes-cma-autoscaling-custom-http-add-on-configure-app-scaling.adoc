@@ -1,0 +1,251 @@
+// Module included in the following assemblies:
+//
+// * nodes/cma/nodes-cma-autoscaling-custom-http-add-on.adoc
+
+:_mod-docs-content-type: PROCEDURE
+[id="nodes-cma-autoscaling-custom-http-add-on-configure-app-scaling_{context}"]
+= Configure HTTP-based autoscaling for your application
+
+[role="_abstract"]
+After installing the HTTP Add-on, you configure per-application autoscaling by creating an `InterceptorRoute` custom resource to define traffic routing and scaling metrics, and a `ScaledObject` custom resource to link your scaling configuration to your application deployment.
+
+.Prerequisites
+
+* The KEDA HTTP Add-on is installed and the interceptor and scaler pods are running in the `openshift-keda` namespace.
+
+* You have an HTTP-based application deployed in {product-title} as a Deployment.
+
+* Your application is exposed through a Kubernetes Service. The Service name and port are known (typically port 8080 for HTTP).
+
+* You have permissions to create `ScaledObject` and `InterceptorRoute` custom resources in your application's namespace.
+
+* You understand your application's expected traffic patterns and have estimated appropriate activation and scaling thresholds.
+
+.Procedure
+
+. Create an `InterceptorRoute` custom resource to define traffic routing and metrics collection for your application.
+
+.. Create a file named `interceptor-route.yaml` with the following content, replacing the example values with your actual configuration:
++
+[source,yaml]
+----
+apiVersion: http.keda.sh/v1alpha1
+kind: InterceptorRoute
+metadata:
+  name: my-app-interceptor
+  namespace: default
+spec:
+  hosts:
+  - "my-app.example.com"
+  targetService:
+    name: my-app-service
+    port: 8080
+  scalingMetrics:
+    rps:
+      threshold: 100
+    concurrency:
+      threshold: 50
+----
++
+Modify the following fields for your application:
+
+* `metadata.name`: A descriptive name for this interceptor route (e.g., "web-app-interceptor")
+* `metadata.namespace`: The namespace where your application is deployed
+* `spec.hosts`: The hostname(s) where traffic arrives for your application (from your Route or Ingress)
+* `spec.targetService.name`: The name of your application's Kubernetes Service
+* `spec.targetService.port`: The port your application listens on (typically 8080)
+* `spec.scalingMetrics.rps.threshold` or `concurrency.threshold`: Default metric thresholds (these are overridden by ScaledObject configuration)
+
+.. Apply the interceptor route:
++
+[source,terminal]
+----
+$ oc apply -f interceptor-route.yaml
+----
+
+.. Verify that the interceptor route was created:
++
+[source,terminal]
+----
+$ oc get interceptorroute -n default
+----
+
+. Create a `ScaledObject` custom resource to configure autoscaling for your deployment.
+
+.. Create a file named `scaled-object.yaml` with the following content:
++
+[source,yaml]
+----
+apiVersion: keda.sh/v1alpha1
+kind: ScaledObject
+metadata:
+  name: my-app-scaler
+  namespace: default
+spec:
+  scaleTargetRef:
+    name: my-app-deployment
+  minReplicaCount: 0
+  maxReplicaCount: 10
+  triggers:
+  - type: http
+    metadata:
+      namespace: default
+      name: my-app-interceptor
+      scalingMetric: "rps"
+      activationThreshold: "5"
+      threshold: "100"
+      cooldownPeriod: "300"
+----
++
+Modify the following fields for your application:
+
+* `metadata.name`: A name for this scaling configuration (e.g., "my-app-scaler")
+* `spec.scaleTargetRef.name`: The name of your Deployment to be scaled
+* `spec.minReplicaCount`: Minimum replicas (use 0 to enable scale-to-zero)
+* `spec.maxReplicaCount`: Maximum replicas your application should scale to
+* `triggers[0].metadata.name`: Must match the `InterceptorRoute` name from step 1
+* `triggers[0].metadata.namespace`: Must match the `InterceptorRoute` namespace
+* `triggers[0].metadata.scalingMetric`: "rps" or "concurrency" (must match what you configured in InterceptorRoute)
+* `triggers[0].metadata.activationThreshold`: Traffic threshold to activate from zero replicas
+* `triggers[0].metadata.threshold`: Traffic threshold for normal scaling
+* `triggers[0].metadata.cooldownPeriod`: Seconds to wait before scaling to zero after traffic drops
+
+.. Apply the scaled object:
++
+[source,terminal]
+----
+$ oc apply -f scaled-object.yaml
+----
+
+.. Verify that the scaled object was created:
++
+[source,terminal]
+----
+$ oc get scaledobject -n default
+----
+
+. Update your route or ingress to point traffic through the HTTP Add-on interceptor.
+
+.. If using OpenShift routes, get the interceptor service endpoint:
++
+[source,terminal]
+----
+$ oc get svc -n openshift-keda | grep interceptor
+----
++
+.Example output
+[source,terminal]
+----
+http-add-on-interceptor       ClusterIP   10.0.1.100      <none>        80/TCP
+----
+
+.. Update your route or ingress to route traffic to the interceptor service instead of directly to your application. For a route, this means changing the `spec.to.name` to point to the interceptor service.
++
+[source,yaml]
+----
+apiVersion: route.openshift.io/v1
+kind: Route
+metadata:
+  name: my-app-route
+  namespace: default
+spec:
+  host: my-app.example.com
+  to:
+    kind: Service
+    name: http-add-on-interceptor
+    namespace: openshift-keda
+  port:
+    targetPort: 8080
+----
+
+. Verify that the configuration is working correctly.
+
+.. Check the HPA created by the scaled object:
++
+[source,terminal]
+----
+$ oc get hpa -n default
+----
++
+.Example output
+[source,terminal]
+----
+NAME                REFERENCE                 TARGETS        MINPODS   MAXPODS   REPLICAS   AGE
+keda-my-app-scaler  Deployment/my-app         123m/100       0         10        1          2m
+----
+
+.. Verify that your deployment's replica count matches the expected scaling behavior by checking the pod count:
++
+[source,terminal]
+----
+$ oc get pods -n default | grep my-app
+----
+
+.. Check the scaled object status to verify it is active:
++
+[source,terminal]
+----
+$ oc describe scaledobject my-app-scaler -n default
+----
++
+The status should show `status: Active` and provide information about the current metric values.
+
+.Verification
+
+. Monitor scaling behavior by generating traffic to your application.
+
+.. Send test requests to your application using curl or a load testing tool:
++
+[source,terminal]
+----
+$ curl http://my-app.example.com
+----
+
+.. Watch the replica count change in response to traffic:
++
+[source,terminal]
+----
+$ oc get pods -n default -w | grep my-app
+----
++
+When traffic exceeds the activation threshold, the deployment should scale from zero to one replica. As traffic increases further, it should scale to additional replicas based on the configured threshold.
+
+. View scaling events in the HPA status:
++
+[source,terminal]
+----
+$ oc describe hpa keda-my-app-scaler -n default | tail -20
+----
++
+This shows recent scaling events and the current metric values.
+
+. Verify that the interceptor is correctly collecting metrics:
++
+[source,terminal]
+----
+$ oc logs -n openshift-keda -l app=http-add-on-interceptor | head -50
+----
++
+The logs should show that the interceptor is receiving and forwarding traffic.
+
+.Troubleshooting
+
+If scaling is not working as expected:
+
+* Verify the InterceptorRoute hostname matches exactly how traffic arrives. Check your Route or Ingress configuration.
+
+* Verify the targetService port matches the port your application listens on. Use `oc port-forward` to test direct connectivity.
+
+* Check the ScaledObject status for error messages: `oc describe scaledobject my-app-scaler -n default`
+
+* Verify that network policies do not block traffic between the `openshift-keda` namespace and your application namespace.
+
+* Check that your application is stateless or uses external state management (database, cache) to work correctly when scaled to zero.
+
+.Next steps
+
+* Review the HTTP Add-on trigger configuration options to fine-tune your activation and scaling thresholds. See "HTTP Add-on ScaledObject trigger configuration".
+
+* Learn about the InterceptorRoute custom resource specification. See "InterceptorRoute custom resource reference".
+
+* See a complete end-to-end example with a sample application. See "HTTP Add-on autoscaling end-to-end example".
