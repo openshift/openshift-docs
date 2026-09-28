@@ -88,7 +88,8 @@ AUDIT_SCRIPT="$SCRIPT_DIR/audit-map-includes.py"
 
 preflight_dir="$(mktemp -d "${TMPDIR:-/tmp}/navmap-preflight.XXXXXX")"
 trap 'rm -rf -- "$preflight_dir"' EXIT
-declare -A preflight_failed_distros
+# Failed distros are tracked with marker files rather than an associative array,
+# which needs Bash 4 (macOS ships Bash 3.2).
 any_preflight_failed=0
 : > "$preflight_dir/all.txt"
 
@@ -97,7 +98,7 @@ if [[ -x "$AUDIT_SCRIPT" ]] || [[ -f "$AUDIT_SCRIPT" ]]; then
     navigation="maps/$distro/navigation.adoc"
     report="$preflight_dir/$distro.txt"
     if ! python3 "$AUDIT_SCRIPT" "$navigation" > "$report" 2>&1; then
-      preflight_failed_distros[$distro]=1
+      : > "$preflight_dir/$distro.failed"
       any_preflight_failed=1
       cat "$report" >> "$preflight_dir/all.txt"
     fi
@@ -157,7 +158,7 @@ destination = Path(sys.argv[1])
     encoding="utf-8",
 )
 PY
-  if [[ -n "${preflight_failed_distros[$distro]:-}" ]]; then
+  if [[ -f "$preflight_dir/$distro.failed" ]]; then
     python3 "$SCRIPT_DIR/preview-warning.py" "$destination" "$preflight_dir/$distro.txt"
   fi
 done
