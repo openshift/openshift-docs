@@ -64,11 +64,11 @@ spec:
             memory: 256Mi
 ----
 
-.. Apply the deployment:
+.. Create the deployment:
 +
 [source,terminal]
 ----
-$ oc apply -f app-deployment.yaml
+$ oc create -f app-deployment.yaml
 ----
 
 .. Verify the deployment is running:
@@ -106,11 +106,25 @@ spec:
   type: ClusterIP
 ----
 
-.. Apply the Service:
+.. Create the Service:
 +
 [source,terminal]
 ----
-$ oc apply -f app-service.yaml
+$ oc create -f app-service.yaml
+----
+
+.. Verify the service was created:
++
+[source,terminal]
+----
+$ oc get service -n http-add-on-example
+----
++
+.Expected output
+[source,terminal]
+----
+NAME              TYPE        CLUSTER-IP      EXTERNAL-IP   PORT(S)    AGE
+sample-http-app   ClusterIP   172.30.140.75   <none>        8080/TCP   51s
 ----
 
 . Create a Route to expose the application externally:
@@ -134,11 +148,11 @@ spec:
     targetPort: 8080
 ----
 
-.. Apply the Route:
+.. Create the Route:
 +
 [source,terminal]
 ----
-$ oc apply -f app-route.yaml
+$ oc create -f app-route.yaml
 ----
 
 .. Get the actual Route hostname if you want to use it instead of `sample-app.example.com`:
@@ -147,6 +161,12 @@ $ oc apply -f app-route.yaml
 ----
 $ oc get route sample-http-app-route -n http-add-on-example -o jsonpath='{.spec.host}'
 ----
++
+.Expected output
+[source,terminal]
+----
+sample-app.example.com
+----
 
 . Create an `InterceptorRoute` custom resource to intercept traffic:
 
@@ -154,36 +174,45 @@ $ oc get route sample-http-app-route -n http-add-on-example -o jsonpath='{.spec.
 +
 [source,yaml]
 ----
-apiVersion: http.keda.sh/v1alpha1
+apiVersion: http.keda.sh/v1beta1
 kind: InterceptorRoute
 metadata:
   name: sample-app-interceptor
   namespace: http-add-on-example
 spec:
-  hosts:
-  - "sample-app.example.com"
-  targetService:
-    name: sample-http-app
+  rules:
+    - hosts:
+      - "sample-app.example.com"
+  target:
+    service: sample-http-app
     port: 8080
-  scalingMetrics:
+    protocol: http
+  scalingMetric:
     rps:
       threshold: 100
     concurrency:
-      threshold: 50
+      targetValue: 50
 ----
 
-.. Apply the InterceptorRoute:
+.. Create the InterceptorRoute:
 +
 [source,terminal]
 ----
-$ oc apply -f interceptor-route.yaml
+$ oc create -f interceptor-route.yaml
 ----
 
-.. Verify the InterceptorRoute is created:
+.. Verify the interceptor route is created:
 +
 [source,terminal]
 ----
 $ oc get interceptorroute -n http-add-on-example
+----
++
+.Expected output
+[source,terminal]
+----
+NAME                     TARGETSERVICE     READY   AGE
+sample-app-interceptor   sample-http-app   True    18s
 ----
 
 . Create a `ScaledObject` to configure autoscaling:
@@ -203,7 +232,7 @@ spec:
   minReplicaCount: 0
   maxReplicaCount: 5
   triggers:
-  - type: http
+  - type: external-push
     metadata:
       namespace: http-add-on-example
       name: sample-app-interceptor
@@ -215,18 +244,25 @@ spec:
 +
 This example uses very low thresholds (2 RPS to activate, 10 RPS to scale) and a short cooldown (30 seconds) to make testing easier. Adjust these values for production use.
 
-.. Apply the ScaledObject:
+.. Create the scaled object:
 +
 [source,terminal]
 ----
 $ oc apply -f scaled-object.yaml
 ----
 
-.. Verify the ScaledObject is created:
+.. Verify the scaled object is created:
 +
 [source,terminal]
 ----
 $ oc get scaledobject -n http-add-on-example
+----
++
+.Expected output
+[source,terminal]
+----
+NAME                SCALETARGETKIND      SCALETARGETNAME   MIN   MAX   READY   ACTIVE    FALLBACK   PAUSED   TRIGGERS   AUTHENTICATIONS   AGE
+sample-app-scaler   apps/v1.Deployment   sample-http-app   0     5     False   Unknown   False      False    http                         28s
 ----
 
 . Update the Route to direct traffic through the HTTP Add-on interceptor:
@@ -270,8 +306,8 @@ $ oc get hpa -n http-add-on-example
 .Example output
 [source,terminal]
 ----
-NAME                          REFERENCE                          TARGETS   MINPODS   MAXPODS   REPLICAS   AGE
-keda-sample-app-scaler       Deployment/sample-http-app         0m/10     0         5         0          1m
+NAME                         REFERENCE                    TARGETS       MINPODS   MAXPODS   REPLICAS   AGE
+keda-hpa-sample-app-scaler   Deployment/sample-http-app   cpu: 0%/80%   1         5         1          105s
 ----
 
 .. Verify that the deployment currently has zero replicas (because there is no traffic):
@@ -281,11 +317,59 @@ keda-sample-app-scaler       Deployment/sample-http-app         0m/10     0     
 $ oc get deployment sample-http-app -n http-add-on-example
 ----
 +
-.Example output
+.Expected output
 [source,terminal]
 ----
 NAME               READY   UP-TO-DATE   AVAILABLE   AGE
 sample-http-app    0/0     0            0           5m
+----
++
+What I saw:
++
+[source,terminal]
+----
+NAME              READY   UP-TO-DATE   AVAILABLE   AGE
+sample-http-app   1/1     1            1           30m
+----
++
+ME: The deployment was created with 1 min replica....
++
+----
+apiVersion: autoscaling/v2
+kind: HorizontalPodAutoscaler
+  name: keda-hpa-sample-app-scaler
+  namespace: http-add-on-example
+spec:
+  maxReplicas: 5
+  metrics:
+  - resource:
+      name: cpu
+      target:
+        averageUtilization: 80
+        type: Utilization
+    type: Resource
+  minReplicas: 1 <---
+  scaleTargetRef:
+    apiVersion: apps/v1
+    kind: Deployment
+    name: sample-http-app
+----
++
+----
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  annotations:
+    deployment.kubernetes.io/revision: "1"
+  creationTimestamp: "2026-09-28T22:27:06Z"
+  generation: 1
+  name: sample-http-app
+  namespace: http-add-on-example
+  resourceVersion: "136042"
+  uid: 4bc463a5-ca60-4346-9940-2ef61978e0d3
+spec:
+  progressDeadlineSeconds: 600
+  replicas: 1 <---
 ----
 
 . Generate traffic to observe autoscaling behavior:
@@ -302,6 +386,14 @@ metadata:
 spec:
   containers:
   - name: load-gen
+    securityContext:
+       allowPrivilegeEscalation: false
+       runAsNonRoot: true
+       seccompProfile:
+         type: RuntimeDefault
+       capabilities:
+         drop:
+         ^S- ALL
     image: busybox
     command:
     - sh
@@ -315,7 +407,7 @@ spec:
   restartPolicy: Never
 ----
 
-.. Apply the load generation pod:
+.. Create the load generation pod:
 +
 [source,terminal]
 ----
@@ -329,9 +421,27 @@ $ oc apply -f load-gen-pod.yaml
 $ oc get deployment sample-http-app -n http-add-on-example -w
 ----
 +
+.Expected output
+[source,terminal]
+----
+NAME              READY   UP-TO-DATE   AVAILABLE   AGE
+sample-http-app   1/1     1            1           30m
+----
++
 You should see:
-* READY and AVAILABLE change from 0 to 1 (activation)
-* Further scaling to multiple replicas as traffic increases
++
+--
+* The `READY` and `AVAILABLE` fields change from `0` to `1`.
+* Further scaling to multiple replicas as traffic increases.
+==
++
+What I saw:
++
+[source,terminal]
+----
+NAME              READY   UP-TO-DATE   AVAILABLE   AGE
+sample-http-app   1/1     1            1           30m
+----
 
 . Observe scaling events:
 
@@ -339,30 +449,36 @@ You should see:
 +
 [source,terminal]
 ----
-$ oc describe hpa keda-sample-app-scaler -n http-add-on-example
+$ oc describe hpa keda-hpa-sample-app-scaler -n http-add-on-example
 ----
 +
-.Example output
+.Expected output
 [source,terminal]
 ----
-Name:                                      keda-sample-app-scaler
-Namespace:                                 http-add-on-example
-Labels:                                    <none>
-Annotations:                               <none>
-CreationTimestamp:                         <timestamp>
-Reference:                                 Deployment/sample-http-app
-Metrics:                                   (current / target)
-  http (Custom):                           25m / 10
-Min replicas:                              0
-Max replicas:                              5
-Deployment pods:                           3 currently running / 5 desired
-Events:
-  Type    Reason             Age   From                   Message
-  ----    ------             ----  ----                   -------
-  Normal  SuccessfulRescale  1m    horizontal-pod-autoscaler  New size: 3; reason: Custom metric http above target
+Name:                                                  keda-hpa-sample-app-scaler
+Namespace:                                             http-add-on-example
+Labels:                                                app.kubernetes.io/managed-by=keda-operator
+                                                       app.kubernetes.io/name=keda-hpa-sample-app-scaler
+                                                       app.kubernetes.io/part-of=sample-app-scaler
+                                                       app.kubernetes.io/version=2.19.0
+                                                       scaledobject.keda.sh/name=sample-app-scaler
+Annotations:                                           <none>
+CreationTimestamp:                                     Mon, 28 Sep 2026 17:11:10 -0400
+Reference:                                             Deployment/sample-http-app
+Metrics:                                               ( current / target )
+  resource cpu on pods  (as a percentage of request):  1% (1m) / 80%
+Min replicas:                                          1
+Max replicas:                                          5
+Deployment pods:                                       1 current / 1 desired
+Conditions:
+  Type            Status  Reason              Message
+  ----            ------  ------              -------
+  AbleToScale     True    ReadyForNewScale    recommended size matches current size
+  ScalingActive   True    ValidMetricFound    the HPA was able to successfully calculate a replica count from cpu resource utilization (percentage of request)
+  ScalingLimited  False   DesiredWithinRange  the desired count is within the acceptable range
 ----
 
-.. Check the ScaledObject status:
+.. Check the scaled object status:
 +
 [source,terminal]
 ----
@@ -385,7 +501,7 @@ $ oc delete pod load-generator -n http-add-on-example
 $ oc get deployment sample-http-app -n http-add-on-example -w
 ----
 +
-.Expected behavior
+.Expected output
 [source,terminal]
 ----
 NAME               READY   UP-TO-DATE   AVAILABLE   AGE
@@ -402,6 +518,12 @@ $ oc get pods -n http-add-on-example | grep sample-http-app
 ----
 +
 Output should be empty (no pods running).
++
+.Expected output
+[source,terminal]
+----
+sample-http-app-864f476f45-6pfzx   1/1     Running   0          44m
+----
 
 .. Generate traffic again to verify that the application wakes up:
 +
@@ -409,6 +531,10 @@ Output should be empty (no pods running).
 ----
 $ oc apply -f load-gen-pod.yaml
 ----
++
+What I saw: "error: error parsing load-gen-pod.yaml: error converting YAML to JSON: yaml: control characters are not allowed"
++
+Could create a new object with the same code in a new yaml.
 
 .. Confirm that replicas scale back up within a few seconds:
 +

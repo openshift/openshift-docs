@@ -13,9 +13,11 @@ After installing the HTTP Add-on, you configure per-application autoscaling by c
 
 * The KEDA HTTP Add-on is installed and the interceptor and scaler pods are running in the `openshift-keda` namespace.
 
-* You have an HTTP-based application deployed in {product-title} as a Deployment.
+* You have an HTTP-based application deployed in {product-title} as a deployment.
 
-* Your application is exposed through a Kubernetes Service. The Service name and port are known (typically port 8080 for HTTP).
+* Your application is exposed through a Kubernetes Service. The service name and port are known, typically port 8080 for HTTP.
+
+* Your application is exposed externally through a route. The route initially points to your application service. In this procedure, you will update the route to send traffic to the interceptor service instead of directly to your application.
 
 * You have permissions to create `ScaledObject` and `InterceptorRoute` custom resources in your application's namespace.
 
@@ -38,6 +40,7 @@ spec:
   target:
     service: sample-app
     port: 8080
+    protocol: https
   rules:
     - hosts:
         - sample-app.example.com
@@ -51,11 +54,12 @@ spec:
 Modify the following fields for your application:
 
 * `metadata.name`: Specifies a descriptive name for this interceptor route, for example `web-app-interceptor`.
-* `metadata.namespace`: Specifies the namespace where your application is deployed
+* `metadata.namespace`: Specifies the namespace where your application is deployed.
 * `spec.rules.hosts`: Specifies the hostname(s) where traffic arrives for your application from your route or ingress.
-* `spec.target.name`: Specifies the name of your application's Kubernetes Service
-* `spec.target.port`: Specifies the port your application listens on (typically 8080)
-* `spec.scalingMetric. Specifies the default metric thresholds. This value is typically overridden by the `ScaledObject` trigger configuration. Specify either `rps` or `concurrency`:
+* `spec.target.service`: Specifies the name of your application's Kubernetes Service.
+* `spec.target.port`: Specifies the port your application listens on, typically `8080`.
+* `spec.target.protocol`: Specifies the protocol to use when communicating with the target Service. Valid values are http or https.
+* `spec.scalingMetric`. Specifies the default metric thresholds. Specify either requests per second (`rps`) or concurrent request count (`concurrency`):
 ** `rps`. The rps metric measures incoming requests averaged over a measurement window. The baseline RPS value is used as the scaling reference.
 ** `concurrency`. The concurrency metric measures in-flight HTTP requests. The baseline concurrency value is used as the scaling reference.
 
@@ -74,6 +78,13 @@ $ oc get interceptorroute -n <namespace_name>
 ----
 +
 Replace `<namespace_name>` with a name for your namespace.
++
+.Example output
+[source,terminal]
+----
+NAME         TARGETSERVICE   READY   AGE
+sample-app   sample-app      True    48s
+----
 
 . Create a `ScaledObject` custom resource to configure autoscaling for your deployment.
 
@@ -84,36 +95,44 @@ Replace `<namespace_name>` with a name for your namespace.
 apiVersion: keda.sh/v1alpha1
 kind: ScaledObject
 metadata:
-  name: my-app-scaler
-  namespace: default
+  name: sample-app
+  namespace: my-namespace
 spec:
   scaleTargetRef:
-    name: my-app-deployment
-  minReplicaCount: 0
-  maxReplicaCount: 10
+    name: sample-app 
+  minReplicaCount: 0 
+  maxReplicaCount: 10 
+  cooldownPeriod: 300 
   triggers:
-  - type: http
-    metadata:
-      namespace: default
-      name: my-app-interceptor
-      scalingMetric: "rps"
-      activationThreshold: "5"
-      threshold: "100"
-      cooldownPeriod: "300"
+    - type: external-push 
+      metadata:
+        name: web-app-routes
+        namespace: my-apps
+        scalerAddress: keda-add-ons-http-external-scaler.openshift-keda.svc:9090 
+        interceptorRoute: sample-app
+        scalingMetric: "rps"
+        activationThreshold: "10"
+        threshold: "100"
+        cooldownPeriod: "300"
 ----
 +
 Modify the following fields for your application:
 
-* `metadata.name`: A name for this scaling configuration (e.g., "my-app-scaler")
-* `spec.scaleTargetRef.name`: The name of your Deployment to be scaled
-* `spec.minReplicaCount`: Minimum replicas (use 0 to enable scale-to-zero)
-* `spec.maxReplicaCount`: Maximum replicas your application should scale to
-* `triggers[0].metadata.name`: Must match the `InterceptorRoute` name from step 1
-* `triggers[0].metadata.namespace`: Must match the `InterceptorRoute` namespace
-* `triggers[0].metadata.scalingMetric`: "rps" or "concurrency" (must match what you configured in InterceptorRoute)
-* `triggers[0].metadata.activationThreshold`: Traffic threshold to activate from zero replicas
-* `triggers[0].metadata.threshold`: Traffic threshold for normal scaling
-* `triggers[0].metadata.cooldownPeriod`: Seconds to wait before scaling to zero after traffic drops
+* `metadata.name`: Specifies a descriptive name for this scaling configuration.
+* `metadata.namespace`: Specifies the namespace where your application is deployed.
+* `spec.minReplicaCount`: Minimum replicas (use 0 to enable scale-to-zero).
+* `spec.maxReplicaCount`: Maximum replicas your application should scale to.
+* `spec.triggers.type`: Specifies the external push trigger that receives metrics from the HTTP add-on scaler.
+* `spec.triggers.metadata.name`: Specifies the name of the `InterceptorRoute` custom resource to use for scaling metrics.
+* `spec.triggers.metadata.namespace`: Specifies the namespace containing the `InterceptorRoute` custom resource being referenced.
+* `spec.triggers.metadata.scalerAddress`: Specifies the HTTP add-on scaler service in the `openshift-keda` namespace.
+* `spec.triggers.metadata.interceptorRoute`: Specifies the InterceptorRoute name in the same namespace as the scaled object.
+* `spec.trigger.metadata.scalingMetric`: Specifies the metric to use for scaling decisions. Use either `rps` or `concurrency`:
+** `rps`. The rps metric measures the rate of incoming HTTP requests averaged over a measurement window. Use this option with applications where incoming request rate directly matches needed capacity.
+** `concurrency`. The concurrency metric measures the number of in-flight HTTP requests being processed simultaneously. Use this option with applications where request duration is long or variable, such as file uploads, complex processing, or streaming responses.
+* `spec.triggers.metadata.activationThreshold`: Traffic threshold to activate from zero replicas
+* `spec.triggers.metadata.threshold`: Traffic threshold for normal scaling
+* `spec.triggers.metadata.cooldownPeriod`: Seconds to wait before scaling to zero after traffic drops
 
 .. Apply the scaled object:
 +
@@ -126,7 +145,16 @@ $ oc apply -f scaled-object.yaml
 +
 [source,terminal]
 ----
-$ oc get scaledobject -n default
+$ oc get scaledobject -n <namespace_name>
+----
++
+Replace `<namespace_name>` with a name for your namespace.
++
+.Example output
+[source,terminal]
+----
+NAME         SCALETARGETKIND   SCALETARGETNAME   MIN   MAX   READY   ACTIVE    FALLBACK   PAUSED   TRIGGERS   AUTHENTICATIONS   AGE
+sample-app                     sample-app        0     10    False   Unknown   False      False                                 10m
 ----
 
 . Update your route or ingress to point traffic through the HTTP Add-on interceptor.
@@ -141,7 +169,9 @@ $ oc get svc -n openshift-keda | grep interceptor
 .Example output
 [source,terminal]
 ----
-http-add-on-interceptor       ClusterIP   10.0.1.100      <none>        80/TCP
+keda-add-ons-http-interceptor-admin     ClusterIP   172.30.193.173   <none>        9090/TCP            47m
+keda-add-ons-http-interceptor-metrics   ClusterIP   172.30.54.183    <none>        2223/TCP            47m
+keda-add-ons-http-interceptor-proxy     ClusterIP   172.30.157.1     <none>        8080/TCP,8443/TCP   47m
 ----
 
 .. Update your route or ingress to route traffic to the interceptor service instead of directly to your application. For a route, this means changing the `spec.to.name` to point to the interceptor service.
@@ -152,7 +182,7 @@ apiVersion: route.openshift.io/v1
 kind: Route
 metadata:
   name: my-app-route
-  namespace: default
+  namespace: my-namespace
 spec:
   host: my-app.example.com
   to:
