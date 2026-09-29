@@ -4,11 +4,18 @@
 
 :_mod-docs-content-type: REFERENCE
 [id="configuring-gangscheduling_{context}"]
-= Configuring gang scheduling
+= Gang scheduling configuration
 
 [role="_abstract"]
-As a cluster administrator, you can configure gang scheduling by modifying the `gangScheduling` spec in the `Kueue` custom resource (CR).
+The `spec.config.gangScheduling` fields in the `Kueue` custom resource (CR) control admission, readiness timeouts, and retry behavior for gang-scheduled workloads.
 
+The following example uses parallel admission and a 10-minute start timeout:
+
+// Example sources:
+// Timeout of 600 seconds:
+// https://github.com/openshift/kueue-operator/blob/f940304dae5befd94ffdf0a9a7f9a34aa4e9fd6f/pkg/configmap/configmap_test.go#L273-L335
+// BatchJob integration with the ByWorkload policy:
+// https://github.com/openshift/kueue-operator/blob/f940304dae5befd94ffdf0a9a7f9a34aa4e9fd6f/test/e2e/e2e_gangscheduling_test.go#L264-L430
 .Example `Kueue` CR with gang scheduling configured
 [source,yaml]
 ----
@@ -19,17 +26,111 @@ metadata:
   labels:
     app.kubernetes.io/managed-by: kustomize
     app.kubernetes.io/name: kueue-operator
-  namespace: openshift-kueue-operator
 spec:
   config:
+    integrations:
+      frameworks:
+      - BatchJob
     gangScheduling:
       policy: ByWorkload
       byWorkload:
         admission: Parallel
-# ...
+        timeoutSeconds: 600
 ----
 
-`spec.config.gangScheduling.policy`:: You can set the `policy` value to enable or disable gang scheduling. The possible values are `ByWorkload`, `None`, or empty (`""`). 
-When the `policy` value is set to `ByWorkload`, each job is processed and considered for admission as a single unit. If the job does not become ready within the specified time, the entire job is evicted and retried at a later time. When the `policy` value is set to `None`, gang scheduling is disabled. When the `policy` value is empty or set to `""`, the {kueue-name} Operator determines settings for gang scheduling. Currently, gang scheduling is disabled by default.
+The `policy` field accepts the following values:
 
-`spec.config.gangScheduling.byWorkload.admission`:: If the `policy` value is set to `ByWorkload`, you must configure job admission settings. The possible values for the `admission` spec are `Parallel`, `Sequential`, or empty (`""`). When the `admission` value is set to `Parallel`, pods from any job can be admitted at any time. This can cause a deadlock, where jobs are in contention for cluster capacity. When a deadlock occurs, the successful scheduling of pods from another job can prevent the scheduling of pods from the current job. When the `admission` value is set to `Sequential`, only pods from the currently processing job are admitted. After all of the pods from the current job have been admitted and are ready, {kueue-name} processes the next job. Sequential processing can slow down admission when the cluster has sufficient capacity for multiple jobs, but provides a higher likelihood that all of the pods for a job are scheduled together successfully. When the `admission` value is empty or set to `""`, the {kueue-name} Operator determines job admission settings. Currently, the `admission` value is set to `Parallel` by default.
+.`spec.config.gangScheduling.policy` values
+[cols="1,3",options="header"]
+|===
+|Value
+|Behavior
+
+|`ByWorkload`
+|Uses the `byWorkload` settings for readiness timeouts and retries. Include the `byWorkload` field.
+
+|`ByWorkloadDefaults`
+|Uses the default workload readiness settings. Omit the `byWorkload` field.
+
+|`None`
+|Sets a one-year readiness timeout and uses parallel admission. Workloads can still time out. Omit the `byWorkload` field.
+
+|Empty string (`""`)
+|Uses the policy selected by the Operator. Omit the `byWorkload` field.
+|===
+
+The `admission` field accepts the following values. Set this field when you use the `ByWorkload` policy.
+
+.`spec.config.gangScheduling.byWorkload.admission` values
+[cols="1,3",options="header"]
+|===
+|Value
+|Behavior
+
+|`Parallel`
+|Admits workloads without waiting for pods in admitted workloads to reach a ready state. Quota and other admission requirements still apply. Workloads can compete for cluster capacity and cause a deadlock.
+
+|`Sequential`
+|Blocks new admissions across all cluster queues while pods in an admitted workload are not ready. Blocking admissions reduces competition for resources while pods start. Sequential admission can delay workloads even when the cluster has capacity to run them.
+
+|Empty string (`""`)
+|Uses the admission mode selected by the Operator. The current default is `Parallel`.
+|===
+
+// REVIEW OSDOCS-22178 (SME): Confirm the default readiness timeout for the target release.
+// OCPSTRAT-3301 and OCPKUEUE-698 request a backward-compatible 5-minute default.
+// Operator f940304dae5befd94ffdf0a9a7f9a34aa4e9fd6f (pkg/apis/kueueoperator/v1/types.go)
+// and operand 4ea0c9f46ee5d806c15086747bbc72169842d3c2 (apis/config/v1beta2/defaults.go) specify 30 minutes.
+The `byWorkload` field supports the following timeout fields:
+
+.`spec.config.gangScheduling.byWorkload` timeout fields
+[cols="2,3,2,2",options="header"]
+|===
+|Field
+|Description
+|Valid values
+|If omitted
+
+|`timeoutSeconds`
+|Sets the start timeout for an admitted workload to reach the `PodsReady=True` condition. Allow enough time for image pulls, initialization, and resource provisioning.
+|`30`–`86400` seconds
+|Uses the default readiness timeout.
+
+|`recoveryTimeoutSeconds`
+|Sets the recovery timeout for a workload to return to the `PodsReady=True` condition after one or more pods are no longer ready. A value of `0` disables recovery timeout checks.
+|`0`–`86400` seconds
+|Uses the value of `timeoutSeconds`.
+|===
+
+The `requeuingStrategy` field supports the following fields. If you include `requeuingStrategy`, specify at least one field. An empty `requeuingStrategy: {}` value is invalid.
+
+.`spec.config.gangScheduling.byWorkload.requeuingStrategy` fields
+[cols="2,3,2,2",options="header"]
+|===
+|Field
+|Description
+|Valid values
+|If omitted
+
+|`timeReference`
+|Selects which timestamp {kueue-name} uses to order a workload in the queue after a readiness timeout.
+|`Eviction` uses the eviction time. `Creation` uses the workload creation time.
+|Uses `Eviction`.
+
+|`retryLimit`
+|Limits repeated admission attempts after readiness timeouts. After a workload uses all retries, the next timeout deactivates the workload. The `spec.active` field of the `Workload` object changes to `false`.
+|`1`–`200`
+|Sets no retry limit.
+
+|`backoffBaseSeconds`
+|Sets the base delay before a workload can be admitted again. The delay increases exponentially with the retry count.
+|`30`–`3600` seconds
+|Uses `60` seconds.
+
+|`backoffMaxSeconds`
+|Sets the maximum delay before a workload can be admitted again. If you set both delay fields, `backoffBaseSeconds` must not exceed `backoffMaxSeconds`.
+|`30`–`7200` seconds
+|Uses `3600` seconds.
+|===
+
+After the configured delay, the workload must still meet quota and other admission requirements before {kueue-name} can admit it again.
