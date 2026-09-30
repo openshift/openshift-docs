@@ -16,7 +16,7 @@ The two are joinable on `source_assembly`: find an assembly worth mapping in the
 
 Column meanings:
 
-- `total_modules` / `uncovered` — modules the assembly includes, and how many no job map has picked up.
+- `total_modules` / `uncovered` — modules the assembly includes, and how many no job map reachable from the navigation map has picked up. A module sitting in a job map that no category includes counts as uncovered; see `Job maps not reachable from the navigation map` below.
 - `coverage` — the share already in a job map. `0%` means the assembly has not been touched at all.
 - `all_branches` — `yes` if every uncovered module in the row is also a gap on every branch, so mapping it on `main` backports verbatim. `partial` means some modules are newer than the oldest branch. `no` means none of them are shared.
 - `gap_on` / `gap_branch_count` — which branches a module is missing from, and how many.
@@ -26,26 +26,26 @@ Column meanings:
 | Branch | Assemblies | Live modules | In job maps | Gap | Coverage |
 | --- | ---: | ---: | ---: | ---: | ---: |
 | main | 1815 | 7146 | 4137 | 3446 | 52% |
-| 4.20 | 1749 | 6773 | 3928 | 3275 | 52% |
-| 4.21 | 1760 | 6799 | 4014 | 3223 | 53% |
-| 4.22 | 1801 | 7139 | 4133 | 3437 | 52% |
-| 5.0 | 1760 | 6770 | 4136 | 3287 | 51% |
+| 4.20 | 1749 | 6773 | 3980 | 3235 | 52% |
+| 4.21 | 1760 | 6799 | 4200 | 3082 | 55% |
+| 4.22 | 1801 | 7139 | 4329 | 3295 | 54% |
+| 5.0 | 1760 | 6776 | 4332 | 3177 | 53% |
 
 ## Where the work splits
 
-- **2861 modules are a gap on every branch** (83% of the main gap). Map these on `main` and backport verbatim.
-  - `gap_analysis_main.csv`, rows where `all_branches` is `yes`: 597 assemblies whose entire gap is shared.
+- **2745 modules are a gap on every branch** (80% of the main gap). Map these on `main` and backport verbatim.
+  - `gap_analysis_main.csv`, rows where `all_branches` is `yes`: 557 assemblies whose entire gap is shared.
 - Gaps unique to one branch, which need branch-specific work:
 
   Counts below are distinct modules. The `uncovered` column in the CSVs sums higher, because a module included by two assemblies is a row in each.
 
 | Branch | Unique gap modules | Report |
 | --- | ---: | --- |
-| main | 11 | gap_analysis_main.csv (filter `all_branches` = `no`) |
-| 4.20 | 184 | gap_analysis_4.20_unique.csv |
-| 4.21 | 39 | gap_analysis_4.21_unique.csv |
+| main | 55 | gap_analysis_main.csv (filter `all_branches` = `no`) |
+| 4.20 | 185 | gap_analysis_4.20_unique.csv |
+| 4.21 | 40 | gap_analysis_4.21_unique.csv |
 | 4.22 | 21 | gap_analysis_4.22_unique.csv |
-| 5.0 | 2 | gap_analysis_5.0_unique.csv |
+| 5.0 | 8 | gap_analysis_5.0_unique.csv |
 
 ## Gap by documentation area (main)
 
@@ -105,16 +105,155 @@ Job maps that include a module which does not exist on that branch. Asciidoctor 
 - `modules/oc-adm-upgrade-recommend-custom-alert.adoc`
 - `modules/oc-adm-upgrade-recommend.adoc`
 
-### 4.21 (8)
+## Job maps not reachable from the navigation map
 
-- `modules/about-self-service-tsr.adoc`
-- `modules/hcp-backup-etcd-snapshot-about.adoc`
-- `modules/hcp-backup-etcd-snapshot-backup.adoc`
-- `modules/hcp-backup-etcd-snapshot-config.adoc`
-- `modules/hcp-backup-etcd-snapshot-restore.adoc`
-- `modules/oc-adm-upgrade-recommend-accept.adoc`
-- `modules/oc-adm-upgrade-recommend-custom-alert.adoc`
-- `modules/oc-adm-upgrade-recommend.adoc`
+The gap is measured against what the navigation map reaches, so a job map that no category map includes does not count as coverage. Its modules are reported as uncovered even though the mapping work is already done. Wiring one of these in, or deleting it as superseded, is cheaper than mapping its modules from scratch, so check this list before starting on a directory in the table above.
+
+`Gap modules` is how many of the map's modules the report currently counts as uncovered, which is what wiring it in would close. A map with `0` is fully redundant with what the navigation already reaches.
+
+On `main`: 96 maps, holding 108 of the 3446 gap modules.
+
+| Map | Modules | Gap modules | Broken includes |
+| --- | ---: | ---: | ---: |
+| `maps/ocp-jobs/configure-topology-aware-lifecycle-manager.adoc` | 13 | 13 | 0 |
+| `maps/ocp-jobs/update-cluster-disconnected-osus.adoc` | 20 | 11 | 1 |
+| `maps/ocp-jobs/configure-ingress-node-firewall.adoc` | 10 | 10 | 0 |
+| `maps/ocp-jobs/optimize-collection-performance-and-resource-usage.adoc` | 13 | 7 | 0 |
+| `maps/ocp-jobs/configure-multi-tenant-namespace-isolation.adoc` | 8 | 6 | 0 |
+| `maps/ocp-jobs/manage-kernel-modules-across-cluster-nodes-configure-module-upgrade-ordering.adoc` | 5 | 5 | 0 |
+| `maps/ocp-jobs/manage-kernel-modules-across-cluster-nodes-run-preflight-validation-before-cluster-upgrades.adoc` | 5 | 5 | 0 |
+| `maps/ocp-jobs/sign-kernel-modules-for-secure-boot.adoc` | 5 | 5 | 0 |
+| `maps/ocp-jobs/understand-ovn-kubernetes-network-plugin.adoc` | 6 | 5 | 0 |
+| `maps/ocp-jobs/analyze-dns-resolution-patterns-and-errors.adoc` | 5 | 4 | 0 |
+| `maps/ocp-jobs/configure-dpu-offloading.adoc` | 20 | 4 | 0 |
+| `maps/ocp-jobs/configure-registry-allowlists-and-blocks.adoc` | 5 | 4 | 0 |
+| `maps/ocp-jobs/enable-remote-health-monitoring.adoc` | 4 | 4 | 0 |
+| `maps/ocp-jobs/track-traffic-on-sr-iov-and-secondary-network-interfaces.adoc` | 5 | 4 | 0 |
+| `maps/ocp-jobs/configure-alternate-or-mirrored-registry.adoc` | 6 | 3 | 0 |
+| `maps/ocp-jobs/configure-short-name-search-registries.adoc` | 3 | 3 | 0 |
+| `maps/ocp-jobs/plan-mirroring-for-sample-content.adoc` | 5 | 3 | 0 |
+| `maps/ocp-jobs/understand-traffic-management-entering-and-leaving-the-cluster.adoc` | 3 | 3 | 0 |
+| `maps/ocp-jobs/configure-trust-and-mirroring.adoc` | 7 | 2 | 0 |
+| `maps/ocp-jobs/scale-components-based-on-cluster-size.adoc` | 7 | 2 | 0 |
+| `maps/ocp-jobs/set-up-secure-build-and-push-credentials.adoc` | 4 | 2 | 0 |
+| `maps/ocp-jobs/understand-image-cr-parameters.adoc` | 3 | 2 | 0 |
+| `maps/ocp-jobs/understand-network-observability-architecture.adoc` | 3 | 2 | 0 |
+| `maps/ocp-jobs/understand-network-observability-netobserv.adoc` | 4 | 2 | 0 |
+| `maps/ocp-jobs/enable-ip-forwarding.adoc` | 3 | 1 | 0 |
+| `maps/ocp-jobs/evaluate-network-observability-prerequisites-and-requirements.adoc` | 4 | 1 | 0 |
+| `maps/ocp-jobs/evaluate-prerequisites-and-cluster-requirements.adoc` | 4 | 1 | 0 |
+| `maps/ocp-jobs/understand-core-network-components.adoc` | 1 | 1 | 0 |
+| `maps/ocp-jobs/understand-mco-rollout-behavior.adoc` | 1 | 1 | 0 |
+| `maps/ocp-jobs/understand-networking-architecture.adoc` | 2 | 1 | 0 |
+| `maps/ocp-jobs/understand-traffic-flow-among-networking-components.adoc` | 3 | 1 | 0 |
+| `maps/ocp-jobs/understand-traffic-management-within-the-cluster.adoc` | 3 | 1 | 0 |
+| `maps/ocp-jobs/upgrade-network-observability-operator-version.adoc` | 3 | 1 | 0 |
+| `maps/ocp-jobs/use-wildcard-and-glob-patterns-to-sign-kernel-module-files.adoc` | 1 | 1 | 0 |
+| `maps/ocp-jobs/add-node-without-registry.adoc` | 0 | 0 | 0 |
+| `maps/ocp-jobs/allocate-huge-pages-of-specific-sizes.adoc` | 5 | 0 | 0 |
+| `maps/ocp-jobs/apply-node-tuning-operator-profiles.adoc` | 12 | 0 | 0 |
+| `maps/ocp-jobs/apply-worker-latency-profiles.adoc` | 4 | 0 | 0 |
+| `maps/ocp-jobs/assess-update-impact-on-environment.adoc` | 8 | 0 | 0 |
+| `maps/ocp-jobs/cidr-planning-requirements.adoc` | 6 | 0 | 0 |
+| `maps/ocp-jobs/cluster-latency-requirements-for-etcd.adoc` | 1 | 0 | 0 |
+| `maps/ocp-jobs/configure-cluster-use-registry.adoc` | 4 | 0 | 1 |
+| `maps/ocp-jobs/configure-low-latency-tuning.adoc` | 18 | 0 | 0 |
+| `maps/ocp-jobs/configure-management-state-and-imports.adoc` | 6 | 0 | 0 |
+| `maps/ocp-jobs/configure-prometheus-metrics-collection.adoc` | 11 | 0 | 0 |
+| `maps/ocp-jobs/configure-rhacm-for-telco-deployments.adoc` | 12 | 0 | 0 |
+| `maps/ocp-jobs/configure-tls-and-security.adoc` | 13 | 0 | 0 |
+| `maps/ocp-jobs/convert-connected-to-disconnected.adoc` | 10 | 0 | 1 |
+| `maps/ocp-jobs/create-mirror-registry.adoc` | 17 | 0 | 1 |
+| `maps/ocp-jobs/deployment-best-practices-for-spanned-clusters.adoc` | 2 | 0 | 0 |
+| `maps/ocp-jobs/disable-etcd-encryption.adoc` | 2 | 0 | 0 |
+| `maps/ocp-jobs/enable-cpu-manager-and-topology-manager.adoc` | 6 | 0 | 0 |
+| `maps/ocp-jobs/enable-etcd-encryption.adoc` | 3 | 0 | 0 |
+| `maps/ocp-jobs/enable-workload-partitioning.adoc` | 4 | 0 | 0 |
+| `maps/ocp-jobs/etcd-requirements-for-spanned-clusters.adoc` | 1 | 0 | 0 |
+| `maps/ocp-jobs/etcd-storage-best-practices.adoc` | 1 | 0 | 0 |
+| `maps/ocp-jobs/explore-detailed-flow-records-in-traffic-flows-table.adoc` | 3 | 0 | 0 |
+| `maps/ocp-jobs/export-flow-data-to-ipfix.adoc` | 1 | 0 | 0 |
+| `maps/ocp-jobs/export-flow-data-to-kafka.adoc` | 2 | 0 | 0 |
+| `maps/ocp-jobs/export-flow-data-to-opentelemetry.adoc` | 1 | 0 | 0 |
+| `maps/ocp-jobs/follow-ibm-z-platform-specific-recommendations.adoc` | 14 | 0 | 0 |
+| `maps/ocp-jobs/iaas-and-cloud-provider-considerations.adoc` | 1 | 0 | 0 |
+| `maps/ocp-jobs/implement-network-policies-for-observability-components.adoc` | 2 | 0 | 0 |
+| `maps/ocp-jobs/install-and-configure-numa-resources-operator.adoc` | 10 | 0 | 0 |
+| `maps/ocp-jobs/install-cluster-disconnected-environment.adoc` | 12 | 0 | 1 |
+| `maps/ocp-jobs/install-cluster-without-registry.adoc` | 2 | 0 | 1 |
+| `maps/ocp-jobs/install-disconnected-environments.adoc` | 1 | 0 | 1 |
+| `maps/ocp-jobs/integrated-registry-capabilities.adoc` | 3 | 0 | 0 |
+| `maps/ocp-jobs/manage-olm-disconnected.adoc` | 12 | 0 | 1 |
+| `maps/ocp-jobs/manage-role-based-access-control-for-flow-data.adoc` | 5 | 0 | 0 |
+| `maps/ocp-jobs/migrate-oc-mirror-v1-v2.adoc` | 3 | 0 | 1 |
+| `maps/ocp-jobs/mirror-images-oc-adm.adoc` | 12 | 0 | 1 |
+| `maps/ocp-jobs/mirror-images-oc-mirror-v1.adoc` | 22 | 0 | 15 |
+| `maps/ocp-jobs/mirror-images-oc-mirror-v2.adoc` | 34 | 0 | 1 |
+| `maps/ocp-jobs/monitor-bytes-transferred-and-connection-counts.adoc` | 4 | 0 | 0 |
+| `maps/ocp-jobs/mount-persistent-storage-volumes-to-pods-and-containers.adoc` | 3 | 0 | 0 |
+| `maps/ocp-jobs/network-observability-integration.adoc` | 4 | 0 | 0 |
+| `maps/ocp-jobs/network-requirements-for-spanned-clusters.adoc` | 3 | 0 | 0 |
+| `maps/ocp-jobs/networking-operators-overview.adoc` | 3 | 0 | 0 |
+| `maps/ocp-jobs/reduce-nic-queues-for-low-core-nodes.adoc` | 4 | 0 | 0 |
+| `maps/ocp-jobs/reference-performance-profile-templates.adoc` | 4 | 0 | 0 |
+| `maps/ocp-jobs/registry-terminology-reference.adoc` | 1 | 0 | 0 |
+| `maps/ocp-jobs/schedule-and-coordinate-cluster-updates.adoc` | 8 | 0 | 0 |
+| `maps/ocp-jobs/secure-flow-data-with-tls-encryption.adoc` | 4 | 0 | 0 |
+| `maps/ocp-jobs/site-recommendations.adoc` | 1 | 0 | 0 |
+| `maps/ocp-jobs/storage-requirements-for-spanned-clusters.adoc` | 2 | 0 | 0 |
+| `maps/ocp-jobs/understand-how-cluster-updates-work.adoc` | 6 | 0 | 0 |
+| `maps/ocp-jobs/understand-huge-pages-fundamentals.adoc` | 4 | 0 | 0 |
+| `maps/ocp-jobs/understand-multi-network-architecture.adoc` | 3 | 0 | 0 |
+| `maps/ocp-jobs/understand-network-policies-and-administrative-network-policies.adoc` | 7 | 0 | 0 |
+| `maps/ocp-jobs/understand-the-openshift-image-registry.adoc` | 1 | 0 | 0 |
+| `maps/ocp-jobs/update-cluster-disconnected-without-osus.adoc` | 9 | 0 | 1 |
+| `maps/ocp-jobs/update-cluster-without-registry.adoc` | 0 | 0 | 0 |
+| `maps/ocp-jobs/validate-hardware-for-etcd.adoc` | 2 | 0 | 0 |
+| `maps/ocp-jobs/view-pod-to-pod-communication-patterns-in-topology-view.adoc` | 3 | 0 | 0 |
+| `maps/ocp-jobs/workload-placement-for-spanned-clusters.adoc` | 1 | 0 | 0 |
+
+The broken includes above are not in the section before this one, because that section only sees maps the navigation reaches. Each one fails the build the moment the map is wired in.
+
+- `maps/ocp-jobs/configure-cluster-use-registry.adoc`
+  - `modules/configure-cluster-use-registry-con.adoc`
+- `maps/ocp-jobs/convert-connected-to-disconnected.adoc`
+  - `modules/convert-connected-to-disconnected-con.adoc`
+- `maps/ocp-jobs/create-mirror-registry.adoc`
+  - `modules/create-mirror-registry-con.adoc`
+- `maps/ocp-jobs/install-cluster-disconnected-environment.adoc`
+  - `modules/install-cluster-disconnected-environment-con.adoc`
+- `maps/ocp-jobs/install-cluster-without-registry.adoc`
+  - `modules/install-cluster-without-registry-con.adoc`
+- `maps/ocp-jobs/install-disconnected-environments.adoc`
+  - `modules/.adoc`
+- `maps/ocp-jobs/manage-olm-disconnected.adoc`
+  - `modules/manage-olm-disconnected-con.adoc`
+- `maps/ocp-jobs/migrate-oc-mirror-v1-v2.adoc`
+  - `modules/migrate-oc-mirror-v1-v2-con.adoc`
+- `maps/ocp-jobs/mirror-images-oc-adm.adoc`
+  - `modules/mirror-images-oc-adm-con.adoc`
+- `maps/ocp-jobs/mirror-images-oc-mirror-v1.adoc`
+  - `modules/mirror-images-oc-mirror-v1-con.adoc`
+  - `modules/oc-mirror-about.adoc`
+  - `modules/oc-mirror-command-reference.adoc`
+  - `modules/oc-mirror-creating-image-set-config.adoc`
+  - `modules/oc-mirror-disk-to-mirror.adoc`
+  - `modules/oc-mirror-dry-run.adoc`
+  - `modules/oc-mirror-image-set-config-examples.adoc`
+  - `modules/oc-mirror-imageset-config-params.adoc`
+  - `modules/oc-mirror-mirror-to-disk.adoc`
+  - `modules/oc-mirror-mirror-to-mirror.adoc`
+  - `modules/oc-mirror-oci-format.adoc`
+  - `modules/oc-mirror-support.adoc`
+  - `modules/oc-mirror-updating-cluster-manifests.adoc`
+  - `modules/oc-mirror-updating-registry-about.adoc`
+  - `modules/oc-mirror-updating-use-cases.adoc`
+- `maps/ocp-jobs/mirror-images-oc-mirror-v2.adoc`
+  - `modules/mirror-images-oc-mirror-v2-con.adoc`
+- `maps/ocp-jobs/update-cluster-disconnected-osus.adoc`
+  - `modules/update-cluster-disconnected-osus-con.adoc`
+- `maps/ocp-jobs/update-cluster-disconnected-without-osus.adoc`
+  - `modules/update-cluster-disconnected-without-osus-con.adoc`
 
 ## Modules in job maps but not in the live docs
 
@@ -123,10 +262,10 @@ Expected to be non-zero: job maps introduce their own intro and concept modules.
 | Branch | Modules |
 | --- | ---: |
 | main | 437 |
-| 4.20 | 430 |
-| 4.21 | 438 |
-| 4.22 | 431 |
-| 5.0 | 653 |
+| 4.20 | 442 |
+| 4.21 | 483 |
+| 4.22 | 485 |
+| 5.0 | 733 |
 
 ## Regenerating
 
