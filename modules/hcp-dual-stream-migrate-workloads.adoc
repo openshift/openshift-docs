@@ -1,0 +1,159 @@
+:_mod-docs-content-type: PROCEDURE
+[id="hcp-dual-stream-migrate-workloads_{context}"]
+= Migrating workloads between {op-system} major versions in {hcp}
+
+[role="_abstract"]
+You can migrate workloads from a {op-system-base} 9 `NodePool` resource to a {op-system-base} 10 `NodePool` resource within the same `HostedCluster` resource by using the side-by-side `NodePool` resource strategy. 
+
+This approach runs both `NodePool` resources simultaneously, drains the old `NodePool` resource to move workloads, and then removes the old `NodePool` resource.
+
+This procedure covers the `Replace` upgrade strategy, which is the default for cloud-based `NodePool` resources. For `NodePool` resources that use the `InPlace` upgrade strategy, typically on bare metal or on-premise deployments, draining is managed by an in-place upgrade tool that applies drain-and-reboot to each node. 
+
+In-place rollback from {op-system-base} 10 to {op-system-base} 9 on a `NodePool` resource is not supported and is permanently blocked by API validation. If you need to return workloads to {op-system-base} 9 after they are running on {op-system-base} 10 nodes, create a `NodePool` resource with `spec.osImageStream.name: rhel-9` and follow the same side-by-side migration procedure.
+
+[IMPORTANT]
+====
+Workloads that require the `runc` container runtime must remain on {op-system-base} 9 `NodePool` resources and cannot be migrated to {op-system-base} 10 `NodePool` resources. {op-system-base} 10 does not include `runc`. Migrating workloads that depend on `runc` to a {op-system-base} 10 `NodePool` resource causes the `ValidMachineConfig=False` condition to be set on the NodePool.
+====
+
+.Prerequisites
+
+* Your `HostedCluster` resource is running {product-title} 5.0 or later.
+* No `ContainerRuntimeConfig` resources set `defaultRuntime: runc` for workloads you intend to migrate.
+* The cluster has enough capacity to run both the existing {op-system-base} 9 `NodePool` resource and the new {op-system-base} 10 `NodePool` resource simultaneously.
+* You have reviewed `PodDisruptionBudget` (PDB) resources in affected namespaces and confirmed that PDB constraints will not permanently block the drain.
+* The target platform and architecture support {op-system-base} 10 boot images. For more information, see "Supported architectures for {op-system-base} 10 `NodePool` resources".
+
+For a full pre-migration checklist, see "Prerequisites for migrating workloads between {op-system} major versions".
+
+.Procedure
+
+. Identify the name of the existing {op-system-base} 9 `NodePool` resource and note the namespace:
++
+[source,terminal]
+----
+$ oc get nodepool -n clusters
+----
+
+. Create a `NodePool` resource manifest file, for example `rhel10-nodepool.yaml`, with `spec.osImageStream.name` set to `rhel-10`, as shown in the following example:
++
+[source,yaml]
+----
+apiVersion: hypershift.openshift.io/v1beta1
+kind: NodePool
+metadata:
+  name: <new_nodepool_name>
+  namespace: clusters
+spec:
+  clusterName: <cluster_name>
+  replicas: <replica_count>
+  osImageStream:
+    name: rhel-10
+  platform:
+    type: AWS
+    aws:
+      instanceType: m5.xlarge
+----
++
+* Replace `<new_nodepool_name>` with the name for the new {op-system-base} 10 `NodePool` resource.
+* Replace `<cluster_name>` with the name of the `HostedCluster` resource.
+* Replace `<replica_count>` with the number of compute nodes. Match or exceed the replica count of the old `NodePool` resource to maintain workload capacity during migration.
+
+. Apply the new `NodePool` manifest by entering the following command:
++
+[source,terminal]
+----
+$ oc apply -f rhel10-nodepool.yaml
+----
+
+. Wait for all nodes in the new {op-system-base} 10 `NodePool` resource to reach `Ready` status before proceeding by entering the following command:
++
+[source,terminal]
+----
+$ oc get nodepool <new_nodepool_name> -n clusters -w
+----
++
+Node provisioning typically takes 5–15 minutes depending on platform. If the `NodePool` resource does not reach a ready state within 30 minutes, check events by entering `oc describe nodepool <new_nodepool_name> -n clusters`.
+
+. Verify that `status.osImageStream` on the new `NodePool` resource shows `rhel-10` by entering the following command:
++
+[source,terminal]
+----
+$ oc get nodepool <new_nodepool_name> -n clusters -o jsonpath='{.status.osImageStream}'
+----
++
+The expected output is as follows:
++
+[source,terminal]
+----
+rhel-10
+----
+
+. Cordon all nodes in the old {op-system-base} 9 `NodePool` resource to prevent new workloads from being scheduled on them. List the nodes associated with the old `NodePool` resource by entering the following command:
++
+[source,terminal]
+----
+$ oc get nodes -l hypershift.openshift.io/nodePool=<old_nodepool_name>
+----
++
+Cordon all nodes in a single command:
++
+[source,terminal]
+----
+$ for node in $(oc get nodes -l hypershift.openshift.io/nodePool=<old_nodepool_name> -o name); do oc adm cordon "$node"; done
+----
+
+. Drain all nodes in the old {op-system-base} 9 `NodePool` resource to evict workloads by entering the following command:
++
+[source,terminal]
+----
+$ for node in $(oc get nodes -l hypershift.openshift.io/nodePool=<old_nodepool_name> -o name); do oc adm drain "$node" --ignore-daemonsets --delete-emptydir-data; done
+----
++
+[NOTE]
+====
+If a PDB blocks the drain, the command pauses and reports which pods cannot be evicted. Resolve the PDB constraint before continuing. You might need to temporarily scale up the affected workload or adjust the PDB during the migration window.
+====
+
+. Verify that the workloads have moved to nodes in the new {op-system-base} 10 `NodePool` resource.
++
+.. List the nodes in the new `NodePool` resource by entering the following command:
++
+[source,terminal]
+----
+$ oc get nodes -l hypershift.openshift.io/nodePool=<new_nodepool_name>
+----
++
+.. List all pods and confirm they are running on the new {op-system-base} 10 nodes by entering the following command:
++
+[source,terminal]
+----
+$ oc get pods -A -o wide
+----
++
+Confirm that pods formerly running on {op-system-base} 9 nodes now show {op-system-base} 10 node names in the `NODE` column and are in `Running` status.
+
+. Delete the old {op-system-base} 9 `NodePool` resource after confirming that all workloads are running successfully on {op-system-base} 10 nodes by entering the following command:
++
+[source,terminal]
+----
+$ oc delete nodepool <old_nodepool_name> -n clusters
+----
+
+.Verification
+
+* Confirm that the old `NodePool` resource no longer exists and all workloads are running on {op-system-base} 10 nodes by entering the following command:
++
+[source,terminal]
+----
+$ oc get nodepool -n clusters
+----
++
+Ensure the old `NodePool` resource name is not in the output.
++
+[source,terminal]
+----
+$ oc get nodes -l hypershift.openshift.io/nodePool=<new_nodepool_name>
+----
++
+Ensure all nodes show `Ready` status with no taints from the drain operation.
