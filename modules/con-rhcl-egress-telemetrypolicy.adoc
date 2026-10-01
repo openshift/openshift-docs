@@ -1,0 +1,77 @@
+// Module included in the following assemblies:
+//
+// * observe/rhcl-egress-observability.adoc
+
+:_mod-docs-content-type: CONCEPT
+[id="con-rhcl-egress-telemetrypolicy_{context}"]
+= Custom labels on data plane metrics
+
+[role="_abstract"]
+The `istio_*` metrics of an egress `Gateway` object cannot identify the workload that made an outbound call. A `TelemetryPolicy` custom resource (CR) closes that gap by adding labels, derived from Common Expression Language (CEL) expressions, to the metrics that the {prodname} data plane emits.
+
+A `TelemetryPolicy` CR has no egress-specific fields. A policy that you write for an egress `Gateway` object is the same as a policy that you write for a gateway that handles incoming traffic.
+
+[id="rhcl-egress-telemetry-labeled-metrics_{context}"]
+== Metrics that carry custom labels
+
+A `TelemetryPolicy` CR labels the metrics that the {prodname} components emit. It leaves the `istio_*` metrics unchanged. Two components consume the labels.
+
+The Limitador counters carry the complete label set.
+
+.Limitador metrics that carry custom labels
+[cols="1,2",options="header"]
+|===
+| Metric | Description
+
+| `authorized_calls`
+| Requests that a rate limit check allowed
+
+| `limited_calls`
+| Requests that a rate limit check rejected
+
+| `authorized_hits`
+| Hits counted against a limit, which for a `TokenRateLimitPolicy` CR is the token consumption
+
+| `report_calls`
+| Calls to the Limitador `Report` method, which a `TokenRateLimitPolicy` CR uses to report token usage after the response
+|===
+
+Each series also carries the `limitador_namespace` label, which identifies the targeted route in the form `_<route_namespace>_/_<route_name>_`.
+
+Authorino receives the same labels on every route that carries an `AuthPolicy` CR, and applies them to its own per-`AuthConfig` metrics. Authorino serves these metrics on the `/server-metrics` endpoint rather than on the `/metrics` endpoint. The following metrics carry every label except the labels that derive from the `auth.*` attributes:
+
+* `auth_server_authconfig_total`
+* `auth_server_authconfig_response_status`
+* `auth_server_authconfig_duration_seconds`
+* `auth_server_evaluator_*`
+
+Authorino exports the `auth_server_evaluator_*` metrics only for evaluators that set the `metrics` field to `true`, or when Authorino runs with deep metrics enabled.
+
+An `auth.*` label reaches Limitador but never Authorino, because the two components resolve the expression against data of a different shape. The `wasm-shim` module resolves the copy for Limitador against the flattened dynamic metadata that an `AuthPolicy` CR exports, where a `TokenReview` identity is `auth.identity.username`. Authorino resolves its own copy against its internal authorization JSON, where the same identity is `auth.identity.user.username`. The expressions in this documentation are the expressions that Limitador requires, so Authorino evaluates each request at several points in its pipeline and logs a `failed to evaluate CEL expression` error with the reason `no such key: username` at each of them. These errors are expected and have no effect on the Limitador labels.
+
+Writing the label in the form that Authorino expects is not a workaround, because the `wasm-shim` module then cannot resolve it and the route stops producing Limitador metrics. Write `auth.*` labels for Limitador, and treat their absence from the Authorino metrics as expected.
+
+For the labels that Authorino does apply, a single metric can hold series that have different label sets, because Authorino allocates one counter for each distinct label combination and never reclaims them, so a renamed or removed label leaves its earlier series in place. Aggregate such a metric with an explicit `sum by (...)` clause rather than summing the metric as a whole, and note that a high-cardinality expression costs storage twice, in Limitador and in Authorino.
+
+[id="rhcl-egress-telemetry-requirements_{context}"]
+== Requirements for emitting labels
+
+Neither of the following requirements is specific to egress, but both are often overlooked when the target is an egress `Gateway` object:
+
+* A rate limit policy must be in effect on the route. Custom labels are attached to the descriptor that the `wasm-shim` module sends to Limitador, so a route that carries neither a `RateLimitPolicy` CR nor a `TokenRateLimitPolicy` CR produces no Limitador metrics and therefore no labels. A `TelemetryPolicy` CR that targets a gateway whose routes are not rate limited reports that it is accepted and enforced, but emits nothing.
+* The `spec.targetRef` field must reference a `Gateway` object. The API rejects every other kind, so you cannot scope a `TelemetryPolicy` CR to an individual `HTTPRoute` object. The labels apply to every rate limited route on the gateway.
+
+A label that references the `auth.identity.*` attributes adds a third requirement. In addition to an `AuthPolicy` CR that resolves workload identity on the route, the rate limit policy on the route must itself reference the `auth.*` attributes, usually through a counter:
+
+[source,yaml]
+----
+limits:
+  per-workload:
+    rates:
+      - limit: 100
+        window: 1m
+    counters:
+      - expression: auth.identity.username
+----
+
+{prodname} runs the rate limit check before authentication whenever the rate limit policy has no need for an identity, and a label cannot reference an identity that is not yet resolved. Under that order, {prodname} drops the `auth.*` label from the Limitador descriptor without an error and without a change in the policy status. The other labels continue to work, so the symptom is a single missing label rather than missing metrics.
