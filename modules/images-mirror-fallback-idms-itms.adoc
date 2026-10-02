@@ -1,0 +1,299 @@
+// Module included in the following assemblies:
+//
+// * openshift_images/image-configuration.adoc
+
+:_mod-docs-content-type: CONCEPT
+[id="images-mirror-fallback-idms-itms_{context}"]
+= How ImageDigestMirrorSet and ImageTagMirrorSet prevent deadlock
+
+[role="_abstract"]
+ImageDigestMirrorSet (IDMS) and ImageTagMirrorSet (ITMS) custom resources enable layer-level mirror fallback through their mirrors array and mirrorSourcePolicy field. By configuring multiple mirrors in fallback order and controlling source registry contact, administrators can design resilient image pulling that prevents deadlock scenarios even when primary mirrors experience transient failures.
+
+== IDMS versus ITMS: When to use each
+
+Both IDMS and ITMS provide mirror configuration with layer-level fallback. The choice between them depends on how your cluster references container images.
+
+=== ImageDigestMirrorSet (IDMS)
+
+Use IDMS when images are referenced by digest (SHA256 hash):
+
+* **Image reference format**: `registry.example.com/namespace/image@sha256:abc123def456...`
+* **Use case**: Kubernetes workloads, deployments, and statefulsets typically use digest-based references for reproducibility and security
+* **Fallback behavior**: Layer-level fallback applies to all layers in the image
+* **Configuration**: `spec.imageDigestMirrors` array
+
+Example IDMS use case:
+
+[source,yaml]
+----
+# Pod references image by digest
+containers:
+- name: app
+  image: registry.redhat.io/ubi9/ubi-minimal@sha256:abc123def456...
+---
+# IDMS configuration routes all pulls of this image to mirrors
+kind: ImageDigestMirrorSet
+metadata:
+  name: redhat-mirrors
+spec:
+  imageDigestMirrors:
+  - source: registry.redhat.io
+    mirrors:
+    - quay.example.com
+    - mirror-backup.example.com
+----
+
+=== ImageTagMirrorSet (ITMS)
+
+Use ITMS when images are referenced by tag:
+
+* **Image reference format**: `registry.example.com/namespace/image:latest` or `registry.example.com/namespace/image:v1.2.3`
+* **Use case**: Deployments or builds that use tagged image references (less secure, but common in legacy systems)
+* **Fallback behavior**: Layer-level fallback applies to tag-based image pulls
+* **Configuration**: `spec.imageTagMirrors` array
+
+Example ITMS use case:
+
+[source,yaml]
+----
+# Pod references image by tag
+containers:
+- name: app
+  image: registry.redhat.io/ubi9/ubi-minimal:latest
+---
+# ITMS configuration routes tag-based pulls to mirrors
+kind: ImageTagMirrorSet
+metadata:
+  name: redhat-mirrors
+spec:
+  imageTagMirrors:
+  - source: registry.redhat.io
+    mirrors:
+    - quay.example.com
+    - mirror-backup.example.com
+----
+
+== Mirror array ordering: Fallback sequence
+
+The order of mirrors in the `mirrors:` array directly determines the fallback sequence.
+
+CRI-O attempts mirrors in the order they appear in the IDMS/ITMS resource:
+
+[source,yaml]
+----
+spec:
+  imageDigestMirrors:
+  - source: registry.redhat.io
+    mirrors:
+    - primary.example.com          # Tried first
+    - secondary.example.com        # Tried if primary fails
+    - tertiary.example.com         # Tried if secondary fails
+    - quaternary.example.com       # Tried if tertiary fails
+    mirrorSourcePolicy: AllowContactingSource  # Finally, try source if all mirrors fail
+----
+
+This ordering is critical:
+
+* **First mirror is preferred**: Place your fastest or most reliable mirror first
+* **Geographic locality**: For distributed clusters, place locally-close mirrors earlier
+* **Capacity ordering**: Place mirrors with greater capacity (more parallel QPS) earlier to distribute load appropriately
+
+If you reorder mirrors, update the resource and CRI-O on all nodes will reflect the new order automatically.
+
+== Layer-specific fallback with IDMS/ITMS
+
+When pulling an image configured in IDMS/ITMS, CRI-O uses layer-level fallback:
+
+1. **Manifest retrieval**: CRI-O fetches the image manifest (lists all layers and their digests)
+   - Attempts primary mirror first
+   - If primary fails with transient error, attempts secondary mirror
+   - If secondary fails, attempts tertiary mirror
+   - Continues until a mirror provides the manifest or all mirrors fail
+
+2. **Layer download**: For each layer in the manifest, CRI-O downloads the actual layer content
+   - Attempts to download from the primary mirror
+   - If primary fails with a transient error, immediately retries with secondary mirror
+   - Other layers continue downloading from their preferred mirrors
+   - A single image pull can combine layers from multiple mirrors
+
+3. **Example mixed-source scenario**:
+   - Manifest retrieved from primary mirror
+   - Layer 1 downloaded from primary mirror
+   - Layer 2 fails on primary mirror (404), retrieved from secondary mirror
+   - Layer 3 downloaded from primary mirror
+   - Image pull succeeds with layers from both primary and secondary mirrors
+
+This per-layer independence prevents deadlock because Mirror A can be temporarily degraded for some layers while still providing others, and Mirror B can independently provide the missing layers.
+
+== mirrorSourcePolicy field in IDMS/ITMS
+
+The `mirrorSourcePolicy` field controls fallback behavior after all configured mirrors are exhausted.
+
+Two options exist:
+
+=== AllowContactingSource (default)
+
+[source,yaml]
+----
+spec:
+  imageDigestMirrors:
+  - source: registry.redhat.io
+    mirrors:
+    - primary.example.com
+    - secondary.example.com
+    mirrorSourcePolicy: AllowContactingSource
+----
+
+**Behavior**: After all mirrors fail, CRI-O attempts to pull the image directly from the source registry (`registry.redhat.io`).
+
+**Fallback sequence**:
+1. Try primary mirror
+2. Try secondary mirror
+3. Try source registry (registry.redhat.io)
+
+**Use case**: Hybrid deployments where the cluster has occasional external connectivity.
+
+**Implication**: If the source registry is unreachable (network isolation), the pull fails after attempting all mirrors and the source.
+
+=== NeverContactSource
+
+[source,yaml]
+----
+spec:
+  imageDigestMirrors:
+  - source: registry.redhat.io
+    mirrors:
+    - primary.example.com
+    - secondary.example.com
+    mirrorSourcePolicy: NeverContactSource
+----
+
+**Behavior**: After all mirrors fail, CRI-O does not attempt to contact the source registry. The image pull fails immediately.
+
+**Fallback sequence**:
+1. Try primary mirror
+2. Try secondary mirror
+3. Fail (do not contact source registry)
+
+**Use case**: Air-gapped and restricted environments where network policy prevents source contact.
+
+**Implication**: All images the cluster needs must be available in at least one configured mirror. If an image is not in any mirror, the pull fails permanently.
+
+== Deadlock prevention mechanism in IDMS/ITMS
+
+IDMS/ITMS prevent deadlock through per-layer fallback:
+
+=== Without IDMS/ITMS (whole-registry fallback - older behavior)
+
+A degraded primary mirror blocked all image pulls:
+
+1. Primary mirror returns error for any reason
+2. Entire mirror marked as failed
+3. Next pull skips primary mirror
+4. Only then tries secondary mirror
+5. Recovery time depends on health check intervals
+6. Circular dependencies possible (Mirror A fails → Mirror B blocks → Mirror A provides something Mirror B needs → deadlock)
+
+=== With IDMS/ITMS (layer-level fallback - 4.20+)
+
+A degraded primary mirror allows independent secondary mirrors:
+
+1. Primary mirror fails for specific layer
+2. That specific layer pulled from secondary mirror
+3. Other layers continue from primary mirror if available
+4. No whole-mirror failure detection needed
+5. Recovery is immediate (no timeout waiting for mirror recovery)
+6. Circular dependencies resolved (Mirror A can fail for layer X but still provide layer Y, Mirror B can provide X, no deadlock)
+
+== Multiple IDMS/ITMS configurations
+
+You can configure multiple IDMS or ITMS resources, each covering different source registries:
+
+[source,yaml]
+----
+---
+apiVersion: config.openshift.io/v1
+kind: ImageDigestMirrorSet
+metadata:
+  name: redhat-mirrors
+spec:
+  imageDigestMirrors:
+  - source: registry.redhat.io
+    mirrors:
+    - quay.example.com
+    mirrorSourcePolicy: NeverContactSource
+---
+apiVersion: config.openshift.io/v1
+kind: ImageDigestMirrorSet
+metadata:
+  name: quay-mirrors
+spec:
+  imageDigestMirrors:
+  - source: quay.io
+    mirrors:
+    - quay-local.example.com
+    - quay-backup.example.com
+    mirrorSourcePolicy: NeverContactSource
+---
+apiVersion: config.openshift.io/v1
+kind: ImageTagMirrorSet
+metadata:
+  name: tag-based-mirrors
+spec:
+  imageTagMirrors:
+  - source: docker.io
+    mirrors:
+    - docker-mirror.example.com
+    mirrorSourcePolicy: AllowContactingSource
+----
+
+Each resource:
+* Can configure different source registries
+* Can use different mirror sets
+* Can use different `mirrorSourcePolicy` values
+* Applies independently to matching image pulls
+
+== Comparing IDMS/ITMS with deprecated ICSP
+
+ICSP (ImageContentSourcePolicy) is deprecated but still functional. It works similarly to IDMS/ITMS but with limitations:
+
+|===
+|Feature |ICSP |IDMS/ITMS
+
+|Layer-level fallback
+|Yes (in 4.20+, automatically gets fallback behavior)
+|Yes (designed for layer-level fallback)
+
+|Mirror ordering control
+|Yes (mirrors tried in order)
+|Yes (mirrors tried in order)
+
+|mirrorSourcePolicy field
+|Not supported (always behaves like AllowContactingSource)
+|Supported (can enforce NeverContactSource for air-gapped)
+
+|Namespace support
+|Limited (repository-specific)
+|Full (source can be registry, namespace, or specific image)
+
+|Deprecation status
+|Deprecated since 4.13, will be removed in future release
+|Recommended (IDMS for digest, ITMS for tags)
+
+|Migration path
+|Use `oc adm migrate icsp` command to convert to IDMS/ITMS
+|Recommended for all new configurations
+
+|===
+
+For new deployments and migrations, use IDMS/ITMS to take advantage of full control over fallback behavior, especially `mirrorSourcePolicy: NeverContactSource` for air-gapped clusters.
+
+== Best practices for IDMS/ITMS configuration
+
+* **Order mirrors by preference**: List fastest/most reliable mirror first
+* **Ensure mirror coverage**: All images must exist in at least one configured mirror, especially with `NeverContactSource`
+* **Use NeverContactSource for air-gapped**: Enforce network isolation by preventing source contact
+* **Test fallback**: Verify secondary mirrors work before relying on them in production
+* **Monitor mirror health**: Track mirror availability and performance to optimize ordering
+* **Plan for updates**: Sync new image versions to mirrors before cluster updates
+* **Document mirror relationships**: Maintain documentation of which mirrors serve which images

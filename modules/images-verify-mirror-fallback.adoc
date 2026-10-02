@@ -1,0 +1,272 @@
+// Module included in the following assemblies:
+//
+// * openshift_images/image-configuration.adoc
+
+:_mod-docs-content-type: PROCEDURE
+[id="images-verify-mirror-fallback_{context}"]
+= Verifying mirror fallback functionality works correctly
+
+[role="_abstract"]
+After configuring multiple mirrors in ImageDigestMirrorSet or ImageTagMirrorSet, you should verify that CRI-O correctly falls over to secondary mirrors when the primary mirror encounters transient errors. Testing fallback behavior in a non-production environment confirms that your multi-mirror configuration provides the expected resilience before relying on it in production.
+
+.Prerequisites
+* You have cluster administrator access to the cluster.
+* You have a multi-mirror IDMS or ITMS configuration applied to the cluster with at least two mirrors.
+* You can access cluster nodes using `oc debug node` or SSH access.
+* You have `crictl` command-line tool available on nodes (or available via `oc debug node`).
+* You have a test node (non-critical workload) where you can temporarily block network access to the primary mirror.
+
+.Procedure
+
+. Identify the mirrors and images you will use for testing.
++
+From your IDMS/ITMS configuration, note:
++
+* The source registry (e.g., `registry.redhat.io`)
+* The primary mirror (first mirror in the list)
+* The secondary mirror (second mirror in the list)
+* A digest-based image reference that exists in both mirrors (e.g., `registry.redhat.io/ubi9/ubi-minimal@sha256:abcd...`)
+
+. Select a non-critical test node.
++
+Choose a node running non-critical workloads or a test node that you can isolate for this verification. Avoid production nodes running user workloads.
++
+[source,terminal]
+----
+$ oc get nodes -L node-role.kubernetes.io/master
+----
+
+. Access the test node using `oc debug node`.
++
+[source,terminal]
+----
+$ oc debug node/<test-node-name>
+----
++
+The command opens an interactive session on the node with root access.
+
+. Enter the node's root filesystem (within the debug session).
++
+[source,terminal]
+----
+sh-4.4# chroot /host
+----
+
+. Verify that you can pull an image from the primary mirror before testing fallback.
++
+[source,terminal]
+----
+sh-4.4# crictl pull registry.redhat.io/ubi9/ubi-minimal:latest
+----
++
+The output should show:
++
+[source,terminal]
+----
+Image is up to date for registry.redhat.io/ubi9/ubi-minimal:latest
+----
++
+Or:
++
+[source,terminal]
+----
+sha256:abc123... (digest of successfully pulled image)
+----
+
+. Temporarily block network access to the primary mirror using `iptables`.
++
+First, determine the IP address or hostname of the primary mirror. From your IDMS configuration, the primary mirror is the first entry in the `mirrors:` array.
++
+For example, if your primary mirror is `quay.example.com`:
++
+[source,terminal]
+----
+sh-4.4# iptables -I OUTPUT -d quay.example.com -j DROP
+----
++
+This rule blocks outbound connections to the primary mirror. Verify the rule was added:
++
+[source,terminal]
+----
+sh-4.4# iptables -L OUTPUT -n
+----
+
+. Ensure the secondary mirror is still reachable (optional verification).
++
+Test connectivity to the secondary mirror to confirm the fallback destination is available:
++
+[source,terminal]
+----
+sh-4.4# nc -zv mirror-backup.example.com 443
+----
++
+Expected output:
++
+[source,terminal]
+----
+Connection to mirror-backup.example.com 443 port [tcp/https] succeeded!
+----
+
+. Clear the CRI-O image cache to force a fresh pull.
++
+[source,terminal]
+----
+sh-4.4# crictl rmi registry.redhat.io/ubi9/ubi-minimal:latest
+----
++
+This command removes the image from the local cache so that CRI-O must pull it again.
+
+. Attempt to pull the image with the primary mirror blocked.
++
+[source,terminal]
+----
+sh-4.4# crictl pull registry.redhat.io/ubi9/ubi-minimal:latest
+----
++
+If fallback is working correctly, CRI-O should:
++
+1. Attempt connection to the primary mirror
+2. Fail after timeout (because iptables is dropping packets)
+3. Automatically retry the pull from the secondary mirror
+4. Successfully pull the image from the secondary mirror
++
+Expected output (after waiting for timeout):
++
+[source,terminal]
+----
+sha256:abc123... (digest of successfully pulled image)
+----
++
+If the pull fails immediately with a connection error, fallback is not working as expected (see troubleshooting below).
+
+. Monitor CRI-O logs to observe the fallback behavior.
++
+While the pull is in progress (or in another terminal), check CRI-O logs for fallback attempts:
++
+[source,terminal]
+----
+sh-4.4# journalctl -u crio --no-pager -n 100 | grep -i "trying\|fallback\|mirror"
+----
++
+Look for log entries showing attempts from multiple mirrors:
++
+[source,terminal]
+----
+... Trying to access https://quay.example.com/...
+... Failed to pull image from primary mirror
+... Trying to access https://mirror-backup.example.com/...
+... Successfully pulled image from secondary mirror
+----
+
+. Check cluster events to see the pull activity from the perspective of the pod/node.
++
+In another terminal (outside the debug session), check for pull-related events:
++
+[source,terminal]
+----
+$ oc get events -A --sort-by='.lastTimestamp' | grep -i "pull\|mirror" | tail -20
+----
++
+Events should show the image pull activity and potentially the retry attempts.
+
+. Restore network access to the primary mirror.
++
+Once testing is complete, remove the iptables rule to restore normal connectivity:
++
+[source,terminal]
+----
+sh-4.4# iptables -D OUTPUT -d quay.example.com -j DROP
+----
++
+Verify the rule was removed:
++
+[source,terminal]
+----
+sh-4.4# iptables -L OUTPUT -n | grep quay.example.com
+----
++
+The command should return no results (rule is deleted).
+
+. Re-verify that the primary mirror is responsive.
++
+Pull an image again to confirm the primary mirror is reachable:
++
+[source,terminal]
+----
+sh-4.4# crictl rmi registry.redhat.io/ubi9/ubi-minimal:latest
+sh-4.4# crictl pull registry.redhat.io/ubi9/ubi-minimal:latest
+----
++
+The pull should succeed quickly, indicating the primary mirror is working normally.
+
+. Exit the debug session.
++
+[source,terminal]
+----
+sh-4.4# exit
+----
+
+. (Optional) Test fallback on the secondary mirror by blocking it and verifying tertiary mirror use.
++
+If you configured a tertiary mirror, repeat steps 3-11 but block the secondary mirror instead of the primary:
++
+[source,terminal]
+----
+sh-4.4# iptables -I OUTPUT -d mirror-backup.example.com -j DROP
+----
++
+Pull an image and verify it falls back to the tertiary mirror.
+
+.Verification
+
+A successful fallback verification demonstrates:
+
+* The primary mirror can be blocked, and image pulls still succeed
+* The secondary mirror is used when the primary is unavailable
+* CRI-O logs show attempts from both primary and secondary mirrors
+* Pull latency is slightly higher during fallback (due to timeout waiting for primary mirror before trying secondary)
+* After the primary mirror is restored, subsequent pulls prefer it again
+
+.Troubleshooting
+
+[discrete]
+=== Image pull fails even with secondary mirror available
+
+If the image pull fails despite the secondary mirror being reachable, check:
+
+* **Image coverage**: Verify the image exists in the secondary mirror. The secondary mirror must contain all images the cluster needs.
+* **Authentication**: If the secondary mirror requires different credentials than the primary, ensure the pull secret is configured correctly.
+* **Mirror order**: Verify the mirror order in IDMS/ITMS is correct (primary mirror should be first in the list).
+
+[discrete]
+=== Fallback does not occur, pull fails immediately
+
+If the pull fails without attempting fallback, check:
+
+* **CRI-O configuration**: Verify the mirrors are correctly configured in `/etc/containers/registries.conf` on the node:
++
+[source,terminal]
+----
+sh-4.4# cat /etc/containers/registries.conf | grep -A 5 "location = \"registry.redhat.io\""
+----
+
+* **Error type**: If the error is HTTP 401 or 403 (authentication failure), fallback is intentionally not attempted (for security). Verify credentials.
+* **Mirror reachability**: Test network connectivity to the secondary mirror from the node.
+
+[discrete]
+=== Fallback occurs but takes longer than expected
+
+Layer-level fallback involves a timeout waiting for the primary mirror to respond before trying secondary mirrors. If the primary mirror is slow to reject connections:
+
+* Configure shorter timeouts in CRI-O configuration if possible
+* Consider reordering mirrors if secondary mirrors are significantly faster
+* Monitor primary mirror performance to identify degradation
+
+.Next steps
+* Use the xref:images-troubleshoot-mirror-fallback-logs_{context}[Troubleshooting mirror fallback using CRI-O logs] procedure to diagnose mirror-related pull failures in production.
+* Monitor xref:images-diagnose-mirror-fallback-events_{context}[cluster events] for image pull diagnostics.
+* Review xref:images-mirror-fallback-http-errors_{context}[HTTP error codes and conditions triggering mirror fallback] to understand which errors trigger automatic fallback.
+
+.Additional resources
+* xref:images-configuring-idms-multiple-mirrors_{context}[Configuring ImageDigestMirrorSet with multiple mirrors for fallback]
+* xref:images-mirror-fallback-when-layer-fails_{context}[How layer-level mirror fallback works when a mirror cannot serve a layer]

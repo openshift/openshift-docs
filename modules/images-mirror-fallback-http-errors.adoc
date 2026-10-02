@@ -1,0 +1,208 @@
+// Module included in the following assemblies:
+//
+// * openshift_images/image-configuration.adoc
+
+:_mod-docs-content-type: REFERENCE
+[id="images-mirror-fallback-http-errors_{context}"]
+= HTTP error codes and conditions triggering mirror fallback
+
+[role="_abstract"]
+When CRI-O on Linux nodes pulls an image using multiple mirrors, specific HTTP error codes and network conditions trigger automatic fallback to the next mirror in the configuration. Understanding which errors trigger fallback and which halt the pull process is critical for diagnosing image pull failures and designing resilient mirror configurations.
+
+== Error codes that trigger layer-level fallback
+
+The following table lists HTTP status codes and error conditions that cause CRI-O to attempt the next mirror in the mirrors list when pulling a specific layer or manifest.
+
+|===
+|Error Code |Error Name |Triggers Fallback |Reason |Example Scenario
+
+|HTTP 404
+|Not Found
+|Yes
+|Layer or manifest does not exist in the mirror; likely in another mirror
+|Layer digest `sha256:abc123...` not found in primary mirror `quay.example.com`; fallback tries secondary mirror
+
+|HTTP 502
+|Bad Gateway
+|Yes
+|Mirror gateway or upstream service failure; likely transient
+|Primary mirror gateway is misconfigured or upstream Quay service is down; fallback to secondary mirror
+
+|HTTP 503
+|Service Unavailable
+|Yes
+|Mirror service is temporarily unavailable (maintenance, overload, or restart)
+|Primary mirror is performing maintenance; fallback to secondary mirror until maintenance completes
+
+|HTTP 429
+|Too Many Requests
+|Yes
+|Rate limit exceeded on primary mirror; secondary mirror may have available quota
+|Quay rate limit triggered on primary mirror (common in high-throughput clusters); fallback distributes load to secondary mirror
+
+|Connection timeout
+|Network timeout
+|Yes
+|Primary mirror is not responding within the configured timeout window (network latency, unreachable mirror, or firewall drop)
+|Network latency to primary mirror exceeds timeout threshold; fallback to geographically closer secondary mirror
+
+|Connection reset
+|TCP reset
+|Yes
+|Connection to primary mirror was abruptly terminated by the server or network
+|Mirror process crashed and network connection was reset; fallback to secondary mirror
+
+|Backend storage error
+|I/O error or corruption
+|Yes
+|Registry backend (persistent storage) failure; layer is corrupted or inaccessible in the primary mirror
+|Primary mirror's backend storage is degraded; layer exists but cannot be retrieved; fallback to secondary mirror
+
+|===
+
+== Error conditions that do NOT trigger fallback
+
+The following error conditions halt the image pull process and do not trigger fallback to other mirrors.
+
+|===
+|Error Code |Error Name |Fallback Behavior |Reason |Example Scenario
+
+|HTTP 401
+|Unauthorized
+|No fallback
+|Authentication credentials are invalid or missing; other mirrors likely have the same auth requirement, so fallback would fail for the same reason (security boundary)
+|Primary mirror requires authentication token; token is invalid or expired; pull fails for all mirrors with same token
+
+|HTTP 403
+|Forbidden
+|No fallback
+|Authorization failure; authenticated user lacks permission to access the layer (security boundary)
+|User is authenticated but not authorized to pull from namespace; other mirrors enforce the same authz policy; pull fails for all mirrors
+
+|Partial layer download with connection drop during transfer
+|Partial transfer failure
+|No immediate fallback (retry same mirror first)
+|CRI-O retries the layer download from the same mirror before falling back; this handles transient network interruptions during large file transfers
+|Layer download is 60% complete when connection drops; CRI-O retries same mirror before falling back
+
+|===
+
+== HTTP 401 versus HTTP 403: Why authentication failures do not trigger fallback
+
+Authentication and authorization failures are handled differently from transient errors because:
+
+* **HTTP 401 (Unauthorized)**: The credentials provided are not valid. If the same credentials are invalid on the primary mirror, they are likely invalid on secondary mirrors as well. Falling back would result in identical auth failure.
+* **HTTP 403 (Forbidden)**: The user is authenticated but not authorized to access the requested resource. Authorization policies are usually enforced consistently across all mirrors in a cluster, so fallback would encounter the same authorization denial.
+
+For security reasons, CRI-O treats auth failures as non-recoverable errors and does not attempt fallback.
+
+If a layer is truly available in a secondary mirror but protected by different credentials, the cluster administrator must configure separate IDMS/ITMS resources with the appropriate credentials for each mirror.
+
+== Partial layer transfer and connection reliability
+
+If a connection drops during layer download after significant data transfer:
+
+* **CRI-O behavior**: CRI-O retries the download from the same mirror before falling back to the secondary mirror
+* **Reason**: Many transient network interruptions (brief packet loss, router failover) are recoverable with a retry on the same connection
+* **Fallback trigger**: If the same mirror fails again, CRI-O then falls back to the secondary mirror
+* **Implication**: Large layer downloads are resilient to brief network interruptions without requiring fallback to secondary mirrors
+
+This retry-first approach reduces unnecessary fallback to secondary mirrors when temporary network issues occur locally.
+
+== Error conditions at different pull phases
+
+Fallback behavior is consistent regardless of which phase of the image pull encounters the error.
+
+|===
+|Pull Phase |Typical Errors |Fallback Behavior
+
+|Manifest retrieval
+|404, 502, 503, 429, timeout, reset
+|CRI-O attempts the next mirror for the manifest; if obtained from secondary mirror, layer downloads may still prefer the primary mirror
+
+|Layer download
+|404, 502, 503, 429, timeout, reset
+|CRI-O attempts the next mirror for that specific layer; other layers continue with the primary mirror
+
+|Authentication (at any phase)
+|401, 403
+|Pull fails immediately; no fallback attempted
+
+|Partial transfer (during layer download)
+|Connection reset, timeout during transfer
+|CRI-O retries the same mirror first; falls back only if retry fails
+
+|===
+
+== Rate limiting (HTTP 429) and mirror fallback
+
+Rate limiting is a special case that frequently triggers fallback in disconnected and restricted environments.
+
+When a registry implements rate limiting:
+
+* **Single cluster accessing single mirror**: HTTP 429 triggers fallback to the next mirror, distributing load across mirrors
+* **Multiple clusters accessing single mirror**: If multiple clusters pull simultaneously, the primary mirror may rate-limit, causing fallback to secondary mirrors and better load distribution
+* **High-throughput pulls (many parallel pods)**: Large scale-out events (new cluster deployment, workload autoscaling) can trigger rate limiting on a single mirror; fallback distributes the load across multiple mirrors
+
+Rate limiting is particularly important in disconnected environments where a single local Quay instance may have limited QPS capacity. With layer-level fallback, multiple mirrors can distribute pull load.
+
+== Windows (containerd) differences
+
+Windows nodes running containerd have different fallback semantics:
+
+* **Windows behavior**: Whole-registry fallback (not per-layer)
+* **Error codes**: Similar HTTP codes trigger fallback, but the fallback scope is the entire image pull, not individual layers
+* **Implication**: If a Windows node experiences any pull error from the primary mirror for any layer, the next pull attempt skips the primary mirror entirely
+
+## Common diagnostic scenarios
+
+=== Scenario 1: Primary mirror returns 404 for specific layer
+
+**Situation**: Image manifest exists in primary mirror, but one layer is missing (perhaps layer was deleted or corrupted in primary mirror, but exists in secondary mirror).
+
+**CRI-O behavior**:
+1. Manifest retrieval succeeds from primary mirror
+2. Layer 1 download succeeds from primary mirror
+3. Layer 2 download fails with 404 from primary mirror
+4. CRI-O retries layer 2 from secondary mirror — success
+5. Layer 3 download succeeds from primary mirror
+6. Image pull succeeds with mixed sources
+
+**Administrator action**: Investigate why layer 2 is missing from primary mirror; restore missing layer or accept that secondary mirror provides it.
+
+=== Scenario 2: Primary mirror returns 502 for all requests
+
+**Situation**: Primary mirror gateway is down; all requests to primary mirror fail with 502.
+
+**CRI-O behavior**:
+1. Manifest retrieval fails with 502 from primary mirror
+2. CRI-O retries manifest from secondary mirror — success
+3. Layer downloads proceed from secondary mirror
+4. Image pull succeeds from secondary mirror
+
+**Administrator action**: Investigate primary mirror gateway outage; check mirror availability and restore if possible.
+
+=== Scenario 3: Primary mirror returns 401 authentication error
+
+**Situation**: Authentication token for primary mirror is invalid or expired.
+
+**CRI-O behavior**:
+1. CRI-O attempts manifest from primary mirror with credentials
+2. Primary mirror returns 401 (Unauthorized)
+3. CRI-O does NOT attempt fallback (auth failure is non-recoverable)
+4. Image pull fails
+
+**Administrator action**: Verify authentication token is valid; update token if expired; check if primary mirror credential requirements differ from other mirrors.
+
+=== Scenario 4: Primary mirror rate-limits at 429
+
+**Situation**: Primary mirror is experiencing high load and returns rate-limit errors (HTTP 429).
+
+**CRI-O behavior**:
+1. First pull attempts manifest from primary mirror
+2. Primary mirror returns 429 (rate limit)
+3. CRI-O retries manifest from secondary mirror — success
+4. Layer downloads proceed from secondary mirror
+5. Load is distributed across mirrors
+
+**Administrator action**: Monitor QPS on primary mirror; consider reordering mirrors to prefer secondary mirror, or distribute pull load across more mirrors.

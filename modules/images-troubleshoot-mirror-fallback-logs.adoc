@@ -1,0 +1,303 @@
+// Module included in the following assemblies:
+//
+// * openshift_images/image-configuration.adoc
+
+:_mod-docs-content-type: PROCEDURE
+[id="images-troubleshoot-mirror-fallback-logs_{context}"]
+= Troubleshooting mirror fallback using CRI-O logs
+
+[role="_abstract"]
+When image pulls fail or behave unexpectedly, CRI-O logs provide detailed information about mirror fallback attempts. By examining these logs, you can determine which mirrors were attempted, what errors occurred, and whether fallback behavior is functioning as expected. Understanding how to interpret CRI-O logs is essential for diagnosing image pull issues in production clusters.
+
+.Prerequisites
+* You have cluster administrator access to the cluster.
+* You can access cluster nodes using `oc debug node` or SSH access.
+* You have `kubectl` installed and configured to access the cluster.
+* A pod image pull has failed, or you want to diagnose mirror fallback behavior.
+* You understand basic journalctl commands for log examination.
+
+.Procedure
+
+. Identify the node where the image pull failure occurred.
++
+Use `oc describe pod` to find which node the pod is (or attempted to be) scheduled on:
++
+[source,terminal]
+----
+$ oc describe pod <pod-name> -n <namespace>
+----
++
+Look for:
++
+[source,terminal]
+----
+Node: <node-name>
+Events:
+  Type     Reason     Message
+  ----     ------     -------
+  Normal   Scheduled  Successfully assigned...
+  Warning  Failed     Failed to pull image...
+----
+
+. Access the node's logs using `oc debug node`.
++
+[source,terminal]
+----
+$ oc debug node/<node-name>
+----
++
+This opens an interactive session on the node with root access.
+
+. Enter the node's root filesystem.
++
+[source,terminal]
+----
+sh-4.4# chroot /host
+----
+
+. (Optional) Increase CRI-O logging verbosity to capture more detailed information.
++
+By default, CRI-O logs at INFO level. To capture more detailed fallback information, temporarily increase verbosity:
++
+[source,terminal]
+----
+sh-4.4# cat /etc/crio/crio.conf.d/00-default | grep -i "log_level"
+----
++
+If log level is not set to DEBUG, you can temporarily enable debug logging (note: do not leave debug logging enabled in production as it impacts performance):
++
+For temporary debugging, restart CRI-O with debug logging (this affects all image pulls on the node temporarily):
++
+[source,terminal]
+----
+sh-4.4# systemctl set-environment GODEBUG=madvdontneed=1
+sh-4.4# systemctl restart crio
+----
++
+If you need to modify the crio.conf to add debug logging:
++
+[source,terminal]
+----
+sh-4.4# cat >> /etc/crio/crio.conf.d/99-debug.conf << 'EOF'
+[crio.runtime]
+log_level = "debug"
+EOF
+sh-4.4# systemctl restart crio
+----
+
+. View CRI-O logs related to image pulls.
++
+Use `journalctl` to view CRI-O logs, filtering for image pull and mirror-related entries:
++
+[source,terminal]
+----
+sh-4.4# journalctl -u crio --no-pager -n 200 | grep -i "image\|mirror\|trying\|pull"
+----
++
+To get the most recent logs around the time of the pull failure (if you know the approximate time):
++
+[source,terminal]
+----
+sh-4.4# journalctl -u crio --since "2024-10-02 15:30:00" --until "2024-10-02 15:35:00" --no-pager
+----
+
+. Look for "Trying to access" log entries indicating mirror attempts.
++
+Mirror fallback attempts are logged with entries like:
++
+[source,terminal]
+----
+Oct  2 15:32:45 node1 crio[1234]: "Trying to access https://quay.example.com/v2/ubi9/ubi-minimal/manifests/sha256:abc123..."
+Oct  2 15:32:50 node1 crio[1234]: "connection refused" or "502 Bad Gateway"
+Oct  2 15:32:51 node1 crio[1234]: "Trying to access https://mirror-backup.example.com/v2/ubi9/ubi-minimal/manifests/sha256:abc123..."
+Oct  2 15:32:55 node1 crio[1234]: "Success: manifest retrieved from secondary mirror"
+----
++
+Each "Trying to access" line indicates an attempt to retrieve content (manifest or layer) from a mirror.
+
+. Interpret fallback sequence from log entries.
++
+Multiple "Trying to access" entries in sequence indicate mirror fallback is occurring. For example:
++
+[source,terminal]
+----
+Trying to access https://primary-mirror.example.com/v2/image/manifests/...  <-- First attempt
+502 Bad Gateway error                                                       <-- Primary mirror failed
+Trying to access https://secondary-mirror.example.com/v2/image/manifests/... <-- Automatic fallback
+Success                                                                     <-- Secondary mirror succeeded
+----
++
+This sequence demonstrates proper layer-level fallback behavior.
+
+. Identify which errors triggered fallback.
++
+Look for error messages between "Trying to access" entries:
++
+* **404 Not Found**: Layer or manifest does not exist in the mirror
+* **502 Bad Gateway**: Mirror gateway or upstream service error (transient)
+* **503 Service Unavailable**: Mirror temporarily unavailable
+* **429 Too Many Requests**: Rate limit exceeded on mirror
+* **Connection timeout**: Network latency or mirror unreachable
+* **Connection reset**: Unexpected connection termination
+* **401 Unauthorized** or **403 Forbidden**: Authentication/authorization failure (no fallback for security)
+
+. Examine logs for successful fallback completion.
++
+Look for log entries indicating successful image retrieval from a secondary mirror:
++
+[source,terminal]
+----
+sh-4.4# journalctl -u crio --no-pager | grep -A 2 "secondary\|fallback\|alternate"
+----
++
+Or look for digest references after successful pulls:
++
+[source,terminal]
+----
+sh-4.4# journalctl -u crio --no-pager | grep "sha256:" | tail -10
+----
+
+. Check for all-mirrors-failed scenarios.
++
+If the image pull failed entirely, look for entries indicating all mirrors were attempted and all failed:
++
+[source,terminal]
+----
+sh-4.4# journalctl -u crio --no-pager | grep -i "all mirrors\|no mirrors\|exhausted"
+----
++
+Or look for the final error message when pull fails:
++
+[source,terminal]
+----
+sh-4.4# journalctl -u crio --no-pager | grep -i "failed to pull\|error.*image" | tail -5
+----
+
+. Extract detailed logs around a specific image pull.
++
+If you know approximately when an image pull occurred, extract logs for that time window:
++
+[source,terminal]
+----
+sh-4.4# journalctl -u crio --no-pager --since "2024-10-02 15:32:40" --until "2024-10-02 15:33:00" | grep -i "image\|mirror"
+----
+
+. Check container runtime events for pod pull failures.
++
+In addition to CRI-O logs, check pod events for pull-related messages:
++
+[source,terminal]
+----
+$ oc describe pod <pod-name> -n <namespace> | grep -A 5 "Events:"
+----
++
+Events show messages like:
++
+[source,terminal]
+----
+Warning  Failed   1m    kubelet    Failed to pull image "registry.redhat.io/ubi9/ubi-minimal:latest": rpc error: code = Unknown desc = Trying to pull registry.redhat.io/ubi9/ubi-minimal:latest...
+----
++
+The error message from the event includes information about which mirror was used.
+
+. (Optional) Create a test image pull to capture fresh logs.
++
+If past logs are insufficient, create a test pod to trigger a fresh image pull and capture logs:
++
+[source,terminal]
+----
+$ kubectl run test-pull --image=registry.redhat.io/ubi9/ubi-minimal:latest --node-selector=kubernetes.io/hostname=<test-node>
+----
++
+Simultaneously, on the node, monitor CRI-O logs in real-time:
++
+[source,terminal]
+----
+sh-4.4# journalctl -u crio -f | grep -i "image\|mirror\|trying"
+----
+
+. (Optional) Simulate mirror failures to capture fallback logs.
++
+To observe fallback behavior in logs, temporarily block the primary mirror and trigger an image pull:
++
+[source,terminal]
+----
+sh-4.4# iptables -I OUTPUT -d quay.example.com -j DROP
+sh-4.4# crictl pull registry.redhat.io/ubi9/ubi-minimal:latest
+----
++
+Monitor logs to see fallback attempts:
++
+[source,terminal]
+----
+sh-4.4# journalctl -u crio --no-pager -n 50 | grep -i "trying\|access\|mirror"
+----
++
+When done testing, restore connectivity:
++
+[source,terminal]
+----
+sh-4.4# iptables -D OUTPUT -d quay.example.com -j DROP
+----
+
+. Exit the debug session.
++
+[source,terminal]
+----
+sh-4.4# exit
+----
+
+. Restore CRI-O logging to normal level (if you increased verbosity).
++
+If you enabled debug logging, disable it to restore performance:
++
+[source,terminal]
+----
+sh-4.4# rm /etc/crio/crio.conf.d/99-debug.conf
+sh-4.4# systemctl restart crio
+----
+
+.Verification
+
+Successful log analysis confirms:
+
+* Mirror fallback is occurring (multiple "Trying to access" entries show different mirrors)
+* The correct mirrors are being attempted in the configured order
+* Transient errors (502, 503, 429, timeout) trigger fallback
+* Authentication errors (401, 403) do not trigger fallback
+* Image pulls eventually succeed from a healthy mirror or fail if all mirrors are unavailable
+
+.Troubleshooting
+
+[discrete]
+=== No "Trying to access" entries appear in logs
+
+This indicates CRI-O logs are not configured to show mirror attempts. Check:
+
+* **Log level**: Verify CRI-O is logging at INFO level or higher
+* **Journal size**: Ensure journalctl buffer is large enough; older logs may have been rotated out
+* **CRI-O service name**: Confirm CRI-O logs are in the `crio` service (not `kubelet` or other services)
+
+[discrete]
+=== Logs show only one "Trying to access" entry, no fallback
+
+This could indicate:
+
+* The primary mirror succeeded (no fallback needed)
+* The error was an authentication failure (401/403) which does not trigger fallback
+* Fallback is not configured (all errors are treated as unrecoverable)
+* The secondary mirror is not configured correctly
+
+[discrete]
+=== Cannot see detailed error messages in logs
+
+Enable debug logging on the node for a limited time to capture detailed error messages. Note that debug logging impacts performance and should not be left enabled in production.
+
+.Next steps
+* Use xref:images-diagnose-mirror-fallback-events_{context}[Diagnosing mirror fallback failures using cluster events] to cross-reference pod-level pull failures with node logs.
+* Review xref:images-mirror-fallback-http-errors_{context}[HTTP error codes and conditions triggering mirror fallback] to understand what errors should trigger fallback.
+* Check xref:images-mirror-fallback-error-indicators_{context}[Mirror fallback error indicators reference] for patterns indicating misconfiguration.
+
+.Additional resources
+* xref:images-verify-mirror-fallback_{context}[Verifying mirror fallback functionality works correctly]
+* xref:viewing-the-image-pull-source_{context}[Viewing the image pull source]

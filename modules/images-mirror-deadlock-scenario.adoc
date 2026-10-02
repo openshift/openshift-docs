@@ -1,0 +1,130 @@
+// Module included in the following assemblies:
+//
+// * openshift_images/image-configuration.adoc
+
+:_mod-docs-content-type: CONCEPT
+[id="images-mirror-deadlock-scenario_{context}"]
+= Understanding the deadlock scenario and how fallback prevents it
+
+[role="_abstract"]
+In disconnected or restricted OpenShift environments with multiple independent registry mirrors, a critical failure mode can occur where a reachable but malfunctioning primary mirror prevents cluster access to healthy alternative image sources. This deadlock scenario can cascade across dependent workloads, blocking cluster operations. Layer-level mirror fallback in OpenShift 4.20 and later eliminates this failure mode by automatically attempting to retrieve missing layers from secondary mirrors when a primary mirror encounters transient errors.
+
+== The deadlock scenario problem
+
+Deadlock occurs when all of the following conditions are true:
+
+* The cluster uses multiple independent registry mirrors configured with fallback order (primary, secondary, tertiary)
+* The primary mirror is reachable and responds to connection attempts (cluster can connect to it)
+* The primary mirror experiences a transient failure condition such as:
+  - Service degradation or partial outage
+  - Rate limiting (HTTP 429 errors)
+  - Missing or corrupted layers
+  - Backend storage failures
+* The secondary mirrors contain the required images and are functioning correctly
+* The cluster configuration prevents fallback to the external source registry (air-gapped environments)
+
+When all of these conditions align, the cluster cannot pull images because the reachable but failing primary mirror blocks fallback to secondary mirrors.
+
+== Real-world deadlock example
+
+Consider a disconnected OpenShift cluster with the following architecture:
+
+* **Primary mirror**: Local Quay instance on the cluster (high performance, preferred)
+* **Secondary mirror**: Quay instance in a remote data center (backup)
+* **Tertiary mirror**: Mirror registry for Red Hat OpenShift in an isolated network segment (disaster recovery)
+* **Workloads**: Red Hat OpenShift Data Foundation (ODF) Operator deployment requiring Operator images
+
+At 3 AM, the primary Quay instance experiences a backend storage failure. The storage system recovers after 15 minutes, but the Quay instance remains in a degraded state, returning HTTP 502 (Bad Gateway) errors for layer downloads.
+
+In OpenShift 4.19 and earlier (whole-registry-level fallback):
+
+1. Red Hat OpenShift Data Foundation (ODF) Operator tries to pull images from primary mirror (Quay)
+2. Primary mirror returns HTTP 502 for entire image pull
+3. Operator marks entire primary mirror as failed (whole-registry fallback)
+4. Operator tries secondary mirror
+5. If secondary mirror responds with any error on the initial manifest pull, both secondary and tertiary mirrors are marked failed
+6. ODF Operator cannot proceed; ODF workloads cannot start
+7. Dependent workloads (applications using ODF storage) fail to start
+8. Cluster operations are blocked; alerts fire; on-call engineers respond at 3 AM
+
+In OpenShift 4.20 and later (layer-level fallback):
+
+1. Red Hat OpenShift Data Foundation (ODF) Operator tries to pull images from primary mirror (Quay)
+2. Primary mirror returns HTTP 502 for a specific layer (not the manifest)
+3. CRI-O detects the layer download failure and automatically retries with secondary mirror for that specific layer
+4. Secondary mirror successfully provides the missing layer
+5. Primary mirror successfully provides other required layers
+6. Image pull completes successfully; Red Hat OpenShift Data Foundation workloads start normally
+7. At 3:15 AM, the primary mirror is restored
+8. On-call engineers are not paged; cluster continues operating
+
+== How layer-level fallback prevents deadlock
+
+Layer-level fallback prevents deadlock because it separates the fallback decision from whole-registry availability.
+
+In the layer-level fallback model:
+
+* **Manifest retrieval**: CRI-O first attempts to fetch the image manifest from the primary mirror. If the manifest is unavailable (404, 502, 503, timeout), CRI-O attempts to fetch it from the secondary mirror.
+* **Layer download**: For each layer in the manifest, CRI-O attempts to download from the primary mirror. If that download fails with a transient error (404, 502, 503, 429, timeout), CRI-O attempts the same layer from the secondary mirror.
+* **Mixed sources**: A single image pull can combine layers from multiple mirrors—the manifest from mirror A, one set of layers from mirror B, and another set from mirror C.
+
+This per-layer granularity prevents circular dependencies. Mirror A can be temporarily unavailable for some layers while still providing others. Mirror B can serve the missing layers from Mirror A. Both mirrors remain usable without deadlock.
+
+The fallback only stops when:
+
+* An authentication failure (401, 403) occurs—CRI-O does not fall back for auth failures (security boundary)
+* All configured mirrors have been exhausted and the image is not available in any of them
+* The `mirrorSourcePolicy` field is set to `NeverContactSource` and all mirrors fail (air-gapped configuration prevents source contact)
+
+== Deadlock prevention in disconnected environments
+
+Disconnected clusters benefit most from layer-level fallback because they lack fallback to external registries.
+
+In air-gapped deployments:
+
+* The cluster cannot reach the external source registry (intentional network isolation)
+* The `mirrorSourcePolicy` field must be set to `NeverContactSource` to enforce this isolation
+* If a primary mirror fails, the cluster has only the secondary mirrors to draw from
+* Layer-level fallback ensures that transient failures in one mirror do not prevent other mirrors from serving available layers
+
+Before layer-level fallback, a single degraded primary mirror could make the entire cluster image-pull system unreliable, even with multiple healthy secondary mirrors configured.
+
+After layer-level fallback, secondary mirrors become truly independent fallback paths rather than whole-registry fallbacks only triggered when the primary is completely unavailable.
+
+== Circularity elimination
+
+Some architectures use mirror cascades where:
+
+* Mirror A serves as primary for some images
+* Mirror B is secondary and also serves as primary for other images
+* Mirror C is tertiary for both A and B
+
+Without layer-level fallback, a transient failure in Mirror A could block Mirror B from using its own images, creating circular dependencies where no mirror can serve its images because another mirror is blocking it.
+
+With layer-level fallback, Mirror B can provide layers independently even while Mirror A is experiencing transient failures. The layer-level fallback resolves circular dependencies automatically.
+
+== Comparison with previous whole-registry fallback behavior
+
+In OpenShift 4.19 and earlier, mirroring used whole-registry fallback:
+
+* When any error occurred pulling from primary mirror, the entire mirror was marked as failed (or partially failed)
+* The next pull attempt would skip the primary mirror and try secondary
+* Recovery from transient failures was slow because the entire mirror needed to recover
+
+In OpenShift 4.20 and later, mirroring uses layer-level fallback:
+
+* When an error occurs for a specific layer on primary mirror, only that layer pull is retried on secondary
+* Other layers continue pulling from primary if available
+* Transient failures are recovered immediately without marking the entire mirror as failed
+* Cluster resilience improves significantly
+
+== Key implications for cluster administrators
+
+Administrators managing disconnected or restricted OpenShift environments should understand:
+
+* Layer-level fallback is automatic; no configuration changes required to enable it
+* Mirror ordering in IDMS/ITMS becomes critical—ensure secondary mirrors are truly independent and contain the required images
+* The `mirrorSourcePolicy` field controls whether to fall back to external sources after all mirrors fail
+* For air-gapped clusters, use `NeverContactSource` to prevent source contact and enforce network isolation
+* Multiple mirrors are now more valuable than before—each mirror can independently contribute layers to image pulls
+* Cluster availability improves with multi-mirror configurations because transient failures in one mirror no longer block all image pulls
