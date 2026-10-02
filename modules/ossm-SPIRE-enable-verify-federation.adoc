@@ -1,0 +1,195 @@
+// Module included in the following assemblies:
+//
+// * service-mesh-docs-main/install/ossm-SPIRE.adoc
+
+:_mod-docs-content-type: PROCEDURE
+[id="ossm-SPIRE-enable-verify-federation_{context}"]
+= Enable and verify SPIRE federation between clusters
+
+[role="_abstract"]
+
+Configure the SPIRE servers on both clusters to trust each other's identities by establishing federation.
+Deploy test workloads to verify that SPIFFE identities from different trust domains can successfully authenticate with each other.
+
+.Prerequisites
+
+* You have installed and configured the Zero Trust Workload Identity Manager on both clusters with federation support.
+* You have set the required environment variables for both clusters.
+
+.Procedure
+
+. Retrieve the federation bundle endpoint URL for Cluster A:
++
+[source,terminal]
+----
+$ export KUBECONFIG="${CLUSTER_A_KUBECONFIG}"
+$ export BUNDLE_ENDPOINT_A="https://spire-server-bundle.${ZTWIM_NS}.$(oc get ingresses.config/cluster -o jsonpath={.spec.domain}):8443"
+----
+
+. Retrieve the federation bundle endpoint URL for Cluster B:
++
+[source,terminal]
+----
+$ export KUBECONFIG="${CLUSTER_B_KUBECONFIG}"
+$ export BUNDLE_ENDPOINT_B="https://spire-server-bundle.${ZTWIM_NS}.$(oc get ingresses.config/cluster -o jsonpath={.spec.domain}):8443"
+----
+
+. Configure Cluster A to federate with Cluster B by creating a `ClusterSPIFFEID` resource:
++
+[source,terminal]
+----
+$ export KUBECONFIG="${CLUSTER_A_KUBECONFIG}"
+$ cat <<EOF | oc apply -f -
+apiVersion: spire.openshift.io/v1alpha1
+kind: ClusterSPIFFEID
+metadata:
+  name: federated-${TRUST_DOMAIN_B}
+spec:
+  trustDomain: ${TRUST_DOMAIN_B}
+  federatesWith:
+  - ${BUNDLE_ENDPOINT_B}
+EOF
+----
+
+. Configure Cluster B to federate with Cluster A:
++
+[source,terminal]
+----
+$ export KUBECONFIG="${CLUSTER_B_KUBECONFIG}"
+$ cat <<EOF | oc apply -f -
+apiVersion: spire.openshift.io/v1alpha1
+kind: ClusterSPIFFEID
+metadata:
+  name: federated-${TRUST_DOMAIN_A}
+spec:
+  trustDomain: ${TRUST_DOMAIN_A}
+  federatesWith:
+  - ${BUNDLE_ENDPOINT_A}
+EOF
+----
+
+. Deploy a test server workload on Cluster A:
++
+[source,terminal]
+----
+$ export KUBECONFIG="${CLUSTER_A_KUBECONFIG}"
+$ oc new-project spiffe-test
+$ cat <<EOF | oc apply -f -
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: spiffe-mtls-validator
+  namespace: spiffe-test
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: spiffe-mtls-validator
+  template:
+    metadata:
+      labels:
+        app: spiffe-mtls-validator
+      annotations:
+        spiffe.io/audience: "spiffe-federation-test"
+    spec:
+      serviceAccountName: default
+      containers:
+      - name: validator
+        image: quay.io/example/spiffe-mtls-validator:latest
+        env:
+        - name: SPIFFE_ENDPOINT_SOCKET
+          value: "unix:///spiffe-workload-api/spire-agent.sock"
+        - name: SERVER_MODE
+          value: "true"
+        volumeMounts:
+        - name: spiffe-workload-api
+          mountPath: /spiffe-workload-api
+          readOnly: true
+      volumes:
+      - name: spiffe-workload-api
+        csi:
+          driver: "csi.spiffe.io"
+          readOnly: true
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: spiffe-mtls-validator
+  namespace: spiffe-test
+spec:
+  selector:
+    app: spiffe-mtls-validator
+  ports:
+  - port: 8443
+    targetPort: 8443
+EOF
+$ oc wait --for=condition=Available deployment/spiffe-mtls-validator -n spiffe-test --timeout=300s
+----
+
+. Deploy a test client workload on Cluster B:
++
+[source,terminal]
+----
+$ export KUBECONFIG="${CLUSTER_B_KUBECONFIG}"
+$ oc new-project spiffe-test
+$ cat <<EOF | oc apply -f -
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: spiffe-mtls-client
+  namespace: spiffe-test
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: spiffe-mtls-client
+  template:
+    metadata:
+      labels:
+        app: spiffe-mtls-client
+      annotations:
+        spiffe.io/audience: "spiffe-federation-test"
+    spec:
+      serviceAccountName: default
+      containers:
+      - name: client
+        image: quay.io/example/spiffe-mtls-validator:latest
+        env:
+        - name: SPIFFE_ENDPOINT_SOCKET
+          value: "unix:///spiffe-workload-api/spire-agent.sock"
+        - name: SERVER_URL
+          value: "https://spiffe-mtls-validator.spiffe-test.svc.cluster.local:8443"
+        volumeMounts:
+        - name: spiffe-workload-api
+          mountPath: /spiffe-workload-api
+          readOnly: true
+      volumes:
+      - name: spiffe-workload-api
+        csi:
+          driver: "csi.spiffe.io"
+          readOnly: true
+EOF
+$ oc wait --for=condition=Available deployment/spiffe-mtls-client -n spiffe-test --timeout=300s
+----
+
+.Verification
+
+. Check the client logs on Cluster B to verify successful cross-cluster SPIFFE authentication:
++
+[source,terminal]
+----
+$ export KUBECONFIG="${CLUSTER_B_KUBECONFIG}"
+$ CLIENT_POD=$(oc get pod -l app=spiffe-mtls-client -n spiffe-test -o jsonpath="{.items[0].metadata.name}")
+$ oc logs ${CLIENT_POD} -n spiffe-test
+----
++
+The logs should show successful mTLS connection establishment and verification of the server's SPIFFE identity from the federated trust domain.
+
+. Verify that the SPIFFE identities contain different trust domains:
++
+[source,terminal]
+----
+$ oc logs ${CLIENT_POD} -n spiffe-test | grep "trust domain"
+----
++
+The output should show both trust domains (`TRUST_DOMAIN_A` and `TRUST_DOMAIN_B`), confirming that federation enables cross-domain identity verification.
