@@ -1,0 +1,273 @@
+// Module included in the following assemblies:
+//
+// * networking/metallb/metallb-configure-bgp-peers.adoc
+
+:_mod-docs-content-type: PROCEDURE
+[id="nw-metallb-configure-bgp-authentication_{context}"]
+= Configuring BGP authentication with MD5 passwords
+
+[role="_abstract"]
+To secure BGP sessions with MD5 authentication, configure BGP peers to use password-based authentication. Starting in {product-title} 4.19, you can use the `secretPassthrough` feature to prevent exposing password values in the generated `FRRConfiguration` custom resources.
+
+When you enable the `secretPassthrough` field in the MetalLB custom resource (CR), the MetalLB Operator passes BGP password Secret references to the FRR-K8s daemon instead of extracting the password values from the Secrets. This ensures that password values are never exposed in any custom resource.
+
+[NOTE]
+====
+The `secretPassthrough` feature is available starting in {product-title} 4.19. In earlier versions, BGP password values were extracted in FRRConfiguration custom resources, potentially exposing them in logs, backups, or to users with read access to the `openshift-frr-k8s` namespace.
+====
+
+.Prerequisites
+
+* Install the {oc-first}.
+* Log in as a user with `cluster-admin` privileges.
+* Deploy the MetalLB Operator and create a MetalLB custom resource.
+
+.Procedure
+
+. Enable secret passthrough in the MetalLB CR.
++
+You can enable `secretPassthrough` using either the CLI or by editing the YAML directly.
++
+Run the following command to enable secret passthrough:
++
+[source,terminal]
+----
+$ oc patch metallb metallb -n metallb-system --type=merge \
+  -p '{"spec":{"frrk8sConfig":{"secretPassthrough":true}}}'
+----
++
+Alternatively, edit the MetalLB CR interactively. Run the following command:
++
+[source,terminal]
+----
+$ oc edit metallb metallb -n metallb-system
+----
++
+Add the `secretPassthrough` field under `spec.frrk8sConfig`:
++
+[source,yaml]
+----
+apiVersion: metallb.io/v1beta1
+kind: MetalLB
+metadata:
+  name: metallb
+  namespace: metallb-system
+spec:
+  frrk8sConfig:
+    secretPassthrough: true
+# ...
+----
+
+. Create a Secret of type `kubernetes.io/basic-auth` in the `openshift-frr-k8s` namespace with the BGP password. Run the following command:
++
+[source,terminal]
+----
+$ oc create secret generic bgp-peer-password \
+  --type=kubernetes.io/basic-auth \
+  --from-literal=password=<your_password> \
+  -n openshift-frr-k8s
+----
++
+Replace `<your_password>` with your BGP MD5 authentication password.
++
+[NOTE]
+====
+The `openshift-frr-k8s` namespace is automatically created by the MetalLB Operator when FRR-K8s components are deployed. You do not need to create this namespace manually.
+====
++
+[IMPORTANT]
+====
+When `secretPassthrough` is enabled, the Secret must reside in the `openshift-frr-k8s` namespace. FRR-K8s reads the Secret directly, and cross-namespace secret references are not supported.
+
+In earlier versions or when `secretPassthrough` is disabled, Secrets are created in the `metallb-system` namespace and the MetalLB Operator extracts the password values. However, this exposes password values in the FRRConfiguration custom resources.
+====
+
+. Create a BGPPeer CR that references the Secret:
++
+[source,yaml]
+----
+apiVersion: metallb.io/v1beta2
+kind: BGPPeer
+metadata:
+  name: doc-example-peer-auth
+  namespace: metallb-system
+spec:
+  peerAddress: 10.0.0.1
+  peerASN: 64501
+  myASN: 64500
+  passwordSecret:
+    name: bgp-peer-password
+# ...
+----
++
+.BGPPeer CR parameters
+[cols="1,3"]
+|===
+|Parameter |Description
+
+|`spec.peerAddress`
+|Replace with your BGP router's IP address.
+
+|`spec.peerASN`
+|Replace with your BGP peer's AS number.
+
+|`spec.myASN`
+|Replace with your local AS number. This must match the AS number used in your BGPAdvertisement configuration.
+
+|`spec.passwordSecret.name`
+|The name of the Secret in the `openshift-frr-k8s` namespace. Do not specify a namespace in the `passwordSecret` field.
+|===
+
+. Apply the BGPPeer configuration:
++
+[source,terminal]
+----
+$ oc apply -f bgppeer-auth.yaml
+----
+
+.Verification
+
+. Wait for the FRR-K8s daemon to process the BGPPeer configuration:
++
+[source,terminal]
+----
+$ oc wait --for=condition=Ready pod -l app=frr-k8s \
+  -n openshift-frr-k8s --timeout=120s
+----
+
+. Verify that the FRRConfiguration CR contains only a `passwordSecret` reference and no `password` field containing the password value:
++
+[source,terminal]
+----
+$ oc get frrconfiguration -n openshift-frr-k8s \
+  -o jsonpath='{.items[0].spec.bgp.routers[0].neighbors[0]}' | jq
+----
++
+.Example output
+[source,json]
+----
+{
+  "address": "10.0.0.1",
+  "asn": 64501,
+  "passwordSecret": {
+    "name": "bgp-peer-password",
+    "namespace": "openshift-frr-k8s"
+  }
+}
+----
++
+[IMPORTANT]
+====
+If you see a `password` field with a password value instead of `passwordSecret`, verify that `spec.frrk8sConfig.secretPassthrough` is set to `true` in the MetalLB CR:
+
+[source,terminal]
+----
+$ oc get metallb metallb -n metallb-system \
+  -o jsonpath='{.spec.frrk8sConfig.secretPassthrough}'
+----
+
+The output should show `true`. If not, repeat step 1 to enable secret passthrough.
+====
+
+. Verify that the BGP session is established. Run the following command:
++
+[source,terminal]
+----
+$ oc get bgpsessionstate -n openshift-frr-k8s
+----
++
+.Example output
+[source,terminal]
+----
+NAME                                      STATUS        AGE
+doc-example-peer-auth-mysno-sno-...       Established   2m15s
+----
++
+[NOTE]
+====
+It may take up to 2 minutes for the BGP session to establish after creating the BGPPeer CR. If the status shows `Connect` or `Active`, the session is still negotiating. Check the FRR-K8s pod logs if the session does not establish within 5 minutes:
+
+[source,terminal]
+----
+$ oc logs -n openshift-frr-k8s -l app=frr-k8s -c frr --tail=50
+----
+====
+
+*Troubleshooting*
+
+*FRRConfiguration shows password value instead of passwordSecret*
+
+If the FRRConfiguration CR contains a `password` field with a password value:
+
+. Verify that `secretPassthrough` is enabled:
++
+[source,terminal]
+----
+$ oc get metallb metallb -n metallb-system \
+  -o jsonpath='{.spec.frrk8sConfig.secretPassthrough}'
+----
++
+The output should show `true`.
+
+. If the output is empty or `false`, enable secret passthrough and delete the BGPPeer CR to force regeneration:
++
+[source,terminal]
+----
+$ oc patch metallb metallb -n metallb-system --type=merge \
+  -p '{"spec":{"frrk8sConfig":{"secretPassthrough":true}}}'
+$ oc delete bgppeer <bgppeer-name> -n metallb-system
+$ oc apply -f <bgppeer-file>.yaml
+----
+
+*BGP session does not establish*
+
+If the BGP session status remains in `Connect` or `Active` state:
+
+. Verify that the MD5 password in the Secret matches the password configured on your BGP router.
+
+. Check the FRR-K8s logs for authentication errors:
++
+[source,terminal]
+----
+$ oc logs -n openshift-frr-k8s -l app=frr-k8s -c frr --tail=50
+----
+
+. Verify network connectivity between OpenShift nodes and the BGP peer:
++
+[source,terminal]
+----
+$ oc debug node/<node-name> -- chroot /host ping -c 3 <peer-address>
+----
+
+*Secret not found error*
+
+If you see errors about the Secret not being found:
+
+. Verify the Secret exists in the `openshift-frr-k8s` namespace (not `metallb-system`):
++
+[source,terminal]
+----
+$ oc get secret bgp-peer-password -n openshift-frr-k8s
+----
+
+. If the Secret was created in the wrong namespace, delete it from the `metallb-system` namespace. Run the following command:
++
+[source,terminal]
+----
+$ oc delete secret bgp-peer-password -n metallb-system
+----
+
+. Create the Secret in the `openshift-frr-k8s` namespace. Run the following command:
++
+[source,terminal]
+----
+$ oc create secret generic bgp-peer-password \
+  --type=kubernetes.io/basic-auth \
+  --from-literal=password=<your_password> \
+  -n openshift-frr-k8s
+----
+
+[IMPORTANT]
+====
+Cross-namespace secret references are not supported by FRR-K8s. The Secret referenced in the BGPPeer CR must reside in the `openshift-frr-k8s` namespace, not in the `metallb-system` namespace.
+====
