@@ -1,0 +1,101 @@
+// Module included in the following assemblies:
+//
+// * observe/rhcl-egress-observability.adoc
+
+:_mod-docs-content-type: PROCEDURE
+[id="proc-rhcl-egress-telemetrypolicy_{context}"]
+= Attribute egress traffic to the calling workload
+
+[role="_abstract"]
+Record which workload made an outbound call, and the external service that it reached, by attaching a `TelemetryPolicy` custom resource (CR) to your egress `Gateway` object.
+
+[IMPORTANT]
+====
+To change a label, delete the `TelemetryPolicy` CR and apply it again. Editing a policy in place leaves the earlier label bindings in the generated configuration, where a single stale binding stops the metrics for the route.
+====
+
+.Prerequisites
+
+include::snippets/egress-gateway-prereqs.adoc[]
+
+* You applied an `AuthPolicy` CR that resolves workload identity on the routes of your egress `Gateway` object.
+* You applied a `RateLimitPolicy` CR or a `TokenRateLimitPolicy` CR to the routes that you want to label. To use a label that references the `auth.identity.*` attributes, that policy must count per identity, such as through a counter that has the `auth.identity.username` expression.
+* You set the `spec.observability.enable` field of the `Kuadrant` CR to `true`, and your monitoring stack collects the {prodname} metrics. See "Collect egress gateway metrics in your monitoring stack".
+
+.Procedure
+
+. Create a `TelemetryPolicy` CR that labels each metric with the authenticated identity of the calling workload, the external destination, and the source IP address by using the following example:
++
+.Example TelemetryPolicy to attribute egress traffic
+[source,yaml,subs="+quotes"]
+----
+apiVersion: extensions.kuadrant.io/v1alpha1
+kind: TelemetryPolicy
+metadata:
+  name: _<egress_telemetry>_
+  namespace: _<gateway_system>_
+spec:
+  targetRef:
+    group: gateway.networking.k8s.io
+    kind: Gateway
+    name: _<kuadrant_egressgateway>_
+  metrics:
+    default:
+      labels:
+        workload: auth.identity.username
+        destination: request.host
+        source_ip: source.address.substring(0, source.address.lastIndexOf(":")).replace("[", "").replace("]", "")
+----
++
+* Replace the `metadata.name` value with the name of your telemetry policy.
+* Replace the `metadata.namespace` value with the namespace where you applied your egress `Gateway` object.
+* Replace the `spec.targetRef.name` value with the name of your egress `Gateway` object.
+* The `source_ip` expression removes the ephemeral port and the brackets that Envoy adds around an IPv6 address. Recording the address with the port creates a separate time series for every connection.
+
+. Apply the `TelemetryPolicy` CR by running the following command:
++
+[source,terminal,subs="+quotes"]
+----
+$ oc apply -f _<egress_telemetry>_
+----
++
+Replace `_<egress_telemetry>_` with the name of your telemetry policy YAML.
+
+. Confirm that the policy is accepted and enforced by running the following command:
++
+[source,terminal,subs="+quotes"]
+----
+$ oc get telemetrypolicy _<egress_telemetry>_ -n _<gateway_system>_ \
+    -o jsonpath='{range .status.conditions[*]}{.type}={.status}{"\n"}{end}'
+----
++
+* Replace `_<egress_telemetry>_` with the name of your telemetry policy YAML.
+* Replace `_<gateway_system>_` with the namespace where your `Gateway` object is applied.
++
+.Example output
+[source,text]
+----
+Accepted=True
+Enforced=True
+----
+
+.Verification
+
+. Send authenticated traffic from a workload through the egress `Gateway` object to a rate limited route.
+
+. In the metrics view of the {ocp} web console, run the following query:
++
+[source,text]
+----
+sum(authorized_calls) by (workload, destination, source_ip)
+----
+
+. Confirm that the result has one series for each service account that made an outbound call, and that the `workload` label holds the identity of that service account, similar to the following example:
++
+.Example output
+[source,text]
+----
+{destination="api.example.com", source_ip="192.0.2.25", workload="system:serviceaccount:egress-test:team-gold"}   2
+----
++
+The same labels are present on the `limited_calls` metric when a workload exceeds its limit. These labels show the throttled workload and the destination that it called.
