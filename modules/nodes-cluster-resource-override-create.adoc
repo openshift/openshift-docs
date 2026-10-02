@@ -1,0 +1,196 @@
+// Module included in the following assemblies:
+//
+// * nodes/clusters/nodes-cluster-overcommit.adoc
+// * post_installation_configuration/node-tasks.adoc
+// * maps/ocp-jobs/manage-cluster-overcommitment.adoc
+// * maps/ocp-jobs/control-the-level-of-overcommitted-pods.adoc
+// * maps/ocp-jobs/manage-resource-utilization-by-adjusting-node-density.adoc
+// * maps/ocp-jobs/allocate-resources-for-nodes.adoc
+
+:_mod-docs-content-type: PROCEDURE
+[id="nodes-cluster-resource-override-create_{context}"]
+= Create a ResourceOverride object in a project
+
+[role="_abstract"]
+You can create a `ResourceOverride` object so that new pods in your project use CPU and memory requests that differ from the cluster-wide default.
+
+The new requests apply to pods that are created after the `ResourceOverride` object exists. Pods that already run are unchanged.
+
+.Prerequisites
+
+* The Cluster Resource Override Operator is installed.
+* A `ClusterResourceOverride` object named `cluster` exists.
+* You are bound to the `admin` or `edit` role in the target project.
+* The target project is not a system namespace. System namespaces are `openshift`, `kube`, and `kubernetes`, and any namespace whose name starts with `openshift-`, `kube-`, or `kubernetes-`.
+* If you set `memoryRequestToLimitPercent`, `cpuRequestToLimitPercent`, or `limitCPUToMemoryPercent`, default container limits are specified in a `LimitRange` object for the project, or limits are configured in `Pod` specs.
+* If you set `cpuRequestToRequestPercent`, containers specify a CPU request. A CPU limit is not required for that field.
+
+.Procedure
+
+. Confirm that the `ClusterResourceOverride` object named `cluster` exists:
++
+[source,terminal]
+----
+$ oc get clusterresourceoverride cluster
+----
++
+Keep the object name `cluster`. Cluster-wide overcommit uses that name.
+
+. Confirm that the application namespace is opted in:
++
+[source,terminal]
+----
+$ oc get namespace <namespace_name> --show-labels
+----
++
+The output includes `clusterresourceoverrides.admission.autoscaling.openshift.io/enabled=true`.
++
+.Example output
+[source,terminal]
+----
+NAME           STATUS   AGE   LABELS
+my-namespace   Active   39s   clusterresourceoverrides.admission.autoscaling.openshift.io/enabled=true
+----
++
+If the label is missing, add it:
++
+[source,terminal]
+----
+$ oc label namespace <namespace_name> clusterresourceoverrides.admission.autoscaling.openshift.io/enabled=true
+----
++
+where:
++
+--
+`<namespace_name>`:: Specifies the namespace to opt in.
+--
+
+. Create a `ResourceOverride` object in the opted-in namespace.
++
+[IMPORTANT]
+====
+If you omit `spec.podSelector` or set `podSelector: {}`, the project ratios replace the cluster-wide configuration for every new pod in that namespace. The webhook does not merge the two objects field by field.
+====
++
+To change only some pods, set `spec.podSelector`. Pods that do not match the selector keep the cluster-wide ratios.
+
+.. Create a file named `resourceoverride.yaml`:
++
+[source,yaml]
+----
+apiVersion: autoscaling.openshift.io/v1
+kind: ResourceOverride
+metadata:
+  name: example
+  namespace: my-namespace
+spec:
+  podResourceOverride:
+    memoryRequestToLimitPercent: 50
+    cpuRequestToRequestPercent: 50
+  podSelector:
+    matchLabels:
+      workload-type: batch
+----
++
+where:
++
+--
+`metadata.name`:: Specifies a name for the object in the project. If more than one object matches a pod, the webhook applies the object whose name comes first in alphabetical order.
+`metadata.namespace`:: Specifies the project that contains the pods to change. Replace `my-namespace` with your project name.
+`spec.podResourceOverride`:: Specifies the override ratios. Place the ratio fields directly under `spec.podResourceOverride`. Do not add another `spec` key. On the cluster-wide `ClusterResourceOverride` object, these fields are under `spec.podResourceOverride.spec`.
+`spec.podResourceOverride.memoryRequestToLimitPercent`:: Specifies the percentage of the container memory limit to use as the memory request, between 1-100. If you omit this field, the memory request is not overridden. This parameter is optional.
+`spec.podResourceOverride.cpuRequestToRequestPercent`:: Specifies the percentage of the original CPU request to set as the new CPU request, between 1-100. Omit this field to leave request-relative CPU override disabled. This parameter is optional and has no default. A CPU limit is not required.
+`spec.podSelector.matchLabels`:: Specifies labels that a pod must have to use these ratios. Omit `spec.podSelector` if every new pod in the namespace should use these ratios.
+--
+
+.. Create the object:
++
+[source,terminal]
+----
+$ oc create -f resourceoverride.yaml
+----
+
+.Verification
+
+. List `ResourceOverride` objects in the project:
++
+[source,terminal]
+----
+$ oc get resourceoverride -n my-namespace
+----
++
+.Example output
+[source,terminal]
+----
+NAME      AGE
+example   15s
+----
+
+. Confirm that the object is valid and that the namespace is opted in:
++
+[source,terminal]
+----
+$ oc get resourceoverride example -n my-namespace -o yaml
+----
++
+For a valid object in an opted-in namespace, `status.conditions` includes `Ignored` and `ValidationFailure` with status `False`.
++
+.Example output
+[source,yaml]
+----
+status:
+  conditions:
+  - status: "False"
+    type: Ignored
+  - status: "False"
+    type: ValidationFailure
+----
++
+If `Ignored` is `True` with reason `NamespaceNotOptedIn`, add the namespace label and get the object again. For more information about status conditions, see "ResourceOverride custom resource fields".
+
+. Create a pod that matches the selector and confirm the admitted requests.
++
+The following pod requests `200m` of CPU and limits memory to `512Mi`. With `cpuRequestToRequestPercent` set to `50` and `memoryRequestToLimitPercent` set to `50`, the admitted pod requests `100m` of CPU and `256Mi` of memory.
++
+.. Create a file named `hello-pod.yaml`:
++
+[source,yaml]
+----
+apiVersion: v1
+kind: Pod
+metadata:
+  name: hello-openshift
+  namespace: my-namespace
+  labels:
+    workload-type: batch
+spec:
+  containers:
+  - name: hello-openshift
+    image: openshift/hello-openshift
+    resources:
+      requests:
+        cpu: 200m
+      limits:
+        memory: 512Mi
+----
+
+.. Create the pod:
++
+[source,terminal]
+----
+$ oc create -f hello-pod.yaml
+----
+
+.. View the admitted CPU and memory requests:
++
+[source,terminal]
+----
+$ oc get pod hello-openshift -n my-namespace -o jsonpath='{.spec.containers[0].resources.requests.cpu}{"\n"}{.spec.containers[0].resources.requests.memory}{"\n"}'
+----
++
+.Example output
+[source,terminal]
+----
+100m
+256Mi
+----
