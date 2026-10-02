@@ -1,0 +1,307 @@
+// Module included in the following assemblies:
+//
+// * service-mesh-docs-main/install/ossm-SPIRE.adoc
+
+:_mod-docs-content-type: PROCEDURE
+[id="ossm-SPIRE-verify-federated-workloads_{context}"]
+= Verify workload communication across SPIRE-federated clusters
+
+[role="_abstract"]
+
+Deploy test applications on both clusters and verify that they can communicate securely across cluster boundaries by using SPIFFE identities from different trust domains.
+This procedure validates that SPIRE federation enables cross-cluster mTLS authentication.
+
+.Prerequisites
+
+* You have enabled cross-cluster service discovery by creating remote secrets on both clusters.
+* You have set the required environment variables for both clusters.
+
+.Procedure
+
+. Create a sample namespace on Cluster B with sidecar injection enabled:
++
+[source,terminal]
+----
+$ export KUBECONFIG="${CLUSTER_B_KUBECONFIG}"
+$ oc create namespace sample
+$ oc label namespace sample istio-injection=enabled topology.istio.io/network=cluster-b
+----
+
+. Deploy a cross-network gateway on Cluster B:
++
+[source,terminal]
+----
+$ cat <<EOF | oc apply -f -
+apiVersion: networking.istio.io/v1
+kind: Gateway
+metadata:
+  name: cross-network-gateway
+  namespace: ${OSSM_NS}
+spec:
+  selector:
+    istio: eastwestgateway
+  servers:
+  - port:
+      number: 15443
+      name: tls
+      protocol: TLS
+    tls:
+      mode: AUTO_PASSTHROUGH
+    hosts:
+    - "*.local"
+EOF
+----
+
+. Deploy the helloworld service on Cluster B:
++
+[source,terminal]
+----
+$ cat <<EOF | oc apply -f -
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: helloworld
+  namespace: sample
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: helloworld
+  namespace: sample
+  labels:
+    app: helloworld
+spec:
+  ports:
+  - port: 5000
+    name: http
+  selector:
+    app: helloworld
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: helloworld-v1
+  namespace: sample
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: helloworld
+      version: v1
+  template:
+    metadata:
+      annotations:
+        inject.istio.io/templates: "sidecar,spire"
+        spiffe.io/audience: "federated-mesh-demo"
+      labels:
+        app: helloworld
+        version: v1
+    spec:
+      serviceAccountName: helloworld
+      containers:
+      - name: helloworld
+        image: docker.io/istio/examples-helloworld-v1
+        resources:
+          requests:
+            cpu: "100m"
+        imagePullPolicy: IfNotPresent
+        ports:
+        - containerPort: 5000
+EOF
+$ oc wait --for=condition=Available deployment/helloworld-v1 -n sample --timeout=300s
+----
+
+. Create a sample namespace on Cluster A with sidecar injection enabled:
++
+[source,terminal]
+----
+$ export KUBECONFIG="${CLUSTER_A_KUBECONFIG}"
+$ oc create namespace sample
+$ oc label namespace sample istio-injection=enabled topology.istio.io/network=cluster-a
+----
+
+. Deploy a cross-network gateway on Cluster A:
++
+[source,terminal]
+----
+$ cat <<EOF | oc apply -f -
+apiVersion: networking.istio.io/v1
+kind: Gateway
+metadata:
+  name: cross-network-gateway
+  namespace: ${OSSM_NS}
+spec:
+  selector:
+    istio: eastwestgateway
+  servers:
+  - port:
+      number: 15443
+      name: tls
+      protocol: TLS
+    tls:
+      mode: AUTO_PASSTHROUGH
+    hosts:
+    - "*.local"
+EOF
+----
+
+. Deploy the sleep client application on Cluster A:
++
+[source,terminal]
+----
+$ cat <<EOF | oc apply -f -
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: sleep
+  namespace: sample
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: sleep
+  namespace: sample
+  labels:
+    app: sleep
+spec:
+  ports:
+  - port: 80
+    name: http
+  selector:
+    app: sleep
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: sleep
+  namespace: sample
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: sleep
+  template:
+    metadata:
+      annotations:
+        inject.istio.io/templates: "sidecar,spire"
+        spiffe.io/audience: "federated-mesh-demo"
+      labels:
+        app: sleep
+    spec:
+      terminationGracePeriodSeconds: 0
+      serviceAccountName: sleep
+      containers:
+      - name: sleep
+        image: curlimages/curl:8.16.0
+        command:
+        - /bin/sh
+        - -c
+        - sleep inf
+        imagePullPolicy: IfNotPresent
+EOF
+$ oc wait --for=condition=Available deployment/sleep -n sample --timeout=300s
+----
+
+. Patch the sleep deployment on Cluster A to use the SPIRE injection template:
++
+[source,terminal]
+----
+$ oc patch deployment sleep -n sample \
+  --type='merge' \
+  -p '{"spec":{"template":{"metadata":{"annotations":{"inject.istio.io/templates":"sidecar,spire","spiffe.io/audience":"federated-mesh-demo"}}}}}'
+----
+
+. Patch the helloworld deployment on Cluster B to use the SPIRE injection template:
++
+[source,terminal]
+----
+$ export KUBECONFIG="${CLUSTER_B_KUBECONFIG}"
+$ oc patch deployment helloworld-v1 -n sample \
+  --type='merge' \
+  -p '{"spec":{"template":{"metadata":{"annotations":{"inject.istio.io/templates":"sidecar,spire","spiffe.io/audience":"federated-mesh-demo"}}}}}'
+----
+
+. Apply strict mTLS policy on both clusters:
++
+[source,terminal]
+----
+$ export KUBECONFIG="${CLUSTER_A_KUBECONFIG}"
+$ cat <<EOF | oc apply -f -
+apiVersion: security.istio.io/v1beta1
+kind: PeerAuthentication
+metadata:
+  name: default
+  namespace: sample
+spec:
+  mtls:
+    mode: STRICT
+EOF
+
+$ export KUBECONFIG="${CLUSTER_B_KUBECONFIG}"
+$ cat <<EOF | oc apply -f -
+apiVersion: security.istio.io/v1beta1
+kind: PeerAuthentication
+metadata:
+  name: default
+  namespace: sample
+spec:
+  mtls:
+    mode: STRICT
+EOF
+----
+
+.Verification
+
+. Verify that the SPIFFE identities from the two clusters use different trust domains:
++
+[source,terminal]
+----
+$ export KUBECONFIG="${CLUSTER_A_KUBECONFIG}"
+$ SLEEP_POD=$(oc get pod -l app=sleep -n sample -o jsonpath="{.items[0].metadata.name}")
+$ istioctl proxy-config secret "$SLEEP_POD" -n sample -o json \
+  | jq -r '.dynamicActiveSecrets[0].secret.tlsCertificate.certificateChain.inlineBytes' \
+  | base64 --decode > sleep-chain.pem
+$ openssl x509 -in sleep-chain.pem -text | grep URI
+----
++
+The output shows the SPIFFE ID with Cluster A's trust domain, for example:
++
+[source,terminal]
+----
+URI:spiffe://cluster-a.example.com/ns/sample/sa/sleep
+----
+
+. Verify the helloworld SPIFFE identity on Cluster B:
++
+[source,terminal]
+----
+$ export KUBECONFIG="${CLUSTER_B_KUBECONFIG}"
+$ HELLO_POD=$(oc get pod -l app=helloworld -n sample -o jsonpath="{.items[0].metadata.name}")
+$ istioctl proxy-config secret "$HELLO_POD" -n sample -o json \
+  | jq -r '.dynamicActiveSecrets[0].secret.tlsCertificate.certificateChain.inlineBytes' \
+  | base64 --decode > hello-chain.pem
+$ openssl x509 -in hello-chain.pem -text | grep URI
+----
++
+The output shows the SPIFFE ID with Cluster B's trust domain, for example:
++
+[source,terminal]
+----
+URI:spiffe://cluster-b.example.com/ns/sample/sa/helloworld
+----
+
+. Test cross-cluster connectivity from Cluster A to Cluster B:
++
+[source,terminal]
+----
+$ export KUBECONFIG="${CLUSTER_A_KUBECONFIG}"
+$ SLEEP_POD=$(oc get pod -l app=sleep -n sample -o jsonpath="{.items[0].metadata.name}")
+$ oc exec $SLEEP_POD -n sample -it -- curl -s -o /dev/null -w "%{http_code}" http://helloworld.sample:5000/hello
+----
++
+An HTTP 200 response confirms that:
+
+* The sleep client on Cluster A successfully obtained a SPIFFE identity from Cluster A's SPIRE server.
+* The helloworld service on Cluster B successfully obtained a SPIFFE identity from Cluster B's SPIRE server.
+* Federation enabled the workloads to verify each other's identities across trust domains.
+* Cross-cluster mTLS communication is working correctly.
