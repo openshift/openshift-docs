@@ -1,0 +1,252 @@
+// Module included in the following assemblies:
+//
+// * service-mesh-docs-main/install/ossm-SPIRE.adoc
+
+:_mod-docs-content-type: PROCEDURE
+[id="ossm-SPIRE-install-istio-federated_{context}"]
+= Install Istio on SPIRE-federated clusters
+
+[role="_abstract"]
+Deploy the {istio} control plane on both clusters with SPIRE integration enabled.
+Configure each cluster's {istio} CR to reference both local and federated SPIRE bundle endpoints, enabling cross-cluster workload identity verification.
+
+.Prerequisites
+
+* The {SMProduct} Operator is installed on both clusters.
+* The {istio} CNI is installed on both clusters.
+* You have enabled and verified SPIRE federation between the clusters.
+* You have set the required environment variables for both clusters.
+
+.Procedure
+
+. Retrieve the federation bundle endpoint URL for Cluster A:
++
+[source,terminal]
+----
+$ export KUBECONFIG="${CLUSTER_A_KUBECONFIG}"
+$ export BUNDLE_ENDPOINT_A="https://spire-server-bundle.${ZTWIM_NS}.$(oc get ingresses.config/cluster -o jsonpath={.spec.domain}):8443"
+----
+
+. Retrieve the federation bundle endpoint URL for Cluster B:
++
+[source,terminal]
+----
+$ export KUBECONFIG="${CLUSTER_B_KUBECONFIG}"
+$ export BUNDLE_ENDPOINT_B="https://spire-server-bundle.${ZTWIM_NS}.$(oc get ingresses.config/cluster -o jsonpath={.spec.domain}):8443"
+----
+
+. Extract the SPIRE OIDC root CA certificate for Cluster A:
++
+[source,terminal]
+----
+$ export KUBECONFIG="${CLUSTER_A_KUBECONFIG}"
+$ export EXTRA_ROOT_CA_A="$(oc get secret oidc-serving-cert \
+                           -n ${ZTWIM_NS} -o json | \
+                           jq -r '.data."tls.crt"' | \
+                           base64 -d | \
+                           sed 's/^/        /')"
+----
+
+. Define the JWT issuer URL for Cluster A:
++
+[source,terminal]
+----
+$ export JWT_ISSUER_A="https://oidc-discovery.$(oc get ingresses.config/cluster -o jsonpath={.spec.domain})"
+----
+
+. Create the {istio} CR on Cluster A:
++
+[source,terminal]
+----
+$ oc new-project "${OSSM_NS}" 2>/dev/null
+$ cat <<EOF | oc apply -f -
+apiVersion: sailoperator.io/v1
+kind: Istio
+metadata:
+  name: default
+  namespace: ${OSSM_NS}
+spec:
+  namespace: ${OSSM_NS}
+  updateStrategy:
+    type: InPlace
+  values:
+    pilot:
+      jwksResolverExtraRootCA: |
+${EXTRA_ROOT_CA_A}
+      env:
+        PILOT_JWT_ENABLE_REMOTE_JWKS: "true"
+    meshConfig:
+      trustDomain: ${TRUST_DOMAIN_A}
+      defaultConfig:
+        proxyMetadata:
+          WORKLOAD_IDENTITY_SOCKET_FILE: "spire-agent.sock"
+      trustDomainBundles:
+        ${TRUST_DOMAIN_A}: ${BUNDLE_ENDPOINT_A}
+        ${TRUST_DOMAIN_B}: ${BUNDLE_ENDPOINT_B}
+    sidecarInjectorWebhook:
+      templates:
+        spire: |
+          spec:
+            initContainers:
+            - name: istio-proxy
+              volumeMounts:
+              - name: workload-socket
+                mountPath: /run/secrets/workload-spiffe-uds
+                readOnly: true
+            volumes:
+              - name: workload-socket
+                csi:
+                  driver: "csi.spiffe.io"
+                  readOnly: true
+        spireGateway: |
+          spec:
+            containers:
+            - name: istio-proxy
+              volumeMounts:
+              - name: workload-socket
+                mountPath: /run/secrets/workload-spiffe-uds
+                readOnly: true
+            volumes:
+              - name: workload-socket
+                csi:
+                  driver: "csi.spiffe.io"
+                  readOnly: true
+EOF
+$ until oc get deployment istiod -n "${OSSM_NS}" &> /dev/null; do sleep 3; done
+$ oc wait --for=condition=Available deployment/istiod -n "${OSSM_NS}" --timeout=300s
+----
++
+The `trustDomainBundles` section references both the local bundle endpoint and the federated cluster's bundle endpoint, enabling {istio} to verify identities from both trust domains.
+
+. Extract the SPIRE OIDC root CA certificate for Cluster B:
++
+[source,terminal]
+----
+$ export KUBECONFIG="${CLUSTER_B_KUBECONFIG}"
+$ export EXTRA_ROOT_CA_B="$(oc get secret oidc-serving-cert \
+                           -n ${ZTWIM_NS} -o json | \
+                           jq -r '.data."tls.crt"' | \
+                           base64 -d | \
+                           sed 's/^/        /')"
+----
+
+. Define the JWT issuer URL for Cluster B:
++
+[source,terminal]
+----
+$ export JWT_ISSUER_B="https://oidc-discovery.$(oc get ingresses.config/cluster -o jsonpath={.spec.domain})"
+----
+
+. Create the {istio} CR on Cluster B with federation bundle endpoints:
++
+[source,terminal]
+----
+$ oc new-project "${OSSM_NS}" 2>/dev/null
+$ cat <<EOF | oc apply -f -
+apiVersion: sailoperator.io/v1
+kind: Istio
+metadata:
+  name: default
+  namespace: ${OSSM_NS}
+spec:
+  namespace: ${OSSM_NS}
+  updateStrategy:
+    type: InPlace
+  values:
+    pilot:
+      jwksResolverExtraRootCA: |
+${EXTRA_ROOT_CA_B}
+      env:
+        PILOT_JWT_ENABLE_REMOTE_JWKS: "true"
+    meshConfig:
+      trustDomain: ${TRUST_DOMAIN_B}
+      defaultConfig:
+        proxyMetadata:
+          WORKLOAD_IDENTITY_SOCKET_FILE: "spire-agent.sock"
+      trustDomainBundles:
+        ${TRUST_DOMAIN_A}: ${BUNDLE_ENDPOINT_A}
+        ${TRUST_DOMAIN_B}: ${BUNDLE_ENDPOINT_B}
+    sidecarInjectorWebhook:
+      templates:
+        spire: |
+          spec:
+            initContainers:
+            - name: istio-proxy
+              volumeMounts:
+              - name: workload-socket
+                mountPath: /run/secrets/workload-spiffe-uds
+                readOnly: true
+            volumes:
+              - name: workload-socket
+                csi:
+                  driver: "csi.spiffe.io"
+                  readOnly: true
+        spireGateway: |
+          spec:
+            containers:
+            - name: istio-proxy
+              volumeMounts:
+              - name: workload-socket
+                mountPath: /run/secrets/workload-spiffe-uds
+                readOnly: true
+            volumes:
+              - name: workload-socket
+                csi:
+                  driver: "csi.spiffe.io"
+                  readOnly: true
+EOF
+$ until oc get deployment istiod -n "${OSSM_NS}" &> /dev/null; do sleep 3; done
+$ oc wait --for=condition=Available deployment/istiod -n "${OSSM_NS}" --timeout=300s
+----
+
+. Install the East-West gateway on Cluster A for cross-cluster mesh traffic:
++
+[source,terminal]
+----
+$ export KUBECONFIG="${CLUSTER_A_KUBECONFIG}"
+$ oc adm policy add-scc-to-user anyuid system:serviceaccount:${OSSM_NS}:istio-eastwestgateway
+$ helm repo add istio https://istio-release.storage.googleapis.com/charts
+$ helm repo update
+$ helm install istio-eastwestgateway -n "${OSSM_NS}" \
+  istio/gateway \
+  --set service.type=LoadBalancer \
+  --set-json 'podAnnotations={"inject.istio.io/templates":"gateway,spireGateway"}' \
+  --set-json 'labels={"istio":"eastwestgateway","topology.istio.io/network":"cluster-a"}'
+$ oc wait --for=condition=Available deployment/istio-eastwestgateway -n "${OSSM_NS}" --timeout=300s
+----
+
+. Install the East-West gateway on Cluster B:
++
+[source,terminal]
+----
+$ export KUBECONFIG="${CLUSTER_B_KUBECONFIG}"
+$ oc adm policy add-scc-to-user anyuid system:serviceaccount:${OSSM_NS}:istio-eastwestgateway
+$ helm install istio-eastwestgateway -n "${OSSM_NS}" \
+  istio/gateway \
+  --set service.type=LoadBalancer \
+  --set-json 'podAnnotations={"inject.istio.io/templates":"gateway,spireGateway"}' \
+  --set-json 'labels={"istio":"eastwestgateway","topology.istio.io/network":"cluster-b"}'
+$ oc wait --for=condition=Available deployment/istio-eastwestgateway -n "${OSSM_NS}" --timeout=300s
+----
++
+The East-West gateways enable cross-cluster service mesh traffic and obtain SPIFFE identities from SPIRE through the `spireGateway` injection template.
+
+.Verification
+
+. Verify the {istio} control plane is running on Cluster A:
++
+[source,terminal]
+----
+$ export KUBECONFIG="${CLUSTER_A_KUBECONFIG}"
+$ oc get pods -n ${OSSM_NS}
+----
+
+. Verify the {istio} control plane is running on Cluster B:
++
+[source,terminal]
+----
+$ export KUBECONFIG="${CLUSTER_B_KUBECONFIG}"
+$ oc get pods -n ${OSSM_NS}
+----
++
+All pods should show `Running` status before proceeding to the next step.
