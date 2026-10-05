@@ -11,23 +11,166 @@ After installing the HTTP Add-on, you configure per-application autoscaling by c
 
 .Prerequisites
 
-* The KEDA HTTP Add-on is installed and the interceptor and scaler pods are running in the `openshift-keda` namespace.
+* The HTTP Add-on is installed in your cluster.
 
-* You have an HTTP-based application deployed in {product-title} as a deployment.
+* You have access to a terminal with the `oc` command-line tool installed and authenticated to your {product-title} cluster.
 
-* Your application is exposed through a service. The service name and port are known.
-
-* Your application is exposed externally through a route. The route initially points to your application service. In this procedure, you will update the route to send traffic to the interceptor service instead of directly to your application.
-
-* You have permissions to create `ScaledObject` and `InterceptorRoute` custom resources in your application's namespace.
-
-* You understand your application's expected traffic patterns and have estimated appropriate activation and scaling thresholds.
+* You have permissions to create deployment, service, route, interceptor route, and scaledbject` custom resources in the `default` namespace.
 
 .Procedure
 
-. Create an `InterceptorRoute` custom resource to define traffic routing and metrics collection for your application.
+. Create a namespace for the example application by running the following command:
++
+[source,terminal]
+----
+$ oc new-project <namespace>
+----
++
+Replace `<namespace>` with the name of your namespace.
 
-.. Create a file named `interceptor-route.yaml` with the following content, replacing the example values with your actual configuration:
+. Create a sample HTTP application deployment.
+
+.. Create a file with the following content:
++
+[source,yaml]
+----
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: sample-http-app
+  namespace: http-add-on-example
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: sample-http-app
+  template:
+    metadata:
+      labels:
+        app: sample-http-app
+    spec:
+      containers:
+      - name: app
+        image: openshift/hello-openshift
+        ports:
+        - containerPort: 8080
+        resources:
+          requests:
+            cpu: 100m
+            memory: 128Mi
+          limits:
+            cpu: 500m
+            memory: 256Mi
+----
+
+.. Create the deployment:
++
+[source,terminal]
+----
+$ oc create -f <file_name>.yaml
+----
+
+.. Verify the deployment is operating by running the following command:
++
+[source,terminal]
+----
+$ oc get pods -n <namespace>
+----
++
+Replace `<namespace>` with the name of your namespace.
++
+.Example output
+[source,terminal]
+----
+NAME                               READY   STATUS    RESTARTS   AGE
+sample-http-app-5fc8679bf4-prb46   1/1     Running   0          6m57s
+----
+
+. Create a service to expose the application:
+
+.. Create a file with the following content:
++
+[source,yaml]
+----
+apiVersion: v1
+kind: Service
+metadata:
+  name: sample-http-app
+  namespace: http-add-on-example
+spec:
+  selector:
+    app: sample-http-app
+  ports:
+  - name: http
+    port: 8080
+    targetPort: 8080
+    protocol: TCP
+----
+
+.. Create the service:
++
+[source,terminal]
+----
+$ oc create -f <file_name>.yaml
+----
+
+.. Verify the service was created by running the following command:
++
+[source,terminal]
+----
+$ oc get service -n  -n <namespace>
+----
++
+Replace `<namespace>` with the name of your namespace.
++
+.Expected output
+[source,terminal]
+----
+NAME              TYPE        CLUSTER-IP       EXTERNAL-IP   PORT(S)    AGE
+sample-http-app   ClusterIP   172.30.154.127   <none>        8080/TCP   6m19s
+----
+
+. Create a route to expose the application externally.
+
+.. Create the route that uses edge termination in the `openshift-keda` namespace by running the following command:
++
+[source,yaml]
+----
+oc create route edge <name> \
+  --service=keda-add-ons-http-interceptor-proxy \
+  --port=proxy \
+  -n openshift-keda
+----
++
+where:
++
+--
+* Replace `<name>` with a name of your route.
+* `service=keda-add-ons-http-interceptor-proxy` specifies the service you want to expose. This must be `keda-add-ons-http-interceptor-proxy`.
+* `port=proxy` specifies the port on the `keda-add-ons-http-interceptor-proxy` that the route uses. Specifying `proxy` sets the port to `8080`. With a route that uses edge termination, the port must be `8080`.
+* `openshift-keda` specifies the namespace where your route is located. This must be `openshift-keda`.
+--
++
+Leave `spec.host` parameter unset to allow the cluster to assigns the host host name on the apps domain.
+
+.. Get the route host name to use in the following step by running the following command:
++
+[source,terminal]
+----
+$ oc get route <route_name> -n openshift-keda -o jsonpath={.spec.host}
+----
++
+Replace `<route_name>` with the name of the route.
++
+.Example output
+[source,terminal]
+----
+sample-http-app-openshift-keda.apps.ci-ln-wszd8jt-72292.origin-ci-int-gce.dev.rhcloud.com
+----
+
+. Create an `InterceptorRoute` custom resource to intercept traffic:
+
+.. Create a file with the following content:
 +
 [source,yaml]
 ----
@@ -35,58 +178,67 @@ apiVersion: http.keda.sh/v1beta1
 kind: InterceptorRoute
 metadata:
   name: sample-app-interceptor
-  namespace: my-namespace
+  namespace: http-add-on-example
 spec:
   rules:
     - hosts:
-        - my-app-proxy-openshift-keda.apps.ci-ln-22h2fyk-72292.gcp-3.ci.openshift.org
+        - sample-http-app-openshift-keda.apps.ci-ln-74rphxb-72292.gcp-3.ci.openshift.org
   target:
-    service: sample-app
-    port: 80
+    service: sample-http-app
+    port: 8080
   scalingMetric:
     requestRate:
-      targetValue: 100
-    concurrency:
-      targetValue: 100
+      targetValue: 5
+      window: 10s
+      granularity: 1s
 ----
 +
 Modify the following fields for your application:
 
 * `metadata.name`: Specifies a descriptive name for this interceptor route.
 * `metadata.namespace`: Specifies the namespace where your application is deployed.
-* `spec.rules.hosts`: Specifies the hostname(s) where traffic arrives for your application from your route or ingress.
+* `spec.rules.hosts`: Specifies the host name where traffic arrives for your application from your route or ingress. Use the host name from the previous step.
 * `spec.target.service`: Specifies the name of your application's service.
 * `spec.target.port`: Specifies the port exposed by the Kubernetes service. For example, if the service exposes port `80` and forwards to `targetPort: 8080`, the interceptor route must use port `80`.
-* `spec.scalingMetric`. Specifies the default metric thresholds. Specify either requests per second (`rps`) or concurrent request count (`concurrency`) or both:
-** `requestRate`. The `requestRate` metric measures incoming requests averaged over a measurement window. The baseline `requestRate` value is used as the scaling reference.
-** `concurrency`. The `concurrency` metric measures in-flight HTTP requests. The baseline `concurrency` value is used as the scaling reference.
+* `spec.scalingMetric`. Specifies the default metric thresholds. Specify either requests per second (`requestRate`) or concurrent request count (`concurrency`) or both:
+** `requestRate`. The `requestRate` metric measures incoming requests averaged over a measurement window. The baseline `requestRate` value is used as the scaling reference. You can set the following paramters:
++
+--
+* `targetValue` specifies how much traffic each replica should handle. The horizontal pod autoscaler adds replicas when the average load per pod rises above that number.
+* `window` is the sliding time window over which the average request rate is calculated. The default is 1 minute. 
+* `granularity` is the bucket size within that window. The default is 1 second. Smaller granularity makes scaling more responsive but also more sensitive to burst traffic.
+--
+
+** `concurrency`. The `concurrency` metric measures in-flight HTTP requests. The baseline `concurrency` value is used as the scaling reference. For `concurrency` you can set `targetValue`. The `window` and `granularity` parameters are not available.
 
 .. Create the interceptor route by running the following command:
 +
 [source,terminal]
 ----
-$ oc create -f interceptor-route.yaml
+$ oc create -f <file_name>.yaml
 ----
 
-.. Verify that the interceptor route was created by running the following command:
+.. Verify the interceptor route is created by running the following command:
 +
 [source,terminal]
 ----
-$ oc get interceptorroute -n <namespace_name>
+$ oc get interceptorroute <route_name> -n <namespace_name>
 ----
 +
-Replace `<namespace_name>` with a name for your namespace.
+Replace `<route_name>` with the name of the interceptor route and `<namespace_name>` with the namespace where the interceptor route was created.
 +
-.Example output
+.Expected output
 [source,terminal]
 ----
-NAME         TARGETSERVICE           READY   AGE
-sample-app   sample-app-interceptor  True    48s
+NAME                     TARGETSERVICE     READY   AGE
+sample-app-interceptor   sample-http-app   True    11s
 ----
++
+Wait until the route interceptor is the `READY:True` state.
 
-. Create a `ScaledObject` custom resource to configure autoscaling for your deployment.
+. Create a `ScaledObject` to configure scaling:
 
-.. Create a file named `scaled-object.yaml` with the following content:
+.. Create a file with the following content:
 +
 [source,yaml]
 ----
@@ -94,13 +246,13 @@ apiVersion: keda.sh/v1alpha1
 kind: ScaledObject
 metadata:
   name: sample-app-scaler
-  namespace: my-namespace
+  namespace: http-add-on-example
 spec:
   scaleTargetRef:
-    name: sample-app
+    name: sample-http-app
   minReplicaCount: 0
   maxReplicaCount: 10
-  cooldownPeriod: 300
+  cooldownPeriod: 30
   triggers:
     - type: external-push
       metadata:
@@ -124,153 +276,127 @@ Modify the following fields for your application:
 +
 [source,terminal]
 ----
-$ oc create -f scaled-object.yaml
+$ oc apply -f <file_name>.yaml
 ----
 
-.. Verify that the scaled object was created by running the following command:
+.. Verify the scaled object is created by running the following command:
 +
 [source,terminal]
 ----
-$ oc get scaledobject -n <namespace_name>
+$ oc get scaledobject <object_name> -n <namespace_name>
 ----
 +
-Replace `<namespace_name>` with a name for your namespace.
+Replace `<object_name>` with the name of the interceptor route and `<namespace_name>` with the namespace where the interceptor route was created.
 +
 .Example output
 [source,terminal]
 ----
-NAME         SCALETARGETKIND   SCALETARGETNAME   MIN   MAX   READY   ACTIVE    FALLBACK   PAUSED   TRIGGERS   AUTHENTICATIONS   AGE
-sample-app                     sample-app        0     10    TRUE    TRUE      False      False                                 10m
+NAME                SCALETARGETKIND      SCALETARGETNAME   MIN   MAX   READY   ACTIVE    FALLBACK   PAUSED   TRIGGERS        AUTHENTICATIONS   AGE
+sample-app-scaler   apps/v1.Deployment   sample-http-app   0     10    True    Unknown   False      False    external-push                     12s
 ----
-
-. Update your route or ingress to point traffic through the HTTP Add-on interceptor. External cluster traffic must target the KEDA Interceptor Proxy Service instead of your application directly.
-
-.. Get the interceptor service endpoint by running the following command:
-+
-[source,terminal]
-----
-$ oc get svc -n openshift-keda | grep interceptor
-----
-+
-.Example output
-[source,terminal]
-----
-keda-add-ons-http-interceptor-admin     ClusterIP   172.30.193.173   <none>        9090/TCP            47m
-keda-add-ons-http-interceptor-metrics   ClusterIP   172.30.54.183    <none>        2223/TCP            47m
-keda-add-ons-http-interceptor-proxy     ClusterIP   172.30.157.1     <none>        8080/TCP,8443/TCP   47m
-----
-
-.. Create a route to expose your application by running the following command:
-+
-[source,terminal]
-----
-oc create route edge my-app-proxy \
-  --service=keda-add-ons-http-interceptor-proxy \
-  --port=proxy \
-  --namespace openshift-keda
-----
-+
-where:
-
-`my-app-proxy`:: Specifies the name of your route.
-`keda-add-ons-http-interceptor-proxy`:: Specifies the service you want to expose.
-`openshift-keda`:: Specifies the namespace where your route is located.
-
-. Verify that the configuration is working correctly.
-
-.. Check the HPA created by the scaled object:
-+
-[source,terminal]
-----
-$ oc get hpa keda-hpa-sample-app-scaler -n default
-----
-+
-.Example output
-[source,terminal]
-----
-NAME               REFERENCE                 TARGETS        MINPODS   MAXPODS   REPLICAS   AGE
-sample-app-scaler  Deployment/my-app         123m/100       0         10        1          2m
-----
-
-.. Inspect the HPA for metric values by running the following command:
-+
-[source,terminal]
-----
-$ 
-----
-
-.. Verify that your deployment's replica count matches the expected scaling behavior by checking the pod count:
-+
-[source,terminal]
-----
-$ oc get pods sample-app -n default | grep my-app
-----
-
-.. Check the scaled object status to verify it is active:
-+
-[source,terminal]
-----
-$ oc describe scaledobject sample-app-scaler -n default
-----
-+
-The status should show `status.conditions.Active` and provide information about the current metric values.
 
 .Verification
 
-. Monitor scaling behavior by generating traffic to your application.
+. Verify the autoscaling configuration is active:
 
-.. Send test requests to your application using curl or a load testing tool:
+.. Verify that the deployment currently has zero replicas by running the following command:
 +
 [source,terminal]
 ----
-$ curl http://my-app.example.com
+$ oc get deployment <deployment_name> -n <namespace_name>
 ----
++
+Replace `<deployment_name>` with the name of the deployment and `<namespace_name>` with the namespace where the deployment was created.
++
+.Expected output
+[source,terminal]
+----
+NAME               READY   UP-TO-DATE   AVAILABLE   AGE
+sample-http-app    0/0     0            0           5m
+----
++
+There are no replicas because there is no traffic going to the application.
 
-.. Watch the replica count change in response to traffic:
+.. Check that an HPA was created by the scaled object by running the following command:
 +
 [source,terminal]
 ----
-$ oc get pods -n default -w | grep my-app
+$ oc get hpa -n <namespace_name>
 ----
 +
-When traffic exceeds the activation threshold, the deployment should scale from zero to one replica. As traffic increases further, it should scale to additional replicas based on the configured threshold.
+Replace `<namespace_name>` with the namespace where the scaled object was created.
++
+.Example output
+[source,terminal]
+----
+NAME                         REFERENCE                    TARGETS             MINPODS   MAXPODS   REPLICAS   AGE
+keda-hpa-sample-app-scaler   Deployment/sample-http-app   <unknown>/5 (avg)   1         10        0          117s
+----
++
+The target is `unknown` because the deployment has no replicas.
 
-. View scaling events in the HPA status:
+. Generate traffic to observe autoscaling behavior by running the following command:
+
+.. Run the following script to generate HTTP traffic to your cluster. This creates concurrent requests that can be monitored in your metrics dashboard:
 +
 [source,terminal]
 ----
-$ oc describe hpa keda-my-app-scaler -n default | tail -20
+for i in $(seq 1 30); do
+  for j in $(seq 1 20); do
+    curl -sk "https://<host_name>/"/dev/null &
+  done
+  wait
+done
 ----
 +
-This shows recent scaling events and the current metric values.
+The curl command in this example sends one HTTP request to the route and prints the response, generating 600 total HTTP requests, 30 batches with 20 concurrent requests per batch, to populate performance metrics. 
 
-. Verify that the interceptor is correctly collecting metrics:
+.. Watch the deployment scale up in response to traffic by running the following command:
 +
 [source,terminal]
 ----
-$ oc logs -n openshift-keda -l app=http-add-on-interceptor | head -50
+$ oc get deployment <deployment_name> -n <namespace_name>
 ----
 +
-The logs should show that the interceptor is receiving and forwarding traffic.
+Replace `<deployment_name>` with the name of the deployment and `<namespace_name>` with the namespace where the deployment was created.
++
+.Example output
+[source,terminal]
+----
+NAME              READY   UP-TO-DATE   AVAILABLE   AGE
+sample-http-app   6/6     6            6           26m
+----
++
+You should see the `READY` and `AVAILABLE` fields increase. In this example, the deployment scaled up to 6 replicas.
 
-.Troubleshooting
+.. Check the HPA status to see the current metrics and scaling activity by running the following command:
++
+[source,terminal]
+----
+$ oc get hpa -n <namespace>
+----
++
+Replace `<namespace>` with the namespace where the scaled object was created.
++
+[source,terminal]
+----
+NAME                         REFERENCE                    TARGETS         MINPODS   MAXPODS   REPLICAS   AGE
+keda-hpa-sample-app-scaler   Deployment/sample-http-app   6500m/5 (avg)   1         10        6          15m
+----
++
+In this example, the HPA target 6500m/5 is 6.5 requests per second per pod against your target of 5 in the interceptor route, so the deployment grew to 6 replicas.
 
-If scaling is not working as expected:
-
-* Verify the hostname on the `InterceptorRoute` object matches exactly how traffic arrives. Check your Route or Ingress configuration.
-
-* Verify the `target.service.port` in the `InterceptorRoute` object matches the port the port exposed by the `service` object. Use `oc port-forward` to test direct connectivity.
-
-* Check the `ScaledObject` status for error messages: `oc describe scaledobject my-app-scaler -n default`
-
-* Verify that network policies do not block traffic between the `openshift-keda` namespace and your application namespace.
-
-* Check that your application is stateless or uses external state management (database, cache) to work correctly when scaled to zero.
-
-.Next steps
-
-* Review the HTTP Add-on trigger configuration options to fine-tune your activation and scaling thresholds. See "HTTP Add-on ScaledObject trigger configuration".
-
-* Learn about the InterceptorRoute custom resource specification. See "InterceptorRoute custom resource reference".
-
-* See a complete end-to-end example with a sample application. See "HTTP Add-on autoscaling end-to-end example".
+.. After traffic stops, wait for the 30-second cooldown, check the scaled object status by running the following command:
++
+[source,terminal]
+----
+$ oc get deploy sample-http-app -n http-add-on-example
+----
++
+[source,terminal]
+----
+NAME              READY   UP-TO-DATE   AVAILABLE   AGE
+sample-http-app   0/0     0            0           27m
+----
++
+The HPA scales the replicas down to the `minReplicaCount` value in the scaled object. The Custom Metrics Autoscaler then scales the replicas down to 0.
