@@ -1,0 +1,176 @@
+// Module included in the following assemblies:
+//
+// * authentication/external-auth.adoc
+
+:_mod-docs-content-type: PROCEDURE
+[id="external-auth-external-claims-entra-id_{context}"]
+= Configuring external claims sourcing with Microsoft Entra ID
+
+[role="_abstract"]
+Configure external claims sourcing to retrieve group membership and additional identity information from Microsoft Entra ID by using the Microsoft Graph API. This approach uses the client credential authentication mode, because the Microsoft Graph API requires its own OAuth2 authentication.
+
+:FeatureName: External claims sourcing
+include::snippets/technology-preview.adoc[]
+
+Microsoft Entra ID has limited support for the standard OIDC `UserInfo` endpoint. When users belong to many groups, Entra ID uses a token overage mechanism that omits group claims from the JWT token. Configuring external claims sourcing with the Microsoft Graph API enables {product-title} to retrieve complete group membership data regardless of token size constraints.
+
+.Prerequisites
+
+* You have configured an external OIDC identity provider with Microsoft Entra ID for direct authentication.
+* You have enabled the `TechPreviewNoUpgrade` feature set on the cluster.
+* You have access to the cluster using a `kubeconfig` file with cluster administrator privileges.
+* You have registered an application in Microsoft Entra ID with the following configuration:
+** An application (client) ID
+** A client secret
+** API permissions for `User.Read.All` and `GroupMember.Read.All`, or equivalent permissions that allow reading user group memberships
+* You have your Microsoft Entra ID tenant ID.
+
+.Procedure
+
+. Create a secret in the `openshift-config` namespace for the Microsoft Entra ID client secret by running the following command:
++
+[source,terminal]
+----
+$ oc create secret generic entra-client-secret \
+    --from-literal=client-secret=<client_secret_value> \
+    -n openshift-config
+----
++
+Replace `<client_secret_value>` with the client secret value from your Microsoft Entra ID app registration.
+
+. Edit the authentication configuration by running the following command:
++
+[source,terminal]
+----
+$ oc edit authentication.config/cluster
+----
+
+. Add the `externalClaimsSources` field under your `oidcProviders` entry:
++
+[source,yaml]
+----
+apiVersion: config.openshift.io/v1
+kind: Authentication
+metadata:
+  name: cluster
+# ...
+spec:
+  type: OIDC
+  oidcProviders:
+  - name: entra-id
+    issuer:
+      issuerURL: https://login.microsoftonline.com/<tenant_id>/v2.0
+      audiences:
+      - <application_client_id>
+    claimMappings:
+      username:
+        claim: preferred_username
+        prefixPolicy: Prefix
+        prefix:
+          prefixString: 'oidc:'
+# ...
+    externalClaimsSources:
+    - authentication:
+        type: ClientCredential
+        clientCredential:
+          clientID: <application_client_id>
+          clientSecret:
+            name: entra-client-secret
+          tokenEndpoint: https://login.microsoftonline.com/<tenant_id>/oauth2/v2.0/token
+          scopes:
+          - "https://graph.microsoft.com/.default"
+      url:
+        hostname: graph.microsoft.com
+        pathExpression: "['v1.0', 'users', claims.preferred_username, 'memberOf']"
+      mappings:
+      - name: groups
+        expression: "has(response.body.value) ? response.body.value.map(x, x.displayName) : []"
+----
++
+where:
++
+`externalClaimsSources`:: Specifies the external claims sourcing configuration with the Microsoft Graph API.
+`authentication.type`:: Specifies the authentication mode. Set to `ClientCredential` to use OAuth2 client credentials for the Microsoft Graph API.
+`clientCredential.clientID`:: Specifies the application (client) ID from the Microsoft Entra ID app registration.
+`clientCredential.clientSecret`:: Specifies a reference to the secret containing the client secret. The secret must exist in the `openshift-config` namespace with the value stored in the `client-secret` key.
+`clientCredential.tokenEndpoint`:: Specifies the Microsoft Entra ID OAuth2 token endpoint. Replace `<tenant_id>` with your tenant ID.
+`clientCredential.scopes`:: Specifies the OAuth2 scopes to request when obtaining the access token.
+`url`:: Specifies the Microsoft Graph API endpoint. The `pathExpression` CEL expression constructs the URL path dynamically by using the `preferred_username` claim from the JWT token.
+`mappings`:: Specifies the mapping from the Microsoft Graph API response to a `groups` claim. The expression extracts the `displayName` field from each group membership object. The `memberOf` endpoint returns all directory memberships, including security groups, Microsoft 365 groups, and directory roles.
++
+[NOTE]
+====
+This configuration does not include a `predicates` field, so it always fetches group membership from the Microsoft Graph API. Because Entra ID can truncate group claims when users belong to many groups, always fetching from the Graph API ensures complete group membership data.
+====
+
+. Save and exit the editor to apply the configuration.
+
+. Wait for the cluster to roll out new revisions to all nodes.
++
+Check the Kubernetes API server Operator status by running the following command:
++
+[source,terminal]
+----
+$ oc get co kube-apiserver
+----
++
+.Example output
+[source,terminal]
+----
+NAME             VERSION   AVAILABLE   PROGRESSING   DEGRADED   SINCE   MESSAGE
+kube-apiserver   4.22.0    True        True          False      85m     NodeInstallerProgressing: 2 nodes are at revision 8; 1 node is at revision 10
+----
++
+Wait until `PROGRESSING` is `False` and `DEGRADED` is `False` before proceeding:
++
+.Example output showing completed rollout
+[source,terminal]
+----
+NAME             VERSION   AVAILABLE   PROGRESSING   DEGRADED   SINCE   MESSAGE
+kube-apiserver   4.22.0    True        False         False      10m
+----
++
+If `DEGRADED` is `True`, review the `MESSAGE` column and the Cluster Authentication Operator and `kube-apiserver` pod logs for configuration errors.
+
+.Verification
+
+. Log in to the cluster by authenticating with Microsoft Entra ID:
++
+[source,terminal]
+----
+$ oc login --exec-plugin=oc-oidc \
+    --issuer-url=https://login.microsoftonline.com/<tenant_id>/v2.0 \
+    --client-id=<application_client_id>
+----
+
+. Verify that external claims sourcing is working by running the following command to check your group memberships:
++
+[source,terminal]
+----
+$ oc create -o yaml -f - <<EOF
+apiVersion: authentication.k8s.io/v1
+kind: SelfSubjectReview
+EOF
+----
++
+.Example output
+[source,terminal]
+----
+apiVersion: authentication.k8s.io/v1
+kind: SelfSubjectReview
+metadata:
+  creationTimestamp: "2026-01-01T00:00:00Z"
+status:
+  userInfo:
+    username: "oidc:user@contoso.com"
+    groups:
+    - "Engineering"
+    - "Platform Admins"
+    - "All Employees"
+    - "system:authenticated"
+    extra:
+      scopes.authorization.openshift.io:
+      - "user:full"
+----
++
+Verify that the groups listed in the output include groups from your Microsoft Entra ID directory.

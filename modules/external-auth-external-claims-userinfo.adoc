@@ -1,0 +1,160 @@
+// Module included in the following assemblies:
+//
+// * authentication/external-auth.adoc
+
+:_mod-docs-content-type: PROCEDURE
+[id="external-auth-external-claims-userinfo_{context}"]
+= Configuring external claims sourcing with the `UserInfo` endpoint
+
+[role="_abstract"]
+Configure external claims sourcing to retrieve additional user identity information from your OIDC provider's `UserInfo` endpoint. This approach uses the request-provided token authentication mode, passing the user's ID token directly to the `UserInfo` endpoint.
+
+:FeatureName: External claims sourcing
+include::snippets/technology-preview.adoc[]
+
+.Prerequisites
+
+* You have configured an external OIDC identity provider for direct authentication.
+* You have enabled the `TechPreviewNoUpgrade` feature set on the cluster.
+* You have access to the cluster using a `kubeconfig` file with cluster administrator privileges.
+* You know the hostname and path of your identity provider's `UserInfo` endpoint.
+
+.Procedure
+
+. Optional: If your identity provider's `UserInfo` endpoint uses a TLS certificate not trusted by the system certificate authority bundle, create a config map containing the certificate authority bundle by running the following command:
++
+[source,terminal]
+----
+$ oc create configmap userinfo-ca \
+    --from-file=ca-bundle.crt=<path_to_ca_bundle> \
+    -n openshift-config
+----
++
+Replace `<path_to_ca_bundle>` with the path to the PEM-encoded certificate authority bundle file.
+
+. Edit the authentication configuration by running the following command:
++
+[source,terminal]
+----
+$ oc edit authentication.config/cluster
+----
+
+. Add the `externalClaimsSources` field under your `oidcProviders` entry:
++
+[source,yaml]
+----
+apiVersion: config.openshift.io/v1
+kind: Authentication
+metadata:
+  name: cluster
+# ...
+spec:
+  type: OIDC
+  oidcProviders:
+  - name: my-oidc-provider
+    issuer:
+      issuerURL: https://idp.example.com
+      audiences:
+      - my-client-id
+    claimMappings:
+      username:
+        claim: email
+        prefixPolicy: Prefix
+        prefix:
+          prefixString: 'oidc:'
+# ...
+    externalClaimsSources:
+    - authentication:
+        type: RequestProvidedToken
+      url:
+        hostname: idp.example.com
+        pathExpression: "['userinfo']"
+      mappings:
+      - name: groups
+        expression: "has(response.body.groups) ? response.body.groups : []"
+      predicates:
+      - expression: "!has(claims.groups)"
+      tls:
+        certificateAuthority:
+          name: userinfo-ca
+----
++
+where:
++
+`externalClaimsSources`:: Specifies one or more external endpoints for sourcing additional identity information.
+`authentication.type`:: Specifies the authentication mode. Set to `RequestProvidedToken` to pass the user's ID token to the external endpoint.
+`url`:: Specifies the external endpoint URL. The `hostname` field sets the host and the `pathExpression` CEL expression returns a list of path segments. Adjust the path segments to match your identity provider's `UserInfo` endpoint path. For example, a Keycloak provider might use `['realms', 'myrealm', 'protocol', 'openid-connect', 'userinfo']`.
+`mappings`:: Specifies the claim mappings by using CEL expressions. The `response.body` variable provides access to the parsed JSON response.
+`predicates`:: Specifies optional CEL expressions that control whether this source is queried. In this example, groups are only fetched externally when the JWT token does not already contain a `groups` claim.
+`tls`:: Specifies the optional certificate authority config map for the external endpoint. Omit if the endpoint certificate is trusted by the system certificate authority bundle.
+
+. Save and exit the editor to apply the configuration.
+
+. Wait for the cluster to roll out new revisions to all nodes.
++
+Check the Kubernetes API server Operator status by running the following command:
++
+[source,terminal]
+----
+$ oc get co kube-apiserver
+----
++
+.Example output
+[source,terminal]
+----
+NAME             VERSION   AVAILABLE   PROGRESSING   DEGRADED   SINCE   MESSAGE
+kube-apiserver   4.22.0    True        True          False      85m     NodeInstallerProgressing: 2 nodes are at revision 8; 1 node is at revision 10
+----
++
+Wait until `PROGRESSING` is `False` and `DEGRADED` is `False` before proceeding:
++
+.Example output showing completed rollout
+[source,terminal]
+----
+NAME             VERSION   AVAILABLE   PROGRESSING   DEGRADED   SINCE   MESSAGE
+kube-apiserver   4.22.0    True        False         False      10m
+----
++
+If `DEGRADED` is `True`, review the `MESSAGE` column and the Cluster Authentication Operator and `kube-apiserver` pod logs for configuration errors.
+
+.Verification
+
+. Log in to the cluster by authenticating with your identity provider:
++
+[source,terminal]
+----
+$ oc login --exec-plugin=oc-oidc \
+    --issuer-url=https://idp.example.com \
+    --client-id=my-client-id
+----
+
+. Verify that external claims sourcing is working by running the following command to check your group memberships:
++
+[source,terminal]
+----
+$ oc create -o yaml -f - <<EOF
+apiVersion: authentication.k8s.io/v1
+kind: SelfSubjectReview
+EOF
+----
++
+.Example output
+[source,terminal]
+----
+apiVersion: authentication.k8s.io/v1
+kind: SelfSubjectReview
+metadata:
+  creationTimestamp: "2026-01-01T00:00:00Z"
+status:
+  userInfo:
+    username: "oidc:user@example.com"
+    groups:
+    - "engineering"
+    - "platform-team"
+    - "system:authenticated"
+    extra:
+      scopes.authorization.openshift.io:
+      - "user:full"
+----
++
+Verify that the groups in the output include groups from the external `UserInfo` endpoint.
