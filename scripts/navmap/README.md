@@ -35,6 +35,12 @@ From the repository root:
 gem install asciidoctor-multipage
 ```
 
+Also requires `python3` and `asciidoctor`.
+
+The shell scripts target Bash 3.2, which is the version macOS ships. Avoid
+Bash 4 features (associative arrays, `mapfile`/`readarray`, `${var^^}`) so the
+scripts keep running on both macOS and Linux without an upgraded Bash.
+
 ## Preview locally
 
 Run from the repository root:
