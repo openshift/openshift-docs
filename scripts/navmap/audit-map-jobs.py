@@ -4,6 +4,10 @@
 Scans category .adoc files under maps/<distro>/ for include directives that
 reference jobs from any *-jobs/ directory, then produces a coverage report.
 
+Jobs can be mapped in two ways:
+  1. Directly included by category files (directly mapped)
+  2. Included by other jobs that are mapped (nested/indirectly mapped)
+
 A distro's categories may reference multiple job pools (e.g. hcm-jobs and
 ocp-jobs).  The script auto-discovers which pools are used.
 
@@ -11,7 +15,7 @@ Usage:
     python3 scripts/navmap/audit-map-jobs.py [FLAGS] [DISTRO ...]
 
 Flags (filter output — default shows all sections):
-    --mapped,       -m          Show mapped jobs and their categories
+    --mapped,       -m          Show mapped jobs (includes nested jobs section)
     --unmapped,     -u          Show unmapped (uncategorised) jobs
     --multi,        -M          Show jobs that appear in multiple categories
     --duplicates,   -D          Show jobs included more than once in the same category
@@ -135,6 +139,33 @@ def collect_job_pools(maps: Path) -> dict[str, set[str]]:
     return pools
 
 
+def discover_nested_jobs(pool_name: str, maps: Path) -> dict[str, set[str]]:
+    """Discover jobs that are nested within other jobs.
+
+    Returns {child_job: {parent_jobs}} for all nested relationships.
+    """
+    pool_dir = maps / pool_name
+    if not pool_dir.is_dir():
+        return {}
+
+    nested: dict[str, set[str]] = defaultdict(set)
+
+    for job_file in pool_dir.glob("*.adoc"):
+        try:
+            text = job_file.read_text(encoding="utf-8", errors="replace")
+        except Exception:
+            continue
+
+        # Find includes of other job files (relative path, no directory prefix)
+        for match in INCLUDE_RE.finditer(text):
+            ref = match.group(1).strip()
+            # Nested job includes are relative paths without directory prefix
+            if "/" not in ref and ref.endswith(".adoc"):
+                nested[ref].add(job_file.name)
+
+    return nested
+
+
 def audit_distro(
     distro: str,
     all_pools: dict[str, set[str]],
@@ -203,19 +234,39 @@ def audit_distro(
             print(f"\n  WARNING: {pool_name}/ directory not found or empty.")
             continue
 
-        mapped_in_pool = {
+        # Find jobs directly included by categories
+        directly_mapped = {
             k.split("/", 1)[1]
             for k in job_to_categories
             if k.startswith(f"{pool_name}/") and k.split("/", 1)[1] in pool_jobs
         }
+
+        # Discover nested job relationships
+        nested_jobs = discover_nested_jobs(pool_name, maps)
+
+        # Recursively find all jobs that are mapped (directly or via nesting)
+        mapped_in_pool = set(directly_mapped)
+        changed = True
+        while changed:
+            changed = False
+            for child, parents in nested_jobs.items():
+                if child in pool_jobs and child not in mapped_in_pool:
+                    if any(parent in mapped_in_pool for parent in parents):
+                        mapped_in_pool.add(child)
+                        changed = True
+
+        # Separate nested and truly unmapped jobs
+        nested_mapped = sorted(mapped_in_pool - directly_mapped)
         unmapped_in_pool = sorted(pool_jobs - mapped_in_pool)
 
         pool_results[pool_name] = (len(mapped_in_pool), len(pool_jobs))
 
         # --- Summary (always shown) ---
-        print(f"\n  ── {pool_name} ({len(mapped_in_pool)}/{len(pool_jobs)} mapped, "
+        coverage = len(mapped_in_pool) * 100 // len(pool_jobs) if pool_jobs else 0
+        print(f"\n  ── {pool_name} ({len(mapped_in_pool)}/{len(pool_jobs)} mapped: "
+              f"{len(directly_mapped)} direct + {len(nested_mapped)} nested, "
               f"{len(unmapped_in_pool)} unmapped, "
-              f"{len(mapped_in_pool) * 100 // len(pool_jobs)}% coverage) ──")
+              f"{coverage}% coverage) ──")
 
         cat_to_jobs: dict[str, list[str]] = defaultdict(list)
         for key, cats in sorted(job_to_categories.items()):
@@ -231,10 +282,10 @@ def audit_distro(
             for cat in sorted(cat_to_jobs, key=lambda c: -len(cat_to_jobs[c])):
                 print(f"  {distro}/{cat:<39} {len(cat_to_jobs[cat]):>5}")
 
-        # --- Mapped jobs ---
-        if SHOW_MAPPED in sections and mapped_in_pool:
-            print(f"\n  Mapped jobs ({len(mapped_in_pool)}):")
-            for job_file in sorted(mapped_in_pool):
+        # --- Mapped jobs (directly included by categories) ---
+        if SHOW_MAPPED in sections and directly_mapped:
+            print(f"\n  Directly mapped jobs ({len(directly_mapped)}):")
+            for job_file in sorted(directly_mapped):
                 key = f"{pool_name}/{job_file}"
                 cats = job_to_categories[key]
                 unique_cats = sorted(set(cats))
@@ -283,6 +334,14 @@ def audit_distro(
                           f"{distro}/{cat} (x{count})")
             elif sections == {SHOW_DUPLICATES, SHOW_SUMMARY}:
                 print(f"\n  No duplicate includes found.")
+
+        # --- Nested jobs (indirectly mapped via parent jobs) ---
+        if SHOW_MAPPED in sections and nested_mapped:
+            print(f"\n  Nested jobs (mapped via parent jobs) ({len(nested_mapped)}):")
+            for job_file in nested_mapped:
+                parents = nested_jobs.get(job_file, set())
+                parents_str = ", ".join(sorted(parents))
+                print(f"    {pool_name}/{job_file:<55} <- {parents_str}")
 
         # --- Unmapped jobs ---
         if SHOW_UNMAPPED in sections and unmapped_in_pool:
