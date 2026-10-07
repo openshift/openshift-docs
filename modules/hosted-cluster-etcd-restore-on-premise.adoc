@@ -22,6 +22,15 @@ After you back up the hosted cluster, you must back up workloads in the data clu
 
 . If you are working in a new terminal session from the session you used to complete the steps in "Backing up etcd on a hosted cluster", set the environment variables again as described in the backup procedure.
 
+. Confirm that the hosted control plane is paused before you scale etcd. The `HostedCluster` `pausedUntil` value is copied to the `HostedControlPlane` asynchronously. Scaling etcd before that copy completes lets the control plane operator scale etcd back to 3 replicas.
++
+[source,terminal]
+----
+$ until [ "$(oc get -n ${CONTROL_PLANE_NAMESPACE} hostedcontrolplane/${CLUSTER_NAME} -o jsonpath='{.spec.pausedUntil}')" = "true" ]; do
+  sleep 2
+done
+----
+
 . Scale down the etcd statefulset by entering the following command:
 +
 [source,terminal]
@@ -29,28 +38,28 @@ After you back up the hosted cluster, you must back up workloads in the data clu
 $ oc scale -n ${CONTROL_PLANE_NAMESPACE} statefulset/etcd --replicas=0
 ----
 
-. Delete volumes for second and third members by entering the following command:
+. Keep the `data-etcd-0`, `data-etcd-1`, and `data-etcd-2` persistent volume claims. Restore the same snapshot into each claim.
 +
-[source,terminal]
-----
-$ oc delete -n ${CONTROL_PLANE_NAMESPACE} pvc/data-etcd-1 pvc/data-etcd-2
-----
+[IMPORTANT]
+====
+On a highly available control plane, restoring the snapshot into `data-etcd-0` only and starting `etcd-1` and `etcd-2` from empty volumes can leave the members with different data. An empty member whose `reset-member` init container cannot reach a Ready etcd endpoint starts with `ETCD_INITIAL_CLUSTER_STATE=new`. With the same initial cluster and token `etcd-cluster`, that member shares the restored cluster ID. `etcdctl endpoint health`, `member list`, and the `EtcdAvailable` condition can all pass while the per-member `hashkv` values differ. If the empty members win the election, the restored snapshot is discarded. Restore the snapshot into every member volume, which is the etcd multi-member restore procedure.
+====
 
-. Create a pod to access the first etcd member's data:
-+
-.. Get the etcd image by entering the following command:
+. Get the etcd image by entering the following command:
 +
 [source,terminal]
 ----
 $ ETCD_IMAGE=$(oc get -n ${CONTROL_PLANE_NAMESPACE} statefulset/etcd \
   -o jsonpath='{ .spec.template.spec.containers[0].image }')
 ----
+
+. Restore the snapshot into every member volume. For each member, `--name` and `--initial-advertise-peer-urls` must name that member:
 +
-.. Create a pod that allows access to etcd data:
-+
-[source,yaml,subs="attributes+"]
+[source,terminal]
 ----
-$ cat << EOF | oc apply -n ${CONTROL_PLANE_NAMESPACE} -f -
+$ for MEMBER in 0 1 2; do
+  oc delete -n ${CONTROL_PLANE_NAMESPACE} deployment/etcd-data --ignore-not-found --wait=true
+  cat << EOF | oc apply -n ${CONTROL_PLANE_NAMESPACE} -f -
 apiVersion: apps/v1
 kind: Deployment
 metadata:
@@ -67,7 +76,7 @@ spec:
     spec:
       containers:
       - name: access
-        image: $ETCD_IMAGE
+        image: ${ETCD_IMAGE}
         volumeMounts:
         - name: data
           mountPath: /var/lib
@@ -82,71 +91,31 @@ spec:
       volumes:
       - name: data
         persistentVolumeClaim:
-          claimName: data-etcd-0
-    EOF
-----
-+
-.. Check the status of the `etcd-data` pod and wait for it to be running by entering the following command:
-+
-[source,terminal]
-----
-$ oc get -n ${CONTROL_PLANE_NAMESPACE} pods -l app=etcd-data
-----
-+
-.. Get the name of the `etcd-data` pod by entering the following command:
-+
-[source,terminal]
-----
-$ DATA_POD=$(oc get -n ${CONTROL_PLANE_NAMESPACE} pods --no-headers \
-  -l app=etcd-data -o name | cut -d/ -f2)
-----
-
-. Copy an etcd snapshot into the pod by entering the following command:
-+
-[source,terminal]
-----
-$ oc cp /tmp/etcd.snapshot.db \
-  ${CONTROL_PLANE_NAMESPACE}/${DATA_POD}:/var/lib/restored.snap.db
+          claimName: data-etcd-${MEMBER}
+EOF
+  oc wait -n ${CONTROL_PLANE_NAMESPACE} --for=condition=Available deployment/etcd-data --timeout=180s
+  DATA_POD=$(oc get -n ${CONTROL_PLANE_NAMESPACE} pods --no-headers \
+    -l app=etcd-data -o name | cut -d/ -f2)
+  oc cp /tmp/etcd.snapshot.db \
+    ${CONTROL_PLANE_NAMESPACE}/${DATA_POD}:/var/lib/restored.snap.db
+  oc exec -n ${CONTROL_PLANE_NAMESPACE} ${DATA_POD} -- rm -rf /var/lib/data
+  oc exec -n ${CONTROL_PLANE_NAMESPACE} ${DATA_POD} -- mkdir -p /var/lib/data
+  oc exec -n ${CONTROL_PLANE_NAMESPACE} ${DATA_POD} -- \
+    etcdutl snapshot restore /var/lib/restored.snap.db \
+    --data-dir=/var/lib/data --skip-hash-check \
+    --name etcd-${MEMBER} \
+    --initial-cluster-token=etcd-cluster \
+    --initial-cluster etcd-0=https://etcd-0.etcd-discovery.${CONTROL_PLANE_NAMESPACE}.svc:2380,etcd-1=https://etcd-1.etcd-discovery.${CONTROL_PLANE_NAMESPACE}.svc:2380,etcd-2=https://etcd-2.etcd-discovery.${CONTROL_PLANE_NAMESPACE}.svc:2380 \
+    --initial-advertise-peer-urls https://etcd-${MEMBER}.etcd-discovery.${CONTROL_PLANE_NAMESPACE}.svc:2380
+  oc exec -n ${CONTROL_PLANE_NAMESPACE} ${DATA_POD} -- rm /var/lib/restored.snap.db
+done
 ----
 
-. Remove old data from the `etcd-data` pod by entering the following commands:
+. Delete the data access deployment by entering the following command:
 +
 [source,terminal]
 ----
-$ oc exec -n ${CONTROL_PLANE_NAMESPACE} ${DATA_POD} -- rm -rf /var/lib/data
-----
-+
-[source,terminal]
-----
-$ oc exec -n ${CONTROL_PLANE_NAMESPACE} ${DATA_POD} -- mkdir -p /var/lib/data
-----
-
-. Restore the etcd snapshot by entering the following command:
-+
-[source,terminal]
-----
-$ oc exec -n ${CONTROL_PLANE_NAMESPACE} ${DATA_POD} -- \
-     etcdutl snapshot restore /var/lib/restored.snap.db \
-     --data-dir=/var/lib/data --skip-hash-check \
-     --name etcd-0 \
-     --initial-cluster-token=etcd-cluster \
-     --initial-cluster etcd-0=https://etcd-0.etcd-discovery.${CONTROL_PLANE_NAMESPACE}.svc:2380,etcd-1=https://etcd-1.etcd-discovery.${CONTROL_PLANE_NAMESPACE}.svc:2380,etcd-2=https://etcd-2.etcd-discovery.${CONTROL_PLANE_NAMESPACE}.svc:2380 \
-     --initial-advertise-peer-urls https://etcd-0.etcd-discovery.${CONTROL_PLANE_NAMESPACE}.svc:2380
-----
-
-. Remove the temporary etcd snapshot from the pod by entering the following command:
-+
-[source,terminal]
-----
-$ oc exec -n ${CONTROL_PLANE_NAMESPACE} ${DATA_POD} -- \
-  rm /var/lib/restored.snap.db
-----
-
-. Delete data access deployment by entering the following command:
-+
-[source,terminal]
-----
-$ oc delete -n ${CONTROL_PLANE_NAMESPACE} deployment/etcd-data
+$ oc delete -n ${CONTROL_PLANE_NAMESPACE} deployment/etcd-data --wait=true
 ----
 
 . Scale up the etcd cluster by entering the following command:
@@ -163,45 +132,39 @@ $ oc scale -n ${CONTROL_PLANE_NAMESPACE} statefulset/etcd --replicas=3
 $ oc get -n ${CONTROL_PLANE_NAMESPACE} pods -l app=etcd -w
 ----
 
+. Compare `hashkv` on each member. Query each pod on its own endpoint. A cluster-wide status check can look healthy when the members have diverged.
++
+[source,terminal]
+----
+$ for MEMBER in 0 1 2; do
+  oc exec -n ${CONTROL_PLANE_NAMESPACE} -c etcd etcd-${MEMBER} -- \
+    env ETCDCTL_API=3 etcdctl \
+    --cacert /etc/etcd/tls/etcd-ca/ca.crt \
+    --cert /etc/etcd/tls/client/etcd-client.crt \
+    --key /etc/etcd/tls/client/etcd-client.key \
+    --endpoints=https://localhost:2379 \
+    endpoint hashkv -w table
+done
+----
++
+The hash and revision must match on `etcd-0`, `etcd-1`, and `etcd-2`. Stop the procedure if they differ.
+
 . Restore reconciliation of the hosted cluster by entering the following command:
 +
 [source,terminal]
 ----
 $ oc patch -n ${HOSTED_CLUSTER_NAMESPACE} hostedclusters/${CLUSTER_NAME} \
-  -p '{"spec":{"pausedUntil":"null"}}' --type=merge
+  -p '{"spec":{"pausedUntil":"false"}}' --type=merge
 ----
 +
-This command uses the `"null"` string. When you use that string, the controller treats unrecognized strings as not paused, but it logs an error. Instead of `"null"`, you can also use `"false"`, which is valid per Common Expression Language (CEL) validation, or JSON `null`, which removes the field.
+Use `"false"`. Common Expression Language validation rejects the string `"null"`.
 
 . Manually roll out the hosted cluster by entering the following command:
 +
 [source,terminal]
 ----
 $ oc annotate hostedcluster -n \
-  <hosted_cluster_namespace> <hosted_cluster_name> \
-  hypershift.openshift.io/restart-date=$(date --iso-8601=seconds)
-----
-+
-The Multus admission controller and network node identity pods do not start yet.
-
-. Delete the pods for the second and third members of etcd and their PVCs by entering the following commands:
-+
-[source,terminal]
-----
-$ oc delete -n ${CONTROL_PLANE_NAMESPACE} pvc/data-etcd-1 pod/etcd-1 --wait=false
-----
-+
-[source,terminal]
-----
-$ oc delete -n ${CONTROL_PLANE_NAMESPACE} pvc/data-etcd-2 pod/etcd-2 --wait=false
-----
-
-. Manually roll out the hosted cluster again by entering the following command:
-+
-[source,terminal]
-----
-$ oc annotate hostedcluster -n \
-  <hosted_cluster_namespace> <hosted_cluster_name> \
+  ${HOSTED_CLUSTER_NAMESPACE} ${CLUSTER_NAME} \
   hypershift.openshift.io/restart-date=$(date --iso-8601=seconds) \
   --overwrite
 ----
