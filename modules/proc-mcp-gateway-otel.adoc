@@ -7,14 +7,21 @@
 = Enable {OTELName} for the {mcpg}
 
 [role="_abstract"]
-The {mcpg} uses {OTELName} throughout all components to give you consistent logging, {DTShortName}, and metrics. By using observability, you can achieve the following goals:
+The {mcpg} uses {OTELName} through the broker-router data plane components to give you consistent logging, {DTShortName}, and metrics.
 
-* Discover which component generated an error, such as Envoy, an {mcpg} component, or a backend MCP server.
+By using observability, you can achieve the following goals:
+
+* Discover which component generated an error, such as Envoy, an {mcpg} component, or a backend Model Context Protocol (MCP) server.
 * Understand how requests flow through the system components.
 * See which tools were called and which MCP servers executed those tools.
 * Understand where to find relevant logs for each component.
 * Examine metrics about tool call patterns, success rates, and error rates.
 * Examine {DTShortName} across the request path.
+
+[IMPORTANT]
+====
+Tracing and log export require a configured OpenTelemetry protocol (OTLP) endpoint. Prometheus metrics do not require an OTLP endpoint, but a telemetry configuration error can prevent the `/metrics` endpoint from being served. Check startup logs for telemetry configuration errors.
+====
 
 .Prerequisites
 
@@ -23,7 +30,8 @@ The {mcpg} uses {OTELName} throughout all components to give you consistent logg
 * You configured a `Gateway` object.
 * You are logged into a running {ocp} cluster with an `admin` role.
 * You installed {OTELName}.
-* You configured the {TempoName} for traces.
+* You have an OTLP-compatible collector deployed, such as the {OTELName} Collector.
+* You configured {TempoName} for traces.
 * You installed the OpenShift Logging Operator (Loki).
 * You configured an S3-compatible persistent storage volume for Loki to store long-term MCP tool call logs.
 
@@ -38,17 +46,17 @@ apiVersion: opentelemetry.io/v1beta1
 kind: OpenTelemetryCollector
 metadata:
   name: _<mcp_otel_collector>_
-  namespace: _<mcp_gateway_system>_
+  namespace: _<mcp_gateway_namespace>_
 spec:
   mode: deployment
   config:
     receivers:
       otlp:
         protocols:
-          http:
-            endpoint: 0.0.0.0:4318
           grpc:
             endpoint: 0.0.0.0:4317
+          http:
+            endpoint: 0.0.0.0:4318
     exporters:
       otlp/tempo:
         endpoint: tempo-gateway-http.openshift-tracing.svc.cluster.local:4317
@@ -66,46 +74,78 @@ spec:
           exporters: [debug]
 ----
 +
-* Replace the value of `metadata.name:` with the name you want to assign to this collector.
-* Replace the value of `metadata.namespace:` with the namespace of your {mcpg} deployment.
+* Replace the `metadata.name` parameter value with the name you want to assign to this collector.
+* Replace the `metadata.namespace` parameter value with the namespace of your {mcpg} deployment.
 * The `spec.config.exporters:` field value points to {DTShortName}.
-* The setting, `spec.config.exporters.otlp/tempo.tls.insecure: true` is for internal cluster communication without TLS.
+* The setting `spec.config.exporters.otlp/tempo.tls.insecure: true` enables unencrypted internal cluster communication.
 
-. Apply the following environment variables to your {ocp} cluster by running the following command:
-+
-[source,terminal,subs="+quotes"]
-----
-$ oc set env deployment/mcp-gateway \
-  OTEL_EXPORTER_OTLP_ENDPOINT="http://_<mcp_otel_collector>_-collector._<mcp_gateway_system>_.svc.cluster.local:4318" \
-  OTEL_EXPORTER_OTLP_INSECURE="true" \
-  OTEL_SERVICE_NAME="mcp-gateway"
-----
-+
-* Replace `_<mcp_otel_collector>_` with the name you used in your `OpenTelemetryCollector` CR. When {OTELName} creates a collector, the service name is `[metadata.name]-collector`.
-* Replace `_<mcp_gateway_system>_` with the namespace of your {mcpg} deployment.
-
-. Optional. If you want to send traces to one collector and logs to a different one, set the following additional environment variables:
+. Find the data-plane deployment and namespace by running the following command:
 +
 [source,terminal]
 ----
-$ oc set env deployment/mcp-gateway \
-  OTEL_EXPORTER_OTLP_TRACES_ENDPOINT="http://trace-collector.tracing-namespace.svc:4317" \
-  OTEL_EXPORTER_OTLP_LOGS_ENDPOINT="http://log-collector.logging-namespace.svc:4317"
+$ oc get deployment -A -l app.kubernetes.io/name=mcp-gateway \
+  -o custom-columns='NAMESPACE:.metadata.namespace,NAME:.metadata.name'
 ----
 +
-* Set `OTEL_EXPORTER_OTLP_TRACES_ENDPOINT` to override the endpoint for traces.
-* Set `OTEL_EXPORTER_OTLP_LOGS_ENDPOINT` to override the endpoint for logs.
+The controller creates the data-plane deployment with the name `mcp-gateway` in the namespace containing the `MCPGatewayExtension` CR.
 
-. If you are using {TempoName}, select your stack name as the data source in the OpenShift Web Console *Observe > Traces* dashboard. For example, `tempo-mcp`.
+. Set the OTLP environment variables on the `mcp-gateway` deployment by running the following command:
++
+[source,terminal,subs="+quotes"]
+----
+$ oc set env deployment/mcp-gateway -n _<mcp_gateway_namespace>_ \
+  OTEL_EXPORTER_OTLP_ENDPOINT="http://_<mcp_otel_collector>_-collector._<mcp_gateway_namespace>_.svc.cluster.local:4318" \
+  OTEL_EXPORTER_OTLP_INSECURE="true"
+----
++
+* Replace `_<mcp_gateway_namespace>_` with the namespace of your {mcpg} deployment.
+* Replace `_<mcp_otel_collector>_` with the name used in your `OpenTelemetryCollector` CR. When {OTELName} creates a collector, the default Kubernetes service name generated is `[metadata.name]-collector`.
 
-. After you select the stack name, you can consult an attribute in your OpenShift Web Console *OpenShift Observe > Traces* dashboard to find where errors have occurred or to gather information for trend identification.
+. Optional. To route traces and logs to separate collector endpoints, set the signal-specific environment variables by running the following command:
++
+[source,terminal,subs="+quotes"]
+----
+$ oc set env deployment/mcp-gateway -n _<mcp_gateway_namespace>_ \
+  OTEL_EXPORTER_OTLP_TRACES_ENDPOINT="http://trace-collector.tracing-namespace.svc.cluster.local:4318" \
+  OTEL_EXPORTER_OTLP_LOGS_ENDPOINT="http://log-collector.logging-namespace.svc.cluster.local:4318"
+----
++
+* Replace `_<mcp_gateway_namespace>_` with the namespace of your {mcpg} deployment.
+* Set `OTEL_EXPORTER_OTLP_TRACES_ENDPOINT` to override the destination endpoint for distributed traces.
+* Set `OTEL_EXPORTER_OTLP_LOGS_ENDPOINT` to override the destination endpoint for log export.
 
-* You can also filter by `service.name="mcp-gateway"`.
+.. To enable only trace export after setting a base endpoint, remove the base and log endpoints before setting the trace endpoint by running the following command:
++
+[source,terminal,subs="+quotes"]
+----
+$ oc set env deployment/mcp-gateway -n _<mcp_gateway_namespace>_ \
+  OTEL_EXPORTER_OTLP_ENDPOINT- \
+  OTEL_EXPORTER_OTLP_LOGS_ENDPOINT- \
+  OTEL_EXPORTER_OTLP_TRACES_ENDPOINT="http://traces-collector:4318"
+----
 
-. When using Loki, use the *Observe > Logs* view and toggle the *Structured* view to filter by `mcp.session.id`.
+.. To enable only log export, remove the base and trace endpoints before setting the log endpoint by running the following command:
++
+[source,terminal,subs="+quotes"]
+----
+$ oc set env deployment/mcp-gateway -n _<mcp_gateway_namespace>_ \
+  OTEL_EXPORTER_OTLP_ENDPOINT- \
+  OTEL_EXPORTER_OTLP_TRACES_ENDPOINT- \
+  OTEL_EXPORTER_OTLP_LOGS_ENDPOINT="http://logs-collector:4318"
+----
 
-. When using Loki, use the *Trace timeline* view, look for the `Log` icon next to `spans` to jump directly to the relevant logs.
+. If you are using {TempoName}, navigate to the OpenShift Web Console *Observe > Traces* dashboard and select your stack name as the data source (for example, `tempo-mcp`).
+
+. Filter {DTShortName} in the *Observe > Traces* dashboard by setting attributes such as `service.name="mcp-gateway"`, `mcp.method.name`, `gen_ai.tool.name`, or `mcp.server` to identify errors or operational bottlenecks.
+
+. For Loki logs, navigate to *Observe > Logs*, select the **Structured** view tab, and filter logs using `trace_id` or `span_id`. Logs emitted before telemetry initialization remain on `stdout` and are not exported through OTLP.
+
+. To cross-correlate traces and logs, open a trace span in the *Observe > Traces* timeline view and click the **Log** icon next to a span to jump directly to the correlated execution logs in Loki.
+
+.Verification
+
+* Generate some traffic against the {mcpg} by using an `initialize` or `tools/list` request. Confirm that traces appear in your collector backend. The {mcpg} emits spans under the service name `mcp-gateway` by default.
 
 .Troubleshooting
 
-* If you do not see any traces, check if the `NetworkPolicy` CR in your namespace allows traffic from the {mcpg} to the {OTELName} collector service.
+* If traces or logs do not appear in your backend, verify that the `NetworkPolicy` CR in your namespace permits egress traffic from {mcpg} to the {OTELName} collector service port, `4317` or `4318`.
