@@ -140,7 +140,8 @@ for distro in "${DISTROS[@]}"; do
     -a doctype=book \
     -a toclevels=2 \
     -a docinfo=shared-footer \
-    -a multipage-level=2
+    -a multipage-level=2 \
+    -a docdatetime="$(date '+%Y-%m-%d %H:%M:%S %z')"
 
   python3 "$SCRIPT_DIR/right-toc.py" "$destination"
   python3 - "$destination" <<'PY'
