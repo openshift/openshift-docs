@@ -16,15 +16,72 @@ This policy extends the Envoy Rate Limit Service (RLS) protocol with automatic t
 [id="how-token-rate-limiting-works_{context}"]
 == How token rate limiting works
 
-The `TokenRateLimitPolicy` object tracks cumulative token usage per client. Before forwarding a request, it checks whether the client has already exceeded their limit. After the upstream responds, the policy extracts the actual token cost and updates the client's counter.
+The `TokenRateLimitPolicy` object tracks cumulative token usage per client. The real token cost of a request is known only after the upstream service responds.
+
+The `Gateway` object contacts the Limitador Operator (Limitador) twice: once when the request arrives, and once when the response returns.
 
 For example:
 
-. On an incoming request, the gateway evaluates the matching rules and predicates from the `TokenRateLimitPolicy` resources.
-. If the request matches, the gateway prepares the necessary rate limit descriptors and monitors the response.
-. After receiving the response, the gateway extracts the `usage.total_tokens` field from the JSON response body.
-. The gateway then sends a `RateLimitRequest` to the Limitador Operator (Limitador), including the actual token count as a `hits_addend`.
-. Limitador tracks the cumulative token usage and responds to the gateway with `OK` or `OVER_LIMIT`.
+. On an incoming request, the `Gateway` object evaluates the matching rules and predicates from the `TokenRateLimitPolicy` resources.
+. If the request matches, the `Gateway` object prepares the necessary rate limit descriptors and contacts Limitador. The enforcement mode determines what Limitador does at this point.
+. If the limit has no capacity left, Limitador rejects the request with a `429` status code before the request reaches the upstream service.
+. After receiving the response, the `Gateway` object extracts the `usage.total_tokens` field from the JSON response body.
+. The `Gateway` object sends the actual token count to Limitador, which adds the count to the cumulative usage.
+
+[id="rhcl-token-rate-limiting-enforcement-modes_{context}"]
+== Token rate limiting enforcement modes
+
+The `spec.tokenRateLimiting.mode` field of the `Kuadrant` CR selects how the `Gateway` object enforces every `TokenRateLimitPolicy` CR in the cluster. Valid values are `Reservation` and `Optimistic`. If you omit the `spec.tokenRateLimiting` field, the mode defaults to `Reservation`.
+
+.Example `Kuadrant` CR that selects the enforcement mode
+[source,yaml]
+----
+apiVersion: kuadrant.io/v1beta1
+kind: Kuadrant
+metadata:
+  name: kuadrant
+  namespace: kuadrant-system
+spec:
+  tokenRateLimiting:
+    mode: Reservation
+----
+
+The mode governs the `reservation` field of each limit in a `TokenRateLimitPolicy` CR, which is a separate resource from the `Kuadrant` CR in the preceding example. The `spec.limits._<limit_name>_.reservation` field of that policy takes effect only in `Reservation` mode. In `Optimistic` mode, the `Gateway` object ignores it.
+
+[IMPORTANT]
+====
+Omitting the `spec.tokenRateLimiting` field does not select `Optimistic` mode. The mode defaults to `Reservation`, so every `TokenRateLimitPolicy` CR in the cluster runs in `Reservation` mode until you set `Optimistic` explicitly.
+
+The `spec.limits._<limit_name>_.reservation.amount` field defaults to `0`, which does not reserve capacity. A limit that does not set the `amount` field therefore behaves the same way as a limit in `Optimistic` mode, even while the cluster is in `Reservation` mode.
+
+To hold capacity for the requests that are in flight, set the `amount` field to a non-zero estimate of the number of tokens that one request consumes.
+====
+
+The modes behave as follows:
+
+`Reservation`::
+The `Gateway` object reserves an estimated number of tokens when the request arrives. If the limit has no capacity left for the reservation, the `Gateway` object rejects the request with a `429` status code before the request reaches the upstream service.
++
+When the upstream service responds, the `Gateway` object commits the actual token usage and releases the unused part of the reservation. This mode closes the window in which several concurrent requests each pass a check that does not cost tokens before any of them reports its usage.
++
+If the `Gateway` object cannot hold a reservation, the request still proceeds to the upstream service. The `Gateway` object commits the actual usage as usual.
++
+If a reservation is held, but the upstream call fails, times out, or returns a response from which the `Gateway` object cannot extract a token count, then the reservation is released. The capacity returns immediately instead of at the end of the counter window.
+
+`Optimistic`::
+The `Gateway` object checks the limit without consuming tokens when the request arrives, and reports the actual usage when the response returns.
++
+Two requests that arrive together can both pass the check before either one reports its usage. This means that a counter that is already close to its limit can be briefly overshot by the cost of the requests that are in flight.
+
+[id="rhcl-reservation-size-and-hold-time_{context}"]
+== Reservation size and hold time
+
+Limitador caps every reservation, so `Reservation` mode still permits some overshoot. You can set the following fields on the `Limitador` CR:
+
+* `spec.reservations.maxFraction`: The largest fraction of a limit that a single reservation can hold. The default value is `0.5`, so Limitador must hold at least two reservations before it rejects a request for lack of capacity.
++
+Each reservation is an estimate, so actual consumption can exceed the amount reserved. A lower value allows more concurrent requests before Limitador rejects them, but it widens the overshoot. A higher value narrows the overshoot, but it allows fewer concurrent requests.
+* `spec.reservations.maxTtl`: The longest time that Limitador holds a reservation. The default value is `60s`, or 60 seconds. Limitador caps a longer `reservation.ttl` value, or a longer `backendRequest` route timeout used in its place, at this value.
 
 [id="rhcl-token-rate-limiting-use-cases_{context}"]
 == Key features and use cases
