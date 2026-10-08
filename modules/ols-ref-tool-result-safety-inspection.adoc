@@ -1,0 +1,175 @@
+// Module included in the following assemblies:
+// * audit-logging-and-tracing.adoc
+
+:_mod-docs-content-type: REFERENCE
+[id="ols-ref-tool-result-safety-inspection_{context}"]
+= Tool-result safety inspection
+
+[role="_abstract"]
+{ols-long} inspects untrusted tool results before the main model can use them. This inspection helps prevent instructions that are embedded in tool output from changing model behavior, a class of attack known as prompt injection. The inspection applies to Classic {ols-long} and the DeepAgents runtime.
+
+== Inspection scope
+
+The inspection examines the following content:
+
+* Successful tool results.
+* Tool-generated error results.
+* Results that the runtime sends to the main model.
+* Each sequential part of a large tool result.
+
+The inspection does not examine the following content:
+
+* Tool calls or tool arguments.
+* User prompts.
+* Conversation history.
+* Retrieval-augmented generation (RAG) content.
+* Attachments.
+* Skills.
+
+The point of inspection depends on the runtime:
+
+* Classic {ols-long} inspects a result after tool execution and before it sends the result to the model.
+* The DeepAgents runtime inspects a result before it sends the result to the model.
+
+Gemini ADK and OpenAI Agents do not use active tool-result inspection. The main-model tool-safety instructions remain active for all runtimes.
+
+== Inspection outcomes
+
+[cols="1,3",options="header"]
+|===
+| Outcome | Behavior
+
+| Safe result
+| Inspection passes. The runtime sends the result to the model.
+
+| Unsafe result
+| Inspection detects a prompt injection. The runtime stops the operation and does not send the rejected result to the model.
+
+| Inspection failure
+| The safety inspection cannot complete. The runtime stops the operation. This behavior prevents the runtime from continuing without a safety decision.
+|===
+
+When inspection rejects a result or cannot complete, {ols-short} reports the following fixed message:
+
+[source,text]
+----
+Lightspeed stopped the operation because a tool result failed the safety inspection.
+----
+
+The rejected result and inspection details are never included in this message.
+
+== Classic {ols-long} behavior
+
+When inspection stops an operation in Classic {ols-long}, the service response depends on the endpoint:
+
+* For the streaming endpoint, the service sends one `error` event with the fixed safety message and stops the stream.
+* For the non-streaming endpoint, the service returns HTTP status `500` with the following response body:
++
+[source,json]
+----
+{
+  "detail": {
+    "response": "Lightspeed stopped the operation because a tool result failed the safety inspection.",
+    "cause": ""
+  }
+}
+----
+
+The service does not store the failed conversation turn.
+
+== Agentic {ols-long} behavior
+
+When inspection fails during an agentic operation, the following sequence occurs:
+
+. The sandbox writes the `ToolResultSafetyInspectionFailed` marker to `/dev/termination-log`.
+. The sandbox exits with a nonzero status.
+. The sandbox does not publish a `Result` CR for this failure.
+. The agentic operator marks the complete `AgenticRun` as failed.
+. The operator uses the fixed safety message for the failed step.
+
+The rejected result and inspection details do not appear in the termination log, the `Result` CR, the operator status, events, or developer logs.
+
+== Large results and retry behavior
+
+The runtime handles large tool results and transient inspection failures as follows:
+
+* The runtime inspects large results in sequential chunks.
+* Adjacent chunks overlap by 256 tokens.
+* Every chunk must pass before the complete result reaches the model.
+* A malicious decision stops the operation.
+* Inspection failures can use three total attempts. The runtime waits 0.5 seconds before the second attempt and 1 second before the third attempt.
+* The runtime fails closed after the final failed attempt.
+* Existing request and `AgenticRun` deadlines still apply.
+
+== Quota behavior
+
+For Classic {ols-long}, inspection input and output tokens count against the initiating user's quota when the provider reports usage. The service checks the quota before each inspection attempt. It keeps reported usage from attempts that occur before a later chunk or request failure.
+
+DeepAgents inspection calls do not use the Classic user quota. They remain subject to the `AgenticRun` deadline.
+
+== Configuration
+
+You enable or disable active tool-result inspection through the `OLSConfig` resource. The operator enables inspection when the field is omitted.
+
+[cols="2,1,1,4",options="header"]
+|===
+| Field | Type | Default | Description
+
+| `spec.ols.guardrails.toolResultInspection.enabled`
+| boolean
+| `true`
+| Controls whether active tool-result inspection runs in Classic {ols-long} and the DeepAgents runtime. When omitted, the operator enables inspection. Set to `false` to disable active inspection. The main-model tool-safety instructions remain active when inspection is disabled.
+|===
+
+The following example enables inspection on the `OLSConfig` CR:
+
+[source,yaml]
+----
+spec:
+  ols:
+    guardrails:
+      toolResultInspection:
+        enabled: true
+----
+
+The following example disables active inspection in Classic {ols-long} and DeepAgents:
+
+[source,yaml]
+----
+spec:
+  ols:
+    guardrails:
+      toolResultInspection:
+        enabled: false
+----
+
+=== Direct service configuration
+
+When the service runs directly without the operator, use the following configuration path:
+
+[source,yaml]
+----
+ols_config:
+  guardrails:
+    tool_result_inspection:
+      enabled: true
+----
+
+When the service runs directly and this setting is omitted, inspection is disabled. This default differs from the operator default: the operator writes an effective value of `true` when the `OLSConfig` field is omitted.
+
+=== Agentic configuration handoff
+
+The operator passes the effective value to agentic {ols-long} through the `lightspeed-agentic-configuration` ConfigMap:
+
+[source,yaml]
+----
+data:
+  tool-output-inspection-enabled: "true"
+----
+
+New sandbox pods receive the value through the following environment variable:
+
+[source,text]
+----
+LIGHTSPEED_TOOL_OUTPUT_INSPECTION_ENABLED=true
+----
