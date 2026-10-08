@@ -1,0 +1,140 @@
+//modules used in the following jobs 
+//
+//jobs/enable-guardrails-on-mcp-gatway.adoc
+
+:_mod-docs-content-type: CONCEPT
+[id="con-mcp-gateway-configure-guardrails_{context}"]
+= Configure NeMo Guardrails on {mcpg}
+
+[role="_abstract"]
+You can enable NeMo Guardrails in the {mcpg} on {product-title}. It inspects MCP traffic and evaluates tool call requests and responses against guardrails configurations.
+
+.Prerequisites 
+
+* You installed {mcpg}.
+* You configured {mcpg} with at least `MCPServerRegistration` CR.
+* You have NeMo Guardrails server configured and running via the TrustyAI operator on RHOAI. Must be in the same namespace as the MCP Gateway 
+//add link
+
+.Procedure
+
+. Configuring Global Guardrails for all MCP traffic
+
+.. Create a Secret to store a reference to the NeMo server and guardrails configurations. The Secret must be in the same namespace as the MCP gateway.
++
+.Example Secret CR 
+[source,yaml]
+----
+apiVersion: v1
+kind: Secret
+metadata:
+  name: _<mcp-gateway-guardrails-ref>_
+  namespace: _<mcp-system>_
+  labels:
+    mcp.kuadrant.io/secret: "true"
+type: guardrails/external/nemo
+stringData:
+  config.yaml: 
+    url: https://nemo-guardrails.mcp-system.svc.cluster.local:8080
+    configIDs:
+      - "pii"
+    model: "meta/llama-3.1-8b-instruct"
+    failMode: deny
+----
++
+The Secret type must be guardrails/external/nemo and it must have the label mcp.kuadrant.io/secret: "true"
+
+* The required `_<guardrails-config>_` parameter sets the name of your Secret CR. 
+* The required `url` parameter sets the NeMo Guardrails server endpoint. 
+* The optional `configID` sets the configuration IDs passed to all registered MCP servers.
+* The required `model` parameter sets the LLM. 
+* The optional `failMode` parameter controls behavior when the NeMo Guardrails server is unreachable. 
+** The defaults to `deny`: Rejected. Requests return HTTP 503 with message `guardrails check unavailable`. Responses return an `isError` tool result with the same message | Always rejected. Requests return HTTP 400 with message `guardrails check failed`. Responses return an `isError` tool result with the same message.
+** If set to `allow`: The call proceeds without a verdict and is still rejected.
+
+
+.. Update your `MCPGatewayExtension` CR to include the `mcp.kuadrant.io/guardrails-ref` annotation.  
++
+.Example MCPGatewayExtension CR that includes the guardrails annotations. 
+[source,yaml]
+----
+apiVersion: mcp.kuadrant.io/v1
+kind: MCPGatewayExtension
+metadata:
+  name: _<mcp_gateway>_
+  annotations:
+    mcp.kuadrant.io/guardrails-ref: _<mcp-gateway-guardrails-ref>_
+spec:
+  targetRef:
+    name: _<mcp_gateway>_
+    sectionName: mcp
+----
++
+This enabled guardrails globally for all servers registered under the gateway by referencing previously created Secret.
+
+.. Apply the changes with the following command:
++
+[source,terminal]
+----
+$ oc apply -f _<mcp_gateway>_
+----
+
+. Adding Per-Server Guardrails
+
+.. Optional: If a server has access to high risk tools, you can extent the global guardrails policy with additional guardrails configurations. You can enable additional guardrails for a specific server by updating the `MCPServerRegistration` CR with the following command:
++
+[source,yaml]
+----
+apiVersion: mcp.kuadrant.io/v1
+kind: MCPServerRegistration
+metadata:
+  name: high-risk
+  namespace: mcp-system
+  annotations:
+    mcp.kuadrant.io/guardrails-config-ids: http://mcp.kuadrant.io/guardrails-config-ids): "toxicity,input-jailbreaking"
+spec:
+  targetRef:
+    name: high-risk-route
+    namespace: mcp-servers
+  prefix: high-risk
+----
+
+.. Apply the changes with the following command:
++
+[source,terminal]
+----
+$ oc apply -f MCPServerRegistration
+----
+
+.Verification 
+
+. Verify that the `MCPGatewayExt` is ready with the following command: 
++
+[source,terminal]
+----
+$ oc get mcpgatewayextension mcp-gateway -n mcp-system
+----
+
+. Check a response call. After the backend returns a tool call result, the router sends the joined `content[].text` values to NeMo. Image and resource content is not sent. A backend JSON-RPC error has no tool text, so it is not checked. A body that cannot be parsed is rejected.
++
+[source,terminal]
+----
+| NeMo status | What the client receives |
+| --- | --- |
+| `passed` | The original result |
+| `modified` | A tool result whose text is the rewritten content. An upstream `isError: true` result stays an error |
+| `blocked` | A tool result with `isError: true` and text `blocked by guardrails` |
+----
++
+.Example output of a blocked tool call
+[source,terminal]
+----
+{
+  "jsonrpc": "2.0",
+  "id": 1,
+  "result": {
+    "content": [{"type": "text", "text": "blocked by guardrails"}],
+    "isError": true
+  }
+}
+----
