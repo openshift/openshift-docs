@@ -1,0 +1,116 @@
+// Module included in the following assemblies:
+//
+// * service-mesh-docs-main/install/ossm-SPIRE.adoc
+
+:_mod-docs-content-type: PROCEDURE
+[id="ossm-SPIRE-verify-ingress-gateway-federation_{context}"]
+= Secure traffic entering SPIRE-federated meshes through an ingress gateway
+
+[role="_abstract"]
+Deploy an ingress gateway on one cluster and verify that external traffic can access services across federated clusters.
+The gateway obtains SPIFFE identities from SPIRE to establish mTLS connections to backend services on both the local and remote clusters.
+
+.Prerequisites
+
+* You have verified that workloads can communicate across SPIRE-federated clusters.
+* You have the Helm CLI installed.
+* You have set the required environment variables for both clusters.
+
+.Procedure
+
+. Grant the necessary security context permissions for the ingress gateway on Cluster A:
++
+[source,terminal]
+----
+$ export KUBECONFIG="${CLUSTER_A_KUBECONFIG}"
+$ oc adm policy add-scc-to-user anyuid system:serviceaccount:${OSSM_NS}:istio-ingressgateway
+----
+
+. Add the {istio} Helm repository if not already added:
++
+[source,terminal]
+----
+$ helm repo add istio https://istio-release.storage.googleapis.com/charts
+$ helm repo update
+----
+
+. Install the ingress gateway on Cluster A with SPIRE integration:
++
+[source,terminal]
+----
+$ helm install istio-ingressgateway -n "${OSSM_NS}" \
+  istio/gateway \
+  --set service.type=LoadBalancer \
+  --set-json 'podAnnotations={"inject.istio.io/templates":"gateway,spireGateway"}'
+$ oc wait --for=condition=Available deployment/istio-ingressgateway -n "${OSSM_NS}" --timeout=300s
+----
++
+The `spireGateway` annotation ensures that the gateway pod mounts the SPIRE agent socket and can obtain SPIFFE identities.
+
+. Create a `Gateway` resource on Cluster A to define ingress routing rules:
++
+[source,terminal]
+----
+$ cat <<EOF | oc apply -f -
+apiVersion: networking.istio.io/v1
+kind: Gateway
+metadata:
+  name: helloworld-gateway
+  namespace: sample
+spec:
+  selector:
+    istio: ingressgateway
+  servers:
+  - port:
+      number: 80
+      name: http
+      protocol: HTTP
+    hosts:
+    - "*"
+EOF
+----
+
+. Configure a `VirtualService` on Cluster A to route traffic to the helloworld service on Cluster B:
++
+[source,terminal]
+----
+$ cat <<EOF | oc apply -f -
+apiVersion: networking.istio.io/v1
+kind: VirtualService
+metadata:
+  name: helloworld
+  namespace: sample
+spec:
+  hosts:
+  - "*"
+  gateways:
+  - helloworld-gateway
+  http:
+  - match:
+    - uri:
+        prefix: "/hello"
+    route:
+    - destination:
+        host: helloworld.sample.svc.cluster.local
+        port:
+          number: 5000
+EOF
+----
++
+The {istio} control plane on Cluster A uses cross-cluster service discovery to route this traffic through the East-West gateway to Cluster B.
+
+.Verification
+
+* Retrieve the ingress gateway's external IP address and test connectivity to the federated service:
++
+[source,terminal]
+----
+$ export GATEWAY_IP="$(oc get svc istio-ingressgateway -n ${OSSM_NS} -o jsonpath={.status.loadBalancer.ingress[].ip})"
+$ curl -H "Host: helloworld.sample" "${GATEWAY_IP}/hello" -s -o /dev/null -w "%{http_code}"
+----
++
+An HTTP 200 response confirms that:
+
+* The ingress gateway on Cluster A obtained a SPIFFE identity from SPIRE.
+* The gateway successfully routed traffic across clusters to the helloworld service on Cluster B.
+* Cross-cluster mTLS authentication worked correctly using federated SPIFFE identities.
