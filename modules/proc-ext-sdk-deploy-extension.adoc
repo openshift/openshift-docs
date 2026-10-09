@@ -1,0 +1,243 @@
+// Module included in the following assemblies:
+//
+// *develop/rhcl-develop-extension-sdk.adoc
+
+:_mod-docs-content-type: PROCEDURE
+[id="proc-ext-sdk-deploy-extension_{context}"]
+= Deploy an extension
+
+[role="_abstract"]
+You can use extensions for various scenarios that require specific policies. The first deployment steps are creating a `ServiceAccount` and role-based access (RBAC).
+
+.Prerequisites
+
+* You installed {prodname}.
+* You installed the {oc-first}.
+* You have built and pushed a container image for your extension.
+
+.Procedure
+
+. Register your extension's Custom Resource Definition (CRD) by running the following command:
++
+[source,terminal,subs="+quotes"]
+----
+$ oc apply -f _<extension-crd.yaml>_
+----
++
+Replace `_<extension-crd.yaml>_` with your extension CRD.
+
+. Verify that the CRD is established in the cluster by running the following command:
++
+[source,terminal,subs="+quotes"]
+----
+$ oc get crd _<full_crd_name>_ -o jsonpath='{.status.conditions[?(@.type=="Established")].status}'
+----
++
+Replace `_<full_crd_name>_` with the `metadata.name` parameter value of your extension CRD.
++
+.Expected output
+[source,text]
+----
+True
+----
+
+. Grant RBAC permissions by creating a `ServiceAccount`, `ClusterRole`, and `ClusterRoleBinding` YAML by using the following example:
++
+.Example RBAC permissions YAML for extension
+[source,yaml,subs="+quotes"]
+----
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: _<my_policy>_
+  namespace: _<my_namespace>_
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: _<my_policy_register>_
+rules:
+  - apiGroups: ["extensions.kuadrant.io"]
+    resources: ["policyregistrations"]
+    resourceNames: ["MyPolicy"]
+    verbs: ["register"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: _<my_policy_register>_
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: _<my_policy_register>_
+subjects:
+  - kind: ServiceAccount
+    name: _<my_policy>_
+    namespace: _<my_namespace>_
+----
++
+* Replace `_<my_policy>_`, `_<my_namespace>_`, and `_<my_policy_register>_` with the values you want to use.
+* Which kind an extension can manage is a Kubernetes authorization decision, expressed as the register verb on the virtual `policyregistrations` resource, scoped by name to one `Kind`.
+* The `ClusterRole` `rules.resourceNames:` parameter value must match the exact policy `Kind` name managed by the extension, for example, `MyPolicy`.
+* Nothing is ever stored under `"policyregistrations"`. The field exists so that you can write "allow this `ServiceAccount` to claim `Kind: X`" as an ordinary RBAC rule.
+
+. Apply the permissions configuration by running the following command:
++
+[source,terminal,subs="+quotes"]
+----
+$ oc apply -f _<extension_rbac.yaml>_
+----
++
+Replace `_<extension_rbac.yaml>_` with the name of your RBAC YAML.
+
+. Create an extension `Deployment` manifest that uses the `ServiceAccount` and mounts the projected `ServiceAccount` token by using the following example:
++
+.Example Deployment YAML for extension
+[source,yaml,subs="+quotes"]
+----
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: _<my_policy_extension>_
+  namespace: _<my_namespace>_
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: _<my_policy>_
+  template:
+    metadata:
+      labels:
+        app: _<my_policy>_
+    spec:
+      serviceAccountName: _<my_policy>_
+      containers:
+        - name: extension
+          image: _<your_extension_image>_
+          env:
+            - name: KUADRANT_EXTENSION_ADDRESS
+              value: kuadrant-operator-extensions.kuadrant-system.svc:50052
+            - name: KUADRANT_EXTENSION_TOKEN_FILE
+              value: /var/run/secrets/kuadrant/token
+          volumeMounts:
+            - name: kuadrant-token
+              mountPath: /var/run/secrets/kuadrant
+              readOnly: true
+      volumes:
+        - name: kuadrant-token
+          projected:
+            sources:
+              - serviceAccountToken:
+                  path: token
+                  audience: kuadrant-extensions
+                  expirationSeconds: 3600
+----
++
+* Replace `_<my_policy_extension>_` and `_<my_policy_register>_` with the values you want to use.
+* Replace `_<my_namespace>_` with the namespace where you want to deploy your extension. The namespace must be the same as your RBAC policies.
+
+. Deploy the extension workload by running the following command:
++
+[source,terminal,subs="+quotes"]
+----
+$ oc apply -f _<extension_deployment.yaml>_
+----
++
+Replace `_<extension_deployment.yaml>_` with the name of your Deployment YAML.
+
+. Create a `NetworkPolicy` manifest YAML to allow your extension's access by using the following example:
++
+[source,yaml]
+----
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: allow-extension-sdk
+  namespace: kuadrant-system
+spec:
+  podSelector:
+    matchLabels:
+      app: kuadrant
+      control-plane: controller-manager
+  ingress:
+  - from:
+    - namespaceSelector:
+        matchLabels:
+          kubernetes.io/metadata.name: _<my_namespace>_
+      podSelector:
+        matchLabels:
+          app: _<my_policy>_
+    ports:
+    - protocol: TCP
+      port: 50052
+  policyTypes:
+  - Ingress
+----
++
+Replace `_<my_namespace>_` and `_<my_policy>_` with the values you used in the earlier steps.
+
+. Apply the `NetworkPolicy` by running the following command:
++
+[source,terminal,subs="+quotes"]
+----
+$ oc apply -f _<allow_extension_sdk.yaml>_
+----
++
+Replace `_<allow_extension_sdk.yaml>_` with the name of your `NetworkPolicy` YAML.
+
+.Verification
+
+. Verify that the extension pod is running and authenticated by running the following commands:
++
+[source,terminal,subs="+quotes"]
+----
+$ oc get pods -n _<my_namespace>_ -l app=_<my_policy>_
+----
++
+Replace `_<my_namespace>_` and `_<my_policy>_` with the values you used in the earlier steps.
++
+[source,terminal,subs="+quotes"]
+----
+$ oc logs -n _<my_namespace>_ deployment/_<my_policy_extension>_
+----
++
+Replace `_<my_namespace>_` and `_<my_policy_extension>_` with the values you used in the earlier steps.
++
+.Expected output
+[source,text]
+----
+NAME                                   READY   STATUS    RESTARTS   AGE
+my-policy-extension-7d89b66c4-x2z9p   1/1     Running   0          45s
+----
+
+. Create an instance of your policy CRD targeting an existing `HTTPRoute` or `Gateway`, and check its status:
++
+[source,terminal,subs="+quotes"]
+----
+$ oc get _<policy_kind>_ _<my_policy>_ -n _<my_namespace>_ -o jsonpath='{.status.conditions}'
+----
++
+Replace `_<policy_kind>_`, `_<my_policy>_`, and `_<my_namespace>_` with the values you used in the earlier steps.
++
+.Expected output
+[source,json]
+----
+[
+  {
+    "lastTransitionTime": "2026-10-07T08:14:00Z",
+    "message": "Policy has been accepted by the extension controller",
+    "observedGeneration": 1,
+    "reason": "Accepted",
+    "status": "True",
+    "type": "Accepted"
+  },
+  {
+    "lastTransitionTime": "2026-10-07T08:14:01Z",
+    "message": "Policy has been successfully enforced on the target network resource",
+    "observedGeneration": 1,
+    "reason": "Enforced",
+    "status": "True",
+    "type": "Enforced"
+  }
+]
+----
