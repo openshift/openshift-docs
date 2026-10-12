@@ -1,0 +1,105 @@
+// Module included in the following assemblies:
+//
+// * develop/rhcl-develop-extension-sdk.adoc
+
+:_mod-docs-content-type: PROCEDURE
+[id="proc-rhcl-build-extension-sdk_{context}"]
+= Build an extension using the Extension SDK
+
+[role="_abstract"]
+You can build a custom policy extension for {prodname} by using the Extension SDK. Extensions attach to Gateway API resources by using the Policy Attachment pattern, requiring a `targetRef` field in your policy specification.
+
+.Prerequisites
+
+* You installed Go version 1.26.7 or later.
+* You installed the {oc-first}.
+* You installed {prodname}.
+* You have access to the Kuadrant Extension SDK Go package.
+
+.Procedure
+
+. Define your custom policy API types in Go by using the following example:
++
+.Example custom policy spec struct
+[source,go]
+----
+type MyPolicySpec struct {
+    TargetRef gatewayapiv1alpha2.LocalPolicyTargetReferenceWithSectionName `json:"targetRef"`
+    Threshold int                                                         `json:"threshold"`
+}
+----
++
+* Your policy type must implement the SDK's `Policy` interface (which extends standard Kubernetes object methods with `GetTargetRefs()`).
+* Generate deepcopy functions and CRD manifests using `controller-gen` as you would for a standard operator.
+* Ensure that the policy `Kind` name is unique across the cluster. This name is claimed during the gRPC handshake and authorized by role-based access control (RBAC).
+
+. Implement the reconciler logic by using the following example:
++
+.Example extension reconciler
+[source,go]
+----
+func (r *MyPolicyReconciler) Reconcile(ctx context.Context, req reconcile.Request, kCtx types.KuadrantCtx) (reconcile.Result, error) {
+    if err := r.Configure(ctx); err != nil {
+        return reconcile.Result{}, err
+    }
+
+    pol := &v1alpha1.MyPolicy{}
+    if err := r.Client.Get(ctx, req.NamespacedName, pol); err != nil {
+        return reconcile.Result{}, client.IgnoreNotFound(err)
+    }
+    if pol.GetDeletionTimestamp() != nil {
+        return reconcile.Result{}, nil
+    }
+
+    gw, err := extcontroller.Resolve[GatewayInfo](ctx, kCtx, pol,
+        `{"hostname": self.findGateways()[0].spec.listeners[0].hostname}`, true)
+    if err != nil {
+        return reconcile.Result{}, err
+    }
+
+    desired := buildAuthPolicy(pol, gw)
+    controllerutil.SetControllerReference(pol, desired, r.Scheme)
+    if _, err := kCtx.ReconcileObject(ctx, &kuadrantv1.AuthPolicy{}, desired, authPolicyMutator); err != nil {
+        return reconcile.Result{}, err
+    }
+
+    return r.reconcileStatus(ctx, pol)
+}
+----
++
+* The signature extends standard `controller-runtime` reconcilers by accepting `kCtx types.KuadrantCtx`.
+* Embedding `types.ExtensionBase` provides the `Configure` helper, which initializes logger, client, and scheme references from the execution context.
+
+. Initialize and start the extension controller in `main.go` by using the following example:
++
+.Example main.go entry point
+[source,go]
+----
+func main() {
+    reconciler := controller.NewMyPolicyReconciler()
+    builder, logger := extcontroller.NewBuilder("my-policy-controller")
+
+    extController, err := builder.
+        WithScheme(scheme).
+        WithReconciler(reconciler.Reconcile).
+        For(&v1alpha1.MyPolicy{}).
+        Owns(&kuadrantv1.AuthPolicy{}).
+        Build()
+    if err != nil {
+        logger.Error(err, "unable to create controller")
+        os.Exit(1)
+    }
+
+    if err = extController.Start(ctrl.SetupSignalHandler()); err != nil {
+        logger.Error(err, "unable to start extension controller")
+        os.Exit(1)
+    }
+}
+----
++
+[TIP]
+====
+Use `extcontroller.NewBuilder` from the SDK rather than the standard `controller-runtime` builder. The SDK builder establishes the gRPC handshake with the Operator and passes `KuadrantCtx` into your reconciler.
+====
++
+* The resource passed to `For()` defines the policy `Kind` that your extension claims during the initial handshake with the {prodname} Operator.
