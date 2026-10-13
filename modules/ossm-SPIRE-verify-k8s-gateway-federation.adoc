@@ -1,0 +1,115 @@
+// Module included in the following assemblies:
+//
+// * service-mesh-docs-main/install/ossm-SPIRE.adoc
+
+:_mod-docs-content-type: PROCEDURE
+[id="ossm-SPIRE-verify-k8s-gateway-federation_{context}"]
+= Secure traffic entering SPIRE-federated meshes through the Kubernetes Gateway API
+
+[role="_abstract"]
+
+Use the Kubernetes Gateway API as an alternative to {istio} Gateway resources for routing external traffic to services across SPIRE-federated clusters.
+The Kubernetes Gateway API provides a standardized way to manage ingress traffic with SPIRE-based authentication.
+
+.Prerequisites
+
+* You have verified that workloads can communicate across SPIRE-federated clusters.
+* You have set the required environment variables for both clusters.
+
+.Procedure
+
+. Create a `ConfigMap` on Cluster A to mount the SPIRE socket in the gateway pod:
++
+[source,terminal]
+----
+$ export KUBECONFIG="${CLUSTER_A_KUBECONFIG}"
+$ cat <<EOF | oc apply -f -
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: spire-gateway-injector
+  namespace: ${OSSM_NS}
+data:
+  values: |
+    global:
+      podAnnotations:
+        inject.istio.io/templates: "gateway,spireGateway"
+EOF
+----
+
+. Deploy a `Gateway` resource using the Kubernetes Gateway API:
++
+[source,terminal]
+----
+$ cat <<EOF | oc apply -f -
+apiVersion: gateway.networking.k8s.io/v1
+kind: Gateway
+metadata:
+  name: helloworld-gateway
+  namespace: sample
+  annotations:
+    gateway.istio.io/inject-config: spire-gateway-injector
+spec:
+  gatewayClassName: istio
+  listeners:
+  - name: http
+    port: 80
+    protocol: HTTP
+    allowedRoutes:
+      namespaces:
+        from: Same
+EOF
+----
++
+The `gateway.istio.io/inject-config` annotation references the `ConfigMap` that configures SPIRE socket mounting.
+
+. Create an `HTTPRoute` resource to route traffic to the helloworld service on Cluster B:
++
+[source,terminal]
+----
+$ cat <<EOF | oc apply -f -
+apiVersion: gateway.networking.k8s.io/v1
+kind: HTTPRoute
+metadata:
+  name: helloworld
+  namespace: sample
+spec:
+  parentRefs:
+  - name: helloworld-gateway
+    namespace: sample
+  hostnames:
+  - "helloworld.sample"
+  rules:
+  - matches:
+    - path:
+        type: PathPrefix
+        value: /hello
+    backendRefs:
+    - name: helloworld
+      port: 5000
+EOF
+----
+
+. Wait for the gateway deployment to become available:
++
+[source,terminal]
+----
+$ oc wait --for=condition=Available deployment/helloworld-gateway-istio -n sample --timeout=300s
+----
+
+.Verification
+
+* Retrieve the gateway's external IP address and test connectivity:
++
+[source,terminal]
+----
+$ export K8S_GATEWAY_IP="$(oc get gateway helloworld-gateway -n sample -o jsonpath='{.status.addresses[0].value}')"
+$ curl -H "Host: helloworld.sample" "${K8S_GATEWAY_IP}/hello" -s -o /dev/null -w "%{http_code}"
+----
++
+An HTTP 200 response confirms that:
+
+* The Kubernetes Gateway API successfully configured ingress routing.
+* The gateway pod obtained a SPIFFE identity from SPIRE through the SPIRE socket mount.
+* Cross-cluster mTLS communication works correctly using federated SPIFFE identities.
+* The Kubernetes Gateway API provides a viable alternative to {istio} Gateway resources for SPIRE-integrated meshes.
