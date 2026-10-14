@@ -7,133 +7,124 @@
 = {mcpg} router spans for observability
 
 [role="_abstract"]
-When enabled, the Model Context Protocol (MCP) router, `ext_proc`, emits trace spans for every request and can export structured logs through {OTELName}.
+When you enable tracing, the Model Context Protocol (MCP) router, `ext_proc`, emits protocol-aware trace spans for each external processing request. Logs are exported through {OTELName} when you have configured `OTEL_EXPORTER_OTLP_LOGS_ENDPOINT` or the base endpoint.
 
-With traces, you can see one continuous timeline of traffic events across different pods and services. This can help you identify bottlenecks and conduct root-cause analysis.
+Spans give you a continuous timeline of traffic events across different pods and services. The {mcpg} supports the following dual-protocol routing:
 
-Spans show one part of the journey. The attributes attached to those spans give you the contextual metadata that you need to have searchable and meaningful traces. The attributes are simple `key: value` pairs attached to each span.
+* The `2025-11-25` protocol, stateful and body-based.
+* The `2026-07-28` protocol, stateless and header-based.
 
-The {mcpg} uses the following router spans:
+The generated spans and their relationships depend on the protocol version negotiated by the client.
 
-.MCP router spans
+.MCP router spans by protocol version
 [cols="1,1,2", options="header"]
 |===
-|Span |When |Description
+|Span |Protocol |Description
 
 |`mcp-router.process`
-|Every `ext_proc` stream
-|Root span. Starts when request headers arrive, ends after response headers are processed.
+|Both 2025 and 2026
+|Root span for one external processing stream. Starts when request headers arrive. Records request and routing attributes as body phases are processed. Records the response status at response headers. Ends after response headers for a non-streamed response or after the final streamed response-body phase.
 
 |`mcp-router.route-decision`
-|The request body is parsed
-|Routing decision: `tool-call` versus pass-through to broker.
+|Both 2025 and 2026
+|Records the routing decision for the request.
 
 |`mcp-router.broker-passthrough`
-|Non-`tool-call` requests
-|Pass-through to broker: `initialize`, `tools/list`, `notifications`. No child spans means the broker is not instrumented.
+|Both 2025 and 2026
+|Handles requests that pass through to the broker.
 
 |`mcp-router.tool-call`
-|`tools/call` requests
-|Full tool call handling including session and server resolution.
+|Both 2025 and 2026
+|Handles `tools/call` requests.
 
-|`mcp-router.broker.get-server-info`
-|Inside `tool-call`
-|Queries the broker to resolve which backend MCP server owns the tool.
+|`mcp-router.prompt-get`
+|Both 2025 and 2026
+|Handles `prompts/get` requests.
 
-|`mcp-router.session-cache.get`
-|Inside `tool-call`
-|Queries the session cache to look up an existing backend session.
+|`mcp-router.resource-read`
+|2025 stateful only
+|Handles `resources/read` requests.
+
+|`mcp-router.elicitation-response`
+|2025 stateful only
+|Handles elicitation responses.
 
 |`mcp-router.session-init`
-|Cache miss during `tool-call`
-|Hairpin `initialize` request through the gateway to the backend MCP server.
-
-|`mcp-router.session-cache.store`
-|After `session-init`
-|Persists the new backend session in the session cache.
+|2025 stateful only
+|Initializes a backend session when a routed request needs one that is not already available.
 |===
 
-The attributes in the following tables use link:https://opentelemetry.io/docs/specs/semconv/gen-ai/mcp/#server[OpenTelemetry MCP Semantic Conventions].
+* The `2025-11-25` stateful router can create a `mcp-router.session-init` span on a cache miss. Session initialization hairpins an `initialize` request through the gateway and stores the resulting backend session for later requests.
 
-.MCP router root span, `mcp-router.process`, attributes
-[cols="1,1,2", options="header"]
+* The `2026-07-28` stateless router does not emit session-initialization or session-cache spans and does not hairpin an initialization request.
+
+* Tool and prompt routing performs routing-table lookups inside the `mcp-router.tool-call` or `mcp-router.prompt-get` span. These lookups do not emit separate spans.
+
+The attributes attached to spans use link:https://opentelemetry.io/docs/specs/semconv/gen-ai/mcp/#server[OpenTelemetry MCP Semantic Conventions]. All router spans include `component=mcp-router`. Header-derived attributes are set even when the corresponding request header is not present. Empty values are recorded as empty strings.
+
+.MCP router span attributes
+[cols="1,3", options="header"]
 |===
-|Attribute |Source |Description
+|Span or protocol |Attributes
 
-|`http.method`
-|`:method` header
-|HTTP method, `POST`
+|`mcp-router.process`
+|Request-header attributes `http.method`, `http.path`, `http.request_id`, `mcp.protocol_version`, `mcp.header.method`, and `mcp.header.name`. These attributes have empty-string values when their source headers are not present. Parsed-request attributes include the following spans: `mcp.method.name`, `jsonrpc.protocol.version`, `jsonrpc.request.id`, `gen_ai.operation.name`, and `gen_ai.tool.name` for tool calls, `mcp.session.id` when a stateful session is present, and `client.address` when `x-forwarded-for` is present. The selected router is recorded as `mcp.router` with a value of `202511` or `202607`. Response attributes include `http.status_code` and `mcp.response.protocol_version`. The latter contains the incoming `MCP-Protocol-Version` request-header value and is recorded during response-header processing.
 
-|`http.path`
-|`:path` header
-|Request path, `/mcp`
+|`mcp-router.route-decision`
+|`mcp.method.name`, `protocol.version`, and `mcp.route`. The `2025-11-25` route can be `tool-call`, `prompt-get`, `resource-read`, `elicitation-response`, or `broker`. The `2026-07-28` route can be `tool-call`, `prompt-get`, or `broker`.
 
-|`http.request_id`
-|`x-request-id` header
-|Envoy request ID
+|2025-11-25 `mcp-router.tool-call`
+|`gen_ai.tool.name`, `mcp.session.id`, `mcp.server`, and `mcp.server.hostname`
 
-|`mcp.method.name`
-|JSON-RPC `method` field
-|MCP method, `initialize`, `tools/call`, `tools/list`, and so on
+|2025-11-25 `mcp-router.prompt-get`
+|`mcp.prompt.name`, `mcp.session.id`, `mcp.server`, and `mcp.server.hostname`
 
-|`gen_ai.tool.name`
-|JSON-RPC `params.name`
-|Tool name, only for `tools/call`
+|2025-11-25 `mcp-router.resource-read`
+|`mcp.resource.uri`, `mcp.session.id`, `mcp.server`, and `mcp.server.hostname`
 
-|`jsonrpc.request.id`
-|JSON-RPC `id` field
-|JSON-RPC request ID
+|2025-11-25 `mcp-router.session-init`
+|`mcp.server` and `mcp.session.id`
 
-|`jsonrpc.protocol.version`
-|JSON-RPC `jsonrpc` field
-|Always "2.0"
-
-|`gen_ai.operation.name`
-|JSON-RPC `method` field
-|Same as `mcp.method.name`
-
+|2025-11-25 `mcp-router.elicitation-response`
 |`mcp.session.id`
-|`mcp-session-id` header
-|Gateway session ID
 
-|`client.address`
-|`x-forwarded-for` header
-|Client IP address
+|2026-07-28 `mcp-router.tool-call`
+|`gen_ai.tool.name`, `mcp.server`, and `mcp.server.hostname`. This stateless span does not set `mcp.session.id`.
 
-|`http.status_code`
-|`:status` response header
-|Response status code
-|===
+|2026-07-28 `mcp-router.prompt-get`
+|`mcp.prompt.name`, `mcp.server`, and `mcp.server.hostname`. This stateless span does not set `mcp.session.id`.
 
-.MCP route decision span, `mcp-router.route-decision`, attributes
-[cols="1,2", options="header"]
-|===
-|Attribute |Description
-
+|`mcp-router.broker-passthrough`
 |`mcp.method.name`
-|MCP method
-
-|`mcp.route`
-|Routing decision: `tool-call`, `broker`, or `elicitation-response`
 |===
 
-.MCP tool call span, `mcp-router.tool-call`, attributes
-[cols="1,2", options="header"]
+.MCP broker spans
+[cols="1,2,2", options="header"]
 |===
-|Attribute |Description
+|Span |When |Attributes
 
-|`gen_ai.tool.name`
-|Tool name from the request
+|`mcp-broker.handle-request`
+|MCP method requests processed by the broker, such as `initialize`, `ping`, `tools/list`, `tools/call`, `prompts/list`, `prompts/get`, and `resources/list`
+|`mcp.method` and `protocol.version`; `mcp.session.id` when the SDK request has a stateful session
 
-|`mcp.session.id`
-|Gateway session ID
+|`mcp-broker.tools-list`
+|`tools/list` response filtering
+|`protocol.version` and `mcp.tools.count`
 
+|`mcp-broker.prompts-list`
+|`prompts/list` response filtering
+|`protocol.version` and `mcp.prompts.count`
+
+|`mcp-broker.resources-list`
+|`resources/list` response filtering
+|`mcp.resources.count`
+
+|`mcp-broker.upstream-manage`
+|Upstream lifecycle work at startup, on the health check timer, after list-changed notifications, and after reconnect events
 |`mcp.server`
-|Resolved backend server name
-
-|`mcp.server.hostname`
-|Resolved backend server hostname
 |===
+
+The {mcpg} router propagates W3C trace context on forwarded requests, allowing broker filtering spans to correlate with router work in a single trace. These spans are children of `mcp-broker.handle-request`. However, because outbound header injection is currently a no-operation function, this correlation relies on an incoming client or Envoy `traceparent` header. Without an incoming trace header, the router-generated root context is not forwarded, causing broker spans to start a separate trace.
 
 .MCP error attributes
 [cols="1,2", options="header"]
@@ -141,13 +132,16 @@ The attributes in the following tables use link:https://opentelemetry.io/docs/sp
 |Attribute |Description
 
 |`error.type`
-|Error classification, such as `tool_not_found`, `missing_tool_name`, `invalid_session`, `session_cache_error`, `session_init_error`, `marshal_error`, `path_parse_error`
+|Error classification.
 
 |`error_source`
-|Component that generated the error, such as`ext-proc`
+|Component that generated the error, such as `ext-proc`, `broker`, or `backend`.
 
 |`http.status_code`
-|HTTP status code returned
+|HTTP status code recorded on the router process span when response headers are processed.
 |===
 
-When there is an error, spans include these attributes.
+Error recording is component-specific. Errors passed to the router error-recording path include `error.type`, `error_source=ext-proc`, and the associated `http.status_code`.
+Broker handler errors record `error.type` and `error_source=broker`.
+Backend connection or discovery errors recorded by `mcp-broker.upstream-manage` record `error.type`, `error_source=backend`, and `mcp.server`.
+Router route errors can set span status and `error.type`. The resulting HTTP status is recorded on `mcp-router.process` when response headers are processed.
