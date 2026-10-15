@@ -7,11 +7,11 @@
 = Enable {OTELName} for the {mcpg}
 
 [role="_abstract"]
-The {mcpg} uses {OTELName} through the broker-router data plane components to give you consistent logging, {DTShortName}, and metrics.
+Configure a {OTELName} Collector to export {mcpg} traces to {TempoName} and application logs to Loki over authenticated TLS connections.
 
 By using observability, you can achieve the following goals:
 
-* Discover which component generated an error, such as Envoy, an {mcpg} component, or a backend Model Context Protocol (MCP) server.
+* Discover which component generated an error, such as Envoy, an {mcpg} component, or a back-end Model Context Protocol (MCP) server.
 * Understand how requests flow through the system components.
 * See which tools were called and which MCP servers executed those tools.
 * Understand where to find relevant logs for each component.
@@ -28,16 +28,115 @@ Tracing and log export require a configured OpenTelemetry protocol (OTLP) endpoi
 * You installed {mcpg}.
 * You installed {prodname}.
 * You configured a `Gateway` object.
-* You are logged into a running {ocp} cluster with an `admin` role.
-* You installed {OTELName}.
-* You have an OTLP-compatible collector deployed, such as the {OTELName} Collector.
-* You configured {TempoName} for traces.
-* You installed the OpenShift Logging Operator (Loki).
-* You configured an S3-compatible persistent storage volume for Loki to store long-term MCP tool call logs.
+* You are logged into a running {ocp} cluster with the `cluster-admin` role.
+* You installed the {OTELName} Operator.
+* You configured a `TempoStack` instance with object storage, an enabled gateway, and a tenant in `openshift` mode. The example uses the gateway OTLP gRPC service on port `8090`.
+* You installed the Loki Operator and configured a `LokiStack` instance in `openshift-logging` mode with an active `v13` storage schema and structured metadata enabled for OTLP ingestion.
+* You configured supported object storage for Loki, such as an S3-compatible object store, and the required storage credentials. Object storage is not an S3 persistent volume.
+* The Tempo and Loki gateway services use certificates signed by the {ocp} service certificate authority (CA).
+* For console verification, you installed the Cluster Observability Operator (COO), enabled the `DistributedTracing` and `Logging` UI plugins through `UIPlugin` resources, and configured them for your Tempo and Loki instances. These plugins are not required for ingestion.
+* Users who query telemetry have separate read permissions for the selected Tempo tenant and Loki application logs in the {mcpg} namespace. Grant these permissions to specific users or groups, not to all authenticated users. The collector write permissions configured in this procedure do not grant query access.
++
+For back-end installation, tenant configuration, storage requirements, and console integration, see the product documentation listed in _Additional resources_.
 
 .Procedure
+. Find the data-plane deployment and namespace by running the following command:
++
+[source,terminal]
+----
+$ oc get deployment -A -l app.kubernetes.io/name=mcp-gateway \
+  -o custom-columns='NAMESPACE:.metadata.namespace,NAME:.metadata.name'
+----
++
+The controller creates the data-plane deployment with the name `mcp-gateway` in the namespace containing the `MCPGatewayExtension` CR.
 
-. Use the following example YAML to create a collector in your {mcpg} deployment namespace:
+. Identify the Tempo gateway service and its exposed ports by running the following command:
++
+[source,terminal,subs="+quotes"]
+----
+$ oc get service -n _<tempo_namespace>_
+----
++
+Use the actual service name for `_<tempo_gateway_service>_` in the collector configuration. The example uses the `TempoStack` gateway OTLP gRPC port, `8090`. A `TempoMonolithic` deployment can expose OTLP gRPC on port `4317`; inspect its service and use the port and security configuration for that deployment. Do not use a query endpoint or assume that all Tempo deployments expose the same ingestion port.
+
+. Get the cluster ID for the log resource attributes by running the following command:
++
+[source,terminal]
+----
+$ oc get clusterversion version -o jsonpath='{.spec.clusterID}{"\n"}'
+----
+
+. Save the following resources as `mcp-otel-access.yaml`. Replace `_<mcp_otel_collector>_` with a name that is unique across the cluster, `_<mcp_gateway_namespace>_` with the {mcpg} deployment namespace, and `_<tempo_tenant_name>_` with the `tenantName` configured in your Tempo instance.
++
+.Example collector service account, CA bundle, and permissions
+[source,yaml,subs="+quotes"]
+----
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: _<mcp_otel_collector>_
+  namespace: _<mcp_gateway_namespace>_
+automountServiceAccountToken: true
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: _<mcp_otel_collector>_-service-ca
+  namespace: _<mcp_gateway_namespace>_
+  annotations:
+    service.beta.openshift.io/inject-cabundle: "true"
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: _<mcp_otel_collector>_-telemetry
+rules:
+  - apiGroups: ["tempo.grafana.com"]
+    resources: ["_<tempo_tenant_name>_"]
+    resourceNames: ["traces"]
+    verbs: ["create"]
+  - apiGroups: ["loki.grafana.com"]
+    resources: ["application"]
+    resourceNames: ["logs"]
+    verbs: ["create"]
+  - apiGroups: [""]
+    resources: ["pods", "namespaces"]
+    verbs: ["get", "list", "watch"]
+  - apiGroups: ["apps"]
+    resources: ["replicasets"]
+    verbs: ["get", "list", "watch"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: _<mcp_otel_collector>_-telemetry
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: _<mcp_otel_collector>_-telemetry
+subjects:
+  - kind: ServiceAccount
+    name: _<mcp_otel_collector>_
+    namespace: _<mcp_gateway_namespace>_
+----
++
+The service account can write to the specified Tempo tenant and the Loki `application` tenant. The read-only Kubernetes permissions allow the `k8sattributes` processor to associate telemetry with the originating pods. They do not grant read access to stored traces or logs.
+
+. Apply the resources by running the following command:
++
+[source,terminal]
+----
+$ oc apply -f mcp-otel-access.yaml
+----
+
+. Verify that the service CA controller populated the ConfigMap with a `service-ca.crt` key before creating the collector:
++
+[source,terminal,subs="+quotes"]
+----
+$ oc get configmap _<mcp_otel_collector>_-service-ca -n _<mcp_gateway_namespace>_ -o yaml
+----
+
+. Save the following collector configuration as `mcp-otel-collector.yaml`:
 +
 .Example OpenTelemetryCollector custom resource (CR)
 [source,yaml,subs="+quotes"]
@@ -49,7 +148,19 @@ metadata:
   namespace: _<mcp_gateway_namespace>_
 spec:
   mode: deployment
+  serviceAccount: _<mcp_otel_collector>_
+  volumes:
+    - name: service-ca
+      configMap:
+        name: _<mcp_otel_collector>_-service-ca
+  volumeMounts:
+    - name: service-ca
+      mountPath: /etc/otel/service-ca
+      readOnly: true
   config:
+    extensions:
+      bearertokenauth:
+        filename: /var/run/secrets/kubernetes.io/serviceaccount/token
     receivers:
       otlp:
         protocols:
@@ -57,37 +168,88 @@ spec:
             endpoint: 0.0.0.0:4317
           http:
             endpoint: 0.0.0.0:4318
+    processors:
+      k8sattributes:
+        auth_type: serviceAccount
+        passthrough: false
+        extract:
+          metadata:
+            - k8s.namespace.name
+            - k8s.pod.name
+            - k8s.pod.uid
+            - k8s.node.name
+            - k8s.deployment.name
+        pod_association:
+          - sources:
+              - from: resource_attribute
+                name: k8s.pod.uid
+          - sources:
+              - from: connection
+      resource/openshift:
+        attributes:
+          - key: openshift.cluster.uid
+            value: "_<cluster_id>_"
+            action: upsert
+          - key: openshift.log.type
+            value: application
+            action: upsert
+          - key: openshift.log.source
+            value: container
+            action: upsert
+          - key: log_type
+            from_attribute: openshift.log.type
+            action: upsert
+          - key: log_source
+            from_attribute: openshift.log.source
+            action: upsert
+          - key: kubernetes.namespace_name
+            from_attribute: k8s.namespace.name
+            action: upsert
+      batch: {}
     exporters:
       otlp/tempo:
-        endpoint: tempo-gateway-http.openshift-tracing.svc.cluster.local:4317
+        endpoint: _<tempo_gateway_service>_._<tempo_namespace>_.svc:8090
         tls:
-          insecure: true
-      debug:
-        verbosity: basic
+          ca_file: /etc/otel/service-ca/service-ca.crt
+        auth:
+          authenticator: bearertokenauth
+        headers:
+          X-Scope-OrgID: "_<tempo_tenant_name>_"
+      otlphttp/loki:
+        endpoint: https://_<loki_stack_name>_-gateway-http._<loki_namespace>_.svc:8080/api/logs/v1/application/otlp
+        tls:
+          ca_file: /etc/otel/service-ca/service-ca.crt
+        auth:
+          authenticator: bearertokenauth
     service:
+      extensions: [bearertokenauth]
       pipelines:
         traces:
           receivers: [otlp]
-          exporters: [otlp/tempo, debug]
+          processors: [k8sattributes, batch]
+          exporters: [otlp/tempo]
         logs:
           receivers: [otlp]
-          exporters: [debug]
+          processors: [k8sattributes, resource/openshift, batch]
+          exporters: [otlphttp/loki]
 ----
 +
-* Replace the `metadata.name` parameter value with the name you want to assign to this collector.
-* Replace the `metadata.namespace` parameter value with the namespace of your {mcpg} deployment.
-* The `spec.config.exporters:` field value points to {DTShortName}.
-* The setting `spec.config.exporters.otlp/tempo.tls.insecure: true` enables unencrypted internal cluster communication.
+* Use the same collector name, namespace, and Tempo tenant name as in `mcp-otel-access.yaml`.
+* Replace `_<tempo_gateway_service>_` and `_<tempo_namespace>_` with the service name and namespace of your Tempo gateway.
+* Replace `_<loki_stack_name>_` and `_<loki_namespace>_` with the name and namespace of your `LokiStack` instance. The `otlphttp` exporter appends `/v1/logs` to the OTLP base endpoint.
+* Replace `_<cluster_id>_` with the cluster ID returned earlier.
+* The service account token is mounted automatically. Both exporters use that token and the mounted service CA bundle; neither disables TLS verification.
+* The `k8sattributes` processor runs before batching so that it can use the incoming connection to identify the originating pod. Send telemetry directly from the workload to this collector. If an intermediate proxy or collector hides the originating pod IP, preserve the originating `k8s.pod.uid` resource attribute instead. Do not substitute the collector pod or namespace for the workload identity.
+* The `resource/openshift` processor classifies only the logs pipeline as application container logs. It also supplies the compatibility attributes used by the Logging console. It does not overwrite trace service names or invent pod metadata. Do not use this logs pipeline for infrastructure or cluster audit logs.
+* The HTTP receiver on port `4318` accepts {mcpg} traces and logs. The gRPC receiver on port `4317` can also receive Envoy traces when you configure {service-mesh} tracing. The collector forwards these signals to the authenticated back-end gateways.
 
-. Find the data-plane deployment and namespace by running the following command:
+. Apply the collector configuration by running the following command:
 +
 [source,terminal]
 ----
-$ oc get deployment -A -l app.kubernetes.io/name=mcp-gateway \
-  -o custom-columns='NAMESPACE:.metadata.namespace,NAME:.metadata.name'
+$ oc apply -f mcp-otel-collector.yaml
 ----
-+
-The controller creates the data-plane deployment with the name `mcp-gateway` in the namespace containing the `MCPGatewayExtension` CR.
+
 
 . Set the OTLP environment variables on the `mcp-gateway` deployment by running the following command:
 +
@@ -134,18 +296,65 @@ $ oc set env deployment/mcp-gateway -n _<mcp_gateway_namespace>_ \
   OTEL_EXPORTER_OTLP_LOGS_ENDPOINT="http://logs-collector:4318"
 ----
 
-. If you are using {TempoName}, navigate to the OpenShift Web Console *Observe > Traces* dashboard and select your stack name as the data source (for example, `tempo-mcp`).
-
-. Filter {DTShortName} in the *Observe > Traces* dashboard by setting attributes such as `service.name="mcp-gateway"`, `mcp.method.name`, `gen_ai.tool.name`, or `mcp.server` to identify errors or operational bottlenecks.
-
-. For Loki logs, navigate to *Observe > Logs*, select the **Structured** view tab, and filter logs using `trace_id` or `span_id`. Logs emitted before telemetry initialization remain on `stdout` and are not exported through OTLP.
-
-. To cross-correlate traces and logs, open a trace span in the *Observe > Traces* timeline view and click the **Log** icon next to a span to jump directly to the correlated execution logs in Loki.
-
 .Verification
 
-* Generate some traffic against the {mcpg} by using an `initialize` or `tools/list` request. Confirm that traces appear in your collector backend. The {mcpg} emits spans under the service name `mcp-gateway` by default.
+. Verify that the collector deployment is available:
++
+[source,terminal,subs="+quotes"]
+----
+$ oc rollout status deployment/_<mcp_otel_collector>_-collector -n _<mcp_gateway_namespace>_
+----
+
+. Use an authenticated MCP client to initialize a session, list tools, and call a permitted tool. Check the MCP response for the operation result; an HTTP `200` response alone does not establish that a tool call succeeded.
+
+. Check the collector logs for configuration, certificate, authorization, and export errors:
++
+[source,terminal,subs="+quotes"]
+----
+$ oc logs deployment/_<mcp_otel_collector>_-collector -n _<mcp_gateway_namespace>_ --since=10m
+----
++
+A running collector or the absence of errors does not prove that the back ends received data.
+
+. Forward the collector internal metrics port to your workstation:
++
+[source,terminal,subs="+quotes"]
+----
+$ oc port-forward deployment/_<mcp_otel_collector>_-collector -n _<mcp_gateway_namespace>_ 8888:8888
+----
+
+. In another terminal, inspect the exporter counters:
++
+[source,terminal]
+----
+$ curl --fail --silent --show-error http://localhost:8888/metrics
+----
++
+Record `otelcol_exporter_sent_spans` for `otlp/tempo` and `otelcol_exporter_sent_log_records` for `otlphttp/loki`, generate more MCP traffic, and inspect the counters again. Confirm that the sent counters increase and that the corresponding `otelcol_exporter_send_failed_spans` and `otelcol_exporter_send_failed_log_records` counters do not continue to increase. Depending on the Collector version, counter names can include the `_total` suffix. Stop port forwarding when you finish.
+
+. In the {ocp} web console, open *Observe > Traces*, select the configured Tempo data source and tenant, and query recent traces for `service.name="mcp-gateway"`, unless you configured a different service name. Open a trace and confirm that its time and operation match your test request. Use attributes present on the span, such as `mcp.method.name` or `gen_ai.tool.name`, to narrow the search.
+
+. Open *Observe > Logs*, select the application logs and the {mcpg} namespace, and query the same time range. For a `LokiStack` with the default OpenShift OTLP attribute mapping, use the following LogQL selector:
++
+[source,text,subs="+quotes"]
+----
+{k8s_namespace_name="_<mcp_gateway_namespace>_", openshift_log_type="application"}
+----
++
+Confirm that recent {mcpg} log records are stored, rather than relying only on collector metrics. Inspect a record to identify the labels and structured metadata available in your configured Loki mapping. Resource attribute names such as `k8s.namespace.name` are normalized to `k8s_namespace_name` in Loki.
++
+Logs emitted before telemetry initialization remain on `stdout` and are not exported through OTLP. Correlate a log with a trace only when the exported record contains a trace ID or span ID. Automatic links between the trace and log views depend on the UI plugin configuration and the fields present in the record.
 
 .Troubleshooting
 
-* If traces or logs do not appear in your backend, verify that the `NetworkPolicy` CR in your namespace permits egress traffic from {mcpg} to the {OTELName} collector service port, `4317` or `4318`.
+* If traces or logs do not appear, verify that network policies permit {mcpg} traffic to the collector HTTP port `4318`, optional Envoy traffic to its gRPC port `4317`, and collector traffic to the Tempo gateway port `8090` and Loki gateway port `8080` used in this example.
+* For TLS or authorization errors, check the gateway service names, service CA bundle, service account token mount, tenant name, and writer permissions. Do not disable TLS verification to work around an export error.
+* If exported logs have no workload namespace, check the metadata permissions and pod association. Do not add a fixed namespace to all records in a shared collector.
+
+[role="_additional-resources"]
+.Additional resources
+
+* link:https://docs.redhat.com/en/documentation/red_hat_openshift_distributed_tracing_platform/3.10/html-single/installing_distributed_tracing/index[Installing distributed tracing]
+* link:https://docs.redhat.com/en/documentation/red_hat_openshift_distributed_tracing_platform/3.10/html-single/configuring_distributed_tracing/index[Configuring distributed tracing]
+* link:https://docs.redhat.com/en/documentation/red_hat_build_of_opentelemetry/3.10/html-single/configuring_the_collector/index[Configuring the Collector]
+* link:https://docs.redhat.com/en/documentation/red_hat_openshift_logging/6.4/html-single/configuring_logging/index[Configuring logging]
