@@ -1,0 +1,170 @@
+// Module included in the following assemblies:
+//
+// * upgrade/migrate-lokistack-schema-before-upgrade.adoc
+
+:_mod-docs-content-type: PROCEDURE
+[id="logging-migrate-lokistack-schema_{context}"]
+= Migrate the LokiStack storage schema
+
+[role="_abstract"]
+Migrate your `LokiStack` storage schema from BoltDB (v11 or v12) to the Time Series Database (TSDB) schema (v13), configure retention to age out old data, verify the new schema is active, and remove the outdated schema entries.
+
+.Prerequisites
+
+* You have administrator permissions.
+* You have installed the OpenShift CLI (`oc`).
+* You have installed `jq`.
+* You have updated {logging-title-uc} to the latest supported patch version for your current release before starting.
+
+.Procedure
+
+. Check the current schemas configured on your LokiStack:
++
+[source,terminal]
+----
+$ oc get lokistack <lokistack_name> -n <lokistack_namespace> -o json | jq '.spec.storage.schemas'
+----
+
+. Review the output and determine your migration path:
++
+[cols="1,2,2",options="header"]
+|===
+| Situation | Output | Action
+
+| Single TSDB schema
+| Only entry has `version: v13`
+| Skip steps 3 and 4. Proceed to step 5 to verify before upgrading.
+
+| TSDB schema with older schemas
+| Latest entry has `version: v13`; older `v11` or `v12` entries also present
+| Skip step 3. Proceed to step 4 to configure retention.
+
+| Not yet migrated to TSDB
+| Latest entry has `version: v11` or `version: v12`
+| Continue with step 3.
+|===
+
+. *If your LokiStack has no v13 schema entry*, add one with an effective date two days ahead of the current UTC date:
++
+[source,terminal]
+----
+$ oc patch lokistack <lokistack_name> -n <lokistack_namespace> --type json -p '[
+  {
+    "op": "add",
+    "path": "/spec/storage/schemas/-",
+    "value": {
+      "version": "v13",
+      "effectiveDate": "'"$(date -u -d '+2 days' +%Y-%m-%d)"'"
+    }
+  }
+]'
+----
++
+[NOTE]
+====
+The `effectiveDate` takes effect at 00:00 UTC on the specified date. The Loki Operator requires this time to be more than two hours in the future. To avoid validation errors near midnight UTC, set the date two days ahead of the current UTC date.
+====
+
+. Configure retention and wait for old log data to age out. From the v13 `effectiveDate`, Loki writes new data by using the TSDB schema. Data ingested before that date remains on the earlier BoltDB schema. You must wait until all logs still within the retention window were written by using v13 before removing the old schema entries.
++
+[IMPORTANT]
+====
+By default, LokiStack does not enforce log retention, so logs accumulate indefinitely. You cannot safely assume a fixed wait time unless retention is explicitly configured.
+====
+
+.. Check for a bucket lifecycle policy on your object storage bucket by using your cloud provider console or CLI.
+
+.. Check the LokiStack retention setting:
++
+[source,terminal]
+----
+$ oc get lokistack <lokistack_name> -n <lokistack_namespace> \
+  -o jsonpath='{.spec.limits.global.retention.days}'
+----
+
+.. If neither a bucket lifecycle policy nor a LokiStack retention period is configured, set both now:
++
+[WARNING]
+====
+Configuring retention permanently deletes logs that fall outside the retention window. Confirm your organization's data retention requirements before proceeding.
+====
++
+... Set a bucket lifecycle policy on your object storage bucket. If you have no existing requirement, use 30 days, which is the maximum retention period supported by Red Hat. Note the expiry value as *N*.
++
+... Set the LokiStack global retention to *N{nbsp}+{nbsp}3* days. The 3-day margin ensures the bucket lifecycle policy acts as the primary enforcement mechanism while LokiStack retention acts as a fallback, absorbing the delay most cloud providers have between object expiry and actual deletion:
++
+[source,terminal]
+----
+$ oc patch lokistack <lokistack_name> -n <lokistack_namespace> --type merge \
+  -p '{"spec":{"limits":{"global":{"retention":{"days": <N+3>}}}}}'
+----
+
+. Find how long to wait before removing old schemas. The wait starts from the v13 `effectiveDate`. Run the following command to find the maximum retention value configured across all tenants and stream rules:
++
+[source,terminal]
+----
+$ oc get lokistack <lokistack_name> -n <lokistack_namespace> -o json \
+  | jq '[.spec.limits | .. | objects | .retention? // empty | .days, .streams[]?.days] | max // 0'
+----
++
+[NOTE]
+====
+If `jq` is not available, manually check the following fields:
+
+* Global default retention: `.spec.limits.global.retention.days`
+* Per-tenant default retention: `.spec.limits.tenants.<tenant-name>.retention.days` for each tenant
+* Stream retention rules: `.spec.limits.global.retention.streams[].days` and `.spec.limits.tenants.<tenant-name>.retention.streams[].days` for each rule
+
+If a per-tenant or stream override is longer than the global value, use the longer value as your wait time.
+====
++
+Wait the number of days returned since the v13 `effectiveDate` before proceeding.
++
+[WARNING]
+====
+If retention was not previously configured, wait an additional 8 hours after the calculated time has elapsed. This allows the bucket lifecycle policy or Loki compactor to fully apply retention before you remove the old schemas.
+====
+
+. Verify that the v13 schema is active and that the LokiStack is ready:
+
+.. Check that the LokiStack has accepted the new schema and reports a `Ready` condition:
++
+[source,terminal]
+----
+$ oc get lokistack <lokistack_name> -n <lokistack_namespace> -o json \
+  | jq '.status.conditions[] | select(.type=="Ready") | .status'
+----
+
+.. Verify that recent logs are queryable:
++
+[source,terminal]
+----
+$ TOKEN=$(oc whoami -t)
+$ GATEWAY=$(oc get route <lokistack_name> -n <lokistack_namespace> \
+    -o jsonpath='{.spec.host}')
+$ curl -k -H "Authorization: Bearer ${TOKEN}" \
+  "https://${GATEWAY}/api/logs/v1/infrastructure/loki/api/v1/query_range" \
+  --data-urlencode 'query={kubernetes_namespace_name="<lokistack_namespace>"}' \
+  --data-urlencode 'limit=5' | jq
+----
+
+. Remove the old BoltDB schema entries. The `LokiStack` spec must retain the v13 entry with its original `effectiveDate`. Do not add a new v13 entry.
++
+[source,terminal]
+----
+$ oc get lokistack <lokistack_name> -n <lokistack_namespace> -o json \
+  | jq '.spec.storage.schemas |= map(select(.version == "v13"))' \
+  | oc apply -f -
+----
+
+. Confirm that only the v13 schema entry remains and that the LokiStack is ready:
++
+[source,terminal]
+----
+$ oc get lokistack <lokistack_name> -n <lokistack_namespace> -o json \
+  | jq '.spec.storage.schemas'
+$ oc get lokistack <lokistack_name> -n <lokistack_namespace> -o json \
+  | jq '.status.conditions[] | select(.type=="Ready") | .status'
+----
+
+. Upgrade to {logging-title-uc} 6.7.
