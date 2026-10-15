@@ -7,7 +7,7 @@
 = Configure {mcpg} authentication with an AuthPolicy
 
 [role="_abstract"]
-Configure authentication for your {mcpg} by using a {prodname} `AuthPolicy` custom resource (CR) and an identity provider such as {keycloak}.
+Configure authentication for both broker and back-end MCP routes by using {prodname} `AuthPolicy` custom resources (CRs) and an identity provider such as {keycloak}.
 
 include::snippets/snippet-mcpg-auth-support.adoc[]
 
@@ -15,7 +15,7 @@ include::snippets/snippet-mcpg-auth-support.adoc[]
 
 * You installed {mcpg}.
 * You installed {prodname}.
-* You configured a `Gateway` object with an `mcp` listener.
+* You configured a `Gateway` object with an `mcp` listener for broker routes and an `mcps` listener for back-end MCP server routes.
 * You installed and have ready an identity provider supporting OAuth 2.0 or 2.1, for example, {keycloak}.
 
 .Procedure
@@ -48,7 +48,7 @@ $ oc patch gateway _<mcp_gateway>_ -n _<gateway_system>_ --type json -p '[
 ]'
 ----
 +
-* Replace `_<mcp_gateway>_` with the name of your {mcpg} instance.
+* Replace `_<mcp_gateway>_` with the `metadata.name` of your `Gateway` object.
 * Replace `_<gateway_system>_` with the namespace of your `Gateway` object.
 * Replace the {keycloak} `_<name>_`, `_<hostname>_`, and `_<kubernetes.io/metadata.name>_` with your identity provider information.
 
@@ -56,7 +56,7 @@ $ oc patch gateway _<mcp_gateway>_ -n _<gateway_system>_ --type json -p '[
 +
 [source,terminal,subs="+quotes"]
 ----
-$ oc set env deployment/_<mcp_gateway>_ \
+$ oc set env deployment/_<mcp_broker_deployment>_ \
   OAUTH_RESOURCE_NAME="MCP Server" \
   OAUTH_RESOURCE="http://mcp.example.com:8001/mcp" \
   OAUTH_AUTHORIZATION_SERVERS="http://keycloak.example.com:8002/realms/mcp" \
@@ -65,7 +65,7 @@ $ oc set env deployment/_<mcp_gateway>_ \
   -n _<mcp_system>_
 ----
 +
-* Replace `_<mcp_gateway>_` with the name of your {mcpg} instance.
+* Replace `_<mcp_broker_deployment>_` with the name of your {mcpg} broker deployment.
 * Replace `_<mcp_system>_` with the namespace where your {mcpg} instance is deployed.
 * `OAUTH_RESOURCE_NAME`: Human-readable name for the Model Context Protocol (MCP) server.
 * `OAUTH_RESOURCE`: Canonical URI of the MCP server that is used for token audience validation.
@@ -73,9 +73,9 @@ $ oc set env deployment/_<mcp_gateway>_ \
 * `OAUTH_BEARER_METHODS_SUPPORTED`: Supported bearer token methods. Valid values are usually `header`, `body`, or `query`.
 * `OAUTH_SCOPES_SUPPORTED`: The OAuth scopes this MCP server supports.
 
-. Create an `AuthPolicy` CR that validates JWT tokens:
+. Create an `AuthPolicy` CR that validates JWTs for the broker routes on the `mcp` listener. If a policy already targets this listener, update that policy and preserve its existing authorization and response settings:
 +
-.Example `AuthPolicy` CR
+.Example broker authentication `AuthPolicy` CR
 [source,yaml,subs="+quotes"]
 ----
 apiVersion: kuadrant.io/v1
@@ -88,7 +88,7 @@ spec:
     group: gateway.networking.k8s.io
     kind: Gateway
     name: _<mcp_gateway>_
-    sectionName: _<mcp>_
+    sectionName: mcp
   defaults:
     when:
       - predicate: "!request.path.contains('/.well-known')"
@@ -113,7 +113,7 @@ spec:
 +
 * The `metadata.name:` parameter value is the name of the `AuthPolicy` CR. Replace `_<mcp_jwt_auth_policy>_` as needed.
 * The `metadata.namespace:` parameter value is the gateway namespace. Replace `_<gateway_system>_` with the namespace where you created your `Gateway` object to apply the `AuthPolicy` CR to the namespace.
-* The `spec.targetRef.name:` parameter value is the name of your {mcpg}. Replace `_<mcp_gateway>_` as needed.
+* The `spec.targetRef.name:` parameter value is the name of your `Gateway` object, not the broker deployment. Replace `_<mcp_gateway>_` as needed.
 * The `spec.targetRef.sectionName:` parameter value is the target gateway listener. In this example, `mcp` is used.
 * The `spec.defaults.when` parameter value in this example allows unauthenticated access to `/.well-known` endpoints.
 * The `spec.defaults.rules.authentication:` parameter defines which tokens to validate and how. In this case, JWT validation validates tokens against the Keycloak OIDC issuer.
@@ -128,6 +128,54 @@ $ oc apply -f _<mcp_jwt_auth_policy.yaml>_
 ----
 +
 Replace `_<mcp_jwt_auth_policy.yaml>_` with the name of your CR.
+
+. Create an `AuthPolicy` CR for the back-end routes on the `mcps` listener by using the same token issuer. If a policy already targets this listener, add or retain token validation in that policy instead of creating another policy for the same target. Preserve its authorization and response settings:
++
+.Example back-end authentication `AuthPolicy` CR
+[source,yaml,subs="+quotes"]
+----
+apiVersion: kuadrant.io/v1
+kind: AuthPolicy
+metadata:
+  name: _<mcp_tool_auth_policy>_
+  namespace: _<gateway_system>_
+spec:
+  targetRef:
+    group: gateway.networking.k8s.io
+    kind: Gateway
+    name: _<mcp_gateway>_
+    sectionName: mcps
+  rules:
+    authentication:
+      'keycloak':
+        jwt:
+          issuerUrl: http://keycloak.example.com:8002/realms/mcp
+    response:
+      unauthenticated:
+        code: 401
+        headers:
+          'WWW-Authenticate':
+            value: Bearer resource_metadata=http://mcp.example.com:8001/.well-known/oauth-protected-resource
+        body:
+          value: |
+            {
+              "error": "Unauthorized",
+              "message": "Authentication required."
+            }
+----
++
+* Replace `_<mcp_tool_auth_policy>_` with the name of the policy for the back-end listener. Reuse this name when adding tool and prompt authorization.
+* Use the same `_<gateway_system>_` namespace and `_<mcp_gateway>_` Gateway name as in the broker policy.
+* Set `sectionName` to your back-end listener name, `mcps` in this example. Do not copy the broker policy exception for `/.well-known` paths to this policy.
+
+. Apply the back-end `AuthPolicy` CR by running the following command:
++
+[source,terminal,subs="+quotes"]
+----
+$ oc apply -f _<mcp_tool_auth_policy.yaml>_
+----
++
+Replace `_<mcp_tool_auth_policy.yaml>_` with the file containing your back-end policy. Both route sets must have authentication configured; the broker policy alone does not protect routed tool calls.
 
 .Verification
 
@@ -182,8 +230,19 @@ Replace `_<mcp.example.com:8001/mcp>_` with your endpoint.
 ----
 +
 A `401` error with `WWW-Authenticate` header is expected.
++
+This request checks the broker route. Also confirm that the back-end listener policy is enforced; the broker response alone does not verify back-end route protection.
+
+. Check that the back-end policy is enforced by running the following command:
++
+[source,terminal,subs="+quotes"]
+----
+$ oc get authpolicy _<mcp_tool_auth_policy>_ -n _<gateway_system>_ -o jsonpath='{.status.conditions[?(@.type=="Enforced")].status}'
+----
++
+The expected value is `True`. Replace the policy name and namespace with those used for the `mcps` listener.
 
 .Next steps
 
-* Control which users can access specific tools by configuring authorization policies.
+* Control which users can access specific tools by extending the same `_<mcp_tool_auth_policy>_` CR with authorization rules. Do not create a second policy for the same listener.
 * Connect authenticated external MCP services.
