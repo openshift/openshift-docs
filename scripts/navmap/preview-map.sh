@@ -138,7 +138,7 @@ for distro in "${DISTROS[@]}"; do
     -D "$destination" \
     -a toc=left \
     -a doctype=book \
-    -a toclevels=2 \
+    -a toclevels=3 \
     -a docinfo=shared-footer \
     -a multipage-level=2 \
     -a docdatetime="$(date '+%Y-%m-%d %H:%M:%S %z')"
