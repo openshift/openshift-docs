@@ -1,3 +1,12 @@
+<!---
+Maintenance mode: documentation team contributions only
+
+This repository is not accepting contributions from outside the OpenShift documentation team, including AI-generated pull requests.
+
+For the contribution policy and documentation bug reporting instructions, see:
+https://github.com/openshift/openshift-docs/blob/main/CONTRIBUTING.adoc
+--->
+
 <!--- PR title format: [GH#<gh-issue-id>][BZ#<bz-issue-id>][OCPBUGS#<jira-issue-id>][OSDOCS#<jira-issue-id>]: <short-description-of-the-pr> --->
 
 <!--- If your changes apply to the latest release and/or in-development version of OpenShift, open your PR against the `main` branch.
@@ -22,6 +31,3 @@ QE review:
 
 Additional information:
 <!--- Optional: Include additional context or expand the description here.--->
-
-<!--- After you open your PR, ask for review from the OpenShift docs team:
-  For community authors: Tag @openshift/team-documentation in a GitHub comment.--->
