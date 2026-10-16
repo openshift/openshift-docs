@@ -96,9 +96,30 @@ check_map_completeness() {
         return 1
     fi
 
-    # Run asciidoctor and capture errors
-    if asciidoctor "$nav_file" 2>&1 | tee "$log_file" | grep -q ERROR; then
-        local error_count=$(grep -c ERROR "$log_file" || echo "0")
+    # Capture the complete output, then keep only error lines in the log.
+    local temp_output
+    if ! temp_output=$(mktemp); then
+        echo -e "${RED}  ERROR: Could not create a temporary Asciidoctor output file${NC}"
+        return 1
+    fi
+
+    local asciidoctor_status=0
+    asciidoctor "$nav_file" > "$temp_output" 2>&1 || asciidoctor_status=$?
+
+    if ! awk '/ERROR/' "$temp_output" > "$log_file"; then
+        echo -e "${RED}  ERROR: Could not write ${log_file}${NC}"
+        rm "$temp_output"
+        return 1
+    fi
+    rm "$temp_output"
+
+    if [ "$asciidoctor_status" -ne 0 ]; then
+        echo "ERROR: Asciidoctor exited with status ${asciidoctor_status}" >> "$log_file"
+        echo -e "${RED}  ERROR: Asciidoctor exited with status ${asciidoctor_status} - see ${log_file}${NC}"
+        return 1
+    elif [ -s "$log_file" ]; then
+        local error_count
+        error_count=$(grep -c ERROR "$log_file")
         echo -e "${RED}  ✗ Found ${error_count} error(s) - see ${log_file}${NC}"
         return 1
     else
