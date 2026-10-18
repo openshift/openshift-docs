@@ -1,0 +1,164 @@
+// Module included in the following assemblies:
+//
+// * observability/otel/otel-configuring-metrics-for-monitoring-stack.adoc
+
+:_mod-docs-content-type: REFERENCE
+[id="configuration-for-receiving-metrics-from-the-monitoring-stack-by-using-remote-write_{context}"]
+= Configuration for receiving metrics from the monitoring stack by using remote write
+
+[role="_abstract"]
+You can configure the in-cluster monitoring stack to send the platform metrics and the user-defined project metrics to the OpenTelemetry Collector by using the Prometheus remote write protocol version 2. The Collector receives the metrics with the Prometheus Remote Write Receiver and can export them to any backend, for example to a third-party platform over OTLP. This is the recommended way to export the monitoring stack metrics because it does not depend on the federation endpoint and scales with the remote write configuration of the monitoring stack.
+
+:FeatureName: The Prometheus Remote Write Receiver
+include::snippets/technology-preview.adoc[]
+
+.Prerequisites
+
+* The cluster runs {ocp-product-title} 5.0 or later. Earlier versions of the Cluster Monitoring Operator do not support the `messageVersion` field of the remote write configuration, and the Prometheus Remote Write Receiver accepts only the remote write protocol version 2.
+* The `prometheus_remote_write` receiver listens on a port that is reachable from the `openshift-monitoring` and `openshift-user-workload-monitoring` namespaces. A `NetworkPolicy` in the Collector namespace must allow this traffic.
+
+The following example shows the `OpenTelemetryCollector` custom resource (CR) that receives the metrics from the monitoring stack and forwards them over OTLP:
+
+[source,yaml]
+----
+apiVersion: opentelemetry.io/v1beta1
+kind: OpenTelemetryCollector
+metadata:
+  name: otel
+  namespace: observability
+spec:
+  mode: deployment
+  resources:
+    requests:
+      cpu: 500m
+      memory: 512Mi
+    limits:
+      cpu: "2"
+      memory: 2Gi
+  ports:
+    - name: prw
+      port: 9090
+      targetPort: 9090
+  config:
+    receivers:
+      prometheus_remote_write:
+        endpoint: 0.0.0.0:9090
+    processors:
+      memory_limiter:
+        check_interval: 1s
+        limit_percentage: 80
+        spike_limit_percentage: 20
+    exporters:
+      otlp_http:
+        endpoint: https://<backend_otlp_endpoint>
+        retry_on_failure:
+          enabled: true
+          max_elapsed_time: 0
+        sending_queue:
+          enabled: true
+          sizer: items
+          queue_size: 100000
+          block_on_overflow: true
+          batch:
+            flush_timeout: 1s
+            min_size: 4000
+            max_size: 8000
+    service:
+      pipelines:
+        metrics:
+          receivers: [prometheus_remote_write]
+          processors: [memory_limiter]
+          exporters: [otlp_http]
+----
+where:
+
+`resources`:: Requests sized for the steady state and limits that leave headroom for the recovery after a backend outage. See the resource requirements table that follows the note.
+`ports`:: Exposes the receiver port on the Collector service. The {OTelOperator} does not add the port of the Prometheus Remote Write Receiver automatically.
+`prometheus_remote_write`:: Configures the Prometheus Remote Write Receiver. The endpoint receives the remote write requests at the `/api/v1/write` path.
+`memory_limiter`:: Refuses incoming remote write requests when the Collector memory usage is high. The Prometheus instances retry the refused requests.
+`otlp_http`:: Configures the OTLP HTTP exporter for the backend. The settings keep the Collector a stateless pass-through when the backend is unavailable: the exporter retries without a time limit (`max_elapsed_time: 0`), the sending queue is bounded by the number of data points (`sizer: items`) and blocks the receiver when it is full (`block_on_overflow: true`), and the exporter batches the data points itself instead of the `batch` processor, so that back pressure reaches the receiver. The Prometheus instances keep the samples in their write-ahead log and retry, so that no samples are lost during a backend outage. With the default settings, which retry for at most 5 minutes and queue 5,000 requests, the exporter drops the samples that it cannot deliver in time and the Collector can run out of memory during an outage.
+
+The following example shows the `cluster-monitoring-config` config map that sends the platform metrics to the Collector:
+
+[source,yaml]
+----
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: cluster-monitoring-config
+  namespace: openshift-monitoring
+data:
+  config.yaml: |
+    prometheusK8s:
+      remoteWrite:
+        - name: otel-collector
+          url: http://otel-collector.observability.svc.cluster.local:9090/api/v1/write
+          messageVersion: V2.0
+          writeRelabelConfigs:
+            - sourceLabels: [__name__]
+              regex: "up|node_.*|kube_pod_.*"
+              action: keep
+----
+where:
+
+`url`:: The URL of the Prometheus Remote Write Receiver endpoint of the Collector service.
+`messageVersion`:: Enables the remote write protocol version 2. This field is required because the receiver does not accept the version 1 protocol.
+`writeRelabelConfigs`:: Optional. Limits the exported metrics. Without this field, the monitoring stack exports all platform metrics, which can be hundreds of thousands of series.
+
+The following example shows the `user-workload-monitoring-config` config map that sends the user-defined project metrics to the Collector:
+
+[source,yaml]
+----
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: user-workload-monitoring-config
+  namespace: openshift-user-workload-monitoring
+data:
+  config.yaml: |
+    prometheus:
+      remoteWrite:
+        - name: otel-collector
+          url: http://otel-collector.observability.svc.cluster.local:9090/api/v1/write
+          messageVersion: V2.0
+----
+
+[NOTE]
+====
+* Each Prometheus instance of the monitoring stack runs two replicas and both replicas send every sample. The samples of the two replicas differ only in the `prometheus_replica` label. The two replicas share no state, so deduplicate the samples in the backend on the `prometheus_replica` label. Do not drop one replica in the Collector: it would remove the high availability of the monitoring stack.
+* The monitoring stack does not enable the Prometheus `metadata-wal-records` feature and does not scrape native histograms. The Collector therefore receives the metrics without type metadata, so counters, histogram buckets, and summary quantiles arrive as untyped gauges, and classic histograms are not converted to native histograms.
+* A Prometheus instance that the Cluster Observability Operator manages can send remote write version 2 to the same receiver: set `messageVersion: V2.0` on the `prometheusConfig.remoteWrite` entry of the `MonitoringStack` resource. The same metric type limitation applies, because the `MonitoringStack` resource does not expose the Prometheus feature settings either.
+====
+
+[id="resource-requirements-for-receiving-metrics-by-using-remote-write_{context}"]
+== Resource requirements
+
+The following table lists the resources for one Collector replica with the configuration of this module, measured with the {otel} Collector. To estimate the remote write rate, add up the Prometheus instances that send to the Collector: the two platform replicas of a cluster with about 350,000 platform series send about 30,000 samples per second, and every 25,000 user-defined project series add about 1,700 samples per second. After you configure remote write, the `prometheus_remote_storage_samples_total` metric of the monitoring stack shows the rate.
+
+[options="header"]
+[cols="a,a,a,a"]
+|===
+|Remote write rate |Collector replicas |Requests per replica |Limits per replica
+
+|Up to 50,000 samples per second
+|1
+|CPU `500m`, memory `512Mi`
+|CPU `2`, memory `2Gi`
+
+|Up to 95,000 samples per second
+|1
+|CPU `1`, memory `512Mi`
+|CPU `2`, memory `2Gi`
+
+|More than 95,000 samples per second, or high availability
+|2 or more. The Collector service spreads the remote write shards of the Prometheus instances evenly, so each replica carries its share of the rate.
+|As in the preceding rows, for the rate of one replica
+|As in the preceding rows
+|===
+
+The table is based on the following measurements. The Collector uses about 1 CPU core for every 100,000 samples per second and less than 250 MiB of memory in steady state, independent of the throughput; two replicas at 62,000 samples per second used 0.70 cores and 231 MiB together, the same total as one replica. The limits leave room for the recovery after a backend outage: the sending queue of 100,000 data points adds about 250 MiB, and when the backend returns, the Prometheus instances resend their backlog at more than 100,000 samples per second, which drives the Collector to its CPU limit and to a 2 GiB working set under the `memory_limiter` processor until the backlog is drained, 245 seconds after a 5 minute outage at 40,000 samples per second. Keep the memory limit at `2Gi` or more so that the `memory_limiter` processor turns a memory shortage into back pressure instead of an out-of-memory restart. A longer outage does not need more Collector memory, because the sending queue is bounded and the Prometheus write-ahead log keeps the samples for two hours.
+
+[role="_additional-resources"]
+.Additional resources
+* link:https://docs.redhat.com/en/documentation/monitoring_stack_for_red_hat_openshift/latest/html-single/configuring_core_platform_monitoring/index#configuring-remote-write-storage_storing-and-recording-data[Configuring remote write storage for core platform monitoring]
+* link:https://docs.redhat.com/en/documentation/monitoring_stack_for_red_hat_openshift/latest/html-single/configuring_user_workload_monitoring/index#configuring-remote-write-storage_storing-and-recording-data-uwm[Configuring remote write storage for user workload monitoring]
