@@ -28,6 +28,7 @@ From the repository root:
 | `audit-map-jobs.sh` | Report job-to-category coverage |
 | `audit-module-duplicates.py` | Report module usage within categories (duplicates & cross-job redundancy) |
 | `preview-warning.py` | Post-processor: adds warning banner when includes are missing |
+| `conversion-prechecks.sh` | Run AsciiDoc pre-conversion validation (map completeness, Vale DITA, exploration) |
 
 ## Requirements
 
@@ -197,6 +198,62 @@ python3 scripts/navmap/audit-module-duplicates.py -c troubleshoot ocp
 - `[DUP]` - Module appears multiple times in the same job
 - `[CROSS]` - Module appears in multiple different jobs
 - `[DUP+CROSS]` - Both duplicate and cross-job redundancy
+
+## Pre-conversion validation
+
+Run automated AsciiDoc validation checks before converting to DITA:
+
+```bash
+# From repository root (using wrapper)
+./conversion-prechecks                    # Check OCP full navigation (default)
+./conversion-prechecks install            # Check OCP install category only
+./conversion-prechecks secure             # Check OCP secure category only
+./conversion-prechecks rosa-hcp           # Check specific product
+./conversion-prechecks --all              # Check all products
+
+# Or call script directly
+bash scripts/navmap/conversion-prechecks.sh install
+```
+
+This runs three validation checks:
+1. **Map completeness** - Check for missing includes and AsciiDoctor errors
+2. **Vale DITA validation** - Validate against AsciiDocDITA style rules
+3. **Exploration** - Identify unknown issues and conversion blockers
+
+Asciidoctor output is discarded to avoid generating HTML beside source maps. Vale styles sync once per run, and content files are discovered and deduplicated once per target for both Vale checks. Tool failures, failed style synchronization, and empty or failed content discovery return a non-zero exit status with diagnostics in the logs. Exploration suggestions are advisory; an exploration execution failure fails the run.
+
+Results are logged to `logs/*.log` files:
+- OCP navigation: `logs/asciidoctor.log`, `logs/vale.log`, `logs/exploration.log`
+- OCP categories: `logs/install-asciidoctor.log`, `logs/secure-vale.log`, etc.
+- Other products: `logs/rosa-hcp-asciidoctor.log`, etc.
+
+### Available OCP categories
+
+You can check individual categories: `administer`, `configure`, `deploy`, `develop`, `disconnected-environments`, `discover`, `extend`, `get-started`, `install`, `integrate`, `migrate`, `networking`, `observe`, `optimize`, `plan`, `reference`, `secure`, `storage`, `troubleshoot`.
+
+### Prerequisites
+
+The script checks for these required tools (install instructions shown in error message):
+
+- `asciidoctor` - Already required for preview
+- `list-content` - `gem install asciidoctor-list-content`
+- `vale` - https://docs.vale.sh/topics/installation
+- `~/.dita.ini` - AsciiDocDITA Vale configuration (required for DITA validation)
+
+Set `DITA_CONFIG` to use another Vale configuration file, for example:
+
+```bash
+DITA_CONFIG=/path/to/dita.ini ./conversion-prechecks install
+```
+
+### Regression checks
+
+The tests use isolated fixtures and tool doubles; they do not sync styles or modify source maps:
+
+```bash
+PYTHONDONTWRITEBYTECODE=1 python3 -m unittest discover -s scripts/navmap/tests -v
+bash -n conversion-prechecks scripts/navmap/conversion-prechecks.sh
+```
 
 ## Supported distros
 
