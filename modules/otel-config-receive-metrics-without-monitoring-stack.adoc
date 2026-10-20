@@ -1,0 +1,576 @@
+// Module included in the following assemblies:
+//
+// * config-monitoring/otel-configuring-metrics-for-monitoring-stack.adoc
+
+:_mod-docs-content-type: REFERENCE
+[id="configuration-for-collecting-platform-metrics-without-the-monitoring-stack_{context}"]
+= Configuration for collecting platform metrics without the monitoring stack
+
+[role="_abstract"]
+You can collect the {ocp-product-title} platform metrics with the OpenTelemetry Collector alone, without reading them from the in-cluster monitoring stack, and export them to any backend. A Collector on every node collects the node, pod, container, and volume metrics with the Host Metrics Receiver and the Kubelet Stats Receiver. One cluster-wide Collector collects the state of the cluster objects with the Kubernetes Cluster Receiver and, on a best-effort basis, the metrics of the control plane and of the cluster operators with the Prometheus Receiver. Nothing in the `openshift-monitoring` namespace is read or modified.
+
+:FeatureName: The Kubernetes Cluster Receiver
+include::snippets/technology-preview.adoc[]
+
+:FeatureName: The Resource Detection Processor
+include::snippets/technology-preview.adoc[]
+
+Use this configuration for the node, kubelet, and cAdvisor metrics with the OpenTelemetry metric names, for metrics that the active collection profile of the monitoring stack does not collect, for typed counters and histograms today, and on {ocp-product-title} versions earlier than 5.0. For the control plane and cluster operator metrics, prefer remote write from the Cluster Monitoring Operator or from a Cluster Observability Operator Prometheus where it is available: the scrape jobs of this module reach those endpoints from outside the `openshift-monitoring` namespace, and the component owners can restrict them in any release through network policies or certificate requirements, as the DNS and Ingress Operators already do. Both configurations can run at the same time.
+
+The Collector configuration uses the `host_metrics`, `kubelet_stats`, and `resource_detection` component identifiers. The `hostmetrics`, `kubeletstats`, and `resourcedetection` identifiers are deprecated aliases.
+
+[id="node-collector-without-the-monitoring-stack_{context}"]
+== Node collector
+
+The following example shows the service account, the security context constraints, the permissions, and the `OpenTelemetryCollector` custom resource (CR) of the node Collector:
+
+[source,yaml]
+----
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: otel-node
+  namespace: <namespace>
+---
+apiVersion: security.openshift.io/v1
+kind: SecurityContextConstraints
+metadata:
+  name: otel-node
+allowPrivilegedContainer: false
+allowPrivilegeEscalation: false
+defaultAllowPrivilegeEscalation: false
+requiredDropCapabilities:
+- ALL
+allowHostDirVolumePlugin: true
+allowHostNetwork: false
+allowHostPID: false
+allowHostIPC: false
+allowHostPorts: false
+readOnlyRootFilesystem: true
+runAsUser:
+  type: RunAsAny
+seLinuxContext:
+  type: RunAsAny
+fsGroup:
+  type: RunAsAny
+supplementalGroups:
+  type: RunAsAny
+seccompProfiles:
+- runtime/default
+volumes:
+- configMap
+- downwardAPI
+- emptyDir
+- hostPath
+- projected
+- secret
+users:
+- system:serviceaccount:<namespace>:otel-node
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: otel-node
+rules:
+- apiGroups: [""]
+  resources: ["nodes/stats", "nodes/proxy"]
+  verbs: ["get"]
+- apiGroups: [""]
+  resources: ["nodes"]
+  verbs: ["get", "list", "watch"]
+- apiGroups: [""]
+  resources: ["namespaces"]
+  resourceNames: ["kube-system"]
+  verbs: ["get"]
+- apiGroups: ["config.openshift.io"]
+  resources: ["infrastructures", "infrastructures/status"]
+  verbs: ["get", "list", "watch"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: otel-node
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: otel-node
+subjects:
+- kind: ServiceAccount
+  name: otel-node
+  namespace: <namespace>
+---
+apiVersion: opentelemetry.io/v1beta1
+kind: OpenTelemetryCollector
+metadata:
+  name: otel-node
+  namespace: <namespace>
+spec:
+  mode: daemonset
+  serviceAccount: otel-node
+  securityContext:
+    runAsUser: 0
+    seLinuxOptions:
+      type: spc_t
+    readOnlyRootFilesystem: true
+    allowPrivilegeEscalation: false
+    seccompProfile:
+      type: RuntimeDefault
+    capabilities:
+      drop:
+      - ALL
+  tolerations:
+  - operator: Exists
+  resources:
+    requests:
+      cpu: 50m
+      memory: 192Mi
+    limits:
+      cpu: 500m
+      memory: 512Mi
+  env:
+  - name: K8S_NODE_NAME
+    valueFrom:
+      fieldRef:
+        fieldPath: spec.nodeName
+  volumeMounts:
+  - name: hostfs
+    mountPath: /hostfs
+    readOnly: true
+    mountPropagation: HostToContainer
+  volumes:
+  - name: hostfs
+    hostPath:
+      path: /
+  config:
+    receivers:
+      host_metrics:
+        collection_interval: 30s
+        root_path: /hostfs
+        scrapers:
+          cpu: {}
+          memory: {}
+          load: {}
+          filesystem:
+            exclude_mount_points:
+              match_type: regexp
+              mount_points:
+              - ^/(dev|proc|sys|run|var/lib/kubelet/pods|var/lib/containers/storage/overlay)(/|$)
+            exclude_fs_types:
+              match_type: strict
+              fs_types: [tmpfs, devtmpfs, overlay, squashfs, autofs, nsfs, cgroup, cgroup2, rpc_pipefs]
+          disk: {}
+          network:
+            exclude:
+              match_type: regexp
+              interfaces:
+              - ^(veth.*|[a-f0-9]{15}|ovn-k8s-mp[0-9]*|br-ex|br-int|br-ext|br[0-9]*|tun[0-9]*|genev_sys_.*|ovs-system)$
+          paging: {}
+          processes: {}
+      kubelet_stats:
+        collection_interval: 30s
+        auth_type: kubeConfig
+        endpoint: ${env:K8S_NODE_NAME}
+        metric_groups: [node, pod, container, volume]
+    processors:
+      memory_limiter:
+        check_interval: 1s
+        limit_percentage: 80
+        spike_limit_percentage: 20
+      resource_detection:
+        detectors: [openshift, k8s_api]
+        override: false
+        timeout: 5s
+    exporters:
+      otlp_http:
+        endpoint: https://<backend_otlp_endpoint>
+        retry_on_failure:
+          enabled: true
+          max_elapsed_time: 0
+        sending_queue:
+          enabled: true
+          sizer: items
+          queue_size: 50000
+          block_on_overflow: true
+          batch:
+            flush_timeout: 5s
+            min_size: 1000
+            max_size: 4000
+    service:
+      pipelines:
+        metrics:
+          receivers: [host_metrics, kubelet_stats]
+          processors: [memory_limiter, resource_detection]
+          exporters: [otlp_http]
+----
+where:
+
+`SecurityContextConstraints`:: Lets the Collector mount the host filesystem read-only. The Collector runs as root with the `spc_t` SELinux type to read the `/proc` and `/sys` directories of the host, without a privileged container, host PID or host network access, and with all capabilities dropped.
+`nodes/proxy`:: Lets the Collector reach the kubelet through the API server node proxy; `nodes/stats` is the permission the kubelet itself checks and is required when the Collector connects to the kubelet directly. The `get` verb on this subresource also lets the service account read the other read-only kubelet endpoints, such as the container logs; the alternative, connecting to port 10250 of the kubelet directly, requires the kubelet serving CA, which is namespaced and rotates. The `infrastructures` rule is for the `openshift` detector of the Resource Detection Processor, the `nodes` and `namespaces` rules for its `k8s_api` detector.
+`tolerations`:: Schedules a Collector pod on every node, including the control plane nodes.
+`host_metrics`:: Collects the node metrics from the host filesystem mounted at `/hostfs`. The exclusions skip the pseudo filesystems, the container storage, and the virtual network interfaces of the node, as the monitoring stack does. The `process` scraper is not enabled: it requires host PID access and produces one set of metrics per process.
+`kubelet_stats`:: Collects the node, pod, container, and volume metrics from the kubelet. With `auth_type: kubeConfig` and the node name as the endpoint, the Collector connects to the kubelet through the API server node proxy with the in-cluster configuration, so the TLS connection is verified with the service account CA certificate and the API server verifies the kubelet certificate. The kubelet serving CA is not needed and `insecure_skip_verify` is not set.
+`resource_detection`:: Adds the `cloud.provider`, `cloud.platform`, `cloud.region`, `k8s.cluster.name`, `k8s.cluster.uid`, `k8s.node.name`, and `k8s.node.uid` resource attributes. The Host Metrics Receiver sets no resource attributes by itself.
+`otlp_http`:: Configures the exporter for the backend with the same resilience settings as for remote write: unlimited retries, a sending queue bounded by the number of data points that blocks the pipeline when it is full, and batching in the exporter. The queue must be larger than the largest single scrape, because the exporter rejects a request that does not fit into the queue. A Kubelet Stats scrape of a node with 300 pods is about 10,000 data points; a cAdvisor or API server scrape can exceed 50,000. See the following note about backend outages.
+
+[id="cluster-collector-without-the-monitoring-stack_{context}"]
+== Cluster collector
+
+The following example shows the service account, the permissions, and the `OpenTelemetryCollector` CR of the cluster Collector. The Prometheus Receiver scrapes the control plane and the cluster operators with the service account token of the Collector. The example shows three scrape jobs: the Kubernetes API server, which is verified with the cluster CA certificate, the scheduler and the controller manager, which are verified with the service CA certificate, and a kube-rbac-proxy protected endpoint of a cluster operator DaemonSet. Every other endpoint of a cluster operator follows one of these patterns; one scrape job per endpoint is required because the service CA certificates are valid for the `<service>.<namespace>.svc` name and the `server_name` setting applies to the whole job.
+
+[source,yaml]
+----
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: otel-cluster
+  namespace: <namespace>
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: otel-cluster
+rules:
+- nonResourceURLs: ["/metrics", "/metrics/resources"]
+  verbs: ["get"]
+- apiGroups: [""]
+  resources: ["namespace/metrics"]
+  verbs: ["get"]
+- apiGroups: ["route.openshift.io"]
+  resources: ["routers/metrics"]
+  verbs: ["get"]
+- apiGroups: ["image.openshift.io"]
+  resources: ["registry/metrics"]
+  verbs: ["get"]
+- apiGroups: [""]
+  resources:
+  - events
+  - namespaces
+  - namespaces/status
+  - nodes
+  - nodes/spec
+  - persistentvolumeclaims
+  - persistentvolumes
+  - pods
+  - pods/status
+  - replicationcontrollers
+  - replicationcontrollers/status
+  - resourcequotas
+  - services
+  - endpoints
+  verbs: ["get", "list", "watch"]
+- apiGroups: ["discovery.k8s.io"]
+  resources: ["endpointslices"]
+  verbs: ["get", "list", "watch"]
+- apiGroups: ["apps"]
+  resources: ["daemonsets", "deployments", "replicasets", "statefulsets"]
+  verbs: ["get", "list", "watch"]
+- apiGroups: ["extensions"]
+  resources: ["daemonsets", "deployments", "replicasets"]
+  verbs: ["get", "list", "watch"]
+- apiGroups: ["batch"]
+  resources: ["jobs", "cronjobs"]
+  verbs: ["get", "list", "watch"]
+- apiGroups: ["autoscaling"]
+  resources: ["horizontalpodautoscalers"]
+  verbs: ["get", "list", "watch"]
+- apiGroups: ["quota.openshift.io"]
+  resources: ["clusterresourcequotas"]
+  verbs: ["get", "list", "watch"]
+- apiGroups: ["config.openshift.io"]
+  resources: ["infrastructures", "infrastructures/status"]
+  verbs: ["get", "list", "watch"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: otel-cluster
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: otel-cluster
+subjects:
+- kind: ServiceAccount
+  name: otel-cluster
+  namespace: <namespace>
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: otel-cluster-service-ca
+  namespace: <namespace>
+  annotations:
+    service.beta.openshift.io/inject-cabundle: "true"
+---
+apiVersion: opentelemetry.io/v1beta1
+kind: OpenTelemetryCollector
+metadata:
+  name: otel-cluster
+  namespace: <namespace>
+spec:
+  mode: deployment
+  replicas: 1
+  serviceAccount: otel-cluster
+  resources:
+    requests:
+      cpu: 500m
+      memory: 1Gi
+    limits:
+      cpu: "2"
+      memory: 4Gi
+  volumeMounts:
+  - name: service-ca
+    mountPath: /etc/service-ca
+    readOnly: true
+  volumes:
+  - name: service-ca
+    configMap:
+      name: otel-cluster-service-ca
+  config:
+    receivers:
+      k8s_cluster:
+        distribution: openshift
+        collection_interval: 30s
+        node_conditions_to_report: [Ready, MemoryPressure, DiskPressure, PIDPressure]
+        allocatable_types_to_report: [cpu, memory, pods]
+      prometheus:
+        config:
+          global:
+            scrape_interval: 30s
+          scrape_configs:
+            - job_name: 'kube-apiserver'
+              scheme: https
+              authorization:
+                credentials_file: /var/run/secrets/kubernetes.io/serviceaccount/token
+              tls_config:
+                ca_file: /var/run/secrets/kubernetes.io/serviceaccount/ca.crt
+                server_name: kubernetes
+              kubernetes_sd_configs:
+                - role: endpoints
+                  namespaces:
+                    names: [default]
+              relabel_configs:
+                - source_labels: [__meta_kubernetes_service_name, __meta_kubernetes_endpoint_port_name]
+                  regex: kubernetes;https
+                  action: keep
+              metric_relabel_configs:
+                - source_labels: [__name__]
+                  regex: 'apiserver_request_slo_duration_seconds_.*|apiserver_admission_(controller|step)_admission_latencies_seconds_.*'
+                  action: drop
+                - source_labels: [__name__, le]
+                  regex: 'apiserver_request_duration_seconds_bucket;(0.4|0.6|0.8|1.25|1.5|3|6|8|15)(\.0)?'
+                  action: drop
+            - job_name: 'kube-scheduler'
+              scheme: https
+              authorization:
+                credentials_file: /var/run/secrets/kubernetes.io/serviceaccount/token
+              tls_config:
+                ca_file: /etc/service-ca/service-ca.crt
+                server_name: scheduler.openshift-kube-scheduler.svc
+              kubernetes_sd_configs:
+                - role: endpoints
+                  namespaces:
+                    names: [openshift-kube-scheduler]
+              relabel_configs:
+                - source_labels: [__meta_kubernetes_service_name, __meta_kubernetes_endpoint_port_name]
+                  regex: scheduler;https
+                  action: keep
+                - source_labels: [__meta_kubernetes_pod_node_name]
+                  target_label: node
+            - job_name: 'kube-controller-manager'
+              scheme: https
+              authorization:
+                credentials_file: /var/run/secrets/kubernetes.io/serviceaccount/token
+              tls_config:
+                ca_file: /etc/service-ca/service-ca.crt
+                server_name: kube-controller-manager.openshift-kube-controller-manager.svc
+              kubernetes_sd_configs:
+                - role: endpoints
+                  namespaces:
+                    names: [openshift-kube-controller-manager]
+              relabel_configs:
+                - source_labels: [__meta_kubernetes_service_name, __meta_kubernetes_endpoint_port_name]
+                  regex: kube-controller-manager;https
+                  action: keep
+                - source_labels: [__meta_kubernetes_pod_node_name]
+                  target_label: node
+            - job_name: 'ovn-kubernetes-node'
+              scheme: https
+              authorization:
+                credentials_file: /var/run/secrets/kubernetes.io/serviceaccount/token
+              tls_config:
+                ca_file: /etc/service-ca/service-ca.crt
+                server_name: ovn-kubernetes-node.openshift-ovn-kubernetes.svc
+              kubernetes_sd_configs:
+                - role: endpoints
+                  namespaces:
+                    names: [openshift-ovn-kubernetes]
+              relabel_configs:
+                - source_labels: [__meta_kubernetes_service_name, __meta_kubernetes_endpoint_port_name]
+                  regex: ovn-kubernetes-node;metrics
+                  action: keep
+                - source_labels: [__meta_kubernetes_pod_node_name]
+                  target_label: node
+    processors:
+      memory_limiter:
+        check_interval: 1s
+        limit_percentage: 80
+        spike_limit_percentage: 20
+      resource_detection:
+        detectors: [openshift]
+        override: false
+        timeout: 5s
+    exporters:
+      otlp_http:
+        endpoint: https://<backend_otlp_endpoint>
+        retry_on_failure:
+          enabled: true
+          max_elapsed_time: 0
+        sending_queue:
+          enabled: true
+          sizer: items
+          queue_size: 200000
+          block_on_overflow: true
+          batch:
+            flush_timeout: 5s
+            min_size: 2000
+            max_size: 8000
+    service:
+      pipelines:
+        metrics:
+          receivers: [k8s_cluster, prometheus]
+          processors: [memory_limiter, resource_detection]
+          exporters: [otlp_http]
+----
+where:
+
+`nonResourceURLs`:: Lets the service account token of the Collector read the `/metrics` endpoints of the API server, the scheduler, the controller manager, and the cluster operators, which authorize the request through the Kubernetes API. The `/metrics/resources` path is the resource metrics endpoint of the scheduler.
+`namespace/metrics`:: Required by the kube-rbac-proxy instances of the Machine Config Operator and of the Machine API, which authorize on the metrics subresource of their namespace. The `routers/metrics` and `registry/metrics` rules are required by the ingress router and by the image registry.
+`inject-cabundle`:: Injects the service CA bundle into the config map. The scheduler, the controller manager, and the cluster operators serve certificates signed by the service CA, which are valid for the `<service>.<namespace>.svc` name only.
+`resources`:: The memory of the cluster Collector grows with the number of series it scrapes, because the Prometheus Receiver keeps the scrape state of every target. See the resource requirements section of this module.
+`k8s_cluster`:: Collects the state of the cluster objects: pod phase, container restarts, the counts of deployments, daemon sets, stateful sets and jobs, the node conditions and the allocatable resources listed here, resource quotas, and the OpenShift cluster resource quotas.
+`kube-apiserver`:: Scrapes the API server through the `kubernetes` endpoint of the `default` namespace and verifies it with the cluster CA certificate of the service account. The `metric_relabel_configs` drop histogram series that the monitoring stack also drops. The API server is the largest source: with the drop list of the monitoring stack it still produces about 230,000 series on a six-node cluster, the same as for the monitoring stack. If you need only a few API server metrics, replace the drop rules with a `keep` rule that lists them.
+`kube-scheduler`:: Scrapes the scheduler pods through the endpoints of the `scheduler` service and verifies the service CA certificate with the service name. The `kube-controller-manager` job follows the same pattern.
+`ovn-kubernetes-node`:: Scrapes a cluster operator DaemonSet that protects its metrics with kube-rbac-proxy. Repeat this job for every cluster operator endpoint that you need, with the namespace, the service name, the port name, and the `server_name` of that endpoint. The service and port names are the same ones that the `ServiceMonitor` objects of the monitoring stack select. These scrape jobs are best effort: the endpoints are owned by the platform components, which can change the network policy, the authentication, or the certificate of an endpoint in any release, and a job then finds no target or fails its scrape without affecting the other jobs. Check the `up` series of every job after an upgrade.
+`node`:: Keeps the node name of the scraped pod as a label.
+
+[NOTE]
+====
+* On hosted control planes, such as Red Hat OpenShift Service on AWS with hosted control planes, the scheduler, the controller manager, the Machine Config Operator, and the OVN-Kubernetes control plane run outside the cluster. The scrape jobs for these components find no targets.
+* To scale the cluster Collector, set `mode: statefulset`, enable the Target Allocator with `prometheusCR.enabled: false` so that it shards the scrape jobs of the Prometheus Receiver across the replicas, and add the Kubernetes Leader Elector Extension to the Kubernetes Cluster Receiver so that only one replica collects the cluster state. The Target Allocator requires its own service account and permissions to list and watch the services, endpoints, pods, and nodes. See the Target Allocator and the Kubernetes Leader Elector Extension documentation.
+* Backend outages: the receivers pull the metrics, so there is no upstream write-ahead log as with remote write. When the sending queue of the exporter is full, the pipeline blocks and the scrapes of that time are skipped; nothing that is already queued is lost and the Collectors do not restart. Size the queue for the outage that you want to bridge, as described in the resource requirements section of this module. With the File Storage Extension on the sending queue, the queue content survives a restart of the Collector and a much larger `queue_size` becomes affordable on disk; use a persistent volume for the storage directory so that the queue also survives a rescheduled pod.
+====
+
+[id="resource-requirements-without-the-monitoring-stack_{context}"]
+== Resource requirements
+
+The following tables list the resources of the two Collectors, measured with the {otel} Collector on an {ocp-product-title} 5.0 cluster with 7 nodes and up to 1,471 pods. The node Collector depends on the number of pods on its node, the cluster Collector on the number of pods in the cluster and on the scrape jobs that you configure.
+
+.Node Collector, one pod per node
+[options="header"]
+[cols="a,a,a"]
+|===
+|Pods on the node |Requests |Limits
+
+|Up to 250, the default maximum of a node
+|CPU `50m`, memory `192Mi`
+|CPU `500m`, memory `512Mi`
+|===
+
+A node Collector on a node with 250 pods used 5 millicores and 75 MiB of memory at a 30 s collection interval and 11 millicores at 15 s. The requests and limits of the example leave room for the sending queue during a backend outage.
+
+.Cluster Collector, one replica, 30 s scrape interval
+[options="header"]
+[cols="a,a,a,a"]
+|===
+|Pods in the cluster |Scrape jobs |Requests |Limits
+
+|Up to 1,500
+|The jobs of the example in this module: the Kubernetes Cluster Receiver, the API server, the scheduler, the controller manager, and the cluster operator endpoints
+|CPU `500m`, memory `1Gi`
+|CPU `2`, memory `4Gi`
+
+|Up to 1,000
+|The jobs of the example plus the kubelet and cAdvisor endpoints of every node through the API server node proxy
+|CPU `500m`, memory `1Gi`
+|CPU `2`, memory `4Gi`
+
+|Up to 1,500
+|The jobs of the example plus the kubelet and cAdvisor endpoints
+|CPU `500m`, memory `2Gi`
+|CPU `2`, memory `6Gi`
+
+|More than 1,500
+|The jobs of the example plus the kubelet and cAdvisor endpoints
+|Add 1.4 GiB of memory for every further 1,000 pods, or scale the cluster Collector out with the Target Allocator
+|Add 1.4 GiB of memory for every further 1,000 pods
+|===
+
+The tables are based on the following measurements. With the jobs of the example, the cluster Collector used 0.05 CPU cores and 570 MiB of memory with 271 pods in the cluster and 630 MiB with 1,461 pods: the API server target is the base and the pod count adds little. With the kubelet and cAdvisor endpoints added, it used 0.10 cores and 950 MiB with 271 pods, 0.18 cores and 1.7 GiB with 871 pods, and 0.24 cores and 2.5 GiB with 1,471 pods, about 1.3 GiB and 0.12 cores for every 1,000 pods, because the Prometheus Receiver keeps the scrape state of every series and a cAdvisor endpoint serves about 250 series per pod. The CPU usage follows the scrape rate: 0.12 cores at a 60 s interval and 0.49 cores at 15 s with 1,471 pods. The API server, scraped with the drop list of the monitoring stack, is the largest single source with about 230,000 series; a `keep` rule with the metrics that you need reduces the memory further. Two StatefulSet replicas with the Target Allocator used about 10 percent more memory in total than one replica, with 1.7 GiB on the busiest replica instead of 2.5 GiB, because the Target Allocator distributes targets, not series, and the API server target stays on one replica.
+
+The memory limits leave room for the recovery after a backend outage. The sending queue of 200,000 data points holds about 50 seconds of scrapes at 1,471 pods with the kubelet and cAdvisor endpoints and about 80 seconds with the jobs of the example; a longer outage skips the scrapes until the backend returns. After a 5 minute outage with 1,471 pods and the kubelet and cAdvisor endpoints, the cluster Collector drained its queue in 75 seconds with a working set of 3.2 GiB, and of 3.9 GiB with the File Storage Extension, where the `memory_limiter` processor refused scrapes for one minute under the `4Gi` limit. That is why the table raises the limit to `6Gi` for that configuration. The node Collectors reached 46,000 of their 50,000 queued data points per node in the same outage, so a queue of 100,000 data points covers a 10 minute outage.
+
+[id="metric-names-without-the-monitoring-stack_{context}"]
+== Metric names
+
+The node, pod, container, and cluster state metrics use the OpenTelemetry metric names. The following table maps common platform metrics of the monitoring stack to the metrics that the Collector collects:
+
+[options="header"]
+[cols="a,a,a"]
+|===
+|Monitoring stack metric |Collector metric |Receiver
+
+|`node_cpu_seconds_total`
+|`system.cpu.time` (by `state`), `k8s.node.cpu.time`, `k8s.node.cpu.usage`
+|Host Metrics Receiver, Kubelet Stats Receiver
+
+|`node_memory_MemAvailable_bytes`, `node_memory_MemTotal_bytes`
+|`system.memory.usage` (by `state`), `k8s.node.memory.available`, `k8s.node.memory.working_set`
+|Host Metrics Receiver, Kubelet Stats Receiver
+
+|`node_filesystem_avail_bytes`, `node_disk_*`, `node_network_*`, `node_load1`
+|`system.filesystem.usage` (by `state`), `system.disk.io`, `system.disk.operations`, `system.network.io`, `system.network.errors`, `system.cpu.load_average.1m`
+|Host Metrics Receiver
+
+|`container_cpu_usage_seconds_total`
+|`container.cpu.time`, `container.cpu.usage`, `k8s.pod.cpu.time`, `k8s.pod.cpu.usage`
+|Kubelet Stats Receiver
+
+|`container_memory_working_set_bytes`, `container_memory_rss`
+|`container.memory.working_set`, `container.memory.rss`, `k8s.pod.memory.working_set`
+|Kubelet Stats Receiver
+
+|`container_network_receive_bytes_total`, `kubelet_volume_stats_available_bytes`
+|`k8s.pod.network.io`, `k8s.volume.available`, `k8s.volume.capacity`
+|Kubelet Stats Receiver
+
+|`kube_pod_status_phase`, `kube_pod_container_status_restarts_total`
+|`k8s.pod.phase` (1 Pending, 2 Running, 3 Succeeded, 4 Failed, 5 Unknown), `k8s.container.restarts`, `k8s.container.ready`
+|Kubernetes Cluster Receiver
+
+|`kube_deployment_status_replicas_available`, `kube_deployment_spec_replicas`, `kube_daemonset_status_number_ready`, `kube_statefulset_status_replicas_ready`
+|`k8s.deployment.available`, `k8s.deployment.desired`, `k8s.daemonset.ready_nodes`, `k8s.statefulset.ready_pods`
+|Kubernetes Cluster Receiver
+
+|`kube_node_status_condition`, `kube_node_status_allocatable`
+|`k8s.node.condition_ready`, `k8s.node.condition_memory_pressure` (1 true, 0 false, -1 unknown), `k8s.node.allocatable_cpu`, `k8s.node.allocatable_memory`, `k8s.node.allocatable_pods`
+|Kubernetes Cluster Receiver
+
+|`kube_pod_container_resource_requests`, `kube_pod_container_resource_limits`, `kube_resourcequota`
+|`k8s.container.cpu_request`, `k8s.container.memory_request`, `k8s.container.cpu_limit`, `k8s.container.memory_limit`, `k8s.resource_quota.used`, `k8s.resource_quota.hard_limit`
+|Kubernetes Cluster Receiver
+
+|`apiserver_request_total`, `scheduler_pending_pods`, `workqueue_depth`, and the other control plane and operator metrics
+|The same names
+|Prometheus Receiver
+|===
+
+The container metrics that the monitoring stack collects from the kubelet `cAdvisor` endpoint keep their Prometheus names when you scrape the `/metrics/cadvisor` path of the kubelet through the API server node proxy with the Prometheus Receiver instead of the Kubelet Stats Receiver. This requires the `nodes/metrics` and `nodes/proxy` get permissions on the cluster role of the cluster Collector.
+
+[id="not-collected-without-the-monitoring-stack_{context}"]
+== Not collected without the monitoring stack
+
+* The metrics of the following components, which accept only the client certificate of the monitoring stack or run behind a network policy that admits only the `openshift-monitoring` namespace: etcd, Cluster Version Operator, Node Tuning Operator, Cluster Samples Operator, Marketplace Operator, the CSI driver controllers, the `check-endpoints` and `network-check-source` endpoints of the network diagnostics, `CoreDNS`, the DNS Operator, and the Ingress Operator. The API server metrics still contain the etcd request latencies seen by the API server.
+* The `kube_*` and `openshift_*` metrics of kube-state-metrics and openshift-state-metrics, such as the pod and node labels, routes, builds, and `DeploymentConfig` objects. The Kubernetes Cluster Receiver covers the pod, workload, node, and quota state with the OpenTelemetry names of the table.
+* Metrics of custom resources. The monitoring stack configures kube-state-metrics to report the state of the `VerticalPodAutoscaler`, `Gateway`, and `GatewayClass` resources; the Kubernetes Cluster Receiver reports no custom resource (link:https://github.com/open-telemetry/opentelemetry-collector-contrib/issues/50196[opentelemetry-collector-contrib issue 50196]).
+* The recording rules, the alerting rules and Alertmanager, the Observe pages of the web console, the metrics server and therefore the `oc adm top` command and horizontal pod autoscaling on CPU and memory, and the Telemetry data sent to Red Hat.
+* The metrics of user-defined projects that the monitoring stack collects through `ServiceMonitor` and `PodMonitor` objects. Add Prometheus Receiver scrape jobs for them, or use the Target Allocator with the Prometheus Operator custom resources when they exist on the cluster.
