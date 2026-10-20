@@ -45,7 +45,6 @@ def getRouteHostname = { String routeName, String projectName ->
 def setPreviewStatus = { String url, String message, String state, String host, boolean includeLink ->
    setBuildStatus(url, "ci/app-preview/origin", message, state, includeLink ? "http://${host}/openshift-origin/latest/welcome/index.html" : "")
    setBuildStatus(url, "ci/app-preview/enterprise", message, state, includeLink ? "http://${host}/openshift-enterprise/master/welcome/index.html" : "")
-   setBuildStatus(url, "ci/app-preview/online", message, state, includeLink ? "http://${host}/openshift-online/master/welcome/index.html" : "")
    setBuildStatus(url, "ci/app-preview/dedicated", message, state, includeLink ? "http://${host}/openshift-dedicated/master/welcome/index.html" : "")
 }
 
