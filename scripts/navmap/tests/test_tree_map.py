@@ -14,7 +14,8 @@ from unittest.mock import patch
 SCRIPT = Path(__file__).resolve().parents[1] / 'tree-map.py'
 SPEC = importlib.util.spec_from_file_location('tree_map', SCRIPT)
 tree_map = importlib.util.module_from_spec(SPEC)
-SPEC.loader.exec_module(tree_map)
+with patch.object(sys, 'path', [str(SCRIPT.parent), *sys.path]):
+    SPEC.loader.exec_module(tree_map)
 
 
 class TreeMapTests(unittest.TestCase):

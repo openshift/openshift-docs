@@ -11,6 +11,8 @@ import sys
 from pathlib import Path
 from typing import Set, Optional, List, Dict
 
+from job_comparison import MapComparison, compare_job_includes
+
 # ANSI color codes
 class Colors:
     CATEGORY = '\033[1;34m'  # Bold Blue
@@ -42,6 +44,8 @@ class ValidationTracker:
         self.warnings: List[ValidationIssue] = []
         self.redundancies: List[Dict] = []  # Parent-child redundancy tracking
         self.heading_cache: Dict[Path, Optional[list]] = {}
+        self.compared_jobs = 0
+        self.identical_job_groups: Dict[tuple, str] = {}
 
     def add_error(self, message: str, file_path: Path, line: Optional[int] = None):
         self.errors.append(ValidationIssue('ERROR', message, file_path, line))
@@ -124,6 +128,32 @@ def classify_file(file_path: Path) -> str:
         return 'category'
     else:
         return 'other'
+
+
+def cached_includes(file_path: Path, include_cache: dict) -> list:
+    """Read and resolve a file's includes once for analysis and display."""
+    if file_path not in include_cache:
+        include_cache[file_path] = [
+            dict(inc, resolved=resolve_include_path(inc['path'], file_path))
+            for inc in parse_includes(file_path)
+        ]
+    return include_cache[file_path]
+
+
+def prepare_include_tree(file_path, include_cache, max_depth=None, depth=0, visited=frozenset()):
+    """Cache exactly the traversal that will be displayed, without printing it."""
+    canonical = file_path.resolve()
+    if canonical in visited or (max_depth is not None and depth >= max_depth):
+        return
+    try:
+        includes = cached_includes(file_path, include_cache)
+    except (OSError, UnicodeError):
+        return  # The display pass reports the read failure through its validator.
+    for include in includes:
+        target = include['resolved']
+        if target and (classify_file(target) in ('category', 'job') or max_depth is not None):
+            prepare_include_tree(target, include_cache, max_depth, depth + 1, visited | {canonical})
+
 
 def get_color(file_type: str) -> str:
     """Get color code for file type."""
@@ -277,6 +307,8 @@ def build_tree(
     parent_modules: Optional[Dict[Path, tuple]] = None,
     validate_offsets: bool = True,
     include_cache: Optional[Dict[Path, list]] = None,
+    job_annotations: Optional[Dict[tuple, str]] = None,
+    comparison_category: Optional[Path] = None,
 ) -> None:
     """Recursively build and print the include tree."""
 
@@ -290,6 +322,8 @@ def build_tree(
 
     # Check for circular includes
     canonical = file_path.resolve()
+    if classify_file(file_path) == 'category' or comparison_category is None:
+        comparison_category = canonical
     if canonical in visited:
         marker = "(circular reference)" if no_color else f"{Colors.ERROR}(circular reference){Colors.RESET}"
         print(f"{prefix}{marker}")
@@ -307,12 +341,7 @@ def build_tree(
 
     # Get includes from this file
     try:
-        if file_path not in include_cache:
-            include_cache[file_path] = [
-                dict(inc, resolved=resolve_include_path(inc['path'], file_path))
-                for inc in parse_includes(file_path)
-            ]
-        includes = include_cache[file_path]
+        includes = cached_includes(file_path, include_cache)
     except (OSError, UnicodeError) as exc:
         if validator:
             validator.add_error(f"Cannot read file: {exc}", file_path)
@@ -369,6 +398,15 @@ def build_tree(
 
         # Build display name
         display_name = included_file.name
+        comparison_marker = (job_annotations or {}).get((comparison_category, included_file.resolve()), '')
+        if comparison_marker:
+            comparison_marker = ' ' + comparison_marker
+        identical_marker = ''
+        if validator:
+            group = validator.identical_job_groups.get((comparison_category, included_file.resolve()))
+            if group:
+                marker = f'[IDENTICAL {group}]'
+                identical_marker = ' ' + (marker if no_color else f'{Colors.WARNING}{marker}{reset}')
 
         # Check for parent-child redundancy (modules only)
         redundancy_marker = ""
@@ -402,7 +440,7 @@ def build_tree(
         gray = "" if no_color else Colors.GRAY
         warning_color = "" if no_color or not issue_marker else Colors.WARNING
         redundancy_color = "" if no_color else (Colors.WARNING if redundancy_marker else "")
-        print(f"{prefix}{branch}{color}{type_marker} {display_name}{reset}{gray}{extra_info}{reset}{warning_color}{issue_marker}{reset}{redundancy_color}{redundancy_marker}{reset}")
+        print(f"{prefix}{branch}{color}{type_marker} {display_name}{reset}{gray}{extra_info}{reset}{warning_color}{issue_marker}{reset}{redundancy_color}{redundancy_marker}{reset}{comparison_marker}{identical_marker}")
 
         # Recurse for non-module files (to avoid too much depth in typical cases)
         # But allow modules if explicitly requested via max_depth
@@ -427,7 +465,102 @@ def build_tree(
                 parent_modules=child_parent_modules,
                 validate_offsets=validate_offsets,
                 include_cache=include_cache,
+                job_annotations=job_annotations,
+                comparison_category=comparison_category,
             )
+
+def validate_identical_jobs(map_file, repo_root, validator, include_cache):
+    """Warn about identical direct target sets among jobs actually traversed.
+
+    Keep this check within the displayed traversal/depth limit. Conditions and
+    include attributes do not prove rendered equivalence; matches are warnings.
+    """
+    cache = {path.resolve(): includes for path, includes in include_cache.items()}
+    groups = {}
+    visited = set()
+
+    def collect(path, category):
+        path = path.resolve()
+        if path not in cache:
+            return
+        kind = classify_file(path)
+        if kind == 'category':
+            category = path
+        key = (category, path)
+        if key in visited:
+            return
+        visited.add(key)
+        if kind == 'job':
+            groups.setdefault(category, set()).add(path)
+        for include in cache[path]:
+            if include['resolved']:
+                collect(include['resolved'], category)
+
+    collect(map_file, map_file.resolve())
+    all_jobs = set().union(*groups.values())
+    validator.compared_jobs = len(all_jobs)
+    group_ids = {}
+    targets = {}
+    for job in all_jobs:
+        targets[job] = set()
+        for include in cache[job]:
+            ref = include['path']
+            if include['resolved']:
+                target = str(include['resolved'].resolve())
+            elif re.match(r'^[a-zA-Z][a-zA-Z0-9+.-]*://', ref):
+                target = ref
+            else:
+                target = str((job.parent / ref).resolve())
+            targets[job].add(target)
+    for category, jobs in sorted(groups.items()):
+        matches = compare_job_includes({job: targets[job] for job in jobs}, 100)
+        for match in matches:
+            if match['kind'] == 'IDENTICAL':
+                key = (category, frozenset(match['shared']))
+                group = group_ids.setdefault(key, f'G{len(group_ids) + 1}')
+                validator.identical_job_groups[category, match['a']] = group
+                validator.identical_job_groups[category, match['b']] = group
+                validator.add_warning(
+                    f"[IDENTICAL {group}] Identical direct include target set as {display_path(match['b'], repo_root)} "
+                    f"in {display_path(category, repo_root)} ({len(match['shared'])} targets). "
+                    "Check conditional includes and include attributes before removing either job.",
+                    match['a'])
+
+
+def resolve_map_selection(target: str, categories: list[str], repo_root: Path) -> list[Path]:
+    """Resolve distro/category shorthand or an existing explicit map path."""
+    maps = repo_root / 'maps'
+    distros = sorted(path.name for path in maps.iterdir()
+                     if path.is_dir() and (path / 'navigation.adoc').is_file()) if maps.is_dir() else []
+    if target in distros:
+        distro_dir = maps / target
+        if not categories:
+            return [distro_dir / 'navigation.adoc']
+        selected = []
+        available = ', '.join(path.stem for path in sorted(distro_dir.glob('*.adoc'))
+                              if path.name != 'navigation.adoc')
+        for category in dict.fromkeys(categories):
+            if not re.fullmatch(r'[a-zA-Z0-9][a-zA-Z0-9_-]*(?:\.adoc)?', category):
+                raise ValueError(f"Invalid category '{category}'; use a category name, such as observe")
+            filename = category if category.endswith('.adoc') else category + '.adoc'
+            path = distro_dir / filename
+            if not path.is_file():
+                raise ValueError(f"Category '{category}' not found in '{target}'. Available categories: {available}")
+            if path not in selected:
+                selected.append(path)
+        return selected
+
+    path = Path(target)
+    if not path.is_absolute():
+        path = repo_root / path
+    if path.is_file():
+        if categories:
+            raise ValueError('Category selection requires a distro name; an explicit map path selects one file')
+        return [path]
+    if len(Path(target).parts) == 1 and not Path(target).suffix:
+        raise ValueError(f"Unknown distro '{target}'. Available distros: {', '.join(distros) or '(none)'}")
+    raise FileNotFoundError(f'File not found: {target}')
+
 
 def main():
     parser = argparse.ArgumentParser(
@@ -435,6 +568,13 @@ def main():
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog='''
 Examples:
+  # Compare jobs across all OCP categories
+  %(prog)s --compare-jobs ocp
+
+  # Review specific categories in a distro
+  %(prog)s --compare-jobs ocp observe optimize
+  %(prog)s --compare-jobs -c observe rosa-hcp
+
   # Show tree for OCP install category
   %(prog)s maps/ocp/install.adoc
 
@@ -456,8 +596,16 @@ Examples:
     )
 
     parser.add_argument(
-        'map_file',
-        help='Path to the map file (e.g., maps/ocp/install.adoc)'
+        'target', metavar='DISTRO_OR_MAP',
+        help='Distro name (e.g., ocp, rosa-hcp) or an explicit map file path'
+    )
+    parser.add_argument(
+        'categories', nargs='*', metavar='CATEGORY',
+        help='Category names within the distro (default: its full navigation)'
+    )
+    parser.add_argument(
+        '-c', '--category', action='append', default=[], metavar='CATEGORY',
+        help='Select a category within the distro (repeatable; also accepted positionally)'
     )
     parser.add_argument(
         '-l', '--line-numbers',
@@ -483,31 +631,73 @@ Examples:
     parser.add_argument(
         '--validate',
         action='store_true',
-        help='Enable validation of leveloffset patterns (errors shown in red ❌, warnings in yellow ⚠️)'
+        help='Check include structure, heading levels, parent-child reuse, and identical job include target sets'
     )
     parser.add_argument(
         '--check-redundancy',
         action='store_true',
         help='Check for parent-child module redundancy (modules included in both parent and child jobs, shown with 🔁)'
     )
+    parser.add_argument(
+        '--compare-jobs', action='store_true',
+        help='Annotate jobs with shared and unique include coverage within each category'
+    )
+    parser.add_argument(
+        '--similarity', type=int, default=None, metavar='PERCENT',
+        help='Similarity cutoff for job annotations (1-100; default: 80)'
+    )
+    parser.add_argument(
+        '--removal-impact', action='append', default=[], metavar='JOB',
+        help='Simulate removing a reachable job (repeat to assess removals together); implies --compare-jobs'
+    )
 
-    args = parser.parse_args()
+    args = parser.parse_intermixed_args()
     if args.max_depth is not None and args.max_depth < 0:
         parser.error('--max-depth must be zero or greater')
+    if args.similarity is not None:
+        if not 1 <= args.similarity <= 100:
+            parser.error('--similarity must be from 1 to 100')
+        if not (args.compare_jobs or args.removal_impact):
+            parser.error('--similarity requires --compare-jobs or --removal-impact')
 
     # Find repo root
     script_dir = Path(__file__).resolve().parent
     repo_root = script_dir.parent.parent
 
-    # Resolve map file path
-    map_file = Path(args.map_file)
-    if not map_file.is_absolute():
-        map_file = repo_root / map_file
+    try:
+        map_files = resolve_map_selection(args.target, args.categories + args.category, repo_root)
+    except FileNotFoundError as error:
+        print(f'Error: {error}', file=sys.stderr)
+        sys.exit(1)
+    except ValueError as error:
+        parser.error(str(error))
 
-    if not map_file.is_file():
-        print(f"Error: File not found: {args.map_file}", file=sys.stderr)
+    comparisons = {}
+    removed = set()
+    if args.compare_jobs or args.removal_impact:
+        comparisons = {path: MapComparison(path, repo_root, classify_file, args.similarity or 80)
+                       for path in map_files}
+        reachable = set().union(*(comparison.before.jobs for comparison in comparisons.values()))
+        try:
+            removed = comparisons[map_files[0]].select_jobs(args.removal_impact, reachable)
+        except ValueError as error:
+            parser.error(str(error))
+
+    failed = False
+    for map_file in map_files:
+        if len(map_files) > 1:
+            print(f'\nMap: {display_path(map_file, repo_root)}')
+        comparison = comparisons.get(map_file)
+        selected_here = removed & comparison.before.jobs if comparison else set()
+        failed = show_map(map_file, repo_root, args, comparison, selected_here) or failed
+        if removed and not selected_here:
+            print('  No selected removal jobs occur in this map.')
+    if failed:
         sys.exit(1)
 
+
+def show_map(map_file, repo_root, args, comparison=None, removed=frozenset()):
+    """Display one selected map and return whether its checks failed."""
     # Classify root file
     file_type = classify_file(map_file)
     color = "" if args.no_color else get_color(file_type)
@@ -524,6 +714,10 @@ Examples:
     print(f"{color}{type_marker} {map_file.name}{reset}")
 
     # Build tree
+    include_cache = {}
+    if args.validate:
+        prepare_include_tree(map_file, include_cache, args.max_depth)
+        validate_identical_jobs(map_file, repo_root, validator, include_cache)
     build_tree(
         map_file,
         repo_root,
@@ -535,7 +729,39 @@ Examples:
         validator=validator,
         check_redundancy=check_redundancy,
         validate_offsets=args.validate,
+        job_annotations=comparison.annotations() if comparison else None,
+        include_cache=include_cache,
     )
+
+    if args.validate:
+        print(f'\nValidation scope: traversed includes and heading checks; '
+              f'{validator.compared_jobs} jobs compared for identical direct include target sets.')
+        if validator.identical_job_groups:
+            print('Jobs with the same [IDENTICAL G#] marker share a direct include target set; see the warnings below.')
+        print('Conditions, include selections, and rendered content are not evaluated for job equality.')
+
+    comparison_errors = False
+    if comparison:
+        print('\nJOB COMPARISON')
+        print('  Resolved include coverage, including nested jobs, modules, and snippets.')
+        print('  Targets with different selection attributes are compared separately.')
+        print('  Unique counts compare each job with the other jobs in its category.')
+        print('  Zero unique targets does not mean all matching jobs can be removed together.')
+        print('  Local job text, contexts, ordering, and level offsets need separate review.')
+        print('  Analysis traverses the full selected map, regardless of --max-depth.')
+        if comparison.before.issues:
+            print(f'  {len(comparison.before.issues)} analysis notes affect include coverage; '
+                  'affected jobs are marked incomplete.')
+            print('  Use --removal-impact JOB for notes relevant to a removal.')
+        if comparison.before.text_reviews:
+            print('  Conditional text review locations:')
+            for note in sorted(comparison.before.text_reviews):
+                print(f'    {note}')
+        for issue in sorted(comparison.before.errors):
+            print(f'  ERROR: {issue}')
+        comparison_errors = bool(comparison.before.errors)
+        if removed:
+            comparison_errors = comparison.print_impact(removed)
 
     # Print validation summary if enabled
     if validator and validator.has_issues():
@@ -598,7 +824,7 @@ Examples:
 
         # Exit with error code if errors found
         if validator.has_errors():
-            sys.exit(1)
+            return True
     elif validator:
         # Validation enabled but no issues
         success_color = "" if args.no_color else Colors.MODULE
@@ -606,7 +832,9 @@ Examples:
         if args.check_redundancy and not args.validate:
             print(f"{success_color}✓ No parent-child redundancy found{reset}")
         else:
-            print(f"{success_color}✓ No validation issues found{reset}")
+            print(f"{success_color}✓ No issues found in the checks performed within the traversed tree.{reset}")
+
+    return comparison_errors
 
 if __name__ == '__main__':
     main()
