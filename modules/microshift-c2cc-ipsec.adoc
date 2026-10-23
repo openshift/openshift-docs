@@ -1,0 +1,151 @@
+// Module included in the following assemblies:
+//
+// * microshift_networking/microshift-cluster-to-cluster-communication.adoc
+
+:_mod-docs-content-type: PROCEDURE
+[id="microshift-c2cc-ipsec_{context}"]
+= Encrypt C2CC traffic with IPsec
+
+[role="_abstract"]
+C2CC routes cross-cluster pod and service traffic as raw IP between nodes. This traffic traverses the physical network unencrypted by default. You can use IPsec to protect it using standard Linux tools on the host operating system.
+
+{microshift-short} does not configure or manage IPsec. You must set up and maintain the IPsec tunnels.
+
+:FeatureName: Cluster-to-cluster communication (C2CC) for {microshift-short}
+include::snippets/technology-preview.adoc[leveloffset=+1]
+
+.Prerequisites
+
+* Two or more RHEL hosts running {microshift-short} with C2CC configured (non-overlapping pod and service classless inter-domain routings (CIDRs), `clusterToCluster.remoteClusters` populated in each node configuration).
+* IP connectivity between the hosts on the underlay network.
+
+.Procedure
+
+. Install libreswan by running the following command:
++
+[source,terminal]
+----
+$ sudo dnf install -y libreswan
+----
++
+. Open the firewall for IKE negotiation and ESP on each host by running the following commands:
++
+[source,terminal]
+----
+$ sudo firewall-cmd --permanent --zone=public --add-service=ipsec
+$ sudo firewall-cmd --reload
+----
++
+UDP ports `500` and `4500` are for Internet Key Exchange (IKE), Network Address Translation Traversal (NAT-T)), and IP protocol 50 (Encapsulating Security Payload (ESP).
+
+. Generate a pre-shared key on one host and distribute it to all others through a secure channel by running the following command:
++
+[source,terminal]
+----
+$ openssl rand -hex 32
+----
+
+. On Host A, create `/etc/ipsec.d/c2cc.secrets` with entries for every remote host by entering the following information:
++
+[source,text]
+----
+192.168.1.10 192.168.1.20 : PSK "<_your-hex-key_>"
+----
+
+. Set permissions for Host A by running the following commands:
++
+[source,terminal]
+----
+$ sudo chmod 600 /etc/ipsec.d/c2cc.secrets
+$ sudo restorecon -v /etc/ipsec.d/c2cc.secrets
+----
++
+. On Host B, create `/etc/ipsec.d/c2cc.secrets` with entries for every remote host by entering the following information:
++
+[source,text]
+----
+192.168.1.20 192.168.1.10 : PSK "<_your-hex-key_>"
+----
++
+. Set permissions for Host B by running the following commands:
++
+[source,terminal]
+----
+$ sudo chmod 600 /etc/ipsec.d/c2cc.secrets
+$ sudo restorecon -v /etc/ipsec.d/c2cc.secrets
+----
+
+. On Host A, create the `/etc/ipsec.d/c2cc-tunnel.conf` file by entering the following parameters:
++
+[source,text]
+----
+conn c2cc-to-host-b
+    type=tunnel
+    authby=secret
+    left=192.168.1.10
+    right=192.168.1.20
+    leftsubnets={10.42.0.0/16 10.43.0.0/16}
+    rightsubnets={10.45.0.0/16 10.46.0.0/16}
+    auto=start
+    ike=aes256-sha2_256-modp2048
+    esp=aes256-sha2_256
+    failureshunt=drop
+    negotiationshunt=drop
+    ikev2=insist
+----
+
+. On Host B, create the `/etc/ipsec.d/c2cc-tunnel.conf` file by entering the following parameters:
++
+[source,text]
+----
+conn c2cc-to-host-a
+    type=tunnel
+    authby=secret
+    left=192.168.1.20
+    right=192.168.1.10
+    leftsubnets={10.45.0.0/16 10.46.0.0/16}
+    rightsubnets={10.42.0.0/16 10.43.0.0/16}
+    auto=start
+    ike=aes256-sha2_256-modp2048
+    esp=aes256-sha2_256
+    failureshunt=drop
+    negotiationshunt=drop
+    ikev2=insist
+----
++
+[NOTE]
+====
+* The `type=tunnel` parameter encrypts the original IP packet and wraps it in a new IP header. This parameter is required because C2CC traffic uses pod and service CIDRs as source and destination, which are not routable on the underlay.
+* The values for the `leftsubnets` and `rightsubnets` parameters must match the pod and service CIDRs configured in {microshift-short}.
+* The `failureshunt=drop` and `negotiationshunt=drop` parameters drop traffic that matches the tunnel selectors if the security association (SA) fails or is still negotiating, preventing fallback to plain text.
+====
+
+. Initialize the NSS database only once and start the IPsec service by running the following commands:
++
+[source,terminal]
+----
+$ sudo ipsec checknss
+$ sudo systemctl enable --now ipsec
+----
+
+. Verify that tunnel SAs are established by running the following commands:
++
+[source,terminal]
+----
+$ sudo ipsec trafficstatus
+#8: "c2cc-to-host-b/1x1", type=ESP, add_time=..., inBytes=..., outBytes=..., id='192.168.1.20'
+----
++
+.Verification
+
+* `ipsec trafficstatus` displays `type=ESP` entries for each remote host.
+* Cross-cluster connectivity continues to work through the encrypted tunnels.
+* Byte counters in `ip -s xfrm state` increase while cross-cluster traffic is running.
++
+[IMPORTANT]
+====
+IPsec increases processing usage.
+ESP tunnel mode adds roughly 73–93 bytes per packet.
+On jumbo-frame networks with physical maximum transmission unit (MTU) 9000, set the pod MTU to leave headroom for ESP processing by creating `/etc/microshift/ovn.yaml` with `mtu: 8900`.
+Changing the pod MTU requires a node reboot to take effect.
+====
