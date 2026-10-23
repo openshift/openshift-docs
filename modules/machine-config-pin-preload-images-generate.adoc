@@ -1,0 +1,92 @@
+// Module included in the following assemblies:
+//
+// * machine_configuration/machine-config-pin-preload-images-about.adoc
+
+:_mod-docs-content-type: PROCEDURE
+[id="machine-config-pin-preload-images-generate_{context}"]
+= Generating a `PinnedImageSet` from cluster images
+
+[role="_abstract"]
+You can build a `PinnedImageSet` manifest from images that are already referenced by pods in your cluster. Convert every image reference to a digest before you include it in the manifest. Tag references such as `:latest` are not valid in a `PinnedImageSet`.
+
+.Prerequisites
+
+* You have access to the cluster as a user with the `cluster-admin` role.
+* You can reach the registries that host the images, for example from a bastion host or from a node debug session.
+* The `skopeo` or `podman` command is available where you resolve digests.
+
+.Procedure
+
+. Collect unique container and init container image references from the cluster:
++
+[source,terminal]
+----
+$ oc get pods --all-namespaces -o jsonpath='{range .items[*]}{.spec.containers[*].image}{"\n"}{.spec.initContainers[*].image}{"\n"}{end}' | sed '/^$/d' | sort -u > images-tags.txt
+----
++
+Optional: Limit the command to one namespace with `-n <namespace>` instead of `--all-namespaces`.
+
+. Resolve each reference to a digest and write digest pull specs to a file. The following example uses `skopeo`:
++
+[source,terminal]
+----
+$ while read -r image; do
+    digest=$(skopeo inspect docker://"${image}" --format '{{.Digest}}')
+    # Rewrite tag or digest references into registry/repo@sha256:...
+    repo=${image%@*}
+    repo=${repo%:*}
+    echo "${repo}@${digest}"
+  done < images-tags.txt | sort -u > images-digests.txt
+----
++
+[IMPORTANT]
+====
+Review `images-digests.txt` before you continue. Remove images that you do not want to pin, and ensure that the file contains no more than 500 entries for a single `PinnedImageSet`. Split larger lists across multiple sets or pools.
+====
+
+. Create a `PinnedImageSet` manifest that targets the machine config pool you want to update. The following example targets the `worker` pool:
++
+[source,terminal]
+----
+$ {
+    echo 'apiVersion: machineconfiguration.openshift.io/v1'
+    echo 'kind: PinnedImageSet'
+    echo 'metadata:'
+    echo '  name: cluster-derived-worker-images'
+    echo '  labels:'
+    echo '    machineconfiguration.openshift.io/role: worker'
+    echo 'spec:'
+    echo '  pinnedImages:'
+    while read -r digest_image; do
+      echo "  - name: ${digest_image}"
+    done < images-digests.txt
+  } > pinnedimageset-worker.yaml
+----
+
+. Verify that a sample image can be inspected from a target node before you apply the manifest:
++
+[source,terminal]
+----
+$ oc debug node/<node_name> -- chroot /host podman manifest inspect <registry>/<repository>@sha256:<digest>
+----
+
+. Apply the manifest:
++
+[source,terminal]
+----
+$ oc apply -f pinnedimageset-worker.yaml
+----
+
+.Verification
+
+* Confirm that the set is associated with a node in the target pool:
++
+[source,terminal]
+----
+$ oc get machineconfignode <node_name> -o jsonpath='{.status.pinnedImageSets}{"\n"}'
+----
+
+.Next steps
+
+* Store the generated `PinnedImageSet` manifests in Git and manage them with your GitOps or CI workflow.
+* When images change, regenerate digests, update the manifests, and re-apply them. Monitor `MachineConfigNode` status for pull or inspect failures.
