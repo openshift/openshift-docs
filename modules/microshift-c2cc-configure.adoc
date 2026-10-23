@@ -1,0 +1,214 @@
+// Module included in the following assemblies:
+//
+// * microshift_networking/microshift-cluster-to-cluster-communication.adoc
+
+:_mod-docs-content-type: PROCEDURE
+[id="microshift-c2cc-configure_{context}"]
+= Configure cluster-to-cluster communication
+
+[role="_abstract"]
+Configure cluster-to-cluster communication (C2CC) by setting non-overlapping pod and service classless inter-domain routing (CIDRs) on each cluster, adding remote cluster entries to the {microshift-short} configuration, configuring the firewall, and starting {microshift-short}.
+
+{microshift-short} validates the C2CC configuration on startup. If validation fails because of overlapping CIDRs, a routing loop, or an invalid next-hop, {microshift-short} logs the errors and does not start. You must restart {microshift-short} for C2CC configuration changes to take effect.
+
+[NOTE]
+====
+{microshift-short} intentionally does not manage firewall rules because edge deployments often have site-specific firewall policies.
+====
+
+:FeatureName: Cluster-to-cluster communication (C2CC) for {microshift-short}
+include::snippets/technology-preview.adoc[leveloffset=+1]
+
+The examples in this procedure assume the following example two-cluster setup:
+
+.Two-cluster example values
+[cols="1,1,1,1,1",options="header"]
+|===
+|Host |Underlay IP |Pod CIDR |Service CIDR |Domain
+
+|Host A
+|192.168.1.10
+|10.42.0.0/16
+|10.43.0.0/16
+|cluster-a.remote
+
+|Host B
+|192.168.1.20
+|10.45.0.0/16
+|10.46.0.0/16
+|cluster-b.remote
+|===
+
+.Prerequisites
+
+* Two or more hosts with {microshift-short} installed and the default OVN-Kubernetes CNI. C2CC requires OVN-Kubernetes and is not available with `network.cniPlugin: none`. Ideally, {microshift-short} has not been started yet so that cluster and service CIDRs can be set before the first boot.
+* IP connectivity between the hosts on the underlay network, for example, the same L2 segment or routable next-hops.
+* Non-overlapping pod and service CIDRs across all clusters. {microshift-short} defaults are `10.42.0.0/16` for pods and `10.43.0.0/16` for services, so all clusters except one must override them.
+* You installed the {product-title} CLI (`oc`).
+* You have `sudo` privileges to each {microshift-short} host.
+
+[IMPORTANT]
+====
+If {microshift-short} has already run, changing the `network.clusterNetwork` or `network.serviceNetwork` parameters requires wiping {microshift-short} data with the `microshift-cleanup-data --all` command, which deletes all workloads. Plan CIDRs before the first boot whenever possible.
+====
+
+.Procedure
+
+. On all clusters except one, override the pod and service networks before {microshift-short} starts for the first time.
++
+On **Host B**, add the following parameters to `/etc/microshift/config.yaml` or create a configuration snippet such as the following `/etc/microshift/config.d/10-network.yaml`:
++
+[source,yaml]
+----
+network:
+  clusterNetwork:
+  - 10.45.0.0/16
+  serviceNetwork:
+  - 10.46.0.0/16
+----
++
+Host A can use the {microshift-short} defaults (`10.42.0.0/16` and `10.43.0.0/16`).
+
+. On each host, create a configuration snippet that points at the remote cluster.
++
+.. On **Host A**, create `/etc/microshift/config.d/50-c2cc.yaml` by using the following parameters:
++
+[source,yaml]
+----
+clusterToCluster:
+  remoteClusters:
+  - nextHop:
+    - 192.168.1.20
+    clusterNetwork:
+    - 10.45.0.0/16
+    serviceNetwork:
+    - 10.46.0.0/16
+    domain: cluster-b.remote
+----
++
+.. On **Host B**, create the same file describing Host A by using the following parameters:
++
+[source,yaml]
+----
+clusterToCluster:
+  remoteClusters:
+  - nextHop:
+    - 192.168.1.10
+    clusterNetwork:
+    - 10.42.0.0/16
+    serviceNetwork:
+    - 10.43.0.0/16
+    domain: cluster-a.remote
+----
++
+For each remote cluster entry:
++
+* `nextHop` specifies the IP addresses of the remote cluster node used as the routing next-hop. Specify at most one IPv4 and one IPv6 address. Dual-stack clusters require both.
+* `clusterNetwork` and `serviceNetwork` specify the remote cluster pod and service CIDRs. These CIDRs must not overlap with the local networks or with any other remote.
+* `domain` sets an optional DNS suffix for the remote cluster. When set, services on the remote cluster are resolvable as `<_svc_>.<_ns_>.svc.<_domain_>`. When empty, no DNS forwarding is configured for this remote.
++
+[NOTE]
+====
+To connect more than two clusters, add one `remoteClusters` entry per remote on every host.
+====
+
+. On each host, add the remote cluster pod and service CIDRs to the firewall trusted zone by using the following steps.
++
+.. On **Host A**, trust Host B's pod and service CIDRs by running the following commands:
++
+[source,terminal]
+----
+$ sudo firewall-cmd --permanent --zone=trusted --add-source=10.45.0.0/16
+$ sudo firewall-cmd --permanent --zone=trusted --add-source=10.46.0.0/16
+$ sudo firewall-cmd --reload
+----
++
+.. On **Host B**, trust Host A's pod and service CIDRs by running the following commands:
++
+[source,terminal]
+----
+$ sudo firewall-cmd --permanent --zone=trusted --add-source=10.42.0.0/16
+$ sudo firewall-cmd --permanent --zone=trusted --add-source=10.43.0.0/16
+$ sudo firewall-cmd --reload
+----
++
+[IMPORTANT]
+====
+Do not add the remote host's own IP address to the trusted zone. C2CC is designed for pod-to-pod and pod-to-service traffic only. An untrusted host IP blocks host-originated traffic from reaching local pods.
+====
+
+. Start {microshift-short} by running the following command:
++
+[source,terminal]
+----
+$ sudo systemctl start microshift
+----
++
+[IMPORTANT]
+====
+If {microshift-short} was already running and you changed `network.clusterNetwork` or `network.serviceNetwork`, wipe its data first with the `microshift-cleanup-data --all` command and then start the service.
+====
+
+.Verification
+
+. Verify that C2CC is active by running the following command:
++
+[source,terminal]
+----
+$ journalctl -u microshift --case-sensitive=false --grep c2cc
+----
++
+.Expected output
+[source,text]
+----
+C2CC is enabled with 1 remote cluster(s)
+----
+
+. Check the health of each remote cluster by running the following command:
++
+[source,terminal]
+----
+$ oc get remoteclusters.microshift.io
+----
++
+.Expected output
+[source,text]
+----
+NAME                AGE
+c2cc-192-168-1-20   5m
+----
++
+Each remote gets a cluster-scoped `RemoteCluster` resource named after its next-hop IP. The `status.state` field transitions from `NeverProbed` to `Healthy` when end-to-end probes succeed.
+
+. Confirm that the remote cluster reports a healthy state by running the following command:
++
+[source,terminal]
+----
+$ oc get remoteclusters.microshift.io c2cc-192-168-1-20 -o jsonpath='{.status.state}{"\n"}'
+----
++
+.Expected output
+[source,text]
+----
+Healthy
+----
+
+. Inspect the routes that C2CC manages on Host A by running the following command:
++
+[source,terminal]
+----
+$ ip route show table 200
+----
++
+.Expected output
+[source,text]
+----
+10.45.0.0/16 via 192.168.1.20 dev enp1s0 proto 200
+10.46.0.0/16 via 192.168.1.20 dev enp1s0 proto 200
+----
++
+The following items indicate a successful configuration:
+
+* The journal shows `C2CC is enabled with <_n_> remote cluster(s)`.
+* Each `RemoteCluster` resource reports `status.state: Healthy`.
+* Routes to remote CIDRs appear in the configured routing table. The default table ID is `200`.
