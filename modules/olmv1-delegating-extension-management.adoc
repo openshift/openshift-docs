@@ -1,0 +1,232 @@
+// Module included in the following assemblies:
+//
+// * extensions/ce/managing-ce.adoc
+
+:_mod-docs-content-type: PROCEDURE
+[id="olmv1-delegating-extension-management_{context}"]
+= Delegate management of an approved cluster extension
+
+[role="_abstract"]
+To delegate management of an approved cluster extension in {product-title}, configure a validating admission policy, and then grant access with role-based access control (RBAC).
+
+Use the same values in the admission policy, RBAC resources, and extension manifest. Keep the group, extension name, package, version, catalog, and installation namespace consistent wherever they appear.
+
+[WARNING]
+====
+Delegated extension management introduces the following risks:
+
+* Extension runtime permissions are not limited by admission restrictions.
+* Existing user and group permissions are not removed by a role binding.
+====
+
+Extension runtime permissions are defined by the bundle and supported configuration of the selected extension. Review the bundle content and supported configuration before delegating access and before approving another version.
+
+Existing user and group permissions remain in effect when you add a role binding. Users with broad write access can manage extensions or change admission restrictions beyond the access you intend to delegate.
+
+Before delegating access, remove existing write permissions for cluster extensions, cluster object sets, catalogs, and admission policies from the group and its members.
+
+The following example policy is for clusters that use the default {product-title} feature set.
+
+[IMPORTANT]
+====
+If you enable features that make the `spec.config` field available, add and test policy rules that restrict the allowed configuration before delegating access. The example policy does not validate or restrict values in the `spec.config` field.
+====
+
+Use the following example policy to delegate extension management to members of the `team-pipelines` group. After you apply the policy, group members can install the approved version of {pipelines-title} from the Red Hat Operators catalog into the `pipelines` namespace.
+
+.Prerequisites
+
+* You have access to the cluster by using an account with `cluster-admin` permissions.
+* You have installed the {oc-first}.
+* The `team-pipelines` group exists and includes the users who require access.
+* You have reviewed the bundle content and approved a supported extension version available in the catalog.
+* The `pipelines` namespace exists.
+* You have reviewed the RBAC permissions assigned to the group and its members.
+
+.Procedure
+
+. Create a policy and binding file that is similar to the following example:
++
+.Example `<extension_policy>.yaml` file
+[source,yaml]
+----
+apiVersion: admissionregistration.k8s.io/v1
+kind: ValidatingAdmissionPolicy
+metadata:
+  name: pipelines-extension-policy
+spec:
+  failurePolicy: Fail
+  matchConstraints:
+    resourceRules:
+      - apiGroups: ["olm.operatorframework.io"]
+        apiVersions: ["v1"]
+        resources: ["clusterextensions"]
+        operations: ["CREATE", "UPDATE"]
+  matchConditions:
+    - name: team-pipelines
+      expression: >-
+        request.userInfo.groups.exists(g, g == "team-pipelines")
+  validations:
+    - expression: object.metadata.name == "pipelines-operator"
+      message: "Only the pipelines-operator extension is permitted."
+    - expression: object.spec.namespace == "pipelines"
+      message: "The installation namespace must be pipelines."
+    - expression: >-
+        object.spec.source.sourceType == "Catalog" &&
+        has(object.spec.source.catalog) &&
+        has(object.spec.source.catalog.selector) &&
+        has(object.spec.source.catalog.selector.matchLabels) &&
+        "olm.operatorframework.io/metadata.name" in object.spec.source.catalog.selector.matchLabels &&
+        object.spec.source.catalog.selector.matchLabels["olm.operatorframework.io/metadata.name"] == "openshift-redhat-operators"
+      message: "Select the openshift-redhat-operators catalog by its name label."
+    - expression: >-
+        has(object.spec.source.catalog) &&
+        object.spec.source.catalog.packageName == "openshift-pipelines-operator-rh" &&
+        has(object.spec.source.catalog.version) &&
+        object.spec.source.catalog.version == "<approved_version>"
+      message: "Specify the approved Pipelines package and exact version."
+    - expression: >-
+        !has(object.spec.source.catalog) ||
+        !has(object.spec.source.catalog.upgradeConstraintPolicy) ||
+        object.spec.source.catalog.upgradeConstraintPolicy != "SelfCertified"
+      message: "Catalog upgrade constraints must remain enabled."
+    - expression: >-
+        !has(object.spec.install) ||
+        !has(object.spec.install.preflight) ||
+        !has(object.spec.install.preflight.crdUpgradeSafety) ||
+        object.spec.install.preflight.crdUpgradeSafety.enforcement != "None"
+      message: "CRD upgrade safety checks must remain enabled."
+---
+apiVersion: admissionregistration.k8s.io/v1
+kind: ValidatingAdmissionPolicyBinding
+metadata:
+  name: pipelines-extension-policy
+spec:
+  policyName: pipelines-extension-policy
+  validationActions: ["Deny"]
+----
++
+--
+* Replace `<approved_version>` with the exact version that you approved.
+* The `ValidatingAdmissionPolicy` resource checks create and update requests from the `team-pipelines` group. It restricts the extension name, installation namespace, catalog, package, and version. It also prevents disabling upgrade safeguards.
+* The `ValidatingAdmissionPolicyBinding` resource activates the policy and denies requests that fail validation.
+--
++
+To approve another version, review the new bundle and update the version in the policy before the group updates the extension.
+
+. Apply the policy and binding by running the following command:
++
+[source,terminal]
+----
+$ oc apply -f <extension_policy>.yaml
+----
+
+. Verify the policy before granting access by running the following command:
++
+[source,terminal]
+----
+$ oc get validatingadmissionpolicy pipelines-extension-policy -o yaml
+----
++
+Verify that the value of the `status.observedGeneration` field matches the value of the `metadata.generation` field and that the `status.typeChecking.expressionWarnings` field is empty. Resolve any expression warnings before continuing.
+
+. Create a role and binding file that is similar to the following example:
++
+.Example `<extension_rbac>.yaml` file
+[source,yaml]
+----
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: pipelines-extension-manager
+rules:
+  - apiGroups: ["olm.operatorframework.io"]
+    resources: ["clusterextensions"]
+    verbs: ["create"]
+  - apiGroups: ["olm.operatorframework.io"]
+    resources: ["clusterextensions"]
+    resourceNames: ["pipelines-operator"]
+    verbs: ["get", "update", "patch", "delete"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: pipelines-extension-manager
+subjects:
+  - kind: Group
+    name: team-pipelines
+    apiGroup: rbac.authorization.k8s.io
+roleRef:
+  kind: ClusterRole
+  name: pipelines-extension-manager
+  apiGroup: rbac.authorization.k8s.io
+----
++
+--
+* The `ClusterRole` resource grants creation access and limits other actions to the `pipelines-operator` resource. RBAC cannot restrict creation by resource name. The admission policy enforces that restriction.
+* The `ClusterRoleBinding` resource grants the role to the `team-pipelines` group. Use the same group in the role binding and admission policy so that the policy validates requests from users who receive access.
+--
+
+. Grant the group access by running the following command:
++
+[source,terminal]
+----
+$ oc apply -f <extension_rbac>.yaml
+----
+
+.Verification
+
+. Create an extension manifest that is similar to the following example. Replace `<approved_version>` with the same version used in the policy:
++
+.Example `<extension_manifest>.yaml` file
+[source,yaml]
+----
+apiVersion: olm.operatorframework.io/v1
+kind: ClusterExtension
+metadata:
+  name: pipelines-operator
+spec:
+  namespace: pipelines
+  source:
+    sourceType: Catalog
+    catalog:
+      packageName: openshift-pipelines-operator-rh
+      version: "<approved_version>"
+      selector:
+        matchLabels:
+          olm.operatorframework.io/metadata.name: openshift-redhat-operators
+----
+
+. Test an allowed request without installing the extension by running the following command as a cluster administrator:
++
+[source,terminal]
+----
+$ oc --as=<unprivileged_user> --as-group=team-pipelines apply \
+  --dry-run=server -f <extension_manifest>.yaml
+----
++
+Replace `<unprivileged_user>` with the username of a group member without `cluster-admin` permissions. The dry run should succeed.
+
+. Change the `spec.source.catalog.version` field in a copy of the manifest to a different valid version. Repeat the dry-run command with the copied manifest.
++
+The request fails with the admission policy message `Specify the approved Pipelines package and exact version.` If it succeeds, verify the policy binding and group match before users proceed.
+
+. Verify that the group cannot create `ClusterObjectSet` resources by running the following command:
++
+[source,terminal]
+----
+$ oc --as=<unprivileged_user> --as-group=team-pipelines auth can-i \
+  create clusterobjectsets.olm.operatorframework.io
+----
++
+The expected response is `no`. If the response is `yes`, review existing RBAC permissions before delegating extension management.
+
+.Next steps
+
+* Members of the `team-pipelines` group can apply the approved `<extension_manifest>.yaml` file while logged in with their own accounts. Run the server-side dry-run command to verify admission. After applying the manifest, verify bundle resolution and installation by checking the extension status.
+* To revoke access, remove the group binding before removing the policy by running the following command:
++
+[source,terminal]
+----
+$ oc delete clusterrolebinding pipelines-extension-manager
+----
