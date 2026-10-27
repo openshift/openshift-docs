@@ -1,0 +1,106 @@
+// Module included in the following assemblies:
+//
+// * networking/ingress_load_balancing/metallb/about-advertising-ipaddresspool.adoc
+
+:_mod-docs-content-type: PROCEDURE
+[id="nw-metallb-configure-gratuitous-arp-ndp-interval_{context}"]
+= Configure periodic gratuitous ARP and NDP announcements for layer 2 mode
+
+[role="_abstract"]
+In MetalLB Layer 2 mode, speaker pods announce the virtual IP (VIP) addresses of LoadBalancer services, and the Linux kernel does not assign these addresses directly to host network interfaces.
+Certain upstream switches and routers, such as Cisco ACI or H3C Comware, perform periodic Neighbor Unreachability Detection (NUD) by sending unicast IPv6 Neighbor Discovery Protocol (NDP) Neighbor Solicitation (NS) probes directed to the VIP.
+Because the VIP is not bound to a kernel interface, the node does not respond to these unicast probes.
+As a result, the neighbor cache entry on the upstream router eventually expires, dropping traffic to the VIP.
+
+You can configure the MetalLB Operator to send periodic gratuitous Address Resolution Protocol (ARP) (IPv4) and unsolicited NDP Neighbor Advertisement (IPv6) announcements.
+Periodic announcements keep neighbor cache entries active on upstream network devices without manual intervention.
+
+[NOTE]
+====
+This feature is disabled by default (`0s`).
+Even if your cluster automatically updates the MetalLB Operator, you must explicitly configure the `speakerGratuitousARPInterval` parameter in the `MetalLB` custom resource (CR) to enable periodic announcements.
+====
+
+.Prerequisites
+
+* You have installed the MetalLB Operator from a release that includes the `speakerGratuitousARPInterval` field in the `MetalLB` CRD.
++
+For example, MetalLB Operator 5.0.0 or later, or the 4.20 backport `metallb-operator.v4.20.0-202610122343` or later.
+* If your MetalLB Operator subscription update strategy is set to *Manual*, you have approved the latest install plan.
+* You have configured an `IPAddressPool` and an `L2Advertisement` CR.
+* You are logged in to the cluster as a user with the `cluster-admin` role.
+
+.Procedure
+
+. Check your currently installed MetalLB Operator CSV to confirm that it supports the parameter:
++
+[source,terminal]
+----
+$ oc get csv -n metallb-system
+----
+
+. Edit the `MetalLB` custom resource:
++
+[source,terminal]
+----
+$ oc edit metallb metallb -n metallb-system
+----
+
+. Set the `speakerGratuitousARPInterval` field in the `spec` stanza:
++
+[source,yaml]
+----
+apiVersion: metallb.io/v1beta1
+kind: MetalLB
+metadata:
+  name: metallb
+  namespace: metallb-system
+spec:
+  speakerGratuitousARPInterval: 30s
+----
++
+The `speakerGratuitousARPInterval` field specifies the interval at which speaker pods send gratuitous ARP and unsolicited NDP announcements.
+Valid values are `0` (disabled) or a duration string of at least `1s`, for example, `30s` or `1m`.
+A value between 30s and 60s is recommended for environments that experience upstream NUD timeouts.
+
+. Save and exit the editor.
+The MetalLB Operator restarts the speaker daemonset pods with the updated setting.
+
+.Verification
+
+. Verify that the speaker daemonset pods picked up the `--gratuitous-arp-interval` flag:
++
+[source,terminal]
+----
+$ oc get daemonset speaker -n metallb-system -o jsonpath='{.spec.template.spec.containers[?(@.name=="speaker")].args}' | jq .
+----
++
+For example:
++
+[source,json]
+----
+[
+  "--port=29150",
+  "--health-probe-port=7472",
+  "--log-level=info",
+  "--gratuitous-arp-interval=30"
+]
+----
+
+. On a node that currently hosts a `LoadBalancer` VIP, capture egress traffic to verify the periodic unsolicited Neighbor Advertisements (IPv6) or gratuitous ARPs (IPv4):
++
+[source,terminal]
+----
+$ oc debug node/<node_name> -- tcpdump -i br-ex -nn -vv -e 'icmp6 and ip6[40] == 136'
+----
+
+. Check the `metallb_layer2_gratuitous_sent` Prometheus metric to monitor the total number of gratuitous announcements sent:
++
+[source,terminal]
+----
+$ oc -n openshift-monitoring exec -c prometheus prometheus-k8s-0 -- \
+    curl -sk -G --data-urlencode 'query=metallb_layer2_gratuitous_sent' \
+    http://localhost:9090/api/v1/query | jq .
+----
++
+Confirm that the reported counter value increases over time.
