@@ -345,8 +345,9 @@ REPORTS = {
                            "# Each module lists the categories it currently resolves into, then\n"
                            "# its xrefs. Decide the single category before converting."),
         "NO_CATEGORY": ("module_no_category.txt",
-                        "# Module not reachable from any /maps category; no scope to\n"
-                        "# validate against. Revisit once the module is mapped."),
+                        "# Modules not reachable from any /maps category, so there is no\n"
+                        "# scope to validate their xrefs against. Grouped by module, with\n"
+                        "# its xrefs. Revisit once the module is mapped into a category."),
     },
 }
 
@@ -379,6 +380,60 @@ def multi_category_rows(plan_rows, module_index, root):
         for row in by_file[relfile]:
             line = row.split(":", 1)[1].split("\t", 1)[0]
             anchor = row.split("\t")[1] if "\t" in row else ""
+            out.append(f"    line {line}: xref -> {anchor}")
+        out.append("")
+    return out
+
+
+def grouped_by_file_rows(report_rows, detail):
+    """Groups per-xref rows by source file for readability.
+
+    report_rows are "relfile:line\t..." strings. `detail` extracts the per-line
+    text to show under each file. Each file is listed once, then its lines.
+    """
+    by_file = collections.defaultdict(list)
+    for row in report_rows:
+        relfile = row.split(":", 1)[0]
+        by_file[relfile].append(row)
+
+    out = []
+    for relfile in sorted(by_file):
+        out.append(f"{relfile}")
+        for row in by_file[relfile]:
+            line = row.split(":", 1)[1].split("\t", 1)[0]
+            out.append(f"    line {line}: {detail(row)}")
+        out.append("")
+    return out
+
+
+def anchorless_detail(row):
+    """Shows the bare-path xref (no #anchor) fragment for an anchorless row."""
+    # row: "relfile:line\tfragment"
+    frag = row.split("\t", 1)[1] if "\t" in row else ""
+    return frag
+
+
+def broken_detail(row):
+    """Shows the unresolved-{context} xref fragment for a broken row."""
+    frag = row.split("\t", 1)[1] if "\t" in row else ""
+    return frag
+
+
+def no_category_rows(report_rows):
+    """Groups no-category rows by module, noting each has no /maps category."""
+    by_file = collections.defaultdict(list)
+    for row in report_rows:
+        relfile = row.split(":", 1)[0]
+        by_file[relfile].append(row)
+
+    out = []
+    for relfile in sorted(by_file):
+        out.append(f"{relfile}")
+        out.append("    categories: none (module not in any /maps category)")
+        for row in by_file[relfile]:
+            line = row.split(":", 1)[1].split("\t", 1)[0]
+            parts = row.split("\t")
+            anchor = parts[1] if len(parts) > 1 else ""
             out.append(f"    line {line}: xref -> {anchor}")
         out.append("")
     return out
@@ -422,23 +477,28 @@ def write_all_reports(reports_dir, plan, target, module_index=None,
     os.makedirs(reports_dir, exist_ok=True)
     prefix = "assembly" if target == "assembly" else "module"
     for outcome, (filename, header) in REPORTS[target].items():
-        # The assembly ambiguous report gets an id-grouped, target-listing body.
         if target == "assembly" and outcome == "AMBIGUOUS" and assembly_index:
-            write_report(reports_dir, filename, header,
-                         ambiguous_id_rows(plan.rows, assembly_index, root))
-            continue
-        # The module multi-category report gets a module-grouped, category-listing body.
-        if target == "module" and outcome == "MULTI_CATEGORY" and module_index:
-            write_report(reports_dir, filename, header,
-                         multi_category_rows(plan.rows, module_index, root))
+            # Id-grouped: each id lists its conflicting target files + references.
+            body = ambiguous_id_rows(plan.rows, assembly_index, root)
+        elif target == "module" and outcome == "MULTI_CATEGORY" and module_index:
+            # Module-grouped: each module lists its categories + xrefs.
+            body = multi_category_rows(plan.rows, module_index, root)
+        elif target == "module" and outcome == "NO_CATEGORY":
+            # Module-grouped: each module noted as having no /maps category.
+            body = no_category_rows(plan.rows[outcome])
         else:
-            write_report(reports_dir, filename, header, plan.rows[outcome])
+            body = plan.rows[outcome]
+        write_report(reports_dir, filename, header, body)
+
+    # Edge-case queues, grouped by source file for readability.
     write_report(reports_dir, f"{prefix}_anchorless.txt",
-                 "# Anchorless path xrefs (no #anchor). Synthesize target id per case.",
-                 plan.rows["ANCHORLESS"])
+                 "# Anchorless path xrefs (no #anchor to lift). Grouped by file;\n"
+                 "# synthesize the target topic id per case.",
+                 grouped_by_file_rows(plan.rows["ANCHORLESS"], anchorless_detail))
     write_report(reports_dir, f"{prefix}_broken_context.txt",
-                 "# Literal {context} left in an anchor. Author supplies resolved value.",
-                 plan.rows["BROKEN"])
+                 "# Literal {context} left unresolved in an anchor. Grouped by file;\n"
+                 "# author supplies the resolved context value.",
+                 grouped_by_file_rows(plan.rows["BROKEN"], broken_detail))
 
 
 # --- apply / preview --------------------------------------------------------
