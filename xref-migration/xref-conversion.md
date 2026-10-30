@@ -33,10 +33,23 @@ The build substitutes `{context}` from the including assembly's `:context:`. Wri
 
 ### ID-based links need unique IDs
 
-Today, the path makes clear that `a.adoc#foo` and `b.adoc#foo` are distinct. Strip the paths and both become `xref:foo[]`. The test that matters is **within-book uniqueness**. AEM resolves a reference within its book's map and binds it to one file GUID, so a bare `xref:id[]` is safe only if, resolved from its own book, it points at exactly one file. The same ID in two different books is fine, because each book is its own GUID namespace. (Confirmed by the migration team and by the DITA spec, which scopes element IDs per topic.)
+Today, the path makes clear that `a.adoc#foo` and `b.adoc#foo` are distinct. Strip the
+paths and both become `xref:foo[]`. The test that matters is **within-scope uniqueness**:
+AEM resolves a reference within its containing DITA map and binds it to one file GUID, so a
+bare `xref:id[]` is safe only if, resolved from its own scope, it points at exactly one
+file. The same ID in two different scopes is fine, because each map is its own GUID
+namespace. (Confirmed by the migration team and by the DITA spec, which scopes element IDs
+per topic.)
 
-The conversion splits into two paths: **
-1. **convert** where the ID is unique within its book
+"Scope" means different things for the two kinds of source, because they map to the DITA
+target differently (see "Two classifiers" below):
+
+- an **assembly's** scope is its **book**: the legacy source top-level directory it lives in;
+- a **module's** scope is its **category map** in `/maps`: the DITA map that includes it.
+
+The conversion then splits into two paths:
+
+1. **convert** where the ID is unique within its scope
 2. **quarantine** where it is not
 
 ## 2. The numbers (measured)
@@ -79,9 +92,14 @@ within different scopes after migration:
 
 Scope is **per distro**: a module reused across distros (for example, an OpenShift module
 used in ROSA or OSD) gets its own copy and GUID, so that is safe. Reuse across **categories
-within one distro** might not be permitted and is flagged. `disconnected-environments` is
-treated as nested under `install` (the install umbrella), so a module in both is not a
-cross-category case.
+within one distro** might not be permitted and is flagged.
+
+Category maps can themselves be nested: a category map can include another as a sub-map, so
+the child's content belongs to the parent's scope. A module appearing in both a parent and
+its nested child is therefore **not** a cross-category case. For example,
+`disconnected-environments` is nested under `install`, so a module used in both resolves
+within the single `install` scope. The converter accounts for such nesting when computing a
+module's categories.
 
 Both classifiers share everything else: parsing, the rewrite, the modes
 (`report`/`dry-run`/`apply`), repeat-safe application, and the review reports. Only file
@@ -150,7 +168,7 @@ For example, the full repo run converted all 14,454 occurrences through 8,159 re
 ## 5. Exception handling
 
 Review queues live in `xref-migration/reports/`, named by target (`assembly_*` /
-`module_*`). Empty queues are not written. Each is grouped for readability — by the
+`module_*`). Empty queues are not written. Each is grouped for readability, by the
 conflict's natural unit:
 
 | File | Contents | Grouped by | Owner |
