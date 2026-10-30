@@ -101,12 +101,13 @@ The script leaves every ambiguous, anchorless, or broken-`{context}` xref untouc
 
 ## 4. Usage
 
-Run `convert-xrefs.py` with one mode:
+Run `convert-xrefs.py <target> <mode>`, where target is `assembly` or `module` (see
+"Two classifiers" above) and mode is one of:
 
 ```
-convert-xrefs.py report     # classify only; refresh reports; change nothing
-convert-xrefs.py dry-run    # print the diff apply would make; change nothing
-convert-xrefs.py apply      # rewrite clean xrefs in place
+convert-xrefs.py <target> report     # classify only; refresh reports; change nothing
+convert-xrefs.py <target> dry-run    # print the diff apply would make; change nothing
+convert-xrefs.py <target> apply      # rewrite clean xrefs in place
 ```
 
 Options:
@@ -116,22 +117,23 @@ Options:
 | `--root DIR` | Repo root to scan (default: the git top-level directory). |
 | `--out DIR` | Directory for the reports (default: `<root>/xref-migration`). |
 | `--backup` | Write a `.bak` file next to each file before editing, in `apply` mode. |
+| `--only-from FILE` | Restrict conversion to the source files listed in FILE (plain paths or grep-style `path:match` lines, such as `~/xref.txt`). The scope index still uses the whole repo. |
 
 ### When to use each mode
 
 - **`report`**: get current counts and refresh the review queues. Use it first, and
   again after writers resolve issues.
 - **`dry-run`**: review the exact conversions before committing to them. Redirect to a
-  file (`convert-xrefs.py dry-run > preview.diff`).
+  file (`convert-xrefs.py module dry-run > preview.diff`).
 - **`apply`**: perform the conversion. Run it on a branch so `git restore .` can undo
   everything, or add `--backup` for `.bak` copies.
 
 ### Recommended workflow
 
 ```
-git switch -c xref-conversion       # isolate the change
-convert-xrefs.py dry-run | less     # review
-convert-xrefs.py apply              # convert the clean set
+git switch -c xref-conversion               # isolate the change
+convert-xrefs.py module dry-run | less      # review
+convert-xrefs.py module apply               # convert the clean set
 ```
 
 ### Reading the apply count
@@ -147,21 +149,24 @@ For example, the full repo run converted all 14,454 occurrences through 8,159 re
 
 ## 5. Exception handling
 
-Review queues live in `xref-migration/reports/`:
+Review queues live in `xref-migration/reports/`, named by target (`assembly_*` /
+`module_*`). Empty queues are not written. Each is grouped for readability — by the
+conflict's natural unit:
 
-| File | Contents | Owner |
-|------|----------|-------|
-| `ambiguous_index.txt` | the `index` anchor and its book targets | Architecture |
-| `ambiguous_within_book.txt` | 11 within-book-conflict IDs and their targets | Writers |
-| `ambiguous_instances_all.txt` | every quarantined instance with `file:line` | Triage index |
-| `anchorless_xrefs.txt` | 35 anchorless xrefs with `file:line` | Writers/migration |
-| `broken_context_xrefs.txt` | 9 unresolved-`{context}` xrefs with `file:line` | Writers |
+| File | Contents | Grouped by | Owner |
+|------|----------|-----------|-------|
+| `assembly_ambiguous.txt` | ids resolving to >1 file in a book, with those files + references | ambiguous id | Writers |
+| `module_ambiguous.txt` | module ids defined in >1 file within a category | ambiguous id | Writers |
+| `module_multi_category.txt` | modules reused across categories, with the categories | module | Architecture/Writers |
+| `module_no_category.txt` | modules not yet in any `/maps` category | module | Writers/migration |
+| `<target>_anchorless.txt` | xrefs with no `#anchor` to lift | source file | Writers/migration |
+| `<target>_broken_context.txt` | xrefs with literal `{context}` unresolved | source file | Writers |
 
 ### Workflow
 
-1. Run `convert-xrefs.py dry-run` to refresh the reports and preview the diff.
-2. Writers clear the within-book conflicts (99) and the edge cases: index (6), anchorless (35), broken (9).
-3. Run `convert-xrefs.py apply` to convert the clean set; quarantined cases stay for their owners.
+1. Run `convert-xrefs.py <target> dry-run` to refresh the reports and preview the diff.
+2. Writers clear the ambiguous / multi-category conflicts and the edge cases (anchorless, broken).
+3. Run `convert-xrefs.py <target> apply` to convert the clean set; quarantined cases stay for their owners.
 4. Re-run until the quarantine queues are empty.
 
 ### The 11 within-book-conflict IDs needing human judgment
@@ -185,4 +190,4 @@ API topic whose ID is also present on that book's `objects/index.adoc` aggregati
 | `tokenrequest-authentication-k8s-io-v1` | `rest_api/authorization_apis/tokenrequest-authentication-k8s-io-v1.adoc`, `rest_api/objects/index.adoc` |
 | `understanding-multiple-networks` | `.../multiple_networks/primary_networks/about-primary-nwt-nad.adoc`, `.../multiple_networks/understanding-multiple-networks.adoc` |
 
-See `ambiguous_within_book.txt` for the complete target paths.
+See `assembly_ambiguous.txt` for the complete target paths.
