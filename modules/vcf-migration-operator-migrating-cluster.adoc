@@ -1,0 +1,228 @@
+// Module included in the following assemblies:
+//
+// * installing/installing_vsphere/vcf-migration-operator.adoc
+
+:_mod-docs-content-type: PROCEDURE
+[id="vcf-migration-operator-migrating-cluster_{context}"]
+= Migrate a cluster by using the VCF Migration Operator
+
+[role="_abstract"]
+You can migrate your {product-title} cluster from one {vmw-short} vCenter to another by creating a `VmwareCloudFoundationMigration` custom resource (CR) and setting its state to `Running`.
+The operator migrates the cluster through a series of phases, and you can monitor progress, pause, and resume the migration at any point.
+
+.Prerequisites
+
+* The VCF Migration Operator is installed and the operator pod is running in the `openshift-vcf-migration` namespace.
+* You created a secret that contains the target vCenter credentials.
+* You verified that your migration path is supported. See "Supported VCF migration scenarios and limitations."
+* All cluster operators are healthy and no cluster upgrade is in progress.
+* No user-defined `MachineHealthCheck`, `ClusterAutoscaler`, or `MachineAutoscaler` resources exist on the cluster.
+* If the cluster uses {vmw-short} CSI persistent volumes, you removed the {vmw-short} CSI driver and deleted all CSI-backed persistent volumes.
+
+.Procedure
+
+. Remove the {vmw-short} CSI driver if it is present on the cluster:
++
+[source,terminal]
+----
+$ oc patch clustercsidrivers.operator.openshift.io csi.vsphere.vmware.com \
+  --type merge -p '{"spec":{"managementState":"Removed"}}'
+----
++
+[NOTE]
+====
+The VCF Migration Operator preflight check fails if the {vmw-short} CSI driver management state is not set to `Removed`.
+Setting the `Storage` operator to `Unmanaged` or `Removed` is also recommended but not required.
+====
+
+. Verify that no CSI-backed persistent volumes remain:
++
+[source,terminal]
+----
+$ oc get pv -o json | jq -r '.items[] | select(.spec.csi.driver == "csi.vsphere.vmware.com") | .metadata.name'
+----
++
+If this command returns any persistent volume names, you must migrate or delete those volumes before proceeding.
+
+. Remove any user-defined `MachineHealthCheck` resources:
++
+[source,terminal]
+----
+$ oc get machinehealthchecks -A
+----
++
+Delete any MachineHealthCheck resources except `machine-api-termination-handler` in the `openshift-machine-api` namespace, which is a platform-managed resource that does not interfere with migration:
++
+[source,terminal]
+----
+$ oc delete machinehealthcheck <mhc_name> -n <namespace>
+----
+
+. Remove any `ClusterAutoscaler` and `MachineAutoscaler` resources:
++
+[source,terminal]
+----
+$ oc delete clusterautoscaler --all
+$ oc delete machineautoscaler --all -A
+----
+
+. Create a `VmwareCloudFoundationMigration` CR.
++
+The following example shows a migration with a single target failure domain by using the default Recreate engine and automatic RHCOS image import:
++
+[source,yaml]
+----
+apiVersion: migration.openshift.io/v1alpha1
+kind: VmwareCloudFoundationMigration
+metadata:
+  name: cluster
+  namespace: openshift-vcf-migration
+spec:
+  state: Pending
+  targetVCenterCredentialsSecret:
+    name: target-vcenter-creds
+    namespace: openshift-vcf-migration
+  image: {}
+  failureDomains:
+    - name: target-fd-1
+      region: target-region
+      zone: target-zone-1
+      server: <target_vcenter_fqdn>
+      topology:
+        datacenter: <target_datacenter>
+        computeCluster: /<target_datacenter>/host/<target_cluster>
+        datastore: /<target_datacenter>/datastore/<target_datastore>
+        networks:
+          - "<target_network>"
+        resourcePool: /<target_datacenter>/host/<target_cluster>/Resources
+        folder: /<target_datacenter>/vm/<cluster_infra_id>
+----
++
+--
+Where:
+
+`state`:: Set to `Pending` to create the CR without starting the migration. You start the migration in the next step.
+`targetVCenterCredentialsSecret.name`:: The name of the secret that holds the target vCenter credentials.
+`image`:: An empty `image` object (`{}`) enables automatic RHCOS OVA resolution and import. Omit this field if you manually configure `topology.template` in each failure domain.
+`failureDomains`:: One or more target failure domains. Each failure domain must specify the target vCenter server, data center, compute cluster, datastore, and network.
+--
++
+For additional examples, including multiple failure domains, custom OVA URLs for disconnected environments, and VMotion configuration, see "`VmwareCloudFoundationMigration` custom resource reference."
+
+. Apply the CR:
++
+[source,terminal]
+----
+$ oc apply -f <migration_cr_file>.yaml
+----
+
+. Start the migration by setting `spec.state` to `Running`:
++
+[source,terminal]
+----
+$ oc patch vcfm cluster -n openshift-vcf-migration \
+  --type merge -p '{"spec":{"state":"Running"}}'
+----
+
+. Monitor the migration progress:
++
+[source,terminal]
+----
+$ oc get vcfm -n openshift-vcf-migration
+----
++
+.Example output
+[source,terminal]
+----
+NAME      STATE     READY   AGE
+cluster   Running   False   5m
+----
+
+. To see detailed phase information, describe the CR:
++
+[source,terminal]
+----
+$ oc describe vcfm cluster -n openshift-vcf-migration
+----
++
+Review the `Conditions` section to determine which phase the migration is in.
+Each condition transitions from `False` (progressing) to `True` (completed) as the migration advances.
+
+. To monitor events related to the migration:
++
+[source,terminal]
+----
+$ oc get events -n openshift-vcf-migration --field-selector involvedObject.name=cluster
+----
++
+Key events include `OldWorkersStalled` (warning, old worker deletion is blocked by a `PodDisruptionBudget` or similar constraint) and `SourceWorkersDeleted` (normal, empty source `MachineSets` removed after cutover).
+
+. Optional: To pause the migration at any point:
++
+[source,terminal]
+----
+$ oc patch vcfm cluster -n openshift-vcf-migration \
+  --type merge -p '{"spec":{"state":"Paused"}}'
+----
++
+While paused, the `Ready` condition shows `False` with reason `Paused`.
+The migration resumes from where it left off when you set `spec.state` back to `Running`.
+
+. Optional: To resume a paused migration:
++
+[source,terminal]
+----
+$ oc patch vcfm cluster -n openshift-vcf-migration \
+  --type merge -p '{"spec":{"state":"Running"}}'
+----
+
+. After the migration reaches `Ready` state, verify the cluster health:
++
+[source,terminal]
+----
+$ oc get clusteroperators
+----
++
+All cluster operators should show `Available=True`, `Progressing=False`, and `Degraded=False`.
+
+. Verify that all nodes are in `Ready` state:
++
+[source,terminal]
+----
+$ oc get nodes
+----
+
+. After you confirm that the cluster is healthy on the target vCenter, destroy the source infrastructure.
++
+The operator writes a metadata secret that is compatible with the {product-title} installer:
++
+[source,terminal]
+----
+$ oc get secret cluster-metadata -n openshift-vcf-migration \
+  -o jsonpath='{.data.metadata\.json}' | base64 -d > metadata.json
+----
++
+Use this `metadata.json` file with the `openshift-install destroy cluster` command to tear down the source infrastructure:
++
+[source,terminal]
+----
+$ openshift-install destroy cluster --dir <directory_with_metadata>
+----
+
+.Verification
+
+* Verify that the migration CR shows `Ready=True`:
++
+[source,terminal]
+----
+$ oc get vcfm cluster -n openshift-vcf-migration -o jsonpath='{.status.conditions[?(@.type=="Ready")].status}'
+----
++
+The expected output is `True`.
+
+* Verify that only the target vCenter appears in the cluster infrastructure configuration:
++
+[source,terminal]
+----
+$ oc get infrastructure cluster -o jsonpath='{.spec.platformSpec.vsphere.vcenters[*].server}'
+----
