@@ -55,6 +55,11 @@ INCLUDE_RE = re.compile(r"include::([^\[]+)\[")
 FRAG_LEN = 160
 
 
+# ============================================================================
+# SHARED SCAFFOLDING
+# Data types and small helpers used by both the core and presentation zones.
+# ============================================================================
+
 @dataclass(frozen=True)
 class Xref:
     """A single path-based xref occurrence found in a source file."""
@@ -108,6 +113,13 @@ def all_adoc_files(root):
                 found.append(os.path.join(dirpath, name))
     return found
 
+
+# ============================================================================
+# CORE PROCESS
+# The conversion itself: select files, parse xrefs, classify each (convert vs.
+# quarantine), build the plan, and apply the edits. This zone decides WHAT gets
+# converted and performs it. It produces a Plan; it does no human-facing output.
+# ============================================================================
 
 # --- file selection (differs by target) -------------------------------------
 
@@ -307,7 +319,52 @@ def build_plan(root, xrefs, anchorless, classifier, outcomes):
     return Plan(edits_by_file, rows, clean_count, outcomes)
 
 
-# --- reports ----------------------------------------------------------------
+# --- apply / preview (performs the conversion) ------------------------------
+
+def rewrite_file(src, edits):
+    """Returns (old_text, new_text) for src after applying edits, without writing."""
+    old_text = read_text(src)
+    new_text = old_text
+    for old, new in dict(edits).items():
+        new_text = new_text.replace(old, new)
+    return old_text, new_text
+
+
+def apply_plan(plan, root, write, backup):
+    """Applies or previews all edits; returns (files, links, diff text)."""
+    files_changed = 0
+    links_changed = 0
+    diff = []
+
+    for src, edits in sorted(plan.edits_by_file.items()):
+        old_text, new_text = rewrite_file(src, edits)
+        if old_text == new_text:
+            continue
+        files_changed += 1
+        links_changed += len(dict(edits))
+        if write:
+            if backup:
+                with open(src + ".bak", "w", encoding="utf-8") as f:
+                    f.write(old_text)
+            with open(src, "w", encoding="utf-8") as f:
+                f.write(new_text)
+        else:
+            rel = os.path.relpath(src, root)
+            diff += difflib.unified_diff(old_text.splitlines(keepends=True),
+                                         new_text.splitlines(keepends=True),
+                                         fromfile=f"a/{rel}", tofile=f"b/{rel}")
+    return files_changed, links_changed, "".join(diff)
+
+
+# ============================================================================
+# PRESENTATION
+# Everything that turns a Plan into human-facing output: review-report grouping
+# and formatting, and the run summary. This zone makes no decisions and performs
+# no conversion -- remove it and the core still converts correctly. It exists so
+# a reviewer can read what happened.
+# ============================================================================
+
+# --- review reports ---------------------------------------------------------
 
 def write_report(reports_dir, filename, header, rows):
     """Writes one report file, or removes a stale one when there are no rows.
@@ -501,43 +558,6 @@ def write_all_reports(reports_dir, plan, target, module_index=None,
                  grouped_by_file_rows(plan.rows["BROKEN"], broken_detail))
 
 
-# --- apply / preview --------------------------------------------------------
-
-def rewrite_file(src, edits):
-    """Returns (old_text, new_text) for src after applying edits, without writing."""
-    old_text = read_text(src)
-    new_text = old_text
-    for old, new in dict(edits).items():
-        new_text = new_text.replace(old, new)
-    return old_text, new_text
-
-
-def apply_plan(plan, root, write, backup):
-    """Applies or previews all edits; returns (files, links, diff text)."""
-    files_changed = 0
-    links_changed = 0
-    diff = []
-
-    for src, edits in sorted(plan.edits_by_file.items()):
-        old_text, new_text = rewrite_file(src, edits)
-        if old_text == new_text:
-            continue
-        files_changed += 1
-        links_changed += len(dict(edits))
-        if write:
-            if backup:
-                with open(src + ".bak", "w", encoding="utf-8") as f:
-                    f.write(old_text)
-            with open(src, "w", encoding="utf-8") as f:
-                f.write(new_text)
-        else:
-            rel = os.path.relpath(src, root)
-            diff += difflib.unified_diff(old_text.splitlines(keepends=True),
-                                         new_text.splitlines(keepends=True),
-                                         fromfile=f"a/{rel}", tofile=f"b/{rel}")
-    return files_changed, links_changed, "".join(diff)
-
-
 # --- summary ----------------------------------------------------------------
 
 # Human-readable label for each non-CLEAN outcome in the summary.
@@ -571,7 +591,10 @@ def print_summary(plan, target, file_count, mode, files_changed, links_changed):
     print("=" * 50)
 
 
-# --- orchestration ----------------------------------------------------------
+# ============================================================================
+# ORCHESTRATION
+# CLI parsing and main(), wiring the core and presentation zones together.
+# ============================================================================
 
 def default_root():
     """Returns the git toplevel if inside a repo, otherwise the current dir."""
