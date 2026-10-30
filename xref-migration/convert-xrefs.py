@@ -310,8 +310,17 @@ def build_plan(root, xrefs, anchorless, classifier, outcomes):
 # --- reports ----------------------------------------------------------------
 
 def write_report(reports_dir, filename, header, rows):
-    """Writes one report file: a header block followed by its data rows."""
-    with open(os.path.join(reports_dir, filename), "w") as f:
+    """Writes one report file, or removes a stale one when there are no rows.
+
+    Empty categories are not written (the summary still reports their zero count),
+    so the reports directory holds only queues that have real work.
+    """
+    path = os.path.join(reports_dir, filename)
+    if not rows:
+        if os.path.exists(path):
+            os.remove(path)
+        return
+    with open(path, "w") as f:
         f.write(header.rstrip() + "\n")
         f.write("".join(row + "\n" for row in rows))
 
@@ -320,7 +329,9 @@ def write_report(reports_dir, filename, header, rows):
 REPORTS = {
     "assembly": {
         "AMBIGUOUS": ("assembly_ambiguous.txt",
-                      "# Assembly xrefs whose target id is ambiguous within the target's book.\n"
+                      "# Ambiguous ids: the same bare id resolves to more than one file in a\n"
+                      "# book, so a path-stripped xref:id[] cannot be disambiguated. Each id\n"
+                      "# lists the files it resolves to, then where it is referenced.\n"
                       "# HUMAN REVIEW: pick the intended target per reference."),
     },
     "module": {
@@ -328,8 +339,11 @@ REPORTS = {
                       "# Module xrefs whose id is defined in >1 file within a category.\n"
                       "# HUMAN REVIEW: pick the intended target per reference."),
         "MULTI_CATEGORY": ("module_multi_category.txt",
-                           "# Module used across >1 category within a distro; may not be\n"
-                           "# permitted. Decide the module's single category before converting."),
+                           "# Modules reused across >1 category within a distro. A bare ID-based\n"
+                           "# xref would resolve within whichever category the module lands in,\n"
+                           "# so the target is ambiguous until the module has one home category.\n"
+                           "# Each module lists the categories it currently resolves into, then\n"
+                           "# its xrefs. Decide the single category before converting."),
         "NO_CATEGORY": ("module_no_category.txt",
                         "# Module not reachable from any /maps category; no scope to\n"
                         "# validate against. Revisit once the module is mapped."),
@@ -337,12 +351,88 @@ REPORTS = {
 }
 
 
-def write_all_reports(reports_dir, plan, target):
+def module_scopes_of(src, module_index, root):
+    """Returns the sorted 'distro/category' scope labels a module belongs to."""
+    module_scopes, _ = module_index
+    scopes = module_scopes.get(os.path.basename(src), set())
+    return sorted(f"{distro}/{scope}" for distro, scope in scopes)
+
+
+def multi_category_rows(plan_rows, module_index, root):
+    """Builds a module-grouped, human-readable multi-category report body.
+
+    Each module that is reused across categories is shown once with the full list
+    of categories it resolves into (the actual conflict), followed by its xrefs.
+    """
+    # plan_rows["MULTI_CATEGORY"] entries are "relfile:line\tanchor\tfragment".
+    by_file = collections.defaultdict(list)
+    for row in plan_rows["MULTI_CATEGORY"]:
+        relfile = row.split(":", 1)[0]
+        by_file[relfile].append(row)
+
+    out = []
+    for relfile in sorted(by_file):
+        src = os.path.join(root, relfile)
+        cats = module_scopes_of(src, module_index, root)
+        out.append(f"{relfile}")
+        out.append(f"    categories: {', '.join(cats)}")
+        for row in by_file[relfile]:
+            line = row.split(":", 1)[1].split("\t", 1)[0]
+            anchor = row.split("\t")[1] if "\t" in row else ""
+            out.append(f"    line {line}: xref -> {anchor}")
+        out.append("")
+    return out
+
+
+def ambiguous_id_rows(plan_rows, assembly_index, root):
+    """Builds an id-grouped, human-readable assembly ambiguous report body.
+
+    Each ambiguous id is shown once with the conflicting target files it resolves
+    to within a book (the decision point), followed by the referencing locations.
+    """
+    # plan_rows["AMBIGUOUS"] entries are "relfile:line\tanchor\tfragment".
+    by_anchor = collections.defaultdict(list)
+    for row in plan_rows["AMBIGUOUS"]:
+        anchor = row.split("\t")[1] if "\t" in row else ""
+        by_anchor[anchor].append(row)
+
+    # For each anchor, the set of target files it resolves to, grouped by book.
+    anchor_targets = collections.defaultdict(lambda: collections.defaultdict(set))
+    for (book, anchor), targets in assembly_index.items():
+        if anchor in by_anchor and len(targets) > 1:
+            for t in targets:
+                anchor_targets[anchor][book].add(os.path.relpath(t, root))
+
+    out = []
+    for anchor in sorted(by_anchor):
+        out.append(f"{anchor}")
+        for book in sorted(anchor_targets.get(anchor, {})):
+            files = sorted(anchor_targets[anchor][book])
+            out.append(f"    resolves to ({book}): {', '.join(files)}")
+        for row in by_anchor[anchor]:
+            loc = row.split("\t", 1)[0]
+            out.append(f"    referenced at: {loc}")
+        out.append("")
+    return out
+
+
+def write_all_reports(reports_dir, plan, target, module_index=None,
+                      assembly_index=None, root="."):
     """Writes every review-queue report for the target to reports_dir."""
     os.makedirs(reports_dir, exist_ok=True)
     prefix = "assembly" if target == "assembly" else "module"
     for outcome, (filename, header) in REPORTS[target].items():
-        write_report(reports_dir, filename, header, plan.rows[outcome])
+        # The assembly ambiguous report gets an id-grouped, target-listing body.
+        if target == "assembly" and outcome == "AMBIGUOUS" and assembly_index:
+            write_report(reports_dir, filename, header,
+                         ambiguous_id_rows(plan.rows, assembly_index, root))
+            continue
+        # The module multi-category report gets a module-grouped, category-listing body.
+        if target == "module" and outcome == "MULTI_CATEGORY" and module_index:
+            write_report(reports_dir, filename, header,
+                         multi_category_rows(plan.rows, module_index, root))
+        else:
+            write_report(reports_dir, filename, header, plan.rows[outcome])
     write_report(reports_dir, f"{prefix}_anchorless.txt",
                  "# Anchorless path xrefs (no #anchor). Synthesize target id per case.",
                  plan.rows["ANCHORLESS"])
@@ -494,7 +584,10 @@ def main(argv):
     xrefs, anchorless = parse_xrefs(root, files)
     plan = build_plan(root, xrefs, anchorless, classifier, outcomes)
 
-    write_all_reports(reports_dir, plan, args.target)
+    module_index = index if args.target == "module" else None
+    assembly_index = index if args.target == "assembly" else None
+    write_all_reports(reports_dir, plan, args.target,
+                      module_index, assembly_index, root)
     files_changed, links_changed, diff = apply_plan(
         plan, root, write=(args.mode == "apply"), backup=args.backup)
     if args.mode == "dry-run":
