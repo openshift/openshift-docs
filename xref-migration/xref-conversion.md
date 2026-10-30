@@ -63,7 +63,30 @@ An *instance* is one xref occurrence (a `file:line`); one ambiguous *ID* can app
 
 ### Conversion rule
 
-For each `xref:<path>.adoc#<anchor>[<text>]` whose anchor is unique within its book, has an anchor, and is not `{context}`-bearing: produce `xref:<anchor>[<text>]`. Copy the anchor and text verbatim, including `{attributes}`, backticks, and nested brackets. Do not reconstruct the ID from the filename.
+For each `xref:<path>.adoc#<anchor>[<text>]` whose anchor is unique within its scope, has an anchor, and is not `{context}`-bearing: produce `xref:<anchor>[<text>]`. Copy the anchor and text verbatim, including `{attributes}`, backticks, and nested brackets. Do not reconstruct the ID from the filename.
+
+The string rewrite is identical for every file. What differs is the file selection and how "scope" is computed for the uniqueness test, so there are two classifiers.
+
+### Two classifiers: assembly and module
+
+The conversion runs in one of two modes, because an assembly and a module resolve
+within different scopes after migration:
+
+| | Files edited | Uniqueness scope | Why |
+|---|---|---|---|
+| **assembly** | ASSEMBLY `.adoc` files | the assembly's own **book** (top-level directory) | Assemblies live in the legacy book tree and are **not** referenced by `/maps`; the job maps that replace them include `modules/` directly. Their scope is still their book. |
+| **module** | `modules/*.adoc` | the module's **category** in `/maps` (`maps/<distro>/<category>.adoc`) | Modules are what `/maps` composes (module ← job map ← category map), so a module's migrated home is its category, read from `/maps`. |
+
+Scope is **per distro**: a module reused across distros (for example, an OpenShift module
+used in ROSA or OSD) gets its own copy and GUID, so that is safe. Reuse across **categories
+within one distro** might not be permitted and is flagged. `disconnected-environments` is
+treated as nested under `install` (the install umbrella), so a module in both is not a
+cross-category case.
+
+Both classifiers share everything else: parsing, the rewrite, the modes
+(`report`/`dry-run`/`apply`), repeat-safe application, and the review reports. Only file
+selection and the scope computation differ. `/maps` scoping is **not** valid for assemblies.
+Their targets are not in `/maps`, so it would mark nearly all of them as having no scope.
 
 ### Quarantine instead of converting
 
@@ -71,7 +94,7 @@ The script leaves every ambiguous, anchorless, or broken-`{context}` xref untouc
 
 ### Out of scope
 
-- **Non-ASSEMBLY files.** The script scans ASSEMBLY files only. Path-based xrefs in `modules/` (~900) and in other non-assembly `.adoc` files (~200) are not touched
+- **Other non-assembly, non-module `.adoc` files** (~200 path-based xrefs) are not handled by either classifier.
 - **Within-topic duplicates**, where two same-titled sections share one anchor, are a separate collision class, handled by the pre-conversion validation
   (`conversion-prechecks` / Vale AsciiDocDITA), not by this script
 - **Anchorless and broken-`{context}`** cases from the review table are reported, not converted; writers should resolve them.

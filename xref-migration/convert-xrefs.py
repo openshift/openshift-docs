@@ -1,16 +1,29 @@
 #!/usr/bin/env python3
 
-# Converts AsciiDoc path-based xrefs (xref:../f.adoc#id[Text]) to ID-based
-# xrefs (xref:id[Text]) in ASSEMBLY files, in preparation for AEM/DITA migration.
+# Converts AsciiDoc path-based xrefs (xref:../f.adoc#id[Text]) to ID-based xrefs
+# (xref:id[Text]), in preparation for AEM/DITA migration.
 #
-# An xref is converted only if its id is unique within the book that references
-# it, because AEM resolves references per book, by file GUID. Any xref whose id
-# is ambiguous within its book is left untouched and written to a review report.
-# See XREF-CONVERSION.md for the full rationale. Run with -h for usage.
+# The string rewrite is the same for every file: drop the path, keep the bare id.
+# What differs is WHICH files are edited and HOW the uniqueness scope is computed,
+# so there are two classifiers selected by --target:
+#
+#   assembly : edits ASSEMBLY .adoc files; an id is safe if it is unique within the
+#              assembly's own BOOK (top-level directory). Assemblies live in the
+#              legacy book tree and are not referenced by /maps.
+#   module   : edits modules/*.adoc; an id is safe if, within every CATEGORY the
+#              source module belongs to (read from /maps: category map -> job map ->
+#              module), the id resolves to exactly one file. Modules are what /maps
+#              composes, so their migrated scope is the category.
+#
+# After migration AEM resolves a reference by file GUID within its map, so within-
+# scope uniqueness is the proxy for "binds to exactly one GUID". Ambiguous,
+# anchorless, or broken-{context} xrefs are left untouched and reported.
+# See XREF-CONVERSION.md. Run with -h for usage.
 
 from __future__ import annotations
 
 import argparse
+import collections
 import difflib
 import os
 import re
@@ -18,17 +31,27 @@ import subprocess
 import sys
 from dataclasses import dataclass
 
-# Marker that identifies an ASSEMBLY source file
 ASSEMBLY_MARK = ":_mod-docs-content-type: ASSEMBLY"
+MODULES_DIR = "modules"
+MAPS_DIR = "maps"
 
-# Top-level directories that never contain ASSEMBLY source we want to rewrite
-SKIP_TOP_DIRS = {"modules", ".git", "xref-migration", "_attributes", "snippets"}
+# Directories with no convertible source / that must not seed the id or target index.
+# drupal-build is git-ignored generated output; its duplicate id definitions would
+# create phantom collisions.
+SKIP_TOP_DIRS = {".git", "xref-migration", "_attributes", "snippets", "drupal-build"}
 
-# Matches a path-based xref with an anchor, and one without
+# Directories under maps/ that hold job maps (not category maps).
+JOB_MAP_DIRS = {"ocp-jobs", "osd-jobs", "hcm-jobs", "virt-jobs", "rosa-hcp-jobs",
+                "rosa-classic-jobs", "microshift-jobs", "jobs"}
+
+# A category nested under another (install umbrella): a module in both is not a
+# cross-category case. Keys and values are category file basenames without .adoc.
+NESTED_CATEGORIES = {"disconnected-environments": "install"}
+
 PATH_ANCHOR_RE = re.compile(r"xref:([^#\[\s]+\.adoc)#([^\[\]]+)\[")
 PATH_NOANCHOR_RE = re.compile(r"xref:([^#\[\s]+\.adoc)\[")
+INCLUDE_RE = re.compile(r"include::([^\[]+)\[")
 
-# Characters of surrounding text captured per xref for the review reports
 FRAG_LEN = 160
 
 
@@ -37,7 +60,6 @@ class Xref:
     """A single path-based xref occurrence found in a source file."""
 
     src: str
-    book: str
     line: int
     path: str
     anchor: str
@@ -54,6 +76,15 @@ class Xref:
         return f"xref:{self.anchor}["
 
 
+def read_text(path):
+    """Returns the file contents, or an empty string if it cannot be read."""
+    try:
+        with open(path, encoding="utf-8", errors="replace") as f:
+            return f.read()
+    except OSError:
+        return ""
+
+
 def top_dir(root, abspath):
     """Returns the first path segment of abspath relative to root (its book)."""
     return os.path.relpath(abspath, root).split(os.sep)[0]
@@ -65,88 +96,184 @@ def resolve_target(src_file, rel_path):
     return os.path.normpath(os.path.join(src_dir, rel_path))
 
 
-def read_text(path):
-    """Returns the file contents, or an empty string if it cannot be read."""
-    try:
-        with open(path, encoding="utf-8", errors="replace") as f:
-            return f.read()
-    except OSError:
-        return ""
-
-
-def find_assembly_files(root):
-    """Returns all ASSEMBLY-type .adoc files under root, skipping SKIP_TOP_DIRS."""
+def all_adoc_files(root):
+    """Returns every .adoc file under root, skipping SKIP_TOP_DIRS."""
     found = []
     for dirpath, dirnames, filenames in os.walk(root):
-        # Prune directories we never want to descend into
         if os.path.relpath(dirpath, root).split(os.sep)[0] in SKIP_TOP_DIRS:
             dirnames[:] = []
             continue
         for name in filenames:
-            path = os.path.join(dirpath, name)
-            if name.endswith(".adoc") and ASSEMBLY_MARK in read_text(path)[:4000]:
-                found.append(path)
-    return sorted(found)
+            if name.endswith(".adoc"):
+                found.append(os.path.join(dirpath, name))
+    return found
 
+
+# --- file selection (differs by target) -------------------------------------
+
+def find_assembly_files(root):
+    """Returns all ASSEMBLY-type .adoc files under root, skipping SKIP_TOP_DIRS."""
+    return [f for f in all_adoc_files(root)
+            if ASSEMBLY_MARK in read_text(f)[:4000]]
+
+
+def find_module_files(root):
+    """Returns all module .adoc files under modules/."""
+    modules_root = os.path.join(root, MODULES_DIR)
+    return sorted(os.path.join(modules_root, name)
+                  for name in os.listdir(modules_root)
+                  if name.endswith(".adoc"))
+
+
+# --- shared parsing ---------------------------------------------------------
 
 def parse_xrefs(root, files):
-    """Returns (path+anchor xrefs, anchorless occurrences) across all files."""
+    """Returns (path+anchor xrefs, anchorless occurrences) across the given files."""
     xrefs = []
     anchorless = []
     for src in files:
-        book = top_dir(root, os.path.abspath(src))
         rel = os.path.relpath(src, root)
         for line_no, line in enumerate(read_text(src).splitlines(), start=1):
-            # Collect xrefs that carry an #anchor (the convertible kind)
             for m in PATH_ANCHOR_RE.finditer(line):
                 fragment = line[m.start():m.start() + FRAG_LEN].rstrip()
-                xrefs.append(Xref(src, book, line_no, m.group(1),
+                xrefs.append(Xref(src, line_no, m.group(1),
                                   m.group(2).strip(), fragment))
-            # Record anchorless xrefs separately; they have no id to lift
             for m in PATH_NOANCHOR_RE.finditer(line):
                 fragment = line[m.start():m.start() + FRAG_LEN].rstrip()
                 anchorless.append((rel, line_no, fragment))
     return xrefs, anchorless
 
 
-def index_targets(root, xrefs):
-    """Returns (anchor -> targets, (book, anchor) -> targets) lookup tables.
+# --- assembly scope: target id unique within the target's book --------------
 
-    Anchors containing {context} are skipped, since their text is not a real
-    resolved id; they are reported separately as broken.
+def index_assembly_targets(root, files):
+    """Returns (book, anchor) -> set of target files that xrefs resolve to.
+
+    Built from every path+anchor xref across the repo. The book is the TARGET
+    file's top-level directory.
     """
-    by_id = {}
     by_book_id = {}
-    for x in xrefs:
-        if "{context}" in x.anchor:
-            continue
-        target = resolve_target(x.src, x.path)
-        by_id.setdefault(x.anchor, set()).add(target)
-        by_book_id.setdefault((x.book, x.anchor), set()).add(target)
-    return by_id, by_book_id
+    for src in files:
+        for m in PATH_ANCHOR_RE.finditer(read_text(src)):
+            anchor = m.group(2).strip()
+            if "{context}" in anchor:
+                continue
+            target = resolve_target(src, m.group(1))
+            by_book_id.setdefault((top_dir(root, target), anchor), set()).add(target)
+    return by_book_id
 
 
-def bucket(anchor):
-    """Returns the quarantine kind (INDEX or CONFLICT) for a within-book-ambiguous anchor."""
-    # The book-landing 'index' anchor is its own structural case
-    if anchor == "index":
-        return "INDEX"
-    # Everything else is a genuine within-book content conflict
-    return "CONFLICT"
-
-
-def classify(x, by_book_id):
-    """Returns the outcome for one xref: CLEAN, INDEX, CONFLICT, or BROKEN."""
-    # An unresolved {context} in the anchor cannot be converted
+def classify_assembly(x, root, index):
+    """Returns the outcome for one assembly xref: CLEAN, AMBIGUOUS, or BROKEN."""
     if "{context}" in x.anchor:
         return "BROKEN"
-    # The decisive test: is the id unique within the book it is referenced from?
-    # AEM resolves per book by file GUID, so within-book uniqueness is sufficient.
-    if len(by_book_id.get((x.book, x.anchor), ())) <= 1:
-        return "CLEAN"
-    # Otherwise it is ambiguous within its book; sort it into a quarantine kind
-    return bucket(x.anchor)
+    target = resolve_target(x.src, x.path)
+    book = top_dir(root, target)
+    # Safe only if the target id resolves to one file in the target's book.
+    if len(index.get((book, x.anchor), {target})) > 1:
+        return "AMBIGUOUS"
+    return "CLEAN"
 
+
+# --- module scope: id unique within every /maps category of the module ------
+
+def includes_of(map_file, maps_root):
+    """Returns the include:: targets of a map file, as paths under maps_root."""
+    return [os.path.normpath(os.path.join(maps_root, m.group(1).strip()))
+            for m in INCLUDE_RE.finditer(read_text(map_file))]
+
+
+def category_scope(category_file):
+    """Returns the effective scope name for a category map, collapsing nesting."""
+    name = os.path.basename(category_file)[: -len(".adoc")]
+    return NESTED_CATEGORIES.get(name, name)
+
+
+def build_module_index(root):
+    """Returns (module_scopes, scope_id_files) describing the /maps category layout.
+
+    module_scopes: module basename -> set of effective scope names it belongs to.
+    scope_id_files: (distro, scope) -> {resolved-or-prefix id -> set of module files}.
+    The id map is {context}-aware: [id="name_{context}"] is stored under prefix name_.
+    """
+    maps_root = os.path.join(root, MAPS_DIR)
+    id_def_re = re.compile(r'\[id="([^"]+)"\]')
+
+    def file_ids(path):
+        """Resolved id or {context} prefix for each [id=] in a file."""
+        ids = set()
+        for declared in id_def_re.findall(read_text(path)):
+            if declared.endswith("_{context}"):
+                ids.add(declared[: -len("{context}")])
+            else:
+                ids.add(declared)
+        return ids
+
+    module_scopes = collections.defaultdict(set)
+    scope_modules = collections.defaultdict(set)   # (distro, scope) -> module files
+    for distro in sorted(os.listdir(maps_root)):
+        distro_dir = os.path.join(maps_root, distro)
+        if not os.path.isdir(distro_dir) or distro in JOB_MAP_DIRS:
+            continue
+        for name in sorted(os.listdir(distro_dir)):
+            if not name.endswith(".adoc") or name == "navigation.adoc":
+                continue
+            scope = category_scope(name)
+            category = os.path.join(distro_dir, name)
+            for job_map in includes_of(category, maps_root):
+                if not job_map.endswith(".adoc"):
+                    continue
+                for included in includes_of(job_map, maps_root):
+                    if os.path.basename(os.path.dirname(included)) == MODULES_DIR:
+                        module_scopes[os.path.basename(included)].add((distro, scope))
+                        scope_modules[(distro, scope)].add(included)
+
+    scope_id_files = {}
+    for scope_key, module_files in scope_modules.items():
+        id_files = {}
+        for mf in module_files:
+            for anchor_id in file_ids(mf):
+                id_files.setdefault(anchor_id, set()).add(mf)
+        scope_id_files[scope_key] = id_files
+    return module_scopes, scope_id_files
+
+
+def classify_module(x, index):
+    """Returns the outcome for one module xref against the /maps scopes.
+
+    Outcomes: CLEAN, AMBIGUOUS, NO_CATEGORY, MULTI_CATEGORY, or BROKEN.
+    """
+    module_scopes, scope_id_files = index
+    if "{context}" in x.anchor:
+        return "BROKEN"
+    scopes = module_scopes.get(os.path.basename(x.src), set())
+    # A module not reachable from any category map has no scope to validate against.
+    if not scopes:
+        return "NO_CATEGORY"
+    # Reuse across categories within one distro may not be permitted; flag it.
+    distro_scopes = collections.defaultdict(set)
+    for distro, scope in scopes:
+        distro_scopes[distro].add(scope)
+    if any(len(s) > 1 for s in distro_scopes.values()):
+        return "MULTI_CATEGORY"
+    # Safe only if the id resolves to one file in each scope the module is in.
+    for scope_key in scopes:
+        definers = scope_id_files.get(scope_key, {})
+        if _matches_multiple(x.anchor, definers):
+            return "AMBIGUOUS"
+    return "CLEAN"
+
+
+def _matches_multiple(anchor, id_files):
+    """True if the anchor matches ids defined in more than one file ({context}-aware)."""
+    files = set()
+    for anchor_id, defining in id_files.items():
+        if anchor == anchor_id or anchor.startswith(anchor_id):
+            files |= defining
+    return len(files) > 1
+
+
+# --- plan: classify everything into edits + report rows ---------------------
 
 @dataclass
 class Plan:
@@ -155,18 +282,19 @@ class Plan:
     edits_by_file: dict
     rows: dict
     clean_count: int
+    outcomes: tuple          # ordered non-CLEAN outcome names for this target
 
 
-def build_plan(xrefs, anchorless, by_book_id, root):
-    """Classifies every xref into edits (CLEAN) and quarantine report rows."""
+def build_plan(root, xrefs, anchorless, classifier, outcomes):
+    """Classifies every xref into edits (CLEAN) and per-outcome report rows."""
     edits_by_file = {}
-    rows = {k: [] for k in ("INDEX", "CONFLICT", "BROKEN")}
+    rows = {name: [] for name in outcomes}
+    rows["ANCHORLESS"] = []
     clean_count = 0
 
     for x in xrefs:
-        outcome = classify(x, by_book_id)
+        outcome = classifier(x)
         rel = os.path.relpath(x.src, root)
-        # CLEAN xrefs become edits; everything else is quarantined for review
         if outcome == "CLEAN":
             edits_by_file.setdefault(x.src, []).append((x.old_text, x.new_text))
             clean_count += 1
@@ -175,10 +303,11 @@ def build_plan(xrefs, anchorless, by_book_id, root):
         else:
             rows[outcome].append(f"{rel}:{x.line}\t{x.anchor}\t{x.fragment}")
 
-    # Anchorless xrefs are collected in parse_xrefs, not classified per id
     rows["ANCHORLESS"] = [f"{rel}:{ln}\t{frag}" for rel, ln, frag in anchorless]
-    return Plan(edits_by_file, rows, clean_count)
+    return Plan(edits_by_file, rows, clean_count, outcomes)
 
+
+# --- reports ----------------------------------------------------------------
 
 def write_report(reports_dir, filename, header, rows):
     """Writes one report file: a header block followed by its data rows."""
@@ -187,53 +316,45 @@ def write_report(reports_dir, filename, header, rows):
         f.write("".join(row + "\n" for row in rows))
 
 
-def write_all_reports(reports_dir, plan, by_id, by_book_id, root):
-    """Writes every review-queue report to reports_dir."""
+# Report file + header for each outcome, per target.
+REPORTS = {
+    "assembly": {
+        "AMBIGUOUS": ("assembly_ambiguous.txt",
+                      "# Assembly xrefs whose target id is ambiguous within the target's book.\n"
+                      "# HUMAN REVIEW: pick the intended target per reference."),
+    },
+    "module": {
+        "AMBIGUOUS": ("module_ambiguous.txt",
+                      "# Module xrefs whose id is defined in >1 file within a category.\n"
+                      "# HUMAN REVIEW: pick the intended target per reference."),
+        "MULTI_CATEGORY": ("module_multi_category.txt",
+                           "# Module used across >1 category within a distro; may not be\n"
+                           "# permitted. Decide the module's single category before converting."),
+        "NO_CATEGORY": ("module_no_category.txt",
+                        "# Module not reachable from any /maps category; no scope to\n"
+                        "# validate against. Revisit once the module is mapped."),
+    },
+}
+
+
+def write_all_reports(reports_dir, plan, target):
+    """Writes every review-queue report for the target to reports_dir."""
     os.makedirs(reports_dir, exist_ok=True)
-
-    # Only IDs that are ambiguous WITHIN a book are quarantined and listed here.
-    within_book_ambiguous = sorted({
-        anchor for (book, anchor), targets in by_book_id.items() if len(targets) > 1})
-
-    def id_rows(kind):
-        """Builds '<id>\t<target1> | <target2>' rows for one quarantine kind."""
-        return [f"{a}\t" + " | ".join(sorted(os.path.relpath(t, root)
-                                              for t in by_id[a]))
-                for a in within_book_ambiguous if bucket(a) == kind]
-
-    r = plan.rows
-
-    # The book-landing 'index' anchor
-    write_report(reports_dir, "ambiguous_index.txt",
-                 "# Book-landing 'index' anchor.\n"
-                 "# Map each book index to its DITA map landing topic.",
-                 id_rows("INDEX"))
-
-    # Genuine within-book conflicts needing human review
-    write_report(reports_dir, "ambiguous_within_book.txt",
-                 "# Within-book conflicts. HUMAN REVIEW REQUIRED.",
-                 id_rows("CONFLICT"))
-
-    # The flat index of every quarantined instance, for triage
-    write_report(reports_dir, "ambiguous_instances_all.txt",
-                 f"# Quarantined instances. index={len(r['INDEX'])} conflict={len(r['CONFLICT'])}",
-                 r["INDEX"] + r["CONFLICT"])
-
-    # The two edge-case queues
-    write_report(reports_dir, "anchorless_xrefs.txt",
+    prefix = "assembly" if target == "assembly" else "module"
+    for outcome, (filename, header) in REPORTS[target].items():
+        write_report(reports_dir, filename, header, plan.rows[outcome])
+    write_report(reports_dir, f"{prefix}_anchorless.txt",
                  "# Anchorless path xrefs (no #anchor). Synthesize target id per case.",
-                 r["ANCHORLESS"])
-    write_report(reports_dir, "broken_context_xrefs.txt",
-                 "# Literal {context} left in anchor. Author supplies resolved value.",
-                 r["BROKEN"])
+                 plan.rows["ANCHORLESS"])
+    write_report(reports_dir, f"{prefix}_broken_context.txt",
+                 "# Literal {context} left in an anchor. Author supplies resolved value.",
+                 plan.rows["BROKEN"])
 
+
+# --- apply / preview --------------------------------------------------------
 
 def rewrite_file(src, edits):
-    """Returns (old_text, new_text) for src after applying edits, without writing.
-
-    Each edit is a literal, fully-qualified xref prefix, so a plain replace is
-    both safe and idempotent: already-converted bare xrefs are never matched.
-    """
+    """Returns (old_text, new_text) for src after applying edits, without writing."""
     old_text = read_text(src)
     new_text = old_text
     for old, new in dict(edits).items():
@@ -249,49 +370,48 @@ def apply_plan(plan, root, write, backup):
 
     for src, edits in sorted(plan.edits_by_file.items()):
         old_text, new_text = rewrite_file(src, edits)
-        # Skip files the edits did not actually change
         if old_text == new_text:
             continue
         files_changed += 1
         links_changed += len(dict(edits))
         if write:
-            # Optionally preserve the original before overwriting
             if backup:
                 with open(src + ".bak", "w", encoding="utf-8") as f:
                     f.write(old_text)
             with open(src, "w", encoding="utf-8") as f:
                 f.write(new_text)
         else:
-            # Collect a unified diff instead of writing
             rel = os.path.relpath(src, root)
             diff += difflib.unified_diff(old_text.splitlines(keepends=True),
                                          new_text.splitlines(keepends=True),
                                          fromfile=f"a/{rel}", tofile=f"b/{rel}")
-
     return files_changed, links_changed, "".join(diff)
 
 
-def print_summary(plan, file_count, mode, files_changed, links_changed):
+# --- summary ----------------------------------------------------------------
+
+# Human-readable label for each non-CLEAN outcome in the summary.
+OUTCOME_LABELS = {
+    "AMBIGUOUS": "ambiguous in scope",
+    "MULTI_CATEGORY": "multi-category (review)",
+    "NO_CATEGORY": "no category (unmapped)",
+    "BROKEN": "broken {context}",
+}
+
+
+def print_summary(plan, target, file_count, mode, files_changed, links_changed):
     """Prints the classification summary and the result of the chosen mode."""
     r = plan.rows
-    quarantined = len(r["INDEX"]) + len(r["CONFLICT"])
+    counts = [(f"{target} files scanned", file_count),
+              ("CLEAN (convertible)", plan.clean_count)]
+    for outcome in plan.outcomes:
+        counts.append((OUTCOME_LABELS.get(outcome, outcome.lower()), len(r[outcome])))
+    counts.append(("anchorless", len(r["ANCHORLESS"])))
 
-    # The counts, as (label, value) pairs for aligned printing
-    counts = [
-        ("ASSEMBLY files", file_count),
-        ("CLEAN (convertible)", plan.clean_count),
-        ("quarantined ambiguous", quarantined),
-        ("  index landing", len(r["INDEX"])),
-        ("  within-book conflict", len(r["CONFLICT"])),
-        ("anchorless", len(r["ANCHORLESS"])),
-        ("broken {context}", len(r["BROKEN"])),
-    ]
     print("=" * 50)
     for label, value in counts:
         print(f"{label:.<32} {value}")
     print("-" * 50)
-
-    # The closing line depends on which mode ran
     if mode == "report":
         print("report: no files modified; reports refreshed.")
     elif mode == "dry-run":
@@ -300,6 +420,8 @@ def print_summary(plan, file_count, mode, files_changed, links_changed):
         print(f"apply: converted {links_changed} links in {files_changed} files.")
     print("=" * 50)
 
+
+# --- orchestration ----------------------------------------------------------
 
 def default_root():
     """Returns the git toplevel if inside a repo, otherwise the current dir."""
@@ -312,42 +434,74 @@ def default_root():
 
 
 def parse_args(argv):
-    """Parses the command line into mode, root, out, and backup."""
+    """Parses the command line into target, mode, root, out, and backup."""
     parser = argparse.ArgumentParser(
         description="Convert AsciiDoc path-based xrefs to ID-based xrefs.")
+    parser.add_argument("target", choices=["assembly", "module"],
+                        help="which files to convert and how to scope uniqueness")
     parser.add_argument("mode", choices=["report", "dry-run", "apply"])
     parser.add_argument("--root", help="repo root (default: git toplevel)")
     parser.add_argument("--out", help="reports dir (default: <root>/xref-migration)")
     parser.add_argument("--backup", action="store_true",
                         help="write .bak files before editing")
+    parser.add_argument("--only-from", metavar="FILE",
+                        help="restrict conversion to the source files listed in FILE "
+                             "(one 'path:...' or 'path' per line); scope index still uses "
+                             "the whole repo")
     return parser.parse_args(argv)
 
 
+def only_from_files(path, root):
+    """Returns the set of absolute source paths listed in an --only-from file.
+
+    Accepts plain repo-relative paths or grep-style 'path:match' lines (such as
+    ~/xref.txt); only the leading path before the first ':' is used.
+    """
+    wanted = set()
+    for line in read_text(path).splitlines():
+        line = line.strip()
+        if not line:
+            continue
+        rel = line.split(":", 1)[0]
+        wanted.add(os.path.normpath(os.path.abspath(os.path.join(root, rel))))
+    return wanted
+
+
 def main(argv):
-    """Runs the full pipeline: find, parse, classify, report, then apply."""
+    """Runs the full pipeline: select files, index scope, classify, report, apply."""
     args = parse_args(argv)
     root = args.root or default_root()
     reports_dir = os.path.join(
         args.out or os.path.join(root, "xref-migration"), "reports")
 
-    # Discover source files and the xrefs within them
-    files = find_assembly_files(root)
+    # File selection and classifier are the only things that differ by target.
+    if args.target == "assembly":
+        files = find_assembly_files(root)
+        index = index_assembly_targets(root, all_adoc_files(root))
+        classifier = lambda x: classify_assembly(x, root, index)
+        outcomes = ("AMBIGUOUS", "BROKEN")
+    else:
+        files = find_module_files(root)
+        index = build_module_index(root)
+        classifier = lambda x: classify_module(x, index)
+        outcomes = ("AMBIGUOUS", "MULTI_CATEGORY", "NO_CATEGORY", "BROKEN")
+
+    # Optionally restrict which source files are converted (scope index unchanged).
+    if args.only_from:
+        wanted = only_from_files(args.only_from, root)
+        files = [f for f in files if os.path.normpath(os.path.abspath(f)) in wanted]
+
     xrefs, anchorless = parse_xrefs(root, files)
+    plan = build_plan(root, xrefs, anchorless, classifier, outcomes)
 
-    # Index where every id resolves, then classify each xref
-    by_id, by_book_id = index_targets(root, xrefs)
-    plan = build_plan(xrefs, anchorless, by_book_id, root)
-
-    # Always refresh the review reports
-    write_all_reports(reports_dir, plan, by_id, by_book_id, root)
-
-    # Apply the edits, or preview them for dry-run
+    write_all_reports(reports_dir, plan, args.target)
     files_changed, links_changed, diff = apply_plan(
         plan, root, write=(args.mode == "apply"), backup=args.backup)
     if args.mode == "dry-run":
         sys.stdout.write(diff)
 
-    print_summary(plan, len(files), args.mode, files_changed, links_changed)
+    print_summary(plan, args.target, len(files), args.mode,
+                  files_changed, links_changed)
     return 0
 
 
