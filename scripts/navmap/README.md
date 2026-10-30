@@ -29,6 +29,7 @@ From the repository root:
 | `audit-module-duplicates.py` | Report module usage within categories (duplicates & cross-job redundancy) |
 | `preview-warning.py` | Post-processor: adds warning banner when includes are missing |
 | `conversion-prechecks.sh` | Run AsciiDoc pre-conversion validation (map completeness, Vale DITA, exploration) |
+| `compare-ocp-prechecks.py` | Run an OCP category across branches and print a comparison snapshot |
 
 ## Requirements
 
@@ -252,13 +253,70 @@ Set `DITA_CONFIG` to use another Vale configuration file, for example:
 DITA_CONFIG=/path/to/dita.ini ./conversion-prechecks install
 ```
 
+### Compare a category across branches
+
+Run from a checkout containing the precheck scripts:
+
+```bash
+./compare-ocp-prechecks integrate \
+  enterprise-4.20 enterprise-4.21 enterprise-4.22 enterprise-5.0
+```
+
+This runs fresh category checks in temporary Git worktrees using the same checker
+for every branch. It prints a table with Branch, AsciiDoctor, Vale, Exploration,
+ConditionalCode, and AttributeDefinition counts. By default, the command fetches
+`upstream` and rebases each selected local branch before checking it, so checks
+include the latest upstream content. `--rebase-upstream` remains accepted but is
+no longer required.
+
+Use local branch names and launch from a different branch, such as
+`compare-ocp-prechecks`. Selected branches must not be checked out in another
+worktree. The command fetches matching upstream branches once, rebases each local
+branch onto its matching upstream commit, and checks the rebased content. Local
+commits are replayed on upstream, and successful rebases update the local branches.
+It does not push. The launch checkout and its uncommitted content are preserved.
+If a rebase conflicts, the temporary rebase is aborted, that local branch remains
+unchanged, its counts are shown as `N/A`, and the other branches are still checked.
+If fetching fails, the command stops without running checks or replacing the
+previous comparison.
+
+To deliberately check existing local snapshots without fetching or updating
+branches, use `--no-rebase-upstream`. This also accepts other commit references,
+including remote tracking references such as `upstream/enterprise-4.20`, which
+may be stale:
+
+```bash
+./compare-ocp-prechecks --no-rebase-upstream integrate \
+  enterprise-4.20 enterprise-4.21 enterprise-4.22 enterprise-5.0
+```
+
+Each category retains only its latest Markdown snapshot and branch logs under
+`logs/category-comparisons/<category>/latest/`. The snapshot is named
+`<category>-comparison.md`. Branch directories such as `01-enterprise-4.20/logs/`
+contain the three category logs; `run.log` contains the console output. Commit IDs,
+upstream commit IDs when rebasing, and execution details are recorded in
+`run-metadata.json`. Older completed output is replaced after the comparison
+finishes. Concurrent runs for the same output directory are rejected.
+
+Counts include zero findings. ConditionalCode and AttributeDefinition are included
+in the Exploration total. Tool failures, missing categories, and unexpected log
+output produce `N/A` with details on standard error. Rows are sorted by
+ConditionalCode count and branch name, with incomplete checks last. The command
+returns `0` when all counts were obtained, including runs with conversion findings,
+or `1` when a branch cannot be checked.
+
+The command requires Git, Python 3.8 or later, and the prerequisites above on Linux
+or macOS. It reads logs directly using the Python standard library. Use `--repo`
+to select another checkout or `--output-dir` to select a category output directory.
+The `DITA_CONFIG` setting is passed through to the checker.
+
 ### Regression checks
 
 The tests use isolated fixtures and tool doubles; they do not sync styles or modify source maps:
 
 ```bash
 PYTHONDONTWRITEBYTECODE=1 python3 -m unittest discover -s scripts/navmap/tests -v
-bash -n conversion-prechecks scripts/navmap/conversion-prechecks.sh
+bash -n conversion-prechecks compare-ocp-prechecks scripts/navmap/conversion-prechecks.sh
 ```
 
 ## Supported distros
