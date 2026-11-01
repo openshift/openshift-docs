@@ -1,0 +1,537 @@
+// Module included in the following assemblies:
+//
+// * scalability_and_performance/telco-ran-du-rds.adoc
+
+:_mod-docs-content-type: REFERENCE
+[id="telco-ran-arm-platform-support_{context}"]
+= ARM platform support for telco RAN DU
+
+[role="_abstract"]
+ARM-based telco RAN DU deployments are Generally Available for {product-title} {product-version}.
+You can deploy {sno} clusters on ARM hardware by using the {ztp-first} workflow with SiteConfigV2.
+Use ARM deployments when you need energy-efficient, high-performance edge infrastructure for 5G RAN workloads.
+
+== Hub and spoke architecture for ARM deployments
+
+ARM-based telco RAN DU uses a hub-spoke architecture where the hub cluster runs on x86_64 hardware and the spoke clusters run on ARM hardware.
+
+Hub cluster environment::
+The hub cluster is an x86_64 cluster running {product-title} 4.16 or later with {rh-rhacm-first}.
+The hub uses {gitops-title} and the {cgu-operator-first} Operators to deploy and manage ARM spoke clusters.
++
+.Hub cluster component versions
+[cols="2,1", options="header"]
+|====
+|Component
+|Version
+
+|{rh-rhacm}
+|2.12.3
+
+|multicluster-engine
+|2.7.4
+
+|{gitops-title}
+|1.15.0
+
+|{cgu-operator}
+|4.17.0
+|====
+
+{sno} spoke environment::
+The following components are validated for ARM {sno} deployments.
++
+.ARM {sno} validated software components
+[cols="2,1,1", options="header"]
+|====
+|Component
+|Version
+|Notes
+
+|OpenShift API for Data Protection (OADP)
+|1.5.0
+|Supported and validated
+
+|Lifecycle Agent
+|4.19.0
+|Supported in 4.20
+
+|Local Storage Operator
+|4.19.0
+|Supported and validated
+
+|Cluster Logging Operator
+|6.2.2
+|Supported and validated
+
+|PTP Operator
+|4.19.0
+|Supported and validated for ordinary clock (OC) only
+
+|SR-IOV Operator
+|4.19.0
+|Supported in 4.20
+|====
+
+== Deploy ARM clusters with the ZTP workflow
+
+You can deploy ARM hardware as the platform for telco ZTP deployments by using the SiteConfigV2 workflow.
+
+[NOTE]
+====
+Support for Image Based Install, Image Based Upgrade, and Image Based Break+Fix for ARM {sno} deployments requires the Lifecycle Agent, which is supported in {product-title} 4.20.
+====
+
+Before deploying ARM clusters, ensure the following prerequisites are met:
+
+* A hub cluster running {product-title} on x86_64 architecture with {rh-rhacm} installed
+* A matching `ClusterImageSet` for ARM architecture exists on the hub cluster
++
+For example:
++
+[source,yaml]
+----
+img4.19.0-ec.5-multi-appsub   quay.io/openshift-release-dev/ocp-release:4.19.0-ec.5-multi
+----
+
+== Create ARM templates for SiteConfigV2
+
+When the hub cluster architecture differs from the spoke cluster architecture, you must create ARM-specific templates.
+These templates define the architecture for `BareMetalHost` and `InfraEnv` custom resources (CRs) and specify the ironic-agent image for the installation process.
+
+[NOTE]
+====
+Starting with {rh-rhacm} 2.14, you no longer need to manually create the ConfigMaps for ARM templates.
+====
+
+To create ARM templates, complete the following steps:
+
+. Get the ironic-agent image for ARM architecture:
++
+[source,terminal]
+----
+$ oc adm release info --image-for=ironic-agent \
+  quay.io/openshift-release-dev/ocp-release:4.19.0-ec.5-multi
+----
++
+The output shows the ironic-agent image reference:
++
+[source,terminal]
+----
+quay.io/openshift-release-dev/ocp-v4.0-art-dev@sha256:9f35628db5c01a9de3b892939a9a52d8e2ff18ab5efaf1a76f24092a917de1f2
+----
+
+. Create the ARM cluster template `ConfigMap` in the `open-cluster-management` namespace:
++
+[source,yaml]
+----
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: ai-cluster-templates-aarch64-v1
+  namespace: open-cluster-management
+immutable: true
+data:
+  AgentClusterInstall: |-
+    apiVersion: extensions.hive.openshift.io/v1beta1
+    kind: AgentClusterInstall
+    metadata:
+      name: "{{ .Spec.ClusterName }}"
+      namespace: "{{ .Spec.ClusterName }}"
+      annotations:
+    {{ if .SpecialVars.InstallConfigOverrides }}
+        agent-install.openshift.io/install-config-overrides: '{{ .SpecialVars.InstallConfigOverrides }}'
+    {{ end }}
+        siteconfig.open-cluster-management.io/sync-wave: "1"
+    spec:
+      clusterDeploymentRef:
+        name: "{{ .Spec.ClusterName }}"
+      holdInstallation: {{ .Spec.HoldInstallation }}
+      imageSetRef:
+        name: "{{ .Spec.ClusterImageSetNameRef }}"
+    {{ if .Spec.ApiVIPs }}
+      apiVIPs:
+    {{ .Spec.ApiVIPs | toYaml | indent 4 }}
+    {{ end }}
+    {{ if .Spec.IngressVIPs }}
+      ingressVIPs:
+    {{ .Spec.IngressVIPs | toYaml | indent 4 }}
+    {{ end }}
+      networking:
+    {{ if .Spec.ClusterNetwork }}
+        clusterNetwork:
+    {{ .Spec.ClusterNetwork | toYaml | indent 6 }}
+    {{ end }}
+    {{ if .Spec.MachineNetwork }}
+        machineNetwork:
+    {{ .Spec.MachineNetwork | toYaml | indent 6 }}
+    {{ end }}
+    {{ if .Spec.ServiceNetwork }}
+        serviceNetwork:
+    {{ $serviceNetworks := list }}
+    {{ range .Spec.ServiceNetwork }}
+    {{ $serviceNetworks = append $serviceNetworks .CIDR }}
+    {{ end }}
+    {{ $serviceNetworks | toYaml | indent 6 }}
+    {{ end }}
+      provisionRequirements:
+        controlPlaneAgents: {{ .SpecialVars.ControlPlaneAgents }}
+        workerAgents: {{ .SpecialVars.WorkerAgents }}
+    {{ if .Spec.Proxy }}
+      proxy:
+    {{ .Spec.Proxy | toYaml | indent 4 }}
+    {{ end }}
+    {{ if .Spec.PlatformType }}
+      platformType: "{{ .Spec.PlatformType }}"
+    {{ end }}
+      sshPublicKey: "{{ .Spec.SSHPublicKey }}"
+    {{ if gt (len .Spec.ExtraManifestsRefs) 0 }}
+      manifestsConfigMapRefs:
+    {{ .Spec.ExtraManifestsRefs | toYaml | indent 4 }}
+    {{ end }}
+  ClusterDeployment: |-
+    apiVersion: hive.openshift.io/v1
+    kind: ClusterDeployment
+    metadata:
+      name: "{{ .Spec.ClusterName }}"
+      namespace: "{{ .Spec.ClusterName }}"
+      annotations:
+        siteconfig.open-cluster-management.io/sync-wave: "1"
+    spec:
+      baseDomain: "{{ .Spec.BaseDomain }}"
+      clusterInstallRef:
+        group: extensions.hive.openshift.io
+        kind: AgentClusterInstall
+        name: "{{ .Spec.ClusterName }}"
+        version: v1beta1
+      clusterName: "{{ .Spec.ClusterName }}"
+      platform:
+        agentBareMetal:
+          agentSelector:
+            matchLabels:
+              cluster-name: "{{ .Spec.ClusterName }}"
+      pullSecretRef:
+        name: "{{ .Spec.PullSecretRef.Name }}"
+  InfraEnv: |-
+    apiVersion: agent-install.openshift.io/v1beta1
+    kind: InfraEnv
+    metadata:
+      annotations:
+        infraenv.agent-install.openshift.io/ironic-agent-image-override: quay.io/openshift-release-dev/ocp-v4.0-art-dev@sha256:9f35628db5c01a9de3b892939a9a52d8e2ff18ab5efaf1a76f24092a917de1f2
+        siteconfig.open-cluster-management.io/sync-wave: "1"
+      name: "{{ .Spec.ClusterName }}"
+      namespace: "{{ .Spec.ClusterName }}"
+    spec:
+      clusterRef:
+        name: "{{ .Spec.ClusterName }}"
+        namespace: "{{ .Spec.ClusterName }}"
+      cpuArchitecture: "aarch64"
+      sshAuthorizedKey: "{{ .Spec.SSHPublicKey }}"
+    {{ if .Spec.Proxy }}
+      proxy:
+    {{ .Spec.Proxy | toYaml | indent 4 }}
+    {{ end }}
+      pullSecretRef:
+        name: "{{ .Spec.PullSecretRef.Name }}"
+      ignitionConfigOverride: '{{ .Spec.IgnitionConfigOverride }}'
+      nmStateConfigLabelSelector:
+        matchLabels:
+          nmstate-label: "{{ .Spec.ClusterName }}"
+      additionalNTPSources:
+    {{ .Spec.AdditionalNTPSources | toYaml | indent 4 }}
+  KlusterletAddonConfig: |-
+    apiVersion: agent.open-cluster-management.io/v1
+    kind: KlusterletAddonConfig
+    metadata:
+      annotations:
+        siteconfig.open-cluster-management.io/sync-wave: "2"
+      name: "{{ .Spec.ClusterName }}"
+      namespace: "{{ .Spec.ClusterName }}"
+    spec:
+      clusterName: "{{ .Spec.ClusterName }}"
+      clusterNamespace: "{{ .Spec.ClusterName }}"
+      applicationManager:
+        enabled: false
+      certPolicyController:
+        enabled: false
+      iamPolicyController:
+        enabled: false
+      policyController:
+        enabled: true
+      searchCollector:
+        enabled: false
+  ManagedCluster: |-
+    apiVersion: cluster.open-cluster-management.io/v1
+    kind: ManagedCluster
+    metadata:
+      name: "{{ .Spec.ClusterName }}"
+      annotations:
+        siteconfig.open-cluster-management.io/sync-wave: "2"
+      labels:
+        cloud: auto-detect
+        vendor: auto-detect
+    spec:
+      hubAcceptsClient: true
+----
++
+The key ARM-specific settings in this template are:
++
+* `ironic-agent-image-override` annotation -- Specifies the ARM ironic-agent image required when the hub and spoke architectures differ.
+* `cpuArchitecture: "aarch64"` -- Specifies the ARM CPU architecture.
+
+. Create the ARM node template `ConfigMap` in the `open-cluster-management` namespace:
++
+[source,yaml]
+----
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: ai-node-templates-aarch64-v1
+  namespace: open-cluster-management
+immutable: true
+data:
+  BareMetalHost: |-
+    apiVersion: metal3.io/v1alpha1
+    kind: BareMetalHost
+    metadata:
+      name: "{{ .SpecialVars.CurrentNode.HostName }}"
+      namespace: "{{ .Spec.ClusterName }}"
+      annotations:
+        siteconfig.open-cluster-management.io/sync-wave: "1"
+        inspect.metal3.io: "{{ .SpecialVars.CurrentNode.IronicInspect }}"
+    {{ if .SpecialVars.CurrentNode.NodeLabels }}
+    {{ range $key, $value := .SpecialVars.CurrentNode.NodeLabels }}
+        bmac.agent-install.openshift.io.node-label.{{ $key }}: {{ $value | quote}}
+    {{ end }}
+    {{ end }}
+        bmac.agent-install.openshift.io/hostname: "{{ .SpecialVars.CurrentNode.HostName }}"
+    {{ if .SpecialVars.CurrentNode.InstallerArgs  }}
+        bmac.agent-install.openshift.io/installer-args: '{{ .SpecialVars.CurrentNode.InstallerArgs  }}'
+    {{ end }}
+    {{ if .SpecialVars.CurrentNode.IgnitionConfigOverride }}
+        bmac.agent-install.openshift.io/ignition-config-overrides: '{{ .SpecialVars.CurrentNode.IgnitionConfigOverride }}'
+    {{ end }}
+        bmac.agent-install.openshift.io/role: "{{ .SpecialVars.CurrentNode.Role }}"
+      labels:
+        infraenvs.agent-install.openshift.io: "{{ .Spec.ClusterName }}"
+    spec:
+      bootMode: "{{ .SpecialVars.CurrentNode.BootMode }}"
+      bmc:
+        address: "{{ .SpecialVars.CurrentNode.BmcAddress }}"
+        disableCertificateVerification: true
+        credentialsName: "{{ .SpecialVars.CurrentNode.BmcCredentialsName.Name }}"
+      bootMACAddress: "{{ .SpecialVars.CurrentNode.BootMACAddress }}"
+      automatedCleaningMode: "{{ .SpecialVars.CurrentNode.AutomatedCleaningMode }}"
+      online: true
+    {{ if .SpecialVars.CurrentNode.RootDeviceHints }}
+      rootDeviceHints:
+    {{ .SpecialVars.CurrentNode.RootDeviceHints | toYaml | indent 4 }}
+    {{ end }}
+      architecture: "aarch64"
+  NMStateConfig: |-
+    {{ if .SpecialVars.CurrentNode.NodeNetwork }}
+    apiVersion: agent-install.openshift.io/v1beta1
+    kind: NMStateConfig
+    metadata:
+      annotations:
+        siteconfig.open-cluster-management.io/sync-wave: "1"
+      name: "{{ .SpecialVars.CurrentNode.HostName }}"
+      namespace: "{{ .Spec.ClusterName }}"
+      labels:
+        nmstate-label: "{{ .Spec.ClusterName }}"
+    spec:
+      config:
+    {{ .SpecialVars.CurrentNode.NodeNetwork.NetConfig | toYaml | indent 4}}
+      interfaces:
+    {{ .SpecialVars.CurrentNode.NodeNetwork.Interfaces | toYaml | indent 4 }}
+    {{ end }}
+----
++
+The key ARM-specific setting in this template is `architecture: "aarch64"`, which specifies the ARM architecture for the `BareMetalHost` resource.
+
+== Create an ARM `ClusterInstance` CR
+
+After creating the ARM templates, reference them in the `ClusterInstance` CR to deploy an ARM cluster.
+
+The following `ClusterInstance` CR shows how to configure an ARM cluster:
+
+[source,yaml]
+----
+apiVersion: siteconfig.open-cluster-management.io/v1alpha1
+kind: ClusterInstance
+metadata:
+  name: "example-arm-cluster"
+  namespace: "example-arm-cluster"
+spec:
+  additionalNTPSources:
+    - "2600:52:7:x::y"
+  baseDomain: "example.lab"
+  clusterImageSetNameRef: "openshift-4.19.0-ec.5-multi"
+  clusterName: "example-arm-cluster"
+  clusterNetwork:
+    - cidr: "fd01::/48"
+      hostPrefix: 64
+  cpuPartitioningMode: AllNodes
+  extraLabels:
+    ManagedCluster:
+      common-disconnected: "true"
+      common-418-arch: "arm"
+  holdInstallation: false
+  extraManifestsRefs:
+    - name: ran-rds-manifests
+  installConfigOverrides: |
+    {
+      "capabilities": {
+        "baselineCapabilitySet": "None",
+        "additionalEnabledCapabilities": [
+          "NodeTuning",
+          "OperatorLifecycleManager",
+          "Ingress",
+          "marketplace"
+        ]
+      }
+    }
+  machineNetwork:
+    - cidr: "2600:52:7:97::/64"
+  networkType: "OVNKubernetes"
+  pullSecretRef:
+    name: "assisted-deployment-pull-secret"
+  serviceNetwork:
+    - cidr: "fd02::/112"
+  sshPublicKey: ""
+  templateRefs:
+    - name: ai-cluster-templates-aarch64-v1
+      namespace: open-cluster-management
+  nodes:
+    - automatedCleaningMode: "disabled"
+      bmcAddress: "redfish-virtualmedia://192.168.x.y/redfish/v1/Systems/1"
+      bmcCredentialsName:
+        name: "example-arm-cluster-bmc-secret"
+      bootMACAddress: "88:e9:a4:d6:66:cc"
+      bootMode: "UEFI"
+      hostName: "example-arm-cluster.example.lab"
+      nodeNetwork:
+        interfaces:
+          - name: "enP3p1s0f1np0"
+            macAddress: "88:e9:a4:d6:66:cc"
+        config:
+          interfaces:
+            - name: enP3p1s0f1np0
+              type: ethernet
+              state: up
+              ipv4:
+                address:
+                  - ip: 192.168.x.y
+                    prefix-length: 24
+                enabled: true
+                dhcp: false
+              ipv6:
+                address:
+                  - ip: 2600:52:7:x::y
+                    prefix-length: 64
+                dhcp: false
+                autoconf: false
+                enabled: true
+          dns-resolver:
+            config:
+              server:
+                - 2600:52:7:x::y
+                - 192.168.x.y
+          routes:
+            config:
+              - destination: '::/0'
+                next-hop-address: '2600:52:7:x::1'
+                next-hop-interface: enP3p1s0f1np0
+              - destination: '0.0.0.0/0'
+                next-hop-address: '192.168.x.1'
+                next-hop-interface: enP3p1s0f1np0
+      role: "master"
+      rootDeviceHints:
+        deviceName: "/dev/disk/by-path/pci-0007:02:00.0-nvme-1"
+      templateRefs:
+        - name: ai-node-templates-aarch64-v1
+          namespace: open-cluster-management
+----
++
+The key ARM-specific settings in this `ClusterInstance` CR are:
++
+* `clusterImageSetNameRef: "openshift-4.19.0-ec.5-multi"` -- Specifies the multi-architecture `ClusterImageSet` that includes ARM support.
+* `templateRefs` with `ai-cluster-templates-aarch64-v1` -- Specifies the ARM cluster template `ConfigMap`.
+* `templateRefs` with `ai-node-templates-aarch64-v1` -- Specifies the ARM node template `ConfigMap` for each node.
+
+== ARM-specific policy configuration
+
+ARM platforms require different policy configurations compared to x86_64 platforms.
+The RDS provides architecture-specific reference CRs for ARM deployments, including a dedicated `PerformanceProfile` CR (`aarch64/PerformanceProfile.yaml`) and architecture-aware tuning in `TunedPerformancePatch.yaml`.
+
+The key differences for ARM are:
+
+* ARM uses the 64k page size non-RT kernel instead of the real-time (RT) kernel
+* Huge page size is 512M instead of 1G
+* The `stalld` service is disabled because it does not work with the 64k page size kernel
+* The `iommu.passthrough=1` kernel argument is typically required (except when using the NVIDIA GPU Operator)
+
+.ARM policy differences
+[cols="1,2,2", options="header"]
+|====
+|Configuration
+|x86_64
+|ARM
+
+|Huge page size
+|1G
+|512M
+
+|Real-time kernel
+|Enabled
+|Disabled
+
+|kernel page size
+|Default (4k)
+|64k
+
+|`stalld` service
+|Enabled
+|Disabled
+
+|CPU frequency driver
+|`intel_pstate`
+|`cppc_cpufreq`
+|====
+
+Extract the ARM-specific `PerformanceProfile` and `TunedPerformancePatch` reference CRs from the `ztp-site-generate` container image.
+The `TunedPerformancePatch` CR automatically detects the CPU architecture and applies the appropriate tuning.
+
+== Validate ARM deployments with cluster-compare
+
+Use the cluster-compare tool to validate ARM cluster deployments against the RDS.
+The cluster-compare default compares assume x86_64 architecture, so expect differences in the output related to ARM-specific configurations.
+
+The following differences are expected when running cluster-compare against an ARM cluster:
+
+* `PerformanceProfile` shows differences in kernel arguments (`iommu.passthrough=1` instead of `module_blacklist=irdma`)
+* `TunedPerformancePatch` shows differences in service configuration (`stalld` stopped/disabled, `timer_migration=0`)
+* Namespace annotations might include additional security context settings
+
+The cluster-compare output for an ARM cluster shows differences similar to the following:
+
+[source,terminal]
+----
+Cluster CR: performance.openshift.io/v2_PerformanceProfile_openshift-node-performance-profile
+Reference File: required/node-tuning-operator/PerformanceProfile.yaml
+Diff Output:
+@@ -8,7 +8,7 @@
+   additionalKernelArgs:
+   - rcupdate.rcu_normal_after_boot=0
+   - efi=runtime
+-  - module_blacklist=irdma
++  - iommu.passthrough=1
+----
+
+[NOTE]
+====
+Missing CRs related to Intel-specific kernel arguments, such as `07-sriov-related-kernel-args-master.yaml`, are expected because these configurations are not valid for ARM platforms.
+====
+
+Ensure that your ARM deployment conforms to the RDS to receive support.
+Share any deviations with Red Hat for approval.
