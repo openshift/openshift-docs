@@ -1,0 +1,100 @@
+// This module is included in the following assemblies:
+// * pac/securing-pipelines-as-code.adoc
+
+:_mod-docs-content-type: CONCEPT
+[id="op-pac-security-guidelines_{context}"]
+= Security guidelines and best practices for {pac}
+
+[role="_abstract"]
+When integrating {pac} into continuous integration (CI) workflows, follow security best practices to protect cluster resources, safeguard Git provider credentials, and prevent unauthorized pipeline execution from untrusted code.
+
+== Git provider authentication and token lifecycle
+
+{pac} connects to Git providers by using either a dedicated application (such as a GitHub App) or personal access tokens (PAT) with webhooks.
+
+GitHub App authentication (recommended)::
+Using a GitHub App provides better security than personal access tokens:
+* *Short-lived installation tokens:* {pac} authenticates by using a private key to generate scoped installation tokens with a one-hour time-to-live (TTL). The controller automatically requests and refreshes these tokens when processing events.
+* *Granular permissions:* Grant only the minimum permissions required by {pac} (such as `Checks: Read & Write`, `Contents: Read-only` or `Read & Write`, and `Pull requests: Read & Write`). Avoid granting organization-level administrative rights.
+* *Scoped repository access:* When pipeline tasks need to access other private repositories within the organization, explicitly list those repositories under `spec.settings.github_app_token_scope_repos` in the `Repository` custom resource (CR).
+* *Private key security:* Store the GitHub App private key in a secret restricted to the `openshift-pipelines` namespace. Do not share or reuse this private key across other applications.
+
+Webhook secrets and payload verification::
+When using webhooks to trigger pipelines, configure a cryptographically secure webhook secret:
+* Generate a random hex secret using OpenSSL:
++
+[source,terminal]
+----
+\$ openssl rand -hex 20
+----
+* {pac} uses this secret to validate the HMAC signature of incoming webhook payloads. This prevents unauthorized callers from forging webhook events and triggering pipeline runs.
+
+Token expiration and renewal for GitLab and generic webhooks::
+If you use personal access tokens:
+* Always configure an expiration date when generating the token in your Git provider settings.
+* For GitLab repositories, configure token auto-rotation by setting `spec.settings.gitlab.token_auto_rotation: true` on the `Repository` CR. The controller monitors token expiry on each webhook event and automatically rotates the token within a 7-day expiration window if the token has the `api` or `self_rotate` scope.
+
+== Pull request authorization and provenance policies
+
+Running pipelines on pull requests submitted to public or multi-tenant repositories introduces the risk of executing untrusted code on your cluster. Configure authorization policies to mitigate this risk.
+
+Preventing unauthorized execution on pull requests::
+By default, {pac} restricts automatic pipeline execution on pull requests to repository owners, collaborators, and organization members.
+* *Gating external pull requests:* For pull requests submitted by external or untrusted contributors, require manual authorization before executing pipelines. Maintainers can approve execution by commenting `/ok-to-test` on the pull request.
+* *Configuring trusted teams:* Use the `spec.settings.policy` field in the `Repository` CR to define which users or teams can trigger runs:
++
+[source,yaml]
+----
+spec:
+  settings:
+    policy:
+      ok_to_test:
+        - "core-maintainers"
+        - "trusted-reviewer"
+      pull_request:
+        - "verified-contributor"
+----
+
+Pipeline provenance controls::
+By default, {pac} fetches pipeline definitions from the event source branch (`pipelinerun_provenance: "source"`). An untrusted contributor could submit a pull request that alters `.tekton/` pipeline definitions to execute arbitrary commands.
+* To protect sensitive build environments, set `pipelinerun_provenance: "default_branch"` in the `Repository` CR settings. This forces {pac} to use pipeline definitions only from the default protected branch (such as `main`), ignoring unreviewed pipeline changes in the pull request branch.
+
+== Task and pipeline workload authentication
+
+Pipeline tasks frequently require credentials to clone private repositories or push images to container registries. Apply the following practices for handling credentials in pipelines:
+
+Use secrets and workspaces::
+Bind credentials to tasks using dedicated workspaces backed by Kubernetes secrets:
+* Mount SSH credentials or container registry configuration files (`config.json`) into tasks via workspaces.
+* Use optional workspaces (`workspaces.<workspace_name>.bound`) so tasks can conditionally apply credentials without failing when executed in public contexts.
+* Avoid passing sensitive credentials in plain-text task parameters or environment variables.
+
+Avoid hardcoded credentials and direct volume mounts::
+* Never store plain-text tokens, passwords, or keys in pipeline manifests committed to Git.
+* Avoid using direct `volumes` and `volumeMounts` in task definitions. Workspaces provide standard abstraction, lifecycle management, and portability.
+
+Use dedicated, least-privilege service accounts::
+* Avoid running pipelines under the default `pipeline` service account if it possesses elevated permissions.
+* Create dedicated service accounts in your workload namespace for specific pipeline runs, and grant only the required role-based access control (RBAC) permissions and Security Context Constraints (SCCs).
+* Link annotated secrets (prefixed with `tekton.dev/git-` or `tekton.dev/docker-`) to the dedicated service account so credentials mount automatically only when needed.
+
+== Cluster resource and concurrency governance
+
+Uncontrolled continuous integration triggers can overwhelm cluster nodes or exceed Git provider API rate limits.
+
+Limit concurrent pipeline runs::
+Configure the `concurrency_limit` parameter in the `Repository` CR to restrict how many pipeline runs execute simultaneously for a given repository:
+
+[source,yaml]
+----
+apiVersion: pipelinesascode.tekton.dev/v1alpha1
+kind: Repository
+metadata:
+  name: my-repo
+  namespace: my-workload-namespace
+spec:
+  url: "https://github.com/my-org/my-repo"
+  concurrency_limit: 2
+----
+
+When active runs reach the configured limit, {pac} queues subsequent pipeline runs and executes them in order as running pipelines complete.
