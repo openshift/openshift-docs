@@ -1,0 +1,56 @@
+// Module included in the following assemblies:
+// * installing/installing_two_node_cluster/installing_tnf/networking-tnf.adoc
+
+:_mod-docs-content-type: CONCEPT
+[id="tnf-bmc-network-isolation-for-fencing_{context}"]
+= BMC network isolation for fencing
+
+[role="_abstract"]
+Fencing in a two-node {product-title} cluster with fencing relies on each node being able to power off its peer through the peer's baseboard management controller (BMC). Separating BMC traffic from Pacemaker cluster traffic reduces the chance that one failure disables both Pacemaker cluster communication and fencing at the same time. The recommended topology separates the two logically with VLANs, but it does not provide a physically independent fencing network: the BMCs connect to the same top-of-rack (TOR) switches as the cluster interfaces.
+
+== Why fencing depends on the network
+
+Pacemaker uses STONITH (Shoot The Other Node In The Head) to fence an unresponsive node by sending a Redfish power-off command to its BMC. If the path used for fencing shares physical fate with the Pacemaker cluster network, a single failure can partition the cluster _and_ prevent the surviving node from reaching its peer's BMC.
+
+When fencing cannot complete, Pacemaker does not perform automated recovery. It cannot confirm that the peer is powered off, so it does not restart or promote etcd on the survivor. The consequence is not divergent data: etcd does not serve requests without a quorum. Instead, the cluster loses etcd quorum, the Kubernetes API server becomes unavailable, and the cluster stops serving until an operator intervenes.
+
+[IMPORTANT]
+====
+Both the TNF design specification and Pacemaker upstream documentation require that fencing does not depend on the same network as Pacemaker cluster communication. VLAN separation alone does not satisfy this requirement, because the BMC VLAN and the cluster VLAN are carried over the same TOR switches. True physical independence requires a dedicated out-of-band (OOB) management fabric.
+====
+
+== VLAN separation
+
+Use a dedicated management VLAN to separate BMC traffic from cluster traffic. This separation is logical, not physical: it limits the broadcast and security domain and reduces congestion, but the BMC and cluster VLANs still share the same TOR switches and therefore share physical fate at the switch level.
+
+Configure firewall and routing rules to allow each node to reach the BMC of its peer node across VLANs. Because each BMC is cross-cabled to the opposite switch, the required traffic flows are:
+
+* Node 1 reaches the Node 2 BMC through TOR Switch 1, the switch that the Node 2 BMC is connected to.
+* Node 2 reaches the Node 1 BMC through TOR Switch 2, the switch that the Node 1 BMC is connected to.
+
+[NOTE]
+====
+Fencing always targets the peer node: each node powers off the other through the other node's BMC, never its own. Pacemaker can, however, schedule the _monitoring_ operation for a fence device on either node, including the node whose own BMC that device controls. Monitoring a fence device checks reachability only; it does not power off any node.
+====
+
+== Cross-cabling BMC interfaces
+
+In the recommended topology, each node's BMC connects to the TOR switch on the opposite side of the cluster: the Node 1 BMC connects to TOR Switch 2, and the Node 2 BMC connects to TOR Switch 1. Cross-cabling optimizes the fencing path; it does not add fencing redundancy.
+
+Cross-cabling provides the following benefits:
+
+Independence from the MC-LAG inter-switch link::
+Each node reaches its peer's BMC through a switch that it is already connected to, so fencing succeeds even if the multi-chassis link aggregation (MC-LAG) link between the two TOR switches is down.
+
+Fewer hops::
+Fencing traffic does not have to traverse the inter-switch link to reach the peer BMC, which shortens the fencing path.
+
+[IMPORTANT]
+====
+A BMC has a single network interface connected to a single switch, which makes it a single point of failure for fencing. If a TOR switch fails, the node whose BMC is connected to that switch cannot be fenced by its peer, because no alternate path to that BMC exists. Cross-cabling does not remove this limitation, and no cabling arrangement can, because a BMC cannot be multi-homed. To keep both nodes fenceable during a switch failure, use a dedicated out-of-band management network that does not depend on the cluster's TOR switches.
+====
+
+[NOTE]
+====
+A direct BMC-to-BMC crossover cable between the two nodes is not recommended because it removes external management access to the BMC. External BMC access is required for bare-metal provisioning and out-of-band operations.
+====
