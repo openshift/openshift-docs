@@ -1,0 +1,248 @@
+// Module included in the following assemblies:
+//
+// * etcd/KMS_v2/kms-configuring.adoc
+
+// openshift/api: 9edb1b2 (2026-09-15)
+// openshift/enhancements: 66c24fe (2026-09-15)
+
+:_mod-docs-content-type: PROCEDURE
+[id="kms-configuring_{context}"]
+= Enable KMS encryption
+
+[role="_abstract"]
+You can enable Key Management Service (KMS) encryption for etcd data to centralize key management and meet compliance requirements.
+
+.Prerequisites
+
+* You have access to the cluster as a user with the `cluster-admin` role.
+* You have enabled the `TechPreviewNoUpgrade` feature set, which activates the `KMSEncryption` feature gate.
+* You have a HashiCorp Vault Enterprise instance that is externally hosted and accessible from your cluster. Vault Enterprise must not be hosted inside the cluster service network. Vault Community Edition is not supported.
+* You have configured your Vault instance with:
+** Transit secrets engine enabled at a mount path, such as the default `transit/` path
+** Encryption key created with type `aes256-gcm96` (recommended for FIPS 140-3 compliance)
+** Vault policy that allows the KMS plugin to encrypt, decrypt, and read key information
+** Authentication method, such as `AppRole`, configured with the policy attached
+* You have the fully qualified OCI image pull spec with SHA256 digest for the KMS plugin image. You can obtain the image from the Red Hat Ecosystem Catalog or from Docker Hub. For more information, see "HashiCorp Vault KMS plugin container image" and "Red Hat Ecosystem Catalog". In disconnected environments, the image is mirrored to an accessible registry.
+* You have the `skopeo` and `jq` tools installed.
+* You have configured a Vault policy with the following capabilities:
++
+[source,hcl]
+----
+path "transit/encrypt/kms-key" {
+  capabilities = ["update"]
+}
+
+path "transit/decrypt/kms-key" {
+  capabilities = ["update"]
+}
+
+path "transit/keys/kms-key" {
+  capabilities = ["read"]
+}
+
+path "sys/license/status" {
+  capabilities = ["read"]
+}
+----
++
+Replace `transit` with your Transit mount path and `kms-key` with your Vault Transit key name.
+* You have created an etcd backup.
+
+.Procedure
+
+. Obtain the SHA256 digest for the KMS plugin image by entering the following command:
++
+[source,terminal]
+----
+$ skopeo inspect docker://quay.io/redhat-isv-containers/698df066f8d1ddf179c15ef9:<version> | jq -r '.Digest'
+----
++
+Replace `<version>` with the plugin version compatible with your cluster, such as `0.1.0-beta-ubi`.
++
+Use the resulting digest to construct the fully qualified pull spec in the format `quay.io/redhat-isv-containers/698df066f8d1ddf179c15ef9@sha256:<digest>`.
+
+. Create a secret in the `openshift-config` namespace with your Vault authentication credentials by entering the following command:
++
+[source,terminal]
+----
+$ oc create secret generic vault-approle-secret \
+  --from-literal=role-id=<your_role_id> \
+  --from-literal=secret-id=<your_secret_id> \
+  -n openshift-config
+----
++
+Replace `<your_role_id>` and `<your_secret_id>` with your Vault AppRole credentials.
+
+. Optional: If your Vault server uses a custom TLS certificate authority, create a config map in the `openshift-config` namespace with the CA bundle by entering the following command:
++
+[source,terminal]
+----
+$ oc create configmap vault-ca-bundle \
+  --from-file=ca-bundle.crt=<path_to_ca_bundle> \
+  -n openshift-config
+----
+
+. Edit the `APIServer` custom resource by entering the following command:
++
+[source,terminal]
+----
+$ oc edit apiserver cluster
+----
+
+. Add the KMS configuration to the `spec.encryption` section:
++
+[source,yaml]
+----
+apiVersion: config.openshift.io/v1
+kind: APIServer
+metadata:
+  name: cluster
+spec:
+  encryption:
+    type: KMS
+    kms:
+      type: Vault
+      vault:
+        kmsPluginImage: <registry>/<repository>@sha256:<digest>
+        vaultAddress: https://vault.example.com:8200
+        vaultNamespace: my-namespace
+        vaultAuthNamespace: my-auth-namespace
+        vaultKeyPath: transit/keys/kms-key
+        tls:
+          caBundle:
+            name: vault-ca-bundle
+          serverName: vault.example.com
+        authentication:
+          type: AppRole
+          appRole:
+            secret:
+              name: vault-approle-secret
+----
++
+where:
++
+`kmsPluginImage`:: Specifies the KMS plugin container image as a fully qualified OCI pull spec with SHA256 digest. Image tags and short names are not allowed. In disconnected environments, use the mirrored location.
+`vaultAddress`:: Specifies the HTTPS URL of the Vault server. Paths, query parameters, and fragments are not allowed.
+`vaultNamespace`:: Specifies the Vault namespace. This value is optional.
+`vaultAuthNamespace`:: Specifies the Vault namespace for authentication when it differs from the Transit namespace. Defaults to the `vaultNamespace` value. This value is optional.
+`vaultKeyPath`:: Specifies the Transit encryption key path in the format `<mount>/keys/<key_name>`.
+`tls.caBundle.name`:: Specifies the config map in the `openshift-config` namespace containing the CA bundle. Required only if Vault uses a custom CA.
+`tls.serverName`:: Specifies the TLS server name for certificate verification. This value is optional.
+`authentication.appRole.secret.name`:: Specifies the secret name in the `openshift-config` namespace containing the AppRole credentials.
+
+. Save and exit.
++
+The `kube-apiserver`, `openshift-apiserver`, and `authentication` Operators validate the configuration and roll out new revisions.
+
+
+.Verification
+
+. Verify the encryption type by entering the following command:
++
+[source,terminal]
+----
+$ oc get apiserver cluster -o jsonpath='{.spec.encryption.type}'
+----
++
+The output shows `KMS`.
+
+. Check the KMS plugin health and configuration validation by entering the following command:
++
+[source,terminal]
+----
+$ oc get kubeapiserver cluster -ojsonpath='{.status.encryptionStatus}' | jq .
+----
++
+Verify that `preflight.result.status` shows `Succeeded` and all nodes in `healthReports` show `Healthy`.
+
+. Monitor the `kube-apiserver` rollout progress by entering the following command:
++
+[source,terminal]
+----
+$ oc get co kube-apiserver
+----
++
+.Example output during rollout
+[source,terminal]
+----
+NAME             VERSION      AVAILABLE   PROGRESSING   DEGRADED   SINCE   MESSAGE
+kube-apiserver   5.0.0-rc.4   True        True          False      35m     NodeInstallerProgressing: 2 nodes are at revision 6; 1 node is at revision 7
+----
++
+When `PROGRESSING` shows `False`, the rollout is complete.
+
+. Check the encryption migration status by entering the following command:
++
+[source,terminal]
+----
+$ oc get kubeapiserver cluster -o jsonpath='{.status.conditions[?(@.type=="Encrypted")]}' | jq .
+----
++
+.Example output when complete
+[source,json]
+----
+{
+  "lastTransitionTime": "2026-09-24T16:41:48Z",
+  "message": "All resources encrypted: secrets, configmaps",
+  "reason": "EncryptionCompleted",
+  "status": "True",
+  "type": "Encrypted"
+}
+----
++
+Wait for `reason` to show `EncryptionCompleted` before you verify encryption in etcd.
+
+. Verify that secrets are encrypted in etcd:
++
+[WARNING]
+====
+Wait for the `kube-apiserver` rollout to complete on all control plane nodes before you verify encryption. Secrets created while nodes run an earlier revision are not encrypted with KMS.
+====
++
+--
+.. Create a test secret by entering the following command:
++
+[source,terminal]
+----
+$ oc create secret generic test-secret --from-literal=key=value -n default
+----
+
+.. Get an etcd pod name by entering the following command:
++
+[source,terminal]
+----
+$ oc get pods -n openshift-etcd -l app=etcd -o name | head -1
+----
+
+.. Check the secret data in etcd by entering the following command:
++
+[source,terminal]
+----
+$ oc exec -n openshift-etcd <etcd_pod_name> -- etcdctl get /kubernetes.io/secrets/default/test-secret --print-value-only | hexdump -C | head -1
+----
++
+.Example output
+[source,terminal]
+----
+00000000  6b 38 73 3a 65 6e 63 3a  6b 6d 73 3a 76 32 3a 31  |k8s:enc:kms:v2:1|
+----
++
+The output begins with `k8s:enc:kms:v2:` followed by encrypted binary data.
+
+.. Delete the test secret by entering the following command:
++
+[source,terminal]
+----
+$ oc delete secret test-secret -n default
+----
+--
+
+[role="_additional-resources"]
+.Additional resources
+
+* link:https://hub.docker.com/r/hashicorp/vault-kube-kms[HashiCorp Vault KMS plugin container image]
+* link:https://catalog.redhat.com/search?gs&q=vault-kms[Red Hat Ecosystem Catalog]
+* link:https://developer.hashicorp.com/vault/docs/secrets/transit[Vault Transit Secrets Engine]
+* link:https://developer.hashicorp.com/vault/api-docs/secret/transit#create-key[Vault API: Create Key]
+* link:https://developer.hashicorp.com/vault/docs/concepts/policies[Vault Policies]
+* link:https://developer.hashicorp.com/vault/docs/auth[Vault Authentication Methods]

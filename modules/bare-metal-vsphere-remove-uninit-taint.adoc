@@ -1,45 +1,140 @@
 // Module included in the following assemblies:
 //
 // * machine_management/user_infra/adding-bare-metal-compute-vsphere-user-infra.adoc
+// * maps/ocp-jobs/add-compute-machines-manually.adoc
 
 :_mod-docs-content-type: PROCEDURE
 [id="bare-metal-vsphere-remove-uninit-taint_{context}"]
-= Remove the cloud provider uninitialized taint from bare-metal nodes
+= Remove the cloud provider uninitialized taint from compute nodes
 
 [role="_abstract"]
-After a bare-metal node joins a {vmw-first} cluster, the {vmw-short} Cloud Controller Manager (CCM) cannot remove the `node.cloudprovider.kubernetes.io/uninitialized` taint automatically. You must manually remove this taint so that workloads can be scheduled on the node.
+To schedule workloads on bare-metal compute nodes or virtual machines (VMs) without {vmw-short} integration, remove the `node.cloudprovider.kubernetes.io/uninitialized` taint after the nodes join your {product-title} cluster.
 
-The {vmw-short} CCM attempts to initialize each node by searching vCenter for a matching virtual machine. Because a bare-metal node is physical hardware and not a VM in vCenter, the CCM cannot find a match and never removes the taint automatically.
+The {vmw-short} Cloud Controller Manager (CCM) attempts to initialize each node by searching vCenter for a matching virtual machine. For nodes without {vmw-short} integration, the CCM cannot find a match and cannot remove the taint automatically. A node can have the `Ready` status and still have this taint, which prevents workload scheduling.
 
 [NOTE]
 ====
-The CCM logs errors similar to `No VM found` for bare-metal nodes. These errors are expected and do not indicate a problem with the node or the cluster.
+The CCM logs error messages similar to `No VM found` for nodes without {vmw-short} integration. These messages are expected for these nodes.
 ====
 
 .Prerequisites
 
-* The bare-metal node has joined the cluster and its certificate signing requests (CSRs) have been approved.
+* The compute nodes have joined the target cluster and their certificate signing requests (CSRs) have been approved.
 * You have installed the {oc-first}.
-* You have cluster administrator privileges.
+* You are logged in to the target cluster as a user with the `cluster-admin` role.
 
 .Procedure
 
-* Remove the `node.cloudprovider.kubernetes.io/uninitialized` taint from each bare-metal node by running the following command:
+* Remove the `node.cloudprovider.kubernetes.io/uninitialized` taint from each compute node that you added without {vmw-short} integration by running the following command:
 +
 [source,terminal,subs="+quotes"]
 ----
 $ oc adm taint nodes <node_name> node.cloudprovider.kubernetes.io/uninitialized:NoSchedule-
 ----
 +
-Replace `<node_name>` with the name of the bare-metal node as shown in the output of `oc get nodes`.
+Replace `<node_name>` with the name of the compute node as shown in the output of `oc get nodes`.
 
 .Verification
 
-* Verify that the taint has been removed by running the following command and confirming that `node.cloudprovider.kubernetes.io/uninitialized` does not appear in the output:
+. Verify that the compute node has the `Ready` status and does not show `SchedulingDisabled` by running the following command:
 +
 [source,terminal,subs="+quotes"]
 ----
-$ oc describe node <node_name> | grep Taint
+$ oc get node <node_name>
 ----
 +
-Replace `<node_name>` with the name of the bare-metal node as shown in the output of `oc get nodes`.
+Replace `<node_name>` with the name of the compute node as shown in the output of `oc get nodes`.
+
+. Verify that `node.cloudprovider.kubernetes.io/uninitialized` does not appear in the node's taints by running the following command:
++
+[source,terminal,subs="+quotes"]
+----
+$ oc get node <node_name> -o jsonpath='{.spec.taints}{"\n"}'
+----
+
+. Verify that the machine config pool (MCP) containing the added node has `Updated=True`, `Updating=False`, and `Degraded=False` by running the following command:
++
+[source,terminal]
+----
+$ oc get machineconfigpools
+----
+
+. Obtain the value of the added node's `kubernetes.io/hostname` label for a test pod by running the following command:
++
+[source,terminal,subs="+quotes"]
+----
+$ oc get node <node_name> -o jsonpath='{.metadata.labels.kubernetes\.io/hostname}{"\n"}'
+----
+
+. Create a file named `compute-node-test.yaml` with the following content. Use an existing test project whose node selector permits scheduling on the added node.
++
+[source,yaml,subs="+quotes"]
+----
+apiVersion: v1
+kind: Pod
+metadata:
+  name: compute-node-test
+  namespace: <test_namespace>
+spec:
+  nodeSelector:
+    kubernetes.io/hostname: <node_hostname>
+  restartPolicy: Never
+  securityContext:
+    runAsNonRoot: true
+    seccompProfile:
+      type: RuntimeDefault
+  containers:
+  - name: test
+    image: <test_image>
+    command: ["/bin/sh", "-c", "sleep 3600"]
+    securityContext:
+      allowPrivilegeEscalation: false
+      capabilities:
+        drop:
+        - ALL
+----
++
+where:
++
+`<test_namespace>`:: Specifies the existing test project.
+`<node_hostname>`:: Specifies the hostname label value returned by the preceding command.
+`<test_image>`:: Specifies a container image that supports the node's architecture, runs as a non-root user, and contains `/bin/sh` and `sleep`. For example, use `registry.access.redhat.com/ubi9/ubi-minimal:latest` or a mirrored copy accessible to the cluster.
+
+. Create the test pod by running the following command:
++
+[source,terminal]
+----
+$ oc apply -f compute-node-test.yaml
+----
+
+. Verify that the test pod has `STATUS` set to `Running`, `READY` set to `1/1`, and `NODE` set to the added node by running the following command:
++
+[source,terminal,subs="+quotes"]
+----
+$ oc get pod compute-node-test -n <test_namespace> -o wide
+----
++
+This command also displays the pod if it has not been assigned to a node. If the pod remains pending or fails to become ready, examine its status and events by running the following command:
++
+[source,terminal,subs="+quotes"]
+----
+$ oc describe pod compute-node-test -n <test_namespace>
+----
++
+Resolve any reported scheduling or image-pull errors before continuing. This test verifies pod scheduling and startup on the node.
+
+. Delete the test pod by running the following command:
++
+[source,terminal,subs="+quotes"]
+----
+$ oc delete pod compute-node-test -n <test_namespace>
+----
++
+Repeat the node and workload checks for each added node.
+
+. After the cluster finishes reconciling the new nodes, verify that the cluster Operators have `Available=True`, `Progressing=False`, and `Degraded=False` by running the following command:
++
+[source,terminal]
+----
+$ oc get clusteroperators
+----

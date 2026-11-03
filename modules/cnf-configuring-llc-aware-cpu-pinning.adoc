@@ -1,0 +1,383 @@
+// Module included in the following assemblies:
+//
+// * scalability_and_performance/cnf-tuning-low-latency-nodes-with-perf-profile.adoc
+
+:_mod-docs-content-type: PROCEDURE
+[id="cnf-configuring-llc-aware-cpu-pinning_{context}"]
+= Configuring LLC-aware CPU pinning for low latency workloads
+
+[role="_abstract"]
+You can configure the `prefer-align-cpus-by-uncorecache` CPU Manager policy option to attempt, on a best-effort basis, to allocate CPUs from as few last-level cache (LLC) domains as possible.
+An LLC, or layer 3 cache, is the cache that cores on the CPU share.
+Traditional CPU architectures use one LLC for every core. Modern CPU architectures split this LLC into two or more physical caches to reduce the distance, and therefore latency, between the cores and the LLC.
+The term _LLC domain_ refers to cores that share the same LLC.
+A container can receive CPUs from more than one LLC domain, and more than one container can receive CPUs from the same LLC domain.
+
+On CPUs with a split LLC, this allocation can lower inter-cache latency and cache contention for low latency workloads when the allocated CPUs share fewer LLC domains.
+
+The following diagram shows an example of this best-effort allocation. The diagram is illustrative and does not show every allocation result.
+
+.Example best-effort LLC alignment
+image::llc-aware-pinning.png[Example of best-effort LLC alignment. Without the option, workload cores are spread across both split layer 3 caches. With the option, the CPU Manager attempts to allocate each workload to cores that share the same cache.]
+
+You configure the `prefer-align-cpus-by-uncorecache` CPU Manager option by using the `PerformanceProfile` resource, which is the recommended approach. The option has the following behavior:
+
+* The CPU Manager still admits a guaranteed container that requests more CPUs than one LLC domain contains. The CPU Manager then uses the fewest LLC domains that can satisfy the request.
+* If the CPU Manager cannot align the CPUs to the preferred LLC domains and the node has enough unallocated CPUs, it still admits the container and allocates CPUs with the default packed behavior.
+
+[NOTE]
+====
+You must set `cpuManagerPolicy: static` to use `prefer-align-cpus-by-uncorecache`.
+The static policy still assigns exclusive CPUs to guaranteed containers that request an integer number of CPUs.
+The `prefer-align-cpus-by-uncorecache` option changes only which of those CPUs the CPU Manager selects.
+====
+
+.Prerequisites
+
+* You have access to the cluster as a user with the `cluster-admin` role.
+* You installed the OpenShift CLI (`oc`).
+* The target machine has a CPU architecture with a split LLC cache.
+
+.Procedure
+
+. Label the target node that you want to configure by running the following command, where `<node_name>` is the name of your node. This example applies the `worker-cnf` label.
++
+[source,terminal]
+----
+$ oc label node <node_name> node-role.kubernetes.io/worker-cnf=""
+----
+
+. Optional: Create a `MachineConfigPool` resource containing the target nodes.
++
+You can use an existing machine config pool that contains the target nodes, or create a new pool with the target nodes.
+This example demonstrates creating a new machine config pool named `worker-cnf`.
++
+.. Create a YAML file that defines the `MachineConfigPool` resource:
++
+.Example `mcp-worker-cnf.yaml` file
+[source,yaml]
+----
+apiVersion: machineconfiguration.openshift.io/v1
+kind: MachineConfigPool
+metadata:
+  name: worker-cnf
+  labels:
+    machineconfiguration.openshift.io/role: worker-cnf
+spec:
+  machineConfigSelector:
+    matchExpressions:
+      - {
+           key: machineconfiguration.openshift.io/role,
+           operator: In,
+           values: [worker, worker-cnf],
+        }
+  paused: false
+  nodeSelector:
+    matchLabels:
+      node-role.kubernetes.io/worker-cnf: ""
+----
++
+--
+where:
+
+`metadata.name`:: Specifies the name `worker-cnf` for the `MachineConfigPool` resource.
+`metadata.labels`:: Specifies the unique label `machineconfiguration.openshift.io/role: worker-cnf` for the machine config pool.
+`nodeSelector.matchLabels`:: Specifies the nodes that the pool includes. The pool includes nodes with the `node-role.kubernetes.io/worker-cnf: ""` label.
+--
++
+.. Apply the `MachineConfigPool` resource by running the following command:
++
+[source,terminal]
+----
+$ oc apply -f mcp-worker-cnf.yaml
+----
++
+.Example output
+[source,terminal]
+----
+machineconfigpool.machineconfiguration.openshift.io/worker-cnf created
+----
+
+. Create an `openshift-llc-alignment` file in the `/etc/kubernetes/` directory to enable the feature.
++
+.. Create a YAML file that defines a `MachineConfig` resource to create the `openshift-llc-alignment` file:
++
+.Example `mc-enablement.yaml` file
+[source,yaml]
+----
+apiVersion: machineconfiguration.openshift.io/v1
+kind: MachineConfig
+metadata:
+  name: 99-worker-openshift-llc-alignment
+  labels:
+    machineconfiguration.openshift.io/role: worker-cnf
+    node-role.kubernetes.io/worker-cnf: ""
+spec:
+  config:
+    ignition:
+      version: 3.2.0
+    storage:
+      files:
+        - path: /etc/kubernetes/openshift-llc-alignment
+          mode: 0644
+          overwrite: true
+          contents:
+            source: data:,
+----
++
+--
+where:
+
+`metadata.labels`:: Specifies nodes in the `worker-cnf` machine config pool with the `worker-cnf` label.
+`spec.config.storage.files[0].path`:: Specifies the path of the `openshift-llc-alignment` file, `/etc/kubernetes/openshift-llc-alignment`.
+`spec.config.storage.files[0].contents.source`:: Specifies an empty file. The contents do not matter. Creating the file in the `/etc/kubernetes/` directory enables the feature.
+--
++
+[NOTE]
+====
+The node restarts after you apply the `MachineConfig` resource.
+====
++
+.. Apply the `MachineConfig` resource by running the following command:
++
+[source,terminal]
+----
+$ oc apply -f mc-enablement.yaml
+----
++
+.Example output
+[source,terminal]
+----
+machineconfig.machineconfiguration.openshift.io/99-worker-openshift-llc-alignment created
+----
+
+. Create a `PerformanceProfile` resource with the `kubeletconfig.experimental` annotation to set `cpuManagerPolicyOptions: prefer-align-cpus-by-uncorecache`.
++
+[NOTE]
+====
+The recommended method for applying this configuration is through a `PerformanceProfile` resource.
+If the configuration is successfully applied through the `PerformanceProfile` resource, you can skip the next step and proceed directly to the verification steps.
+====
++
+.. Create a YAML file that defines a `PerformanceProfile` resource:
++
+.Example `llc-aware-perfprof.yaml` file
+[source,yaml]
+----
+apiVersion: performance.openshift.io/v2
+kind: PerformanceProfile
+metadata:
+  name: llc-aware-perfprof
+  annotations:
+    kubeletconfig.experimental: "{\"cpuManagerPolicyOptions\": {\"prefer-align-cpus-by-uncorecache\": \"true\"}}"
+spec:
+  globallyDisableIrqLoadBalancing: true
+  hugepages:
+    defaultHugepagesSize: 1G
+    pages:
+    - size: "1G"
+      count: 16
+  cpu:
+    isolated: 4-103
+    reserved: 0-3
+  nodeSelector:
+    node-role.kubernetes.io/worker-cnf: ""
+  machineConfigPoolSelector:
+    matchLabels:
+      machineconfiguration.openshift.io/role: worker-cnf
+  numa:
+    topologyPolicy: single-numa-node
+----
++
+--
+where:
+
+`kubeletconfig.experimental`:: Specifies additional kubelet parameters. These settings are applied on top of the `KubeletConfig` resource that the Node Tuning Operator generates.
+`topologyPolicy`:: Specifies the NUMA topology policy. Set this field to `single-numa-node`. The other parameters in this example, such as IRQ balancing, hugepages, and CPU isolation, must be adjusted for the requirements and topology of the cluster.
+--
++
+[NOTE]
+====
+The node restarts after you apply the `PerformanceProfile` resource.
+====
++
+.. Apply the `PerformanceProfile` resource by running the following command:
++
+[source,terminal]
+----
+$ oc apply -f llc-aware-perfprof.yaml
+----
++
+.Example output
+[source,terminal]
+----
+performanceprofile.performance.openshift.io/llc-aware-perfprof created
+----
+
+. Optional: If you cannot use a `PerformanceProfile` resource, create a `KubeletConfig` resource to configure the `prefer-align-cpus-by-uncorecache` option.
++
+.. Create a YAML file that defines a `KubeletConfig` resource:
++
+.Example `kc-llc-aware.yaml` file
+[source,yaml]
+----
+apiVersion: machineconfiguration.openshift.io/v1
+kind: KubeletConfig
+metadata:
+  name: llc-aware-kubeletconfig
+spec:
+  machineConfigPoolSelector:
+    matchLabels:
+      machineconfiguration.openshift.io/role: worker-cnf
+  kubeletConfig:
+    cpuManagerPolicy: "static"
+    cpuManagerPolicyOptions:
+      prefer-align-cpus-by-uncorecache: "true"
+# ...
+----
++
+--
+where:
+
+`matchLabels`:: Specifies the nodes in the `worker-cnf` machine config pool.
+`cpuManagerPolicy`:: Specifies the CPU Manager policy. Set this field to `static`.
+`prefer-align-cpus-by-uncorecache`:: Specifies best-effort LLC alignment. Set this field to `true`.
+--
++
+[NOTE]
+====
+The node restarts after you apply the `KubeletConfig` resource.
+====
++
+.. Apply the `KubeletConfig` resource by running the following command:
++
+[source,terminal]
+----
+$ oc apply -f kc-llc-aware.yaml
+----
++
+.Example output
+[source,terminal]
+----
+kubeletconfig.machineconfiguration.openshift.io/llc-aware-kubeletconfig created
+----
+
+.Verification
+
+. Check that the enablement file was created on the target node by running the following command, where `<node_name>` is the name of your node:
++
+[source,terminal]
+----
+$ oc debug node/<node_name>
+----
+
+. Use the `stat` command to check for the `openshift-llc-alignment` file by running the following commands:
++
+[source,terminal]
+----
+sh-5.1# chroot /host
+----
++
+[source,terminal]
+----
+sh-5.1# stat /etc/kubernetes/openshift-llc-alignment
+----
++
+.Example output
+[source,terminal]
+----
+  File: /etc/kubernetes/openshift-llc-alignment
+  Size: 0           Blocks: 0          IO Block: 4096   regular empty file
+...
+----
+
+. Create a `Pod` resource to test the configuration.
++
+.. Create a YAML file that defines a `Pod` resource:
++
+.Example `pod-llc-aware.yaml` file
+[source,yaml]
+----
+apiVersion: v1
+kind: Pod
+metadata:
+  name: llc-aware-pod
+spec:
+  runtimeClassName: performance-llc-aware-perfprof
+  containers:
+  - name: centos-container
+    image: quay.io/centos/centos:stream9
+    command: ["/bin/bash", "-c", "sleep infinity"]
+    resources:
+      limits:
+        cpu: "4"
+        memory: "100Mi"
+      requests:
+        cpu: "4"
+        memory: "100Mi"
+----
++
+--
+where:
+
+`runtimeClassName`:: Specifies the runtime class that the pod uses.
+`image`:: Specifies the container image. This example uses a CentOS image to test the configuration.
+`limits.cpu`:: Specifies the number of CPU cores to use.
+`requests.cpu`:: Specifies the number of CPU cores to request.
+--
++
+.. Apply the `Pod` resource by running the following command:
++
+[source,terminal]
+----
+$ oc apply -f pod-llc-aware.yaml
+----
++
+.Example output
+[source,terminal]
+----
+pod/llc-aware-pod created
+----
+
+. Enter the container from the command line to check the CPU assignment by running the following commands:
++
+[source,terminal]
+----
+$ oc exec -it llc-aware-pod --container centos-container -- /bin/bash
+----
++
+[source,terminal]
+----
+bash-5.1# cat /sys/fs/cgroup/cpuset.cpus
+----
++
+.Example output
+[source,terminal]
+----
+4,5,6,7
+----
++
+The output shows the CPU cores assigned to the container.
+
+. Verify that the assigned cores share the same LLC by running the following command. This example uses `cpu4`, which checks the LLC affinity for the core with ID `4`.
++
+[source,terminal]
+----
+$ cat /sys/devices/system/cpu/cpu4/cache/index3/shared_cpu_list
+----
++
+--
+where:
+
+`index3`:: Specifies the LLC cache index.
+`shared_cpu_list`:: Specifies the cores that share the LLC with the specified core.
+--
++
+.Example output
+[source,terminal]
+----
+4-7
+----
++
+In this example, the output shows that core `4` shares the LLC with cores `4` to `7`.
+Using this approach, you can verify that the CPU Manager is scheduling cores according to the LLC cache architecture.
