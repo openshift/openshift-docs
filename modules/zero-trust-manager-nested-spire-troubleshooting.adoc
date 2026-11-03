@@ -1,0 +1,142 @@
+// Module included in the following assemblies:
+//
+// * security/zero_trust_workload_identity_manager/zero-trust-manager-nested-spire.adoc
+
+:_mod-docs-content-type: REFERENCE
+[id="zero-trust-manager-nested-spire-troubleshooting_{context}"]
+= Troubleshooting nested SPIRE
+
+[role="_abstract"]
+Resolve the most common nested SPIRE failures. Start with the downstream SPIRE server CA log and the `SpireServer` status conditions.
+
+Review the CA log by running the following command:
+
+[source,terminal]
+----
+$ oc logs spire-server-0 -c spire-server -n zero-trust-workload-identity-manager | grep "X509 CA"
+----
+
+A healthy downstream server logs `X509 CA prepared` with `self_signed=false` and a non-empty `upstream_authority_id`.
+
+[id="zero-trust-manager-nested-spire-symptom-table_{context}"]
+== Quick reference
+
+[cols="2,2,3",options="header"]
+|===
+| Symptom or error | Likely cause | Action
+
+| `self_signed=true` in the server log
+| The server still holds a self-signed CA and is not using the upstream plugin
+| Re-initialize the SPIRE server datastore. For more information, see xref:#zero-trust-manager-nested-spire-reinitialize_{context}[Re-initializing the downstream datastore].
+
+| `no X.509 bundle found for trust domain`
+| The clusters use different trust domains
+| Install every cluster with the same `spec.trustDomain`. The field is immutable after it is set.
+
+| `not configured for cluster "<name>"`
+| The downstream cluster name is not registered on the upstream server
+| Set `spec.nestedSpire.downstreamClusters[].name` to the downstream `spec.clusterName`.
+
+| `invalid bearer token`
+| The kubeconfig Secret points at the wrong API server or the token is no longer accepted
+| Replace the kubeconfig Secret on the upstream cluster, and then delete the `spire-server-0` pod so the server reloads the Secret.
+
+| `certificate contains no URI SAN`
+| The Route host does not match `serverAddress`, or the Route is not passthrough
+| Set `serverAddress` to the Route host. The Route TLS termination must be `passthrough`.
+
+| `authentication handshake failed: EOF`
+| The downstream cluster cannot reach the upstream server
+| Confirm that the `spire-server-grpc` Route is admitted and that DNS for the Route host resolves to the upstream ingress.
+
+| `403 Forbidden` from the workload attestor
+| The `spire-agent-upstream` ClusterRole is missing `nodes/proxy`
+| {zero-trust-full} creates this ClusterRole. Check the `UpstreamAgentAvailable` condition and the operator logs. Do not grant this permission to the kubeconfig service account.
+
+| Pod stuck in `ContainerCreating`
+| The upstream CSI driver is not running, or the upstream agent socket is missing
+| Check `UpstreamCSIDriverAvailable` and the `spire-agent-upstream` pod.
+
+| `too many intermediates for path length constraint`
+| The external root CA path length is `0` or is shorter than the topology
+| Reissue the root CA with a path length of at least the number of nesting levels.
+
+| `UpstreamAgentAvailable` is `False` with reason `TrustBundleMissing`
+| The trust bundle Secret is missing or does not contain `bundle.crt`
+| Recreate the Secret on the downstream cluster. For more information, see "Copying the upstream trust bundle".
+
+| `DownstreamClustersValid` is `False` with reason `KubeConfigMissing`
+| The kubeconfig Secret named in `kubeConfigSecret` does not exist
+| Create the Secret in the `zero-trust-workload-identity-manager` namespace on the upstream cluster.
+
+| `DownstreamClustersValid` is `False` with reason `EntryNotApplied` or `EntryMasked`
+| `spire-controller-manager` has not applied the registration entry, or the entry is masked
+| Check `status.rendered` and `status.masked` on the `nested-spire-<name>` `ClusterStaticEntry` objects. {zero-trust-full} recreates deleted entries on the next reconcile.
+|===
+
+[id="zero-trust-manager-nested-spire-reinitialize_{context}"]
+== Re-initializing the downstream datastore
+
+Re-initialize the datastore only when the downstream server logs `self_signed=true` after you set `spec.upstreamAuthority.spire`, and you cannot wait for the next CA rotation.
+
+[WARNING]
+====
+This procedure deletes the SPIRE server datastore. Every SVID issued by this server becomes invalid. Run it during a maintenance window. {zero-trust-full} does not perform this step automatically.
+====
+
+. Scale the SPIRE server to zero replicas by running the following command:
++
+[source,terminal]
+----
+$ oc scale statefulset/spire-server -n zero-trust-workload-identity-manager --replicas=0
+----
+
+. List the SPIRE server persistent volume claim by running the following command:
++
+[source,terminal]
+----
+$ oc get pvc -l app.kubernetes.io/name=spire-server -n zero-trust-workload-identity-manager
+----
+
+. Delete that persistent volume claim. The default claim name is `spire-data-spire-server-0`:
++
+[source,terminal]
+----
+$ oc delete pvc spire-data-spire-server-0 -n zero-trust-workload-identity-manager
+----
+
+. Scale the SPIRE server back to one replica by running the following command:
++
+[source,terminal]
+----
+$ oc scale statefulset/spire-server -n zero-trust-workload-identity-manager --replicas=1
+----
+
+. After the pod is ready, confirm that the CA log shows `self_signed=false`.
+
+[id="zero-trust-manager-nested-spire-manual-route_{context}"]
+== Creating a passthrough Route manually
+
+Create this Route when `spec.grpcEndpoint.managedRoute` is `"false"`, or when the default ingress controller does not admit the generated host `grpc.<clusterName>.<trustDomain>`.
+
+The Route host must be the same value you set in `spec.upstreamAuthority.spire.serverAddress`. TLS termination must be `passthrough`. Edge or reencrypt termination presents the router certificate instead of the SPIRE server certificate.
+
+If {zero-trust-full} already created `spire-server-grpc`, set `spec.grpcEndpoint.managedRoute` to `"false"` before you replace the Route. {zero-trust-full} does not manage the Route when `managedRoute` is `"false"`.
+
+[source,yaml]
+----
+apiVersion: route.openshift.io/v1
+kind: Route
+metadata:
+  name: spire-server-grpc
+  namespace: zero-trust-workload-identity-manager
+spec:
+  host: grpc.<upstream_cluster_name>.<trust_domain>
+  to:
+    kind: Service
+    name: spire-server
+  port:
+    targetPort: grpc
+  tls:
+    termination: passthrough
+----
