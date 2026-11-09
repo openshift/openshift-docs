@@ -1,0 +1,197 @@
+// Module included in the following assemblies:
+//
+// * networking/advanced_networking/nvidia_spectrum_x.adoc
+
+:_mod-docs-content-type: PROCEDURE
+[id="nw-spectrum-x-host-preparation_{context}"]
+= Prepare worker nodes for Spectrum-X
+
+[role="_abstract"]
+You can prepare worker nodes for a single-plane Spectrum-X deployment by configuring host settings and creating Node Feature Discovery (NFD), SR-IOV, and NMState resources.
+
+[IMPORTANT]
+====
+Applying a `MachineConfig` custom resource can reboot worker nodes.
+Use the hardware vendor's validated configuration for platform-specific kernel arguments and PCI Express (PCIe) settings.
+Do not disable PCIe Access Control Services (ACS) unless the hardware vendor requires it for the selected design.
+====
+
+.Prerequisites
+
+* You have cluster administrator privileges.
+* You have confirmed that the worker nodes, adapters, switches, firmware, and software versions are supported together.
+For more information, see link:https://docs.nvidia.com/networking/display/kubernetes2611/platform-support.html[NVIDIA Network Operator 26.1 platform support].
+* You have installed the Node Feature Discovery, SR-IOV Network, and Kubernetes NMState Operators.
+For installation procedures, see "Installing the Node Feature Discovery Operator", "Installing the SR-IOV Network Operator", and "Installing the Kubernetes NMState Operator".
+* You have scheduled a maintenance window for changes that can reboot worker nodes.
+
+.Procedure
+
+. Record each worker's node name, Peripheral Component Interconnect (PCI) address for each adapter, adapter type, and breakout configuration by running the following commands:
++
+[source,terminal]
+----
+$ oc get nodes -l node-role.kubernetes.io/worker
+$ oc debug node/<worker_node> -- chroot /host lspci -Dnn
+----
++
+Replace `<worker_node>` with the name of a worker node.
+Use the PCI addresses reported by the host when you configure NVIDIA resources.
+
+. Create a `MachineConfig` custom resource that raises the CRI-O memory lock limit for remote direct memory access (RDMA) workloads.
+Save the resource as `99-worker-rdma-memlock.yaml`:
++
+[source,yaml]
+----
+apiVersion: machineconfiguration.openshift.io/v1
+kind: MachineConfig
+metadata:
+  labels:
+    machineconfiguration.openshift.io/role: worker
+  name: 99-worker-rdma-memlock
+spec:
+  config:
+    ignition:
+      version: 3.5.0
+    storage:
+      files:
+      - path: /etc/crio/crio.conf.d/99-memlock.conf
+        mode: 0644
+        overwrite: true
+        contents:
+          source: data:text/plain;charset=utf-8;base64,W2NyaW8ucnVudGltZV0KZGVmYXVsdF91bGltaXRzID0gWwogICJtZW1sb2NrPS0xOi0xIgpdCg==
+----
++
+Apply the resource and monitor the worker `MachineConfigPool` resource:
++
+[source,terminal]
+----
+$ oc apply -f 99-worker-rdma-memlock.yaml
+$ oc get mcp worker
+----
++
+Wait for the worker `MachineConfigPool` resource to finish updating before continuing.
+
+. Optional: Create a worker `MachineConfig` custom resource with the kernel arguments required by the selected platform reference design.
+Save the resource as `99-worker-spectrum-x-kernel-args.yaml`:
++
+[source,yaml]
+----
+apiVersion: machineconfiguration.openshift.io/v1
+kind: MachineConfig
+metadata:
+  labels:
+    machineconfiguration.openshift.io/role: worker
+  name: 99-worker-spectrum-x-kernel-args
+spec:
+  kernelArguments:
+  - module_blacklist=irdma
+  - default_hugepagesz=1G
+  - hugepagesz=1G
+  - hugepages=16
+  - intel_iommu=on
+  - iommu=pt
+  - pci=realloc=on
+----
++
+The example values are from the Spectrum-X host configuration repository's H200 configuration.
+Adjust them for the target hardware and workload.
+The `hugepages=16` argument reserves 16 1-GiB huge pages.
++
+Apply the resource only when the platform and workload design require these settings, and monitor the worker `MachineConfigPool` resource:
++
+[source,terminal]
+----
+$ oc apply -f 99-worker-spectrum-x-kernel-args.yaml
+$ oc get mcp worker
+----
++
+Wait for the worker `MachineConfigPool` resource to finish updating before continuing.
+
+. Create a `NodeFeatureDiscovery` custom resource that discovers the PCI device classes used by the adapters.
+Save the resource as `nfd-instance.yaml`:
++
+[source,yaml]
+----
+apiVersion: nfd.openshift.io/v1
+kind: NodeFeatureDiscovery
+metadata:
+  name: nfd-instance
+  namespace: openshift-nfd
+spec:
+  operand:
+    servicePort: 12000
+  prunerOnDelete: false
+  topologyUpdater: false
+  workerConfig:
+    configData: |
+      core:
+        sleepInterval: 60s
+      sources:
+        pci:
+          deviceClassWhitelist:
+          - "02"
+          - "03"
+          - "0200"
+          - "0207"
+          - "12"
+          deviceLabelFields:
+          - vendor
+----
++
+Apply the resource and confirm that the NFD pods are running:
++
+[source,terminal]
+----
+$ oc apply -f nfd-instance.yaml
+$ oc get pods -n openshift-nfd
+----
+
+. Configure the SR-IOV Network Operator to manage software bridges and select the worker nodes with NVIDIA adapters.
+Save the following `SriovOperatorConfig` custom resource as `sriov-operator-config.yaml`:
++
+[source,yaml]
+----
+apiVersion: sriovnetwork.openshift.io/v1
+kind: SriovOperatorConfig
+metadata:
+  name: default
+  namespace: openshift-sriov-network-operator
+spec:
+  configDaemonNodeSelector:
+    feature.node.kubernetes.io/pci-15b3.sriov.capable: "true"
+    network.nvidia.com/operator.mofed.wait: "false"
+    node-role.kubernetes.io/worker: ""
+  enableInjector: true
+  enableOperatorWebhook: true
+  featureGates:
+    manageSoftwareBridges: true
+  logLevel: 2
+----
++
+Apply the resource and verify that the SR-IOV Network Operator pods are running:
++
+[source,terminal]
+----
+$ oc apply -f sriov-operator-config.yaml
+$ oc get pods -n openshift-sriov-network-operator
+----
+
+. Create the `NMState` custom resource if one does not already exist.
+Save the resource as `nmstate-instance.yaml`:
++
+[source,yaml]
+----
+apiVersion: nmstate.io/v1
+kind: NMState
+metadata:
+  name: nmstate
+----
++
+Apply the resource and verify that the NMState handler is running on each worker:
++
+[source,terminal]
+----
+$ oc apply -f nmstate-instance.yaml
+$ oc get pods -n openshift-nmstate -o wide
+----
