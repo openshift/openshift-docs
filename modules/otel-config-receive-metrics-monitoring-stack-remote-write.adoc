@@ -7,30 +7,34 @@
 = Sending metrics from the monitoring stack to the Collector by using remote write
 
 [role="_abstract"]
-You can configure the in-cluster monitoring stack to send the platform metrics and the user-defined project metrics to the OpenTelemetry Collector by using the Prometheus remote write protocol version 2. The Collector receives the metrics with the Prometheus Remote Write Receiver and can export them to any backend, for example by using the OpenTelemetry Protocol (OTLP).
+You can configure the in-cluster monitoring stack to send the platform metrics and the user-defined project metrics to the OpenTelemetry Collector by using the Prometheus remote write protocol version 2.
 
+The Collector receives the metrics with the Prometheus Remote Write Receiver and can export them to any backend, for example, by using the OpenTelemetry Protocol (OTLP).
+
+// When removing this Technology Preview notice, also (a) delete the related note that follows the prerequisites and (b) consider deleting the prerequisite about configuring deduplication
 :FeatureName: Exporting the monitoring stack metrics to the OpenTelemetry Collector by using remote write
 include::snippets/technology-preview.adoc[]
 :!FeatureName:
-
-The Technology Preview has the following limitations:
-
-* The monitoring stack does not send the metric type, unit, and help text. The Collector receives all metrics as gauges, including counters, histogram buckets, and summary quantiles. Backends that query the metrics with PromQL are not affected.
-* Classic histograms arrive as separate `_bucket`, `_sum`, and `_count` series. Native histograms are not sent.
-* Both Prometheus replicas of the monitoring stack send every sample. The samples differ only in the `prometheus_replica` label. Deduplicate them in the backend on this label.
-
-Because of these limitations, send only the metrics that you need. Aggregated metrics, such as the `ALERTS` metric and the results of recording rules, are not affected by the missing metric types.
 
 .Prerequisites
 
 * The cluster runs {ocp-product-title} 5.0 or later.
 * You have access to the cluster as a user with the `cluster-admin` role.
-* The {OTelOperator} is installed.
-* For the user-defined project metrics, monitoring for user-defined projects is enabled.
+* For the user-defined project metrics, you have enabled monitoring for user-defined projects.
+* You have configured the backend to deduplicate the samples of both replicas by using the `prometheus_replica` label. Each Prometheus instance in the monitoring stack runs two pods for high availability, so both pods send every sample, and the samples have the same labels apart from `prometheus_replica`.
+
+[NOTE]
+====
+The Technology Preview has the following limitations:
+
+The monitoring stack does not send the metric type, unit, and help text, so the Collector receives all metrics as gauges, including counters, histogram buckets, and summary quantiles. Backends that query the metrics with PromQL are not affected. In particular, aggregated metrics, such as the `ALERTS` metric and the results of recording rules, are already gauges, so the missing type metadata does not change them. Classic histograms arrive as separate `_bucket`, `_sum`, and `_count` series, and native histograms are not sent.
+
+Because of these limitations, send only the metrics that you need.
+====
 
 .Procedure
 
-. Create an `OpenTelemetryCollector` custom resource (CR) that receives the metrics and exports them to your backend:
+. Create an `OpenTelemetryCollector` custom resource (CR) that configures the Collector to receive the metrics and export them to your backend:
 +
 [source,yaml]
 ----
@@ -82,29 +86,11 @@ spec:
 where:
 +
 --
-`resources`:: The requests and limits for up to 50,000 samples per second. See the table that follows.
+`resources`:: Sets the requests and limits for the Collector. Size them by the remote write rate that you measure in the subsequent step that runs the rate query.
 `prometheus_remote_write`:: Receives the remote write requests on port `9090` at the `/api/v1/write` path.
 `memory_limiter`:: Refuses requests when the Collector memory usage is high. Prometheus retries the refused requests.
-`otlp_http`:: Exports the metrics to your backend. With these retry and queue settings, the Collector does not drop data while the backend is unavailable: it stops accepting new data, and Prometheus keeps the samples and sends them again later. Do not use the default settings, which drop the data after 5 minutes.
+`otlp_http`:: Exports the metrics to your backend. Replace `<backend_otlp_endpoint>` with the OTLP endpoint of your backend. With the stated retry and queue settings, the Collector does not drop data while the backend is unavailable: it stops accepting new data, and Prometheus keeps the samples and sends them again later.
 --
-+
-The following table lists the resources for one Collector replica. After you complete this procedure, the `prometheus_remote_storage_samples_total` metric shows the remote write rate. If you send all platform metrics, a cluster with about 350,000 series sends about 30,000 samples per second.
-+
-[options="header"]
-[cols="a,a,a"]
-|===
-|Remote write rate |Requests |Limits
-
-|Up to 50,000 samples per second
-|CPU `500m`, memory `512Mi`
-|CPU `2`, memory `2Gi`
-
-|Up to 95,000 samples per second
-|CPU `1`, memory `512Mi`
-|CPU `2`, memory `2Gi`
-|===
-+
-For more than 95,000 samples per second, increase the number of Collector replicas: the replicas share the rate evenly. Keep the memory limit at `2Gi` or more, because after a backend outage, Prometheus sends its backlog again and the Collector uses its full limits until it finishes.
 
 . Configure the platform monitoring to send the metrics to the Collector:
 
@@ -139,9 +125,9 @@ data:
 where:
 +
 --
-`url`:: The receiver endpoint of the Collector service, in the `<collector_name>-collector.<namespace>.svc.cluster.local` format.
-`messageVersion`:: Required. The receiver accepts only the remote write protocol version 2.
-`writeRelabelConfigs`:: Optional. Selects the metrics to send. This example sends the `up` and `ALERTS` metrics and the node and namespace recording rules, which are about 1,000 series on a small cluster. Without this field, the monitoring stack sends all platform metrics, which can be hundreds of thousands of series.
+`url`:: Specifies the receiver endpoint of the Collector service, in the `<collector_name>-collector.<namespace>.svc.cluster.local` format.
+`messageVersion`:: Accepts only the remote write protocol version 2.
+`writeRelabelConfigs`:: Optional. Selects the metrics to send. This example sends the `up` and `ALERTS` metrics and the node and namespace recording rules, which are approximately 1,000 series on a small cluster. Without this field, the monitoring stack sends all platform metrics, which can be hundreds of thousands of series.
 --
 
 . Optional: Configure the monitoring for user-defined projects to send the metrics to the Collector:
@@ -171,11 +157,9 @@ data:
           messageVersion: V2.0
 ----
 
-.Verification
-
 . In the *Administrator* view of the web console, go to *Observe* -> *Metrics*.
 
-. Run the following query to check that the monitoring stack sends the samples:
+. Run this query to check that the monitoring stack sends the samples:
 +
 [source,text]
 ----
@@ -183,8 +167,15 @@ sum by (job) (rate(prometheus_remote_storage_samples_total{remote_name="otel-col
 ----
 +
 The query returns a value greater than zero for the `prometheus-k8s` job and, if you configured the monitoring for user-defined projects, for the `prometheus-user-workload` job.
++
+The `prometheus_remote_storage_samples_total` metric shows the remote write rate. Use this rate to adjust the sizing of the Collector, and change the `resources` and `spec.replicas` fields of the `OpenTelemetryCollector` CR if needed:
 
-. Run the following query to check that no samples failed:
+** For example, sending all platform metrics from a cluster with approximately 350,000 series produces a remote write rate of 30,000 samples per second.
+** For a remote write rate of up to 50,000 samples per second, request `500m` CPU and `512Mi` of memory for one Collector replica, and set limits of 2 CPUs and 2Gi of memory.
+** For a remote write rate of up to 95,000 samples per second, request `1` CPU and `512Mi` of memory for one Collector replica, and set limits of 2 CPUs and 2Gi of memory.
+** For remote write rates above 95,000 samples per second, increase `spec.replicas` in the `OpenTelemetryCollector` CR. Prometheus spreads the samples over several connections, and the Collector service balances these connections across the replicas, so each replica handles a share of the rate. Keep the memory limit at `2Gi` or more, because after a backend outage, Prometheus sends its backlog again, and the Collector uses its full limits until it finishes.
+
+. Run this query to check that no samples failed:
 +
 [source,text]
 ----
