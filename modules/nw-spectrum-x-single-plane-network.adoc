@@ -1,0 +1,225 @@
+// Module included in the following assemblies:
+//
+// * networking/advanced_networking/nvidia_spectrum_x.adoc
+
+:_mod-docs-content-type: PROCEDURE
+[id="nw-spectrum-x-single-plane-network_{context}"]
+= Configure the Spectrum-X single-plane network
+
+[role="_abstract"]
+You can configure a single Spectrum-X plane with SR-IOV and Open vSwitch (OVS) settings and rail policies. Each rail requires an IP address management (IPAM) pool and an OVS network.
+
+.Prerequisites
+
+* You have cluster administrator privileges.
+* You have installed the NVIDIA Network Operator, SR-IOV Network Operator, and Kubernetes NMState Operator and verified that they are running.
+* You have verified that the NIC Configuration Operator has completed adapter configuration.
+* You have confirmed the intended interface names, maximum transmission unit (MTU), node selectors, resource names, and non-overlapping address ranges for every rail.
+* You have reviewed "Configuring hardware offloading" and "Configuring the SR-IOV remote direct memory access (RDMA) container network interface (CNI)" for workload attachment and generic validation steps.
+
+.Procedure
+
+. Create a file named `sriov-pool-rdma.yaml` with the following content to configure the SR-IOV Network Operator for RDMA mode:
++
+[source,yaml]
+----
+apiVersion: sriovnetwork.openshift.io/v1
+kind: SriovNetworkPoolConfig
+metadata:
+  name: spectrum-x-rdma-workers
+  namespace: openshift-sriov-network-operator
+spec:
+  maxUnavailable: 1
+  rdmaMode: exclusive
+  nodeSelector:
+    matchLabels:
+      node-role.kubernetes.io/worker: ""
+----
++
+Replace the node selector if your worker nodes use a different label set.
++
+Apply the `SriovNetworkPoolConfig` custom resource and wait for any resulting worker updates to complete before continuing:
++
+[source,terminal]
+----
+$ oc apply -f sriov-pool-rdma.yaml
+$ oc get mcp worker
+----
+
+. Optional: If the design uses OVS hardware offload, configure it as described in "Configuring hardware offloading". Apply the following settings only when required by the selected design.
++
+Disable the SR-IOV Network Operator Mellanox plugin by running the following command:
++
+[source,terminal]
+----
+$ oc patch sriovoperatorconfig default -n openshift-sriov-network-operator --type=merge --patch '{"spec":{"disablePlugins":["mellanox"]}}'
+----
++
+Create a file named `sriov-pool-ovs-offload.yaml` with the following content to assign the OVS hardware offload configuration to the worker pool:
++
+[source,yaml]
+----
+apiVersion: sriovnetwork.openshift.io/v1
+kind: SriovNetworkPoolConfig
+metadata:
+  name: spectrum-x-ovs-offload
+  namespace: openshift-sriov-network-operator
+spec:
+  ovsHardwareOffloadConfig:
+    name: worker
+----
++
+Apply the pool configuration and wait for the worker `MachineConfigPool` resource to finish updating:
++
+[source,terminal]
+----
+$ oc apply -f sriov-pool-ovs-offload.yaml
+$ oc get mcp worker
+----
+
+. Create a file named `nncp-rail0.yaml` with the following content to configure physical rail 0:
++
+[source,yaml]
+----
+apiVersion: nmstate.io/v1
+kind: NodeNetworkConfigurationPolicy
+metadata:
+  name: spectrum-x-rail0
+spec:
+  nodeSelector:
+    node-role.kubernetes.io/worker: ""
+  desiredState:
+    interfaces:
+    - name: eth_r0_p0
+      type: ethernet
+      state: up
+      mtu: 9216
+----
++
+The example configures an MTU of 9216. Confirm the supported MTU end to end, including the adapter, switch, and workload network.
++
+Apply the `NodeNetworkConfigurationPolicy` custom resource and verify that its status is `Available` before continuing:
++
+[source,terminal]
+----
+$ oc apply -f nncp-rail0.yaml
+$ oc get nncp spectrum-x-rail0
+----
+
+. Create a file named `sriov-node-policy-rail0.yaml` with the following content to configure the SR-IOV devices for rail 0:
++
+[source,yaml]
+----
+apiVersion: sriovnetwork.openshift.io/v1
+kind: SriovNetworkNodePolicy
+metadata:
+  name: spectrum-x-rail0
+  namespace: openshift-sriov-network-operator
+spec:
+  bridge:
+    ovs: {}
+  deviceType: netdevice
+  eSwitchMode: switchdev
+  isRdma: true
+  linkType: ETH
+  mtu: 9216
+  nicSelector:
+    pfNames:
+    - eth_r0_p0
+  nodeSelector:
+    node-role.kubernetes.io/worker: ""
+  numVfs: 1
+  resourceName: spectrum_x_rail0
+----
++
+The `pfNames` value must match the name assigned by the `NicInterfaceNameTemplate` custom resource.
++
+Apply the `SriovNetworkNodePolicy` custom resource and wait for the SR-IOV Network Operator to configure the selected worker devices:
++
+[source,terminal]
+----
+$ oc apply -f sriov-node-policy-rail0.yaml
+$ oc get sriovnetworknodestates -n openshift-sriov-network-operator
+----
+
+. Create a file named `cidrpool-rail0.yaml` with the following content to assign addresses to rail 0:
++
+[source,yaml]
+----
+apiVersion: nv-ipam.nvidia.com/v1alpha1
+kind: CIDRPool
+metadata:
+  name: spectrum-x-rail0
+  namespace: nvidia-network-operator
+spec:
+  cidr: 198.18.0.0/24
+  gatewayIndex: 0
+  perNodeNetworkPrefix: 31
+  routes:
+  - dst: 198.18.0.0/24
+  - dst: 198.18.0.0/21
+  staticAllocations:
+  - gateway: 198.18.0.5
+    nodeName: worker-a
+    prefix: 198.18.0.4/31
+  - gateway: 198.18.0.7
+    nodeName: worker-b
+    prefix: 198.18.0.6/31
+----
++
+The addresses in this example are from a benchmarking range. The example reserves `198.18.0.0/21` for the rails and assigns `198.18.0.0/24` to rail 0. Assign a unique, non-overlapping subnet from the planned range to each rail. Replace the example addresses and worker names with values from your network plan.
++
+Apply the `CIDRPool` custom resource:
++
+[source,terminal]
+----
+$ oc apply -f cidrpool-rail0.yaml
+$ oc get cidrpool -n nvidia-network-operator
+----
+
+. Create a file named `ovsnetwork-rail0.yaml` with the following content to connect the NVIDIA IPAM (NV-IPAM) pool to the SR-IOV resource:
++
+[source,yaml]
+----
+apiVersion: sriovnetwork.openshift.io/v1
+kind: OVSNetwork
+metadata:
+  name: spectrum-x-rail0
+  namespace: openshift-sriov-network-operator
+spec:
+  ipam: |
+    {
+      "type": "nv-ipam",
+      "poolName": "spectrum-x-rail0",
+      "poolType": "cidrpool"
+    }
+  metaPlugins: |
+    {
+      "type": "rdma"
+    }
+  networkNamespace: default
+  resourceName: spectrum_x_rail0
+----
++
+Apply the `OVSNetwork` custom resource:
++
+[source,terminal]
+----
+$ oc apply -f ovsnetwork-rail0.yaml
+----
+
+. Repeat the `NodeNetworkConfigurationPolicy`, `SriovNetworkNodePolicy`, `CIDRPool`, and `OVSNetwork` configuration for every rail. Keep the rail interface name, SR-IOV resource name, IPAM pool name, and network name consistent. For example, use `eth_r1_p0`, `spectrum_x_rail1`, and `spectrum-x-rail1` for rail 1.
+
+.Verification
+
+* Verify the configuration before attaching workloads by running the following commands:
++
+[source,terminal]
+----
+$ oc get nncp
+$ oc get sriovnetworknodepolicy -n openshift-sriov-network-operator
+$ oc get sriovnetworknodestates -n openshift-sriov-network-operator
+$ oc get cidrpool -n nvidia-network-operator
+$ oc get ovsnetwork -n openshift-sriov-network-operator
+$ oc get network-attachment-definitions -n default
+----
