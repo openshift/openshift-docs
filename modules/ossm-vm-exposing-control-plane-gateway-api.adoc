@@ -1,0 +1,186 @@
+// Module included in the following assemblies:
+//
+// * service-mesh-docs-main/install/ossm-vm-integration.adoc
+
+:_mod-docs-content-type: PROCEDURE
+[id="ossm-vm-exposing-control-plane-gateway-api_{context}"]
+= Exposing the control plane by using the Gateway API
+
+[role="_abstract"]
+
+Instead of a passthrough route, you can expose port 15012 by using the {k8s} Gateway API. Create a `Gateway` resource that listens for the control plane hostname and a `TLSRoute` resource that forwards the connection to the control plane.
+
+The connection reaches the control plane as follows:
+
+. The proxy on the virtual machine resolves the control plane hostname, which points at the load balancer of the gateway.
+. The gateway reads the server name indication (SNI) from the TLS handshake and matches it against the listener hostname.
+. The `TLSRoute` resource forwards the connection to the `istiod` service on port 15012 without decrypting it.
+. The control plane terminates TLS itself, so the proxy still authenticates the control plane against the mesh root certificate and the connection remains encrypted end to end.
+
+The `openshift-default` gateway class is implemented by the Cluster Ingress Operator. For gateways of this class, the Operator publishes a DNS record for each listener hostname that points at the load balancer of the gateway. That record is what makes the control plane resolvable by name from the virtual machine, which is the same property that a route provides. A gateway of the `istio` class, such as the east-west gateway, receives only a load balancer address, because the Operator does not manage DNS records for gateway classes that it does not implement.
+
+The Operator manages those DNS records only for gateways that are created in the `openshift-ingress` namespace. A gateway in any other namespace is still programmed and still receives a load balancer address, but no DNS record is created for its listener hostnames, and the virtual machine cannot resolve the control plane unless you manage DNS yourself. For this reason, create the `Gateway` resource in the `openshift-ingress` namespace, and keep the `TLSRoute` resource in the `istio-system` namespace, next to the `istiod` service that it forwards traffic to. Keeping the route in the same namespace as the service avoids the `ReferenceGrant` resource that a cross-namespace `backendRef` field would otherwise require.
+
+.Prerequisites
+
+* You enabled the Gateway API and created the `openshift-default` gateway class. See link:https://docs.redhat.com/en/documentation/openshift_container_platform/latest/html/ingress_and_load_balancing/configuring-gateway-api[Configuring Gateway API] ({ocp-product-title} documentation).
+* Your cluster provides the `TLSRoute` resource, which the Gateway API requires for TLS passthrough.
+
+.Procedure
+
+. Determine the cluster base domain by running the following command:
++
+[source,terminal]
+----
+$ oc get dns.config.openshift.io cluster -o jsonpath='{.spec.baseDomain}'
+----
++
+*Example output:*
++
+[source,terminal]
+----
+example.com
+----
++
+Use this value wherever `<base_domain>` appears in the following steps. The listener hostname must be a subdomain of the cluster base domain, otherwise the Cluster Ingress Operator does not publish a DNS record for it. This procedure exposes the control plane as `istiod.istio-system.svc.<base_domain>`, for example `istiod.istio-system.svc.example.com`.
++
+[IMPORTANT]
+====
+The `ISTIOD_CUSTOM_HOST` variable in the `Istio` resource must hold the same hostname, because the proxy on the virtual machine verifies the control plane certificate against the name that it connects to. The gateway has its own load balancer and its own DNS record, so this hostname is not in the cluster ingress domain and differs from the hostname that the route uses. Set `ISTIOD_CUSTOM_HOST` to `istiod.istio-system.svc.<base_domain>`. See xref:../install/ossm-vm-integration.adoc#ossm-vm-deploying-control-plane_ossm-vm-integration[Deploying the control plane for virtual machine integration].
+====
+
+. Create a `Gateway` resource named `istiod-gateway.yaml` similar to the following example:
++
+[source,yaml]
+----
+apiVersion: gateway.networking.k8s.io/v1
+kind: Gateway
+metadata:
+  name: istiod-xds
+  namespace: openshift-ingress # <1>
+spec:
+  gatewayClassName: openshift-default # <2>
+  listeners:
+  - name: xds
+    hostname: istiod.istio-system.svc.<base_domain> # <3>
+    port: 443
+    protocol: TLS
+    tls:
+      mode: Passthrough # <4>
+    allowedRoutes:
+      kinds:
+      - kind: TLSRoute
+      namespaces:
+        from: Selector # <5>
+        selector:
+          matchLabels:
+            kubernetes.io/metadata.name: istio-system
+----
+<1> The Cluster Ingress Operator manages DNS records only for gateways in this namespace.
+<2> The gateway class that the Cluster Ingress Operator implements.
+<3> Replace `<base_domain>` with the value from the first step. Must match the value of the `ISTIOD_CUSTOM_HOST` variable in the `Istio` resource. A listener that sets no hostname receives no DNS record. See link:https://docs.redhat.com/en/documentation/openshift_container_platform/latest/html/ingress_and_load_balancing/configuring-gateway-api[Configuring Gateway API] ({ocp-product-title} documentation).
+<4> Passes the connection through without terminating TLS. The gateway routes on the SNI alone and never presents a certificate of its own, so the proxy authenticates the control plane directly.
+<5> Permits the `TLSRoute` resource in the `istio-system` namespace to attach to this listener. This field defaults to `Same`, which accepts routes only from the namespace of the gateway.
+
+. Apply the `Gateway` resource by running the following command:
++
+[source,terminal]
+----
+$ oc apply -f istiod-gateway.yaml
+----
+
+. Create a `TLSRoute` resource named `istiod-tlsroute.yaml` similar to the following example:
++
+[source,yaml]
+----
+apiVersion: gateway.networking.k8s.io/v1
+kind: TLSRoute
+metadata:
+  name: istiod-15012
+  namespace: istio-system # <1>
+spec:
+  parentRefs:
+  - name: istiod-xds # <2>
+    namespace: openshift-ingress
+    sectionName: xds
+  hostnames:
+  - istiod.istio-system.svc.<base_domain> # <3>
+  rules:
+  - backendRefs:
+    - name: istiod
+      port: 15012 # <4>
+----
+<1> The same namespace as the `istiod` service, so that the `backendRefs` field does not cross namespaces.
+<2> Attaches the route to the gateway in the `openshift-ingress` namespace. The `sectionName` field selects the listener by name.
+<3> Must match the listener hostname.
+<4> The port on which the control plane serves xDS configuration and signs workload certificates.
+
+. Apply the `TLSRoute` resource by running the following command:
++
+[source,terminal]
+----
+$ oc apply -f istiod-tlsroute.yaml
+----
+
+.Verification
+
+. Verify that the route attached to the gateway by running the following command:
++
+[source,terminal]
+----
+$ oc get tlsroute istiod-15012 -n istio-system -o jsonpath='{range .status.parents[*].conditions[*]}{.type}={.status}{"\n"}{end}'
+----
++
+*Example output:*
++
+[source,terminal]
+----
+Accepted=True
+ResolvedRefs=True
+----
+
+. Verify that the Cluster Ingress Operator published a DNS record for the listener hostname by running the following command:
++
+[source,terminal]
+----
+$ oc get gateway istiod-xds -n openshift-ingress -o jsonpath='{.status.conditions[?(@.type=="DNSReady")].reason}{"\n"}'
+----
++
+*Example output:*
++
+[source,terminal]
+----
+AllListenersReady
+----
++
+If the `DNSReady` condition is not `True`, inspect the conditions of the individual listeners for the reason. See link:https://docs.redhat.com/en/documentation/openshift_container_platform/latest/html/ingress_and_load_balancing/configuring-gateway-api[Configuring Gateway API] ({ocp-product-title} documentation).
+
+. Extract the mesh root certificate by running the following command:
++
+[source,terminal]
+----
+$ oc get configmap istio-ca-root-cert -n istio-system -o jsonpath='{.data.root-cert\.pem}' > root-cert.pem
+----
+
+. Confirm that the control plane answers on port 443 with a certificate that is valid for the listener hostname by running the following command:
++
+[source,terminal]
+----
+$ openssl s_client -connect istiod.istio-system.svc.<base_domain>:443 \
+  -servername istiod.istio-system.svc.<base_domain> \
+  -CAfile root-cert.pem </dev/null 2>/dev/null | grep -E "Verification|subject="
+----
++
+*Example output:*
++
+[source,terminal]
+----
+Verification: OK
+----
++
+The `Verification: OK` line confirms that the connection reached the control plane and that no component terminated TLS along the way. An empty `subject=` line is expected, because the control plane presents its identity in the subject alternative name extension rather than in the subject.
++
+[IMPORTANT]
+====
+Do not treat the `Verify return code: 0 (ok)` line alone as a successful result. The `openssl` command also prints that line when the server closes the connection without presenting a certificate, alongside a `no peer certificate available` message. Confirm that the command returns a certificate.
+====
