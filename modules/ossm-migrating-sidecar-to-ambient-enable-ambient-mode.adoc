@@ -1,0 +1,190 @@
+// Module included in the following assemblies:
+//
+// * install/ossm-migrating-sidecar-to-ambient.adoc
+
+:_mod-docs-content-type: PROCEDURE
+[id="ossm-migrating-sidecar-to-ambient-enable-ambient-mode_{context}"]
+= Enabling ambient mode
+
+[role="_abstract"]
+
+Enable ambient mode one namespace at a time. This approach lets you validate each namespace before moving on and roll back a single namespace if something goes wrong.
+
+[WARNING]
+====
+If you have L7 policies, there is no zero downtime migration path at this time. During the transition, sidecar clients bypass waypoints entirely, so L7 policies attached to the waypoint are not enforced for traffic from sidecar sources. Additionally, old selector based L7 policies must be removed at pod restart and replaced by waypoint based equivalents, there is a brief window between these two operations where L7 rules are unenforced. Plan a maintenance window if continuous L7 policy enforcement is required.
+====
+
+.Prerequisites
+
+* You have completed "Migrating traffic and security policies", or confirmed that you have only L4 policies and can skip policy migration.
+* Your waypoint proxies are deployed and running if you are using L7 features.
+
+.Procedure
+
+[WARNING]
+====
+Follow the steps in this procedure in the order listed. Performing them out of sequence can leave workloads without active policy enforcement.
+====
+
+. Optional: Activate the waypoint for the namespace or specific services:
++
+[TIP]
+====
+Skip this step if you are not using waypoints. Waypoints are only required for L7 features.
+====
++
+Activate the waypoint deployed during the previous phase by adding the `istio.io/use-waypoint` label.
+
+.. To activate a waypoint for an entire namespace, run the following command:
++
+[source,terminal]
+----
+$ oc label namespace <namespace> istio.io/use-waypoint=waypoint
+----
+
+.. To activate a waypoint for a specific Service only, run the following command:
++
+[source,terminal]
+----
+$ oc label service <service-name> -n <namespace> istio.io/use-waypoint=waypoint
+----
+
+.. Verify the waypoint is ready by running the following command:
++
+[source,terminal]
+----
+$ oc get gateway waypoint -n <namespace>
+----
++
+The `PROGRAMMED` column must show `True` before you proceed.
+
+. Enable ambient mode for the namespace by adding the `istio.io/dataplane-mode=ambient` label:
++
+[source,terminal]
+----
+$ oc label namespace <namespace> istio.io/dataplane-mode=ambient
+----
++
+[NOTE]
+====
+Pods still have their sidecars at this point. The sidecar takes precedence over ztunnel for pods that have both. Do not restart pods until you have removed the sidecar injection label in the next step.
+====
+
+. Remove the sidecar injection label from the namespace:
+
+.. If you use the default injection label, run the following command:
++
+[source,terminal]
+----
+$ oc label namespace <namespace> istio-injection-
+----
+
+.. If you use a revision label, run the following command:
++
+[source,terminal]
+----
+$ oc label namespace <namespace> istio.io/rev-
+----
++
+[WARNING]
+====
+Removing the injection label alone does not remove existing sidecars from running pods. Pods must be restarted for the change to take effect.
+====
+
+. Restart the workloads in the namespace. As pods restart, they start without sidecar containers and use ztunnel — and waypoint, if configured — instead:
++
+[source,terminal]
+----
+$ oc rollout restart deployment -n <namespace>
+----
++
+[source,terminal]
+----
+$ oc rollout status deployment -n <namespace>
+----
+
+. Remove old sidecar mode L7 policies immediately after the pod restart, before running any validation:
++
+[WARNING]
+====
+Once sidecars are removed, ztunnel takes over policy enforcement. Ztunnel only understands L4 attributes and silently drops any L7 conditions: HTTP methods, paths, headers, and request principals from `AuthorizationPolicy` rules. The effect depends on the policy action:
+
+* *`ALLOW` policy with L7 rules*: ztunnel drops the L7 conditions. If every rule in the policy relied solely on L7 attributes, the resulting policy has no rules and matches nothing, causing ztunnel to deny all traffic to that workload. An `ALLOW` policy with no matching rules allows nothing.
+* *`DENY` policy with L7 rules*: ztunnel drops the L7 conditions. If a rule had no L4 conditions for example, it only matched on request principals or HTTP paths removing the L7 parts leaves an empty match that applies to all traffic, effectively denying all traffic to that workload.
+
+In both cases, leaving old selector based L7 policies active after sidecars are removed blocks traffic. Delete them immediately after the pod restart.
+====
+
+.. Delete `AuthorizationPolicy` resources that used a workload `selector` with L7 rules and have been replaced by `targetRefs` based equivalents:
++
+[source,terminal]
+----
+$ oc delete authorizationpolicy <sidecar-policy-name> -n <namespace>
+----
+
+.. Remove `VirtualService` resources replaced by `HTTPRoute`:
++
+[source,terminal]
+----
+$ oc delete virtualservice <name> -n <namespace>
+----
+
+.. Remove `DestinationRule` resources that were used only for routing subsets now replaced by version specific Services and `HTTPRoute` backend references:
++
+[source,terminal]
+----
+$ oc delete destinationrule <name> -n <namespace>
+----
++
+[NOTE]
+====
+L4 `AuthorizationPolicy` resources that use a workload `selector` with no L7 rules are safe to keep. Ztunnel enforces them correctly.
+====
+
+.Verification
+
+. Verify that pods are running without sidecar containers by running the following command:
++
+[source,terminal]
+----
+$ oc get pods -n <namespace>
+----
++
+Pods in ambient mode show `1/1` in the `READY` column. A pod that still shows `2/2` retains its sidecar and has not been restarted yet.
+
+. If you deployed waypoints, verify that L7 policy and routing rules are being enforced by testing the specific behaviors defined by your `HTTPRoute` and `AuthorizationPolicy` resources, such as header-based routing and HTTP method restrictions.
+
+. Repeat this procedure for each namespace you want to migrate. Namespaces not labeled with `istio.io/dataplane-mode=ambient` continue to use their sidecars and are not affected.
+
+[id="ossm-migrating-sidecar-to-ambient-rollback_{context}"]
+== Rolling back a namespace
+
+Each step in this procedure is independently reversible. Use the rollback action that corresponds to how far you have progressed.
+
+[WARNING]
+====
+Running `oc apply -f istio-config-backup.yaml` restores the original sidecar-style resources, but also overwrites any new ambient resources such as `HTTPRoute` rules and `targetRefs` based `AuthorizationPolicy` resources that share the same name. Before applying the backup, delete the ambient resources first, or use selective `oc apply` on individual resources rather than the full backup file.
+====
+
+[cols="2,3", options="header"]
+|===
+|Completed step |Rollback action
+
+|Step 1: Waypoints activated
+|`oc label namespace <namespace> istio.io/use-waypoint-`
+
+|Step 2: Ambient mode enabled
+|`oc label namespace <namespace> istio.io/dataplane-mode-`
+
+|Step 3: Injection label removed
+|Re-add the injection label: `oc label namespace <namespace> istio-injection=enabled`
+
+|Step 4: Pods restarted
+|Re-add the injection label, then run `oc rollout restart deployment -n <namespace>`
+
+|Step 5: Old policies deleted
+|`oc apply -f istio-config-backup.yaml` (see warning above)
+|===
+
+After any rollback that involves pod restarts, verify that pods show `2/2` containers indicating the sidecar was re-injected and confirm that traffic is flowing before proceeding.
