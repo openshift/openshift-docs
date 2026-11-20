@@ -1,0 +1,219 @@
+// Module included in the following assemblies:
+//
+// * resource/configuring-multicluster-support.adoc
+
+:_mod-docs-content-type: PROCEDURE
+[id="op-configuring-tekton-results-logs-multicluster_{context}"]
+= Configuring Tekton Results for logs in a multicluster environment
+
+[role="_abstract"]
+You can configure centralized log collection for multicluster {pipelines-shortname} by deploying `LokiStack` on the hub cluster and forwarding pipeline logs from spoke clusters by using the Red Hat OpenShift Logging collector. You can then query spoke cluster `PipelineRun` logs directly from the hub cluster through Tekton Results.
+
+In this log forwarding architecture:
+
+* The *hub cluster* runs object storage (such as MinIO or S3-compatible storage) and `LokiStack` to receive and store logs from spoke clusters. Do not deploy OpenShift Logging log collectors on the hub cluster.
+* Each *spoke cluster* runs the Red Hat OpenShift Logging collector (Vector) to capture Tekton pod logs and forward them to the hub cluster `LokiStack` gateway.
+
+[IMPORTANT]
+====
+By default, OpenShift Logging excludes application logs from the `default`, `+kube-*+`, and `+openshift-*+` namespaces. Create and run your multicluster `PipelineRun` workloads in a custom namespace (for example, `tekton-test`) so that logs are collected and forwarded to the hub cluster.
+====
+
+.Prerequisites
+
+* You have configured Tekton Results for records in your multicluster environment. For more information, see xref:../resource/configuring-multicluster-support.adoc#op-configuring-tekton-results-records-multicluster_{context}[Configuring Tekton Results for records in a multicluster environment].
+* You have installed the Loki Operator and configured a running `LokiStack` instance named `logging-loki` with object storage in the `openshift-logging` namespace on the hub cluster.
+* You have installed the `oc` CLI and have `cluster-admin` permissions on both the hub cluster and all spoke clusters.
+
+.Procedure
+
+. Configure the hub cluster:
+
+.. Log in to the hub cluster and expose the `LokiStack` gateway externally if a `logging-loki` route does not already exist by running the following command:
++
+[source,terminal]
+----
+$ oc get route logging-loki -n openshift-logging || \
+  oc create route passthrough loki-gateway \
+    --service=logging-loki-gateway-http \
+    --port=8080 \
+    -n openshift-logging
+----
+
+.. Retrieve and save the external `LokiStack` gateway URL (using `logging-loki` or `loki-gateway`, depending on the route present in your cluster) by running the following commands:
++
+[source,terminal]
+----
+$ export HUB_LOKI_HOST="https://$(oc get route <route_name> -n openshift-logging -o jsonpath='{.spec.host}')"
+$ echo "${HUB_LOKI_HOST}"
+----
+
+.. Verify that the `LokiStack` gateway is reachable by running the following command:
++
+[source,terminal]
+----
+$ curl -sk "${HUB_LOKI_HOST}/"
+----
+
+.. Create a `spoke-collector` service account in the `openshift-logging` namespace, grant it log-writer permissions, and generate an authentication token (valid for one year) for the spoke clusters by running the following commands:
++
+[source,terminal]
+----
+$ oc create sa spoke-collector -n openshift-logging
+$ oc adm policy add-cluster-role-to-user logging-collector-logs-writer \
+  system:serviceaccount:openshift-logging:spoke-collector
+$ export HUB_LOKI_TOKEN=$(oc create token spoke-collector -n openshift-logging --duration=8760h)
+----
++
+Save the `+HUB_LOKI_HOST+` URL and `+HUB_LOKI_TOKEN+` token values for configuring each spoke cluster.
+
+.. Patch the `TektonConfig` custom resource on the hub cluster to enable log querying through Loki by running the following command:
++
+[source,terminal]
+----
+$ oc patch tektonconfig config --type=merge -p '{
+  "spec": {
+    "result": {
+      "logs_api": true,
+      "logs_type": "Loki",
+      "loki_stack_name": "logging-loki",
+      "loki_stack_namespace": "openshift-logging"
+    }
+  }
+}'
+----
+
+. Configure each spoke cluster:
+
+.. Log in to the spoke cluster and export the hub `LokiStack` URL and authentication token by running the following commands:
++
+[source,terminal]
+----
+$ export HUB_LOKI_HOST="<hub_loki_host_url>"
+$ export HUB_LOKI_TOKEN="<hub_loki_token>"
+----
+
+.. Create the `openshift-logging` namespace, enable cluster monitoring on the namespace, and install the Red Hat OpenShift Logging Operator from OperatorHub (do not install the Loki Operator on spoke clusters) by running the following commands:
++
+[source,terminal]
+----
+$ oc create namespace openshift-logging
+$ oc label ns openshift-logging openshift.io/cluster-monitoring=true --overwrite
+----
+
+.. Create a secret named `hub-loki-token` in the `openshift-logging` namespace containing the hub authentication token by running the following command:
++
+[source,terminal]
+----
+$ oc create secret generic hub-loki-token -n openshift-logging \
+  --from-literal=token="${HUB_LOKI_TOKEN}" \
+  --dry-run=client -o yaml | oc apply -f -
+----
+
+.. Create a `collector` service account and bind the required log-collection cluster roles by running the following commands:
++
+[source,terminal]
+----
+$ oc create sa collector -n openshift-logging
+$ oc adm policy add-cluster-role-to-user collect-application-logs \
+  system:serviceaccount:openshift-logging:collector
+$ oc adm policy add-cluster-role-to-user collect-infrastructure-logs \
+  system:serviceaccount:openshift-logging:collector
+$ oc adm policy add-cluster-role-to-user collect-audit-logs \
+  system:serviceaccount:openshift-logging:collector
+----
+
+.. Grant the `collector` service account permission to read the `hub-loki-token` secret by running the following command:
++
+[source,terminal]
+----
+$ oc apply -f - <<EOF
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: hub-loki-token-reader
+  namespace: openshift-logging
+rules:
+- apiGroups: [""]
+  resources: ["secrets"]
+  resourceNames: ["hub-loki-token"]
+  verbs: ["get", "list", "watch"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: collector-hub-loki-token-reader
+  namespace: openshift-logging
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: hub-loki-token-reader
+subjects:
+- kind: ServiceAccount
+  name: collector
+  namespace: openshift-logging
+EOF
+----
+
+.. Create a `ClusterLogForwarder` custom resource on the spoke cluster (using output type `loki` with the `authentication` block nested under `loki`) to forward Tekton pipeline logs to the hub cluster `LokiStack` by running the following command:
++
+[source,terminal]
+----
+$ oc apply -f - <<EOF
+apiVersion: observability.openshift.io/v1
+kind: ClusterLogForwarder
+metadata:
+  name: collector
+  namespace: openshift-logging
+spec:
+  serviceAccount:
+    name: collector
+  inputs:
+  - name: only-tekton
+    type: application
+    application:
+      selector:
+        matchExpressions:
+        - key: app.kubernetes.io/managed-by
+          operator: In
+          values: ["tekton-pipelines", "pipelinesascode.tekton.dev"]
+  outputs:
+  - name: hub-loki
+    type: loki
+    loki:
+      url: "${HUB_LOKI_HOST}/api/logs/v1/application"
+      labelKeys:
+      - kubernetes.namespace_name
+      - kubernetes.pod_name
+      - kubernetes.container_name
+      - log_type
+      authentication:
+        token:
+          from: secret
+          secret:
+            name: hub-loki-token
+            key: token
+    tls:
+      insecureSkipVerify: true
+  pipelines:
+  - name: forward-to-hub
+    inputRefs:
+    - only-tekton
+    outputRefs:
+    - hub-loki
+EOF
+----
+
+.. Verify that the collector pods and `ClusterLogForwarder` resource are ready on the spoke cluster by running the following commands:
++
+[source,terminal]
+----
+$ oc get pods -n openshift-logging -l app.kubernetes.io/component=collector
+$ oc get clusterlogforwarder collector -n openshift-logging
+----
+
+.Verification
+
+. Create a custom namespace (for example, `tekton-test`) on both the hub and spoke clusters, ensuring that the spoke cluster has a matching `LocalQueue` resource.
+. Trigger a `PipelineRun` in the `tekton-test` namespace on the hub cluster and wait for it to execute on the spoke cluster.
+. Query the `PipelineRun` logs from the hub cluster by using the Tekton Results CLI (`tkn results logs`) or the Tekton Results API, and confirm that the logs forwarded from the spoke cluster are returned on the hub cluster.
