@@ -1,0 +1,86 @@
+// Module included in the following assemblies:
+//
+// * security/zero_trust_workload_identity_manager/zero-trust-manager-nested-spire.adoc
+
+:_mod-docs-content-type: CONCEPT
+[id="zero-trust-manager-nested-spire-about_{context}"]
+= About nested SPIRE
+
+[role="_abstract"]
+Nested {spire-full} (SPIRE) links SPIRE servers across {product-title} clusters into one trust domain. The upstream server holds the top-level signing certificate authority (CA). Each downstream server holds an intermediate CA signed by its upstream server. Workloads on any cluster in the topology can authenticate workloads on any other cluster against that shared root.
+
+X.509-SVIDs chain through the intermediate CAs to the root. JWT-SVIDs are verified with signing keys propagated across the topology.
+
+{zero-trust-full} manages the SPIRE configuration, the upstream-facing agent, and the registration entries. You create the cross-cluster kubeconfig and copy the trust bundle. {zero-trust-full} does not distribute those credentials for you.
+
+[id="zero-trust-manager-nested-spire-terms_{context}"]
+== Nested SPIRE roles
+
+upstream cluster::
+A cluster whose SPIRE server signs intermediate CAs for one or more downstream servers. The root cluster is the upstream cluster at the top of the topology. Its CA is self-signed, or it is chained to an external public key infrastructure (PKI) through the cert-manager or Vault UpstreamAuthority plugin.
+
+downstream cluster::
+A cluster whose SPIRE server holds an intermediate CA from exactly one upstream server.
+
+mid-tier cluster::
+A cluster that is a downstream cluster of the tier above it and an upstream cluster for the next tier. On a mid-tier cluster, set both `spec.upstreamAuthority.spire` and `spec.nestedSpire`.
+
+upstream agent::
+A one-replica SPIRE agent that {zero-trust-full} deploys on the downstream cluster. The agent authenticates to the upstream server. It is separate from the `spire-agent` DaemonSet that serves local workloads. {zero-trust-full} also deploys a second SPIFFE Container Storage Interface (CSI) driver, `upstream.csi.spiffe.io`, so the downstream SPIRE server can use the upstream agent socket.
+
+[id="zero-trust-manager-nested-spire-federation_{context}"]
+== Nested SPIRE and SPIRE federation
+
+[cols="1,2,2",options="header"]
+|===
+| | Nested SPIRE | SPIRE federation
+
+| Trust domain
+| One trust domain on every cluster
+| A separate trust domain on each cluster
+
+| Certificate hierarchy
+| One root CA, with an intermediate CA on each downstream server
+| A separate root CA on each cluster
+
+| Cross-cluster authentication
+| Workloads verify {svid-full}s against the shared root
+| SPIRE servers exchange trust bundles and accept identities from the remote trust domain
+|===
+
+Nested SPIRE propagates the X.509 CA chain and JWT signing keys. It does not propagate federated trust bundles. A downstream cluster that must federate with a different trust domain needs its own `ClusterFederatedTrustDomain` resources. For more information, see "Zero Trust Workload Identity Manager SPIRE federation".
+
+[id="zero-trust-manager-nested-spire-support_{context}"]
+== Supported topologies
+
+Nested SPIRE is supported on standalone {product-title} clusters.
+
+Nested SPIRE is not supported in the following environments:
+
+* {hcp}
+* {sno-caps}
+* {ms}
+
+A nested topology is a tree. Each downstream cluster has one upstream cluster. An upstream cluster can register many downstream clusters. A cluster can be both upstream and downstream.
+
+Topologies with two nesting levels are tested. Deeper topologies are not tested. With an external root CA, set the CA path length to at least the number of nesting levels. A path length of `0` prevents a downstream server from obtaining an intermediate CA.
+
+Only the `k8s_psat` node attestor is supported. The upstream cluster must be able to reach the API server of each registered downstream cluster. Each downstream cluster must be able to reach the upstream SPIRE server gRPC endpoint.
+
+[id="zero-trust-manager-nested-spire-limits_{context}"]
+== Requirements and limits
+
+* Every cluster in the topology must use the same `spec.trustDomain` on the `ZeroTrustWorkloadIdentityManager` CR. `spec.trustDomain` is immutable after it is set.
+* Each cluster must have a unique `spec.clusterName`. The `downstreamClusters[].name` value on the upstream cluster must match the downstream cluster's `spec.clusterName`. The name is a DNS-1123 subdomain of 1 to 63 characters, and it is immutable.
+* Enable nested SPIRE before the downstream SPIRE server issues workload SVIDs. A server that already holds a self-signed CA continues to use that CA until the next CA rotation. During that time, workload SVIDs do not chain to the shared root.
+* You can set only one UpstreamAuthority plugin. `spec.upstreamAuthority.spire`, `spec.upstreamAuthority.certManager`, and `spec.upstreamAuthority.vault` are mutually exclusive.
+* If the root cluster uses the Vault UpstreamAuthority plugin, do not use JWT-SVIDs in the nested topology. That plugin does not support the `PublishJWTKey` remote procedure call.
+* There is no enforced limit on the number of downstream clusters. Each change to `spec.nestedSpire.downstreamClusters` restarts the upstream SPIRE server. Existing downstream servers keep issuing identities from their cached intermediate CAs during the restart.
+* Upgrade clusters from the root outward. Upgrade each tier before the tier below it. A SPIRE agent must not be newer than the oldest SPIRE server it contacts, and it can be at most one minor version older than that server. The upstream agent runs on the downstream cluster and connects to the upstream server, so upgrade the upstream cluster first.
+
+[id="zero-trust-manager-nested-spire-operations_{context}"]
+== Upstream outages and rescheduling
+
+If the upstream server is unavailable, a downstream server continues to issue identities from its cached intermediate CA. SPIRE retries the CA request until the upstream server is available.
+
+If the node that runs the downstream SPIRE server is drained, the server pod and the upstream agent pod are rescheduled onto the same node. If only the server pod moves, {zero-trust-full} deletes the upstream agent pod so that the replacement starts on the server's new node. CA rotation waits during that reschedule. Workload issuance continues from the cached intermediate CA.
