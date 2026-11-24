@@ -1,0 +1,251 @@
+// Module included in the following assemblies:
+//
+// * networking/advanced_networking/bgp_routing/bgp-routing-google-cloud.adoc
+
+:_mod-docs-content-type: PROCEDURE
+[id="nw-preparing-bgp-peering-gcp_{context}"]
+= Preparing the Google Cloud environment for BGP peering
+
+[role="_abstract"]
+Before you can configure BGP Cloud Connector on your cluster, you must prepare the supporting {gcp-short} infrastructure.
+This preparation ensures the BGP Cloud Connector discovers and peers with a {gcp-short} Cloud Router that already exists.
+
+.Prerequisites
+
+* You have an {product-title} cluster running on {gcp-short} with an existing VPC network.
+* You have installed and authenticated the `gcloud` CLI tool.
+* You have the {gcp-short} IAM permissions required to create service accounts, custom roles, Cloud Routers, and Network Connectivity Center hubs in your project.
+
+.Procedure
+
+. Get the project ID and region of the cluster by entering the following commands:
++
+[source,terminal]
+----
+$ PROJECT_ID=$(oc get infrastructure cluster -o jsonpath='{.status.platformStatus.gcp.projectID}')
+----
++
+[source,terminal]
+----
+$ REGION=$(oc get infrastructure cluster -o jsonpath='{.status.platformStatus.gcp.region}')
+----
+
+. If the Cloud Credential Operator (CCO) on your cluster runs in manual mode with Workload Identity Federation, create the {gcp-short} identity that the BGP Cloud Connector Operator uses.
++
+[NOTE]
+====
+If the CCO on your cluster runs in mint mode, skip this step.
+The CCO mints the required service account and credentials automatically.
+====
++
+.. Get the project number and the Workload Identity Federation pool and provider IDs created by the `ccoctl` utility by entering the following commands:
++
+[source,terminal]
+----
+$ PROJECT_NUMBER=$(gcloud projects describe ${PROJECT_ID} --format='value(projectNumber)')
+----
++
+[source,terminal]
+----
+$ POOL=<pool_id>
+----
++
+[source,terminal]
+----
+$ PROVIDER=<provider_id>
+----
++
+Replace _<pool_id>_ and _<provider_id>_ with the IDs of the Workload Identity Federation pool and provider that `ccoctl` created for your cluster.
++
+.. Create a service account for the BGP Cloud Connector Operator by entering the following command:
++
+[source,terminal]
+----
+$ gcloud iam service-accounts create bgp-cloud-connector \
+    --project "${PROJECT_ID}" \
+    --display-name bgp-cloud-connector
+----
++
+.. Create a custom IAM role with the permissions that the BGP Cloud Connector Operator requires by entering the following command:
++
+[source,terminal]
+----
+$ gcloud iam roles create bgpCloudConnector --project "${PROJECT_ID}" \
+    --title bgp-cloud-connector \
+    --permissions compute.routers.get,compute.routers.update,compute.networks.updatePolicy,compute.networks.get,compute.instances.get,compute.instances.update,compute.zoneOperations.get,compute.regionOperations.get,networkconnectivity.operations.get,networkconnectivity.hubs.get,networkconnectivity.spokes.get,networkconnectivity.spokes.list,networkconnectivity.spokes.create,networkconnectivity.spokes.update,networkconnectivity.spokes.delete
+----
++
+.. Bind the custom role to the service account by entering the following command:
++
+[source,terminal]
+----
+$ gcloud projects add-iam-policy-binding "${PROJECT_ID}" \
+    --member "serviceAccount:bgp-cloud-connector@${PROJECT_ID}.iam.gserviceaccount.com" \
+    --role "projects/${PROJECT_ID}/roles/bgpCloudConnector"
+----
++
+.. Allow the service account of the BGP Cloud Connector Operator to impersonate the {gcp-short} service account by entering the following command:
++
+[source,terminal]
+----
+$ gcloud iam service-accounts add-iam-policy-binding \
+    bgp-cloud-connector@${PROJECT_ID}.iam.gserviceaccount.com \
+    --project "${PROJECT_ID}" \
+    --role roles/iam.workloadIdentityUser \
+    --member "principal://iam.googleapis.com/projects/${PROJECT_NUMBER}/locations/global/workloadIdentityPools/${POOL}/subject/system:serviceaccount:openshift-bgp-cloud-connector:openshift-bgp-cloud-connector-controller-manager"
+----
+
+. Create a Network Connectivity Center hub that the compute nodes of the cluster join as router appliance spokes by entering the following command:
++
+[source,terminal]
+----
+$ gcloud network-connectivity hubs create <hub_name> --project "${PROJECT_ID}"
+----
++
+Replace _<hub_name>_ with a name for the hub, such as `bgp-connector-hub`.
+Note the hub name because you must specify it in the `BGPCloudConfiguration` custom resource (CR) in a later procedure.
++
+[NOTE]
+====
+The BGP Cloud Connector Operator creates and manages the router appliance spokes in this hub automatically.
+You must not create the spokes yourself.
+====
+
+. Create a Cloud Router in the VPC network of the cluster by entering the following command:
++
+[source,terminal]
+----
+$ gcloud compute routers create <router_name> \
+    --network <network_name> \
+    --region "${REGION}" \
+    --asn <asn>
+----
++
+where:
++
+--
+`<router_name>`:: Specifies the name of the Cloud Router, such as `bgp-connector-router`.
+`<network_name>`:: Specifies the name of the VPC network of the cluster.
+`<asn>`:: Specifies the Border Gateway Protocol (BGP) Autonomous System Number (ASN) that you want the Cloud Router to use.
+--
++
+[IMPORTANT]
+====
+Do not use the Cloud Router that the {product-title} installer created for Cloud NAT.
+The installer router has no BGP interfaces, carries the egress traffic of the cluster, and discovery of the BGP infrastructure fails against it.
+The ASN of the Cloud Router must differ from the local ASN of the cluster that you set in the `BGPCloudConfiguration` CR, because BGP sessions between matching ASNs are not eBGP sessions.
+====
+
+. Add two BGP interfaces to the Cloud Router, one in each worker subnet, by entering the following commands:
++
+[source,terminal]
+----
+$ gcloud compute routers add-interface <router_name> \
+    --interface <interface_name_1> \
+    --ip-address <ip_address_1> \
+    --subnetwork <subnet_name_1> \
+    --region "${REGION}"
+----
++
+[source,terminal]
+----
+$ gcloud compute routers add-interface <router_name> \
+    --interface <interface_name_2> \
+    --ip-address <ip_address_2> \
+    --subnetwork <subnet_name_2> \
+    --region "${REGION}" \
+    --redundant-interface <interface_name_1>
+----
++
+where:
++
+--
+`<router_name>`:: Specifies the name of the Cloud Router.
+`<interface_name_1>`, `<interface_name_2>`:: Specify the names of the interfaces, such as `bgp-cr-if-0` and `bgp-cr-if-1`.
+`<ip_address_1>`, `<ip_address_2>`:: Specify unused internal IP addresses from the worker subnets.
+The Cloud Router presents these interface addresses as the BGP neighbors.
+`<subnet_name_1>`, `<subnet_name_2>`:: Specify the names of the subnets that host the compute nodes that participate in BGP.
+--
++
+[NOTE]
+====
+The two interfaces provide redundancy.
+{gcp-short} does not allow duplicate BGP peer IP addresses on one Cloud Router interface.
+
+The BGP Cloud Connector Operator creates the BGP peers on the Cloud Router automatically as compute nodes are added or removed.
+You must not create the peers yourself.
+====
+
+. Get the interface IP address ranges of the Cloud Router by entering the following command:
++
+[source,terminal]
+----
+$ gcloud compute routers describe <router_name> --region "${REGION}" --format='value(interfaces)'
+----
++
+Replace _<router_name>_ with the name of the Cloud Router.
+Note the `ipRange` values of both interfaces because you must use them in the next step.
+
+. Create a firewall rule that allows BGP traffic from the Cloud Router to the compute nodes by entering the following command:
++
+[source,terminal]
+----
+$ gcloud compute firewall-rules create allow-bgp-from-cloud-router \
+    --network <network_name> \
+    --allow tcp:179 \
+    --source-ranges <cloud_router_ip_ranges> \
+    --target-tags <worker_network_tag> \
+    --priority 900
+----
++
+where:
++
+--
+`<network_name>`:: Specifies the name of the VPC network of the cluster.
+`<cloud_router_ip_ranges>`:: Specifies a comma-separated list of the interface IP address ranges of the Cloud Router, in CIDR notation, for example `10.0.1.10/32,10.0.2.10/32`.
+`<worker_network_tag>`:: Specifies the network tag of the compute nodes that participate in BGP.
+--
++
+[NOTE]
+====
+{gcp-short} denies ingress traffic by default, and the {product-title} installer does not open TCP port `179`.
+If you plan to use Bidirectional Forwarding Detection (BFD), add `udp:3784` to the `--allow` option of the firewall rule.
+====
+
+. Label the compute nodes that must participate in BGP by entering the following command:
++
+[source,terminal]
+----
+$ oc label node <node_name> bgp_router=true
+----
++
+Replace _<node_name>_ with the name of a compute node.
+Repeat this command for every compute node that must establish a BGP session with the Cloud Router.
++
+[NOTE]
+====
+For production environments, create a dedicated machine set or machine pool whose nodes carry the `bgp_router=true` label, so that BGP-enabled compute nodes are managed separately from other workloads.
+
+The BGP Cloud Connector Operator enables IP forwarding on the network interfaces of these compute nodes automatically by setting the `canIpForward` flag.
+====
+
+.Verification
+
+* Confirm that the Cloud Router exists and lists both BGP interfaces by entering the following command:
++
+[source,terminal]
+----
+$ gcloud compute routers describe <router_name> --region "${REGION}"
+----
++
+Replace _<router_name>_ with the name of the Cloud Router.
+In the output, confirm that the `interfaces` list contains both interfaces that you created in an earlier step.
+
+* Confirm that the compute nodes carry the `bgp_router=true` label by entering the following command:
++
+[source,terminal]
+----
+$ oc get nodes -l bgp_router=true
+----
++
+In the output, confirm that every compute node that must participate in BGP appears in the list.
