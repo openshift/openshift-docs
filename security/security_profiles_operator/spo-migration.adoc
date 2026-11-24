@@ -1,0 +1,403 @@
+:_mod-docs-content-type: ASSEMBLY
+[id="spo-migration"]
+= Security Profiles Operator Migration
+include::_attributes/common-attributes.adoc[]
+:context: spo-migration
+
+toc::[]
+
+
+[role="_abstract"]
+For versions of Security Profiles Operator (SPO) at or earlier than version 0.8.6, the operator used namespaces to identify and use `ProfileBinding` objects needed to define the function of the operator. Those bindings fall in the categories of `SeccompProfile`, `SelinuxProfile` and `RawSelinuxProfile` objects.
+
+In order to upgrade your Security Profiles Operator (SPO) from a version 0.8.6 or older to version 0.9.0 or newer,  you must migrate the operator from a namespace-scoped installation to a cluster-scoped installation. 
+
+= Pre-Migration Checklist
+
+Before you begin the migration, complete these preparatory steps to ensure a smooth process.
+
+* Verify Cluster Admin Access: Confirm you have administrative privileges by running `oc whoami`. The output should show an administrator-level username to which you have access.
+
+* Install Required Tools: Ensure you have the `oc` (OpenShift CLI) and `jq` (command-line JSON processor) tools installed on your local machine. You will use `jq` to parse the output from `oc` commands.
+
+* Schedule a Maintenance Window: This migration requires the deletion and recreatiion of resources, which will cause brief disruptions. Schedule a maintenance window to minimize impact on users.
+
+* Notify Users: Inform your users about the scheduled maintenance and any potential service interruptions.
+* Document Current Profiles: Make a record of all existing security profiles and the workloads they are applied to. You must verify the migration's success using the information you have recorded.
+
+
+= Backup of SPO resources
+
+== Step 1: Create a backup directory
+
+First, create a dedicated directory to store all your backups. This directory will contain your security profiles, bindings, and other cluster information.
+
+Rationale: A timestamped backup directory keeps all migration-related files organized and prevents accidental overwrites. It also provides a clear restoration point if you need to roll back the process.
+
+Create a backup directory with a unique timestamp.
+
+export BACKUP_DIR="spo-manual-backup-$(date +%Y%m%d-%H%M%S)"
+mkdir -p $BACKUP_DIR/{profiles,bindings-recordings,workload-analysis}
+
+Save essential cluster information for reference.
+
+echo "Backup Date: $(date)" > $BACKUP_DIR/backup-info.txt
+echo "Cluster: $(oc whoami --show-server)" >> $BACKUP_DIR/backup-info.txt
+echo "User: $(oc whoami)" >> $BACKUP_DIR/backup-info.txt
+
+echo "Successfully created backup directory: $BACKUP_DIR"
+
+
+== Step 2: Identify workloads using SPO profiles
+
+Next, you must identify all pods and workloads that are currently using Seccomp or SELinux profiles managed by SPO. This information is critical for later steps when you reconfigure your workloads.
+
+Identify `SeccompProfile` Usage:
+
+Run the following command to find all pods across the cluster that reference an SPO-managed seccomp profile. These profiles are identifiable by the operator/ prefix in their path.
+
+oc get pods -A -o json | jq -r '
+  .items[] |
+  select(
+    (.spec.securityContext.seccompProfile.type == "Localhost" and
+      (.spec.securityContext.seccompProfile.localhostProfile | startswith("operator/"))) or
+    (any(.spec.containers[];
+        .securityContext.seccompProfile.type == "Localhost" and
+        (.securityContext.seccompProfile.localhostProfile | startswith("operator/"))))
+  ) |
+  "\(.metadata.namespace)/\(.metadata.name) - \(.spec.securityContext.seccompProfile.localhostProfile // (.spec.containers[].securityContext.seccompProfile.localhostProfile // "unknown"))"
+' | tee $BACKUP_DIR/workload-analysis/seccomp-usage.txt
+
+Identify `SELinuxProfile` Usage:
+
+To identify workloads using SELinux profiles, first find the unique profile names (.status.usage) and then search for pods that reference those names.
+
+* Get all SELinux profile usage patterns:
+
+oc get selinuxprofiles -A -o json | jq -r '.items[] | "\(.metadata.namespace)/\(.metadata.name): \(.status.usage)"' > $BACKUP_DIR/workload-analysis/selinux-profiles.txt
+
+oc get rawselinuxprofiles -A -o json | jq -r '.items[] | "\(.metadata.namespace)/\(.metadata.name): \(.status.usage)"' >> $BACKUP_DIR/workload-analysis/selinux-profiles.txt
+
+* Find pods using these SELinux profiles:
+
+SELINUX_TYPES=$(cat $BACKUP_DIR/workload-analysis/selinux-profiles.txt | cut -d' ' -f2 | sort -u)
+
+for selinux_type in $SELINUX_TYPES; do
+  echo "Checking for pods using: $selinux_type" >> $BACKUP_DIR/workload-analysis/selinux-usage.txt
+  oc get pods -A -o json | jq -r --arg type "$selinux_type" '
+    .items[] |
+    select(
+      (.spec.securityContext.seLinuxOptions.type == $type) or
+      (any(.spec.containers[]; .securityContext.seLinuxOptions.type == $type))
+    ) |
+    "\(.metadata.namespace)/\(.metadata.name) - \($type)"
+  ' >> $BACKUP_DIR/workload-analysis/selinux-usage.txt
+done
+
+Alternative Method for Finding Workload Usage
+
+You can also directly query the activeWorkloads field on the profile objects for a quicker overview.
+
+oc get selinuxprofiles -A -o json | jq -r '.items[] | "\(.metadata.namespace)/\(.metadata.name): \(.status.activeWorkloads)"'
+
+oc get seccompprofiles -A -o json | jq -r '.items[] | "\(.metadata.namespace)/\(.metadata.name): \(.status.activeWorkloads)"'
+
+
+== Step 3: Backup up all SPO objects
+
+Now, you will save the complete YAML definition of every SPO custom resource. Save a copy of all ProfileBinding objects from every namespace. Loop through each namespace containing profile bindings and back them up.
+
+for ns in $(oc get profilebindings -A -o jsonpath='{range .items[*]}{.metadata.namespace}{"\n"}{end}' | sort -u); do
+  echo "Backing up profile bindings from namespace: $ns"
+  for binding in $(oc get profilebindings -n $ns -o name); do
+    name=$(echo $binding | cut -d'/' -f2)
+    oc get profilebinding $name -n $ns -o json | jq '.' > \
+      "$BACKUP_DIR/bindings-recordings/profilebindings-${ns}-${name}.json"
+    echo "  > Backed up profilebinding: $name"
+  done
+done
+
+
+Save a copy of all ProfileRecording objects from every namespace. Loop through each namespace containing profile bindings and back them up:
+
+
+for ns in $(oc get profilerecordings -A -o jsonpath='{range .items[*]}{.metadata.namespace}{"\n"}{end}' | sort -u); do
+  echo "Backing up profilerecording from namespace: $ns"
+  for recording in $(oc get profilerecordings -n $ns -o name); do
+    name=$(echo $recording | cut -d'/' -f2)
+    oc get profilerecording $name -n $ns -o json | jq '.' > \
+      "$BACKUP_DIR/bindings-recordings/profilerecordings-${ns}-${name}.json"
+    echo "  > Backed up profilerecording: $name"
+  done
+done
+
+Save a copy of all `SeccompProfile`, `SelinuxProfile`, and `RawSelinuxProfile` objects from every namespace.
+
+PROFILE_TYPES="seccompprofiles selinuxprofiles rawselinuxprofiles"
+
+# Loop through each profile type and back them up
+for type in $PROFILE_TYPES; do
+  for ns in $(oc get $type -A -o jsonpath='{range .items[*]}{.metadata.namespace}{"\n"}{end}' | sort -u); do
+    echo "Backing up $type from namespace: $ns"
+    for profile in $(oc get $type -n $ns -o name); do
+      name=$(echo $profile | cut -d'/' -f2)
+      oc get $type $name -n $ns -o json | jq '.' > \
+        "$BACKUP_DIR/profiles/${type}-${ns}-${name}.json"
+      echo "  > Backed up profile: $name"
+    done
+  done
+done
+
+Back Up SPO daemon configuration 
+
+If you have customized the SPO Daemon (spod) configuration, back it up as well.
+
+if oc get spod spod -n openshift-security-profiles &>/dev/null; then
+  echo "Backing up custom SPOD configuration..."
+  oc get spod spod -n openshift-security-profiles -o json | jq '.' > \
+    "$BACKUP_DIR/spod-configuration.json"
+  echo "SPOD configuration backed up successfully."
+fi
+
+
+= Deletion and uninstallation of the older SPO Operator
+
+== Step 4: Remove current SPO resources
+
+Carefully delete all SPO resources in a specific order to prepare for the new installation.
+
+[IMPORTANT]
+====
+You must delete ProfileBindings first. This prevents the old operator from automatically reapplying security profiles to workloads while you are performing the migration.
+====
+
+* Delete all `ProfileBindings` objects:
+
+for ns in $(oc get profilebindings -A -o jsonpath='{range .items[*]}{.metadata.namespace}{"\n"}{end}' | sort -u); do
+  echo "Deleting profile bindings in namespace: $ns"
+  oc delete profilebindings --all -n $ns
+done
+
+* Update workloads to remove profile references
+
+Now, you must manually edit your workloads (Deployments, DaemonSets, etc.) to remove all references to the SPO security profiles you identified in Step 2. Failure to do so may cause pods to fail to start after the old profiles are deleted.
+
+This typically involves editing the .spec.template.spec.securityContext section of your workload's YAML definition and removing the seccompProfile or seLinuxOptions blocks that point to SPO.
+
+* Delete all security profiles
+
+After detaching profiles from workloads, you can safely delete all SeccompProfile, SelinuxProfile, and RawSelinuxProfile objects.
+
+for resource in seccompprofiles selinuxprofiles rawselinuxprofiles; do
+  echo "Searching for $resource to delete..."
+  for ns in $(oc get $resource -A -o jsonpath='{range .items[*]}{.metadata.namespace}{"\n"}{end}' | sort -u); do
+    echo "Deleting $resource in namespace: $ns"
+    oc delete $resource --all -n $ns
+  done
+done
+
+* Verify deletion of the profiles
+
+Confirm that all profiles have been removed. The following command should return no results.
+
+oc get seccompprofiles,selinuxprofiles,rawselinuxprofiles -A
+
+== Step 5: Uninstall the old SPO operator
+
+Remove the old, namespace-scoped operator and its related components.
+
+Delete the SPO Daemon (spod): First, delete the spod custom resource.
+
+Raw
+oc delete spod spod -n openshift-security-profiles
+
+Uninstall the Operator: Use the OpenShift Console to uninstall the operator.
+
+Navigate to Operators > Installed Operators.
+
+Select the Security Profiles Operator in the openshift-security-profiles project.
+
+From the Actions menu, select Uninstall Operator.
+
+Delete the Mutating Webhook: The uninstallation process can sometimes leave behind a webhook. Manually delete it to prevent issues.
+
+oc delete mutatingwebhookconfigurations spo-mutating-webhook-configuration
+
+Delete the Namespace: Finally, delete the operator's namespace to clean up all remaining resources.
+
+oc delete namespace openshift-security-profiles
+
+Step 6: Delete the old Custom Resource Definitions (CRDs)
+
+The final cleanup step is to delete the namespace-scoped CRDs. The new operator will install cluster-scoped versions.
+
+List all SPO-related CRDs to delete:
+
+CRD_LIST="seccompprofiles selinuxprofiles rawselinuxprofiles profilebindings profilerecordings securityprofilenodestatuses securityprofilesoperatordaemons apparmorprofiles"
+
+Loop through the list and delete each CRD if it exists:
+
+for crd in $CRD_LIST; do
+  CRD_NAME="${crd}.security-profiles-operator.x-k8s.io"
+  if oc get crd $CRD_NAME &>/dev/null; then
+    echo "Deleting CRD: $CRD_NAME"
+    oc delete crd $CRD_NAME
+  else
+    echo "CRD $CRD_NAME not found, skipping."
+  fi
+done
+
+Step 7: Install the new SPO Operator
+
+Install the new version of the SPO from OperatorHub, ensuring you select the cluster-scoped installation mode.
+
+*In the OpenShift Console, navigate to OperatorHub and search for "Security Profiles Operator".
+*Click Install.
+*On the installation page, configure the following settings:
+* Installation mode: All namespaces on the cluster (default)
+* Installed Namespace: openshift-security-profiles
+* Update approval: Automatic (Recommended)
+*Click Install and wait for the operator to become available.
+
+Verify the New Installation
+Run these commands to confirm that the new operator and its CRDs have been installed correctly.
+
+Check that the operator deployment is running:
+
+oc get deployment -n openshift-security-profiles
+
+Verify that the new CRDs are installed and are not namespaced:
+
+oc get crd | grep security-profiles-operator
+
+Step 8: Prepare backed-up profiles for restoration
+
+Before you can restore your backed-up profiles, you must modify the JSON files to make them compatible with the new cluster-scoped operator.
+
+Rationale: You must remove all namespace-specific and cluster-managed metadata (like uid and resourceVersion). Attempting to apply a resource with a specific namespace or old metadata will cause an error, as the new CRDs are cluster-scoped and the cluster manages this metadata automatically upon creation.
+
+This script processes each backed-up profile, removes the unnecessary fields, and saves a clean version ready for restoration.
+
+Create a directory for the cleaned-up profiles:
+
+mkdir -p $BACKUP_DIR/profiles-to-restore
+
+Process each backed-up profile:
+
+for file in $BACKUP_DIR/profiles/*.json; do
+  if [ -f "$file" ]; then
+    filename=$(basename "$file")
+    echo "Processing: $filename"
+
+    jq 'del(.metadata.namespace) |
+        del(.metadata.resourceVersion) |
+        del(.metadata.uid) |
+        del(.metadata.creationTimestamp) |
+        del(.metadata.generation) |
+        del(.metadata.annotations) |
+        del(.metadata.labels) |
+        del(.metadata.managedFields) |
+        del(.metadata.ownerReferences) |
+        del(.status) |
+        del(.metadata.finalizers)' "$file" > "$BACKUP_DIR/profiles-to-restore/$filename"
+
+    echo "  > Prepared for cluster-scoped restoration."
+  fi
+done
+
+== Installation of the updated SPO Operator
+
+Step 9: Restore profiles as cluster-scoped resources
+
+Apply the cleaned-up profile definitions to the cluster. The new operator will detect and manage them as cluster-scoped resources.
+
+for file in $BACKUP_DIR/profiles-to-restore/*.json; do
+  if [ -f "$file" ]; then
+    echo "Restoring: $(basename "$file")"
+    oc apply -f "$file"
+  fi
+done
+
+Verify that the profiles have been restored successfully: 
+
+oc get seccompprofiles,selinuxprofiles,rawselinuxprofiles
+
+Step 10: Update Workloads to Use Cluster-Scoped Profiles
+
+This is the final critical step. You must update your workloads again, this time to reference the new, cluster-scoped profile formats.
+
+SeccompProfile Format Change
+
+The path for seccomp profiles no longer includes the namespace.
+
+* Before: operator/openshift-security-profiles/profile-block-all.json
+
+* After: operator/profile-block-all.json
+
+Update your pod spec's securityContext accordingly. The localhostProfile path no longer contains the namespace:
+
+spec:
+  containers:
+  - name: nginx
+    securityContext:
+      seccompProfile:
+        type: Localhost
+        localhostProfile: operator/profile-block-all.json
+
+
+SELinuxProfile Format Change
+
+The type for SELinux profiles no longer includes the namespace suffix.
+
+* Before: errorlogger-selinuxd-test_openshift-security-profiles.process
+
+* After: errorlogger-selinuxd-test_.process
+
+Update your pod spec's securityContext accordingly. The type no longer contains the namespace:
+
+spec:
+  containers:
+  - name: nginx
+    securityContext:
+      seLinuxOptions:
+        type: errorlogger-selinuxd-test_.process
+
+
+== Verify Migration Success
+
+Step 11: Verify Migration Success
+
+Finally, perform checks to ensure that your workloads are running correctly with the new cluster-scoped security profiles.
+
+* Check Profile Status: Verify that the restored profiles are active and show the correct cluster-scoped usage format.
+
+oc get seccompprofiles -o json | jq -r '.items[] | "\(.metadata.name): \(.status.localhostProfile)"'
+oc get selinuxprofiles -o json | jq -r '.items[] | "\(.metadata.name): \(.status.usage)"'
+
+* Test with New Pods: Create new test pods that reference the cluster-scoped profiles and confirm that they start and run without errors. Make sure the pods are in the Running state:
+
+oc get pods test-seccomp-cluster test-selinux-cluster
+
+* Check Application Logs: Review the logs of your migrated applications to ensure they are functioning as expected.
+
+
+== Troubleshooting
+
+If you encounter issues, here are some common problems and solutions.
+
+* Profile Not Found: If pods fail to start with profile-related errors:
+	Verify the exact profile name with oc get seccompprofiles.
+	Check the profile's status with oc describe seccompprofile <name>. It should show Installed.
+	Examine the operator logs for errors: oc logs -n openshift-security-profiles -l name=security-profiles-operator.
+
+* Path Format Issues: Double-check that you are using the correct cluster-scoped format in your workload definitions.
+	Seccomp: operator/<profile-name>.json
+	SELinux: <profile-name>._process
+
+* Profile Not Distributed to Nodes: If a profile is Installed but not working on a specific node:
+	Check the node status with oc get securityprofilenodestatuses -o wide. Ensure the node is listed and the profile is reported as available.
+
+
+Use advanced tasks to enable metrics, configure webhooks, or restrict syscalls.
+// include::modules/spo-log-enricher-app-trace.adoc[leveloffset=+2]
+// include::modules/spo-configuring-webhooks.adoc[leveloffset=+1]
