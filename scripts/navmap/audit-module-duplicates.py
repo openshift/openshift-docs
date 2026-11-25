@@ -13,6 +13,9 @@ Flags:
     --duplicates-only, -d       Show only modules with duplicates in same job
     --redundant-only, -r        Show only modules appearing in 2+ jobs
     --threshold N, -t N         Show only modules appearing N+ times (default: 2)
+    --compare-jobs, -j          Compare jobs' direct include target sets
+    --identical-only           Show only identical job pairs (requires -j)
+    --similarity N             Minimum similarity percentage (1-100; default: 80)
     --summary, -s               Show summary table only
     --help, -h                  Show this help
 
@@ -22,6 +25,17 @@ Examples:
     python3 scripts/navmap/audit-module-duplicates.py -d ocp     # duplicates only
     python3 scripts/navmap/audit-module-duplicates.py -t 3 ocp   # 3+ appearances
     python3 scripts/navmap/audit-module-duplicates.py -r rosa-hcp  # cross-job redundancy
+    python3 scripts/navmap/audit-module-duplicates.py -j -c observe ocp
+    python3 scripts/navmap/audit-module-duplicates.py -j --similarity 70 ocp
+    python3 scripts/navmap/audit-module-duplicates.py -j --identical-only ocp
+
+Job comparison reports identical sets, full containment, and similar sets within
+each category. Similarity is shared targets / all distinct targets in both jobs.
+By default, identical and contained pairs are reported regardless of the cutoff.
+Use --identical-only to exclude contained and similar pairs.
+Order, repetitions, and include attributes are ignored; nested jobs are not
+expanded and AsciiDoc conditionals are not evaluated. Matches are review candidates.
+The module filters -d, -r, and -t cannot be combined with --compare-jobs.
 """
 
 from __future__ import annotations
@@ -30,6 +44,8 @@ import re
 import sys
 from collections import Counter, defaultdict
 from pathlib import Path
+
+from job_comparison import compare_job_includes
 
 INCLUDE_RE = re.compile(r"^include::(.+?)\[", re.MULTILINE)
 JOBS_DIR_RE = re.compile(r"^([a-z][a-z0-9_-]*-jobs)/(.+\.adoc)$")
@@ -47,13 +63,31 @@ def parse_args(argv: list[str]) -> tuple[dict, list[str], list[str]]:
         "redundant_only": False,
         "threshold": 2,
         "summary_only": False,
+        "compare_jobs": False,
+        "identical_only": False,
+        "similarity": 80,
     }
     distros: list[str] = []
     categories: list[str] = []
     expect_category = False
     expect_threshold = False
+    expect_similarity = False
+    module_filters = False
+    similarity_given = False
 
     for arg in argv[1:]:
+        if expect_similarity:
+            try:
+                options["similarity"] = int(arg)
+            except ValueError:
+                print("Error: --similarity must be an integer from 1 to 100.", file=sys.stderr)
+                raise SystemExit(2)
+            if not 1 <= options["similarity"] <= 100:
+                print("Error: --similarity must be an integer from 1 to 100.", file=sys.stderr)
+                raise SystemExit(2)
+            expect_similarity = False
+            continue
+
         if expect_category:
             cat = arg if arg.endswith(".adoc") else f"{arg}.adoc"
             categories.append(cat)
@@ -73,10 +107,20 @@ def parse_args(argv: list[str]) -> tuple[dict, list[str], list[str]]:
             expect_category = True
         elif arg in ("-t", "--threshold"):
             expect_threshold = True
+            module_filters = True
         elif arg in ("-d", "--duplicates-only"):
             options["duplicates_only"] = True
+            module_filters = True
         elif arg in ("-r", "--redundant-only"):
             options["redundant_only"] = True
+            module_filters = True
+        elif arg in ("-j", "--compare-jobs"):
+            options["compare_jobs"] = True
+        elif arg == "--identical-only":
+            options["identical_only"] = True
+        elif arg == "--similarity":
+            expect_similarity = True
+            similarity_given = True
         elif arg in ("-s", "--summary"):
             options["summary_only"] = True
         elif arg in ("-h", "--help"):
@@ -85,12 +129,16 @@ def parse_args(argv: list[str]) -> tuple[dict, list[str], list[str]]:
         elif arg.startswith("-") and not arg.startswith("--"):
             # Combined short flags
             for ch in arg[1:]:
+                if ch in "drt":
+                    module_filters = True
                 if ch == "d":
                     options["duplicates_only"] = True
                 elif ch == "r":
                     options["redundant_only"] = True
                 elif ch == "s":
                     options["summary_only"] = True
+                elif ch == "j":
+                    options["compare_jobs"] = True
                 elif ch == "c":
                     expect_category = True
                 elif ch == "t":
@@ -101,6 +149,9 @@ def parse_args(argv: list[str]) -> tuple[dict, list[str], list[str]]:
                 else:
                     print(f"Unknown flag: -{ch}", file=sys.stderr)
                     raise SystemExit(2)
+        elif arg.startswith("-"):
+            print(f"Unknown flag: {arg}", file=sys.stderr)
+            raise SystemExit(2)
         else:
             distros.append(arg)
 
@@ -109,6 +160,18 @@ def parse_args(argv: list[str]) -> tuple[dict, list[str], list[str]]:
         raise SystemExit(2)
     if expect_threshold:
         print("Error: --threshold requires a value.", file=sys.stderr)
+        raise SystemExit(2)
+    if expect_similarity:
+        print("Error: --similarity requires a value.", file=sys.stderr)
+        raise SystemExit(2)
+    if options["compare_jobs"] and module_filters:
+        print("Error: --compare-jobs cannot be combined with -d, -r, or -t.", file=sys.stderr)
+        raise SystemExit(2)
+    if similarity_given and not options["compare_jobs"]:
+        print("Error: --similarity requires --compare-jobs.", file=sys.stderr)
+        raise SystemExit(2)
+    if options["identical_only"] and not options["compare_jobs"]:
+        print("Error: --identical-only requires --compare-jobs (-j).", file=sys.stderr)
         raise SystemExit(2)
 
     return options, distros, categories
@@ -199,6 +262,84 @@ def audit_category(
     return result
 
 
+def read_include_targets(path: Path) -> set[str] | None:
+    """Read direct include targets, excluding line and block comments.
+
+    This is a source comparison, not an AsciiDoc render: include attributes and
+    conditionals are deliberately not interpreted. None means the read failed.
+    """
+    try:
+        text = path.read_text(encoding="utf-8")
+    except (OSError, UnicodeError) as error:
+        print(f"Warning: could not read {path}: {error}", file=sys.stderr)
+        return None
+
+    targets = set()
+    in_comment = False
+    for line in text.splitlines():
+        if line.strip() == "////":
+            in_comment = not in_comment
+            continue
+        if in_comment:
+            continue
+        match = INCLUDE_RE.match(line)
+        if match:
+            targets.add(match.group(1).strip())
+    return targets
+
+
+def report_job_comparisons(distro: str, categories: list[Path], options: dict) -> None:
+    """Report matching job pairs separately for each category."""
+    print(f"\n{'=' * 80}\n  Job include comparison: {distro}\n{'=' * 80}")
+    print("  Direct target sets; order, repetitions, and include attributes ignored.")
+    print("  Nested jobs are not expanded; conditionals are not evaluated.")
+    print("  Matching include paths do not guarantee identical rendered content.")
+    print("  Check conditional includes before removing either job.")
+    if options["identical_only"]:
+        print("  Filter: identical target sets only.")
+    else:
+        print(f"  Similarity cutoff: {options['similarity']}%; identical/contained pairs always included.")
+
+    cache: dict[str, set[str] | None] = {}
+    for category in categories:
+        targets = read_include_targets(category)
+        if targets is None:
+            continue
+        jobs = {}
+        for ref in sorted(targets):
+            if not JOBS_DIR_RE.match(ref):
+                continue
+            if ref not in cache:
+                cache[ref] = read_include_targets(REPO_ROOT / "maps" / ref)
+            if cache[ref]:
+                jobs[ref] = cache[ref]
+        matches = compare_job_includes(jobs, options["similarity"])
+        if options["identical_only"]:
+            matches = [match for match in matches if match["kind"] == "IDENTICAL"]
+        print(f"\n  ── {distro}/{category.stem} ──")
+        counts = Counter(match["kind"] for match in matches)
+        if options["identical_only"]:
+            print(f"     Identical: {counts['IDENTICAL']} job pairs")
+        else:
+            print(f"     Identical: {counts['IDENTICAL']}; fully contained: {counts['CONTAINED']}; "
+                  f"similar: {counts['SIMILAR']} job pairs")
+        if not matches:
+            print("     No matching job pairs.")
+        if options["summary_only"]:
+            continue
+        for match in matches:
+            print(f"\n     [{match['kind']}] {match['similarity']:.1f}% similarity")
+            print(f"       A: {match['a']} ({len(jobs[match['a']])} targets)")
+            print(f"       B: {match['b']} ({len(jobs[match['b']])} targets)")
+            if match["kind"] == "CONTAINED":
+                print("       All A targets are included in B.")
+            for label, key in (("Shared", "shared"), ("Only A", "only_a"), ("Only B", "only_b")):
+                targets = sorted(match[key])
+                print(f"       {label} ({len(targets)}):" + (" none" if not targets else ""))
+                for target in targets:
+                    print(f"         {target}")
+
+
 def audit_distro(
     distro: str,
     options: dict,
@@ -226,6 +367,10 @@ def audit_distro(
 
     if not category_files:
         print(f"No category .adoc files found in {distro_dir}.", file=sys.stderr)
+        return
+
+    if options["compare_jobs"]:
+        report_job_comparisons(distro, category_files, options)
         return
 
     # Collect module usage across all categories
