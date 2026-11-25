@@ -1,0 +1,91 @@
+// Module included in the following assemblies:
+//
+// * security/zero_trust_workload_identity_manager/zero-trust-manager-nested-spire.adoc
+
+:_mod-docs-content-type: PROCEDURE
+[id="zero-trust-manager-nested-spire-configure-downstream_{context}"]
+= Configuring the nested {spire-full} (SPIRE) server
+
+[role="_abstract"]
+You point the nested {spiffe-full} Runtime Environment (SPIRE) server at the parent gRPC endpoint to obtain an intermediate certificate authority (CA) from the parent. {zero-trust-full} adds the `spire-agent-upstream` sidecar so that the parent can attest the nested server.
+
+.Prerequisites
+
+* You are logged in to the nested cluster with the `cluster-admin` role.
+* You registered the nested cluster on the parent server under `spec.nodeAttestor.externalK8sPSAT.clusters`.
+* You confirmed that `DownstreamClustersValid` is `True` on the parent `SpireServer` custom resource (CR).
+* You created the `spire-trust-bundle` secret in the nested cluster Operator namespace with the `bundle.crt` key.
+* You recorded the parent gRPC hostname. For an Operator-managed route, use the `spire-server-grpc` host.
+* You set the `spec.caValidity` field on the nested server to at most one sixth of the parent CA lifetime, and to at most 7 days.
+
+.Procedure
+
+. Export the current `SpireServer` CR by running the following command:
++
+[source,terminal]
+----
+$ oc get spireserver cluster -o yaml > spireserver-nested.yaml
+----
+
+. Add `spec.upstreamAuthority.spire` under `spec`.
++
+If you set `certManager` or `vault`, remove the `certManager` or `vault` field. Keep the rest of the existing `spec`.
++
+[source,yaml]
+----
+apiVersion: operator.openshift.io/v1alpha1
+kind: SpireServer
+metadata:
+  name: cluster
+spec:
+  # ...
+  caValidity: "8h"
+  upstreamAuthority:
+    spire:
+      serverAddress: grpc.cluster-root.example.com
+      serverPort: 443
+      trustBundleSecret: spire-trust-bundle
+----
++
+where:
++
+`spec.upstreamAuthority.spire.serverAddress`:: Specifies the DNS hostname of the parent gRPC endpoint. Do not include a scheme, a port, or a path.
+`spec.upstreamAuthority.spire.serverPort`:: Specifies the parent gRPC port. The default is `443`. Set `serverPort` only when the endpoint is not on port `443`.
+`spec.upstreamAuthority.spire.trustBundleSecret`:: Specifies the secret name in the Operator namespace. The secret key is `bundle.crt`.
+`spec.caValidity`:: Specifies the CA lifetime for the nested server. The example uses 8 hours under a 64-hour parent CA.
+
+. Apply the updated CR by running the following command:
++
+[source,terminal]
+----
+$ oc apply -f spireserver-nested.yaml
+----
++
+{zero-trust-full} rolls the `spire-server` `StatefulSet`. The nested server pauses issuance until the pod is ready again. Certificates that the nested server already issued stay valid until they expire.
+
+.Verification
+
+. Confirm that the agent sidecar status is `spire-agent-upstream true` by running the following command:
++
+[source,terminal]
+----
+$ oc get pod spire-server-0 -n zero-trust-workload-identity-manager -o jsonpath='{range .status.containerStatuses[*]}{.name}{" "}{.ready}{"\n"}{end}'
+----
+
+. Confirm the status condition by running the following command:
++
+[source,terminal]
+----
+$ oc get spireserver cluster -o jsonpath='{range .status.conditions[*]}{.type}={.status} {.reason}{"\n"}{end}'
+----
++
+The `UpstreamAgentAvailable=True Ready` value ensures that the sidecar is ready and the trust bundle secret exists. It does not prove that the nested server has rotated to the parent-signed CA.
+
+. Check the CA report after the next CA rotation by running the following command:
++
+[source,terminal]
+----
+$ oc logs pod/spire-server-0 -c spire-server -n zero-trust-workload-identity-manager | grep "X509 CA"
+----
++
+A nested server that uses the parent CA logs `X509 CA prepared` with `self_signed=false` and a non-empty `upstream_authority_id`.
