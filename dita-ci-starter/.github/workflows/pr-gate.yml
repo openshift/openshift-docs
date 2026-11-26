@@ -1,0 +1,62 @@
+name: DITA PR gate
+
+# Runs on every PR that touches DITA source. Blocks merge on invalid content.
+# This is the quality wall that makes "one PR per Orchestrator delivery" real:
+# nothing reaches a release branch — and therefore nothing reaches AEM — while red.
+
+on:
+  pull_request:
+    paths:
+      - '**/*.dita'
+      - '**/*.ditamap'
+      - '**/*.ditaval'
+      - 'ci/**'
+
+permissions:
+  contents: read
+
+env:
+  DITA_IMAGE: ghcr.io/dita-ot/dita-ot:4.4.1   # pin to a digest for production
+
+jobs:
+  gate:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0   # need history to diff against the PR base
+
+      - name: Install helpers
+        run: sudo apt-get update && sudo apt-get install -y libxml2-utils rsync
+
+      - name: Make CI scripts executable
+        run: chmod +x ci/*.sh
+
+      - name: Compute changed maps (scope the gate to what the PR touched)
+        run: ci/changed-maps.sh "${{ github.event.pull_request.base.sha }}" | tee changed-maps.txt
+
+      - name: Well-formedness (changed files only)
+        run: |
+          git diff --name-only "${{ github.event.pull_request.base.sha }}"...HEAD \
+            -- '*.dita' '*.ditamap' '*.ditaval' | xargs -r xmllint --noout
+
+      - name: Semantic validation via preprocess (changed maps only)
+        # `--format=dita` runs the full DITA-OT preprocess: it fails on unresolved
+        # keys, broken conref/conkeyref, and missing map/topic references.
+        # It doubles as the normalize step, so we reuse its output for link checking.
+        run: |
+          if [ ! -s changed-maps.txt ]; then
+            echo "No root maps affected; skipping semantic validation."
+            exit 0
+          fi
+          while IFS= read -r m; do
+            [ -z "$m" ] && continue
+            echo "::group::validate $m"
+            docker run --rm -v "$PWD":/src "$DITA_IMAGE" \
+              --input="/src/$m" --format=dita --output=/src/.validate-out
+            echo "::endgroup::"
+          done < changed-maps.txt
+
+      - name: Link check (on resolved output)
+        if: hashFiles('.validate-out/**') != ''
+        run: ci/linkcheck.sh .validate-out
